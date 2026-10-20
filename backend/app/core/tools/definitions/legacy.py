@@ -6,6 +6,7 @@ REMOVED_BUILTIN_TOOLS: set[str] = {
     "update_asset",
     "list_assets",
     "search_assets",
+    "block_ip_on_firewall",
 }
 
 LEGACY_DEPRECATED_TOOL_NAMES: set[str] = {

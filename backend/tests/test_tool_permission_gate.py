@@ -82,8 +82,8 @@ def test_device_descriptors_declare_permission():
     assert write_tool.danger_level == "high"
 
 
-def test_block_ip_on_firewall_preset_declares_device_edit():
+def test_block_ip_on_firewall_is_not_a_callable_preset():
     from app.core.tools.catalog import ToolCatalog
 
-    preset = ToolCatalog.preset_name_index()["block_ip_on_firewall"]
-    assert tuple(preset["required_permission"]) == ("device", "edit")
+    assert "block_ip_on_firewall" in ToolCatalog.removed_names()
+    assert "block_ip_on_firewall" not in ToolCatalog.preset_name_index()

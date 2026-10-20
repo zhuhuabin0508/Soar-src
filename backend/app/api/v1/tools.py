@@ -5,18 +5,21 @@
 """
 import asyncio
 import logging
+from types import SimpleNamespace
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from app.database import get_db
 from app.dependencies import (
-    FirewallDevice,
     ToolRegistry,
     get_current_user,
-    get_firewall_device,
     get_tool_registry,
-    require_role,
+    require_permission,
 )
+from app.devices.as_tool import resolve_default_block_device
+from app.devices.gateway import DeviceGateway, build_idempotency_key
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ class BlockIPRequest(BaseModel):
     ip: str
     duration: str
     reason: str
+    device_id: int
 
 
 @router.get("/query/{ip}")
@@ -71,30 +75,44 @@ async def query_ip(
     return result
 
 
-@router.post("/block_ip", dependencies=[Depends(require_role("admin", "analyst"))])
+@router.post("/block_ip")
 async def block_ip(
     body: BlockIPRequest,
-    firewall: FirewallDevice = Depends(get_firewall_device),
+    db: Session = Depends(get_db),
+    user=Depends(require_permission("device", "edit")),
 ) -> dict:
-    """调用防火墙封禁指定 IP。
-
-    封禁为幂等操作，重复调用同一 IP 不会产生副作用。
-
-    Args:
-        body: 封禁请求体，含 ip/duration/reason。
-        firewall: 注入的防火墙设备单例。
-
-    Returns:
-        封禁结果字典。
-    """
+    """经设备网关封禁指定设备上的 IP。未指定设备或设备不可用时拒绝。"""
     logger.info(
-        "收到封禁 IP 请求, ip=%s, duration=%s, reason=%s",
+        "收到封禁 IP 请求, ip=%s, device_id=%s, duration=%s, reason=%s",
         body.ip,
+        body.device_id,
         body.duration,
         body.reason,
     )
-    result = await firewall.block_ip_on_firewall(
-        ip=body.ip, duration=body.duration, reason=body.reason
+    res = resolve_default_block_device(
+        db,
+        SimpleNamespace(variables={"default_device_id": body.device_id}),
+        {body.device_id},
     )
+    if not res.ok:
+        raise HTTPException(status_code=400, detail={"error": res.error, "hint": res.hint})
+    params = {"ip": body.ip, "duration": body.duration, "reason": body.reason}
+    key = build_idempotency_key(
+        source="api",
+        device_id=res.device.id,
+        action_type="block_ip",
+        params=params,
+    )
+    result = await DeviceGateway.invoke(
+        db,
+        res.device.id,
+        action_id=res.action.id,
+        params=params,
+        source="api",
+        user_id=getattr(user, "id", None),
+        idempotency_key=key,
+    )
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=400, detail=result)
     logger.info("封禁 IP 处理完成, ip=%s", body.ip)
     return result

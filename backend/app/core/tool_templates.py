@@ -60,23 +60,6 @@ TOOL_TEMPLATES: list[dict[str, Any]] = [
         ),
     },
     {
-        "name": "block_ip_on_firewall",
-        "description": "在防火墙上下发 IP 封禁规则（幂等），支持指定时长与原因。",
-        "parameters_schema": [
-            {"name": "ip", "type": "String", "required": True, "description": "待封禁的 IP 地址"},
-            {"name": "duration", "type": "String", "required": False, "description": "封禁时长，如 24h、1d，默认 24h"},
-            {"name": "reason", "type": "String", "required": False, "description": "封禁原因说明"},
-        ],
-        "code": (
-            "async def run(**kwargs):\n"
-            "    from app.devices.firewall import block_ip_on_firewall\n"
-            "    ip = kwargs.get('ip', '')\n"
-            "    duration = kwargs.get('duration', '24h')\n"
-            "    reason = kwargs.get('reason', 'auto block by SOAR')\n"
-            "    return await block_ip_on_firewall(ip, duration, reason)\n"
-        ),
-    },
-    {
         "name": "list_documents",
         "description": "列出智能体可读取的已上传文档（未分段原文，来自对话中上传的文件）。先调用此工具获取 file_id，再用 read_document 读取内容。",
         "parameters_schema": [],

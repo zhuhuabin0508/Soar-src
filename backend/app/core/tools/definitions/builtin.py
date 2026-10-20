@@ -516,7 +516,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "name": "record_ban",
         "description": (
             "将封禁处置结果写入数据库（BannedIP 表）。若该 IP 已有记录则累加违规次数并更新封禁信息，"
-            "否则新建记录。写入后可由 block_ip_on_firewall 工具执行实际封禁，前端「已封禁 IP」页面会展示该记录。"
+            "否则新建记录。设备上的封禁请使用 block_ip。前端「已封禁 IP」页面会展示该记录。"
         ),
         "parameters_schema": [
             {"name": "ip", "type": "String", "required": True, "description": "待封禁的 IP 地址"},
