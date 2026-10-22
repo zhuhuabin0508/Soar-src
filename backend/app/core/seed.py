@@ -825,14 +825,14 @@ def ensure_builder_agent() -> None:
 
 
 PLATFORM_AGENT_NAME = "统一对话"
+# 注意：只放真实可装配的工具名。query_asset / list_assets 已被
+# REMOVED_BUILTIN_TOOLS 移除（目录过滤后永不装配），不再列入白名单。
 _PLATFORM_QUERY_TOOLS = [
     "check_whitelist",
     "get_asset_info",
     "get_threat_intel",
     "check_subnet",
     "query_banned_ip",
-    "query_asset",
-    "list_assets",
 ]
 
 

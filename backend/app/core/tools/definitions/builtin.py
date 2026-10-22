@@ -215,7 +215,13 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "block_ip_on_firewall",
-        "description": "在防火墙上下发 IP 封禁规则（幂等：重复封禁同一 IP 不会重复下发）",
+        # 已停用（2026-10-20）：该名在 REMOVED_BUILTIN_TOOLS 中，种子目录过滤 + 启动清理
+        # 会删除存量 DB 行，正常不会装配；底层 firewall.block_ip_on_firewall 已中性化（返回
+        # error 而非假成功）。此定义仅作防御纵深保留，描述如实标注停用状态。
+        "description": (
+            "已停用：内存封禁已退役，调用只会返回错误，不会在设备上封禁。"
+            "请使用语义工具 block_ip（经 DeviceGateway 下发到真实设备）。"
+        ),
         "parameters_schema": [
             {"name": "ip", "type": "String", "required": True, "description": "待封禁的 IP 地址"},
             {"name": "duration", "type": "String", "required": False, "description": "封禁时长（如 24h / 1h），默认 24h"},
