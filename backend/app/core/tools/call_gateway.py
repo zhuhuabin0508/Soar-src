@@ -33,7 +33,7 @@ def authorize_tool_call(
     tool_name: str,
     arguments: dict | None,
     danger_level: str,
-    required_permission: tuple[str, str] | None,
+    required_permission: tuple[str, str] | tuple[tuple[str, str], ...] | None,
     user,
     approved_ticket_id: Optional[int] = None,
     self_gating: bool = False,
@@ -47,11 +47,12 @@ def authorize_tool_call(
         reason = "对话入口不允许执行最高危工具"
         _audit(db, user, tool_name, entry, tier, False, reason)
         return GatewayDecision(False, reason, tier)
-    from app.core.tools.authz import user_may_call
+    from app.core.tools.authz import required_permission_set, user_may_call
 
     if not user_may_call(user, db, required_permission):
-        module, action = required_permission or ("", "")
-        reason = f"当前角色无权调用 {tool_name}，需要 {module}:{action}"
+        needs = required_permission_set(required_permission)
+        need_text = "、".join(f"{m}:{a}" for m, a in needs) or "-"
+        reason = f"当前角色无权调用 {tool_name}，需要 {need_text}"
         _audit(db, user, tool_name, entry, tier, False, reason)
         return GatewayDecision(False, reason, tier)
     if tier in ("L0", "L1") or self_gating:

@@ -267,7 +267,7 @@ class ToolRegistryBuilder:
             return
         from app.agent.workflow_as_tool import (
             infer_parameters, invoke_workflow_as_tool, make_tool_name,
-            workflow_danger, workflow_self_gates,
+            workflow_danger, workflow_permissions, workflow_self_gates,
         )
         from app.models.workflow import Workflow
 
@@ -305,7 +305,12 @@ class ToolRegistryBuilder:
                 mutating=True,
                 deferrable=True,
                 danger_level=workflow_danger(wf.graph_config),
-                required_permission=("workflow_list", "execute"),
+                # 权限按图推导（与 danger 对称）：基线 workflow_list:execute +
+                # 图内节点的权限并集，防「包一层工作流」侧写绕过模块权限（如 device:edit）
+                required_permission=(
+                    (("workflow_list", "execute"),)
+                    + workflow_permissions(wf.graph_config)
+                ),
                 extra={"self_gating": workflow_self_gates(wf.graph_config)},
                 parameters=parameters,
             )

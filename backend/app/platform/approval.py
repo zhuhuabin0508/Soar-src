@@ -123,7 +123,9 @@ async def _execute_claimed_tool(db: Session, ticket, *, agent_id: int, user, arg
     if (ticket.tool_name or "") == "trigger_workflow_skill":
         from app.models.agent import Agent
         from app.agent.hermes.skill_engine import WorkflowSkillBridge
-        from app.agent.workflow_as_tool import workflow_danger, workflow_self_gates
+        from app.agent.workflow_as_tool import (
+            workflow_danger, workflow_permissions, workflow_self_gates,
+        )
         from app.core.tools.call_gateway import authorize_tool_call
         from app.models.workflow import Workflow
 
@@ -139,12 +141,17 @@ async def _execute_claimed_tool(db: Session, ticket, *, agent_id: int, user, arg
         if _wf is not None and getattr(_wf, "graph_config", None) is not None:
             _danger = workflow_danger(_wf.graph_config)
             _self_gating = workflow_self_gates(_wf.graph_config)
+        # 权限按图推导（与 registry_builder 口径一致）：基线 + 图内节点权限并集，
+        # 防 trigger_workflow_skill 侧写绕过模块权限
+        _required = (("workflow_list", "execute"),)
+        if _wf is not None and getattr(_wf, "graph_config", None) is not None:
+            _required = _required + workflow_permissions(_wf.graph_config)
         _decision = authorize_tool_call(
             db,
             tool_name=ticket.tool_name,
             arguments=args,
             danger_level=_danger,
-            required_permission=("workflow_list", "execute"),
+            required_permission=_required,
             user=user,
             approved_ticket_id=ticket.id,
             self_gating=_self_gating,
