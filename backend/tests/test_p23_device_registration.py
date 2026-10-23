@@ -149,6 +149,21 @@ class TestDeviceRegistration:
         # 两个动作投影
         assert {"device_3_7", "device_3_8"} <= names
 
+    def test_many_reads_keep_core_write_drop_read_projection(self):
+        from app.core.tools.registry_builder import MAX_PROJECTION_READS_PER_DEVICE
+
+        devices = [_device(id=3)]
+        reads = [
+            _action(id=i, device_id=3, action_type="list_hosts", category="query", risk_level="readonly")
+            for i in range(1, MAX_PROJECTION_READS_PER_DEVICE + 2)
+        ]
+        writes = [_action(id=90, device_id=3)]
+        db = _fake_db(devices, reads + writes)
+        registry = ToolRegistryBuilder(db, _agent(enabled_devices=[3])).build()
+        assert "device_3_90" in registry
+        assert "list_device_actions" in registry
+        assert not any(n.startswith("device_3_") and n != "device_3_90" for n in registry)
+
     def test_enabled_devices_empty_no_device_tools(self):
         db = _fake_db([], [])
         agent = _agent(enabled_devices=[])

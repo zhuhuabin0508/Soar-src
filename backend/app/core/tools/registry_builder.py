@@ -13,6 +13,8 @@ from app.core.tools.governance_legacy import (
 
 logger = logging.getLogger(__name__)
 
+MAX_PROJECTION_READS_PER_DEVICE = 20
+
 
 def descriptor_to_tool_entry(d: ToolDescriptor):
     from app.agent.hermes.types import ToolEntry
@@ -362,13 +364,24 @@ class ToolRegistryBuilder:
                 .filter(DeviceAction.device_id == device.id, DeviceAction.enabled.is_(True))
                 .all()
             )
+            writes = []
+            reads = []
             for action in actions:
-                # A2 判定：任一启用的 block_ip 动作 → 具备语义封禁能力
-                # （须在 continue 之前，防止 block_ip 被非核心写过滤时漏标）
                 if (getattr(action, "action_type", "") or "").lower() == "block_ip":
                     has_blockable = True
                 if is_write_action(action) and not is_core_write_action(action):
                     continue
+                if is_core_write_action(action):
+                    writes.append(action)
+                else:
+                    reads.append(action)
+            if len(reads) > MAX_PROJECTION_READS_PER_DEVICE:
+                logger.warning(
+                    "设备 %s(id=%s) 读动作 %d 个，超过投影上限 %d，改为枚举/门面",
+                    device.name, device.id, len(reads), MAX_PROJECTION_READS_PER_DEVICE,
+                )
+                reads = []
+            for action in writes + reads:
                 desc = build_device_action_tool(
                     self.db, device, action, agent_id=agent_id,
                 )

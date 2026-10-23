@@ -40,6 +40,7 @@ class DeviceGateway:
         workflow_id: Optional[int] = None,
         correlation_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> dict:
         """统一设备执行入口。返回 {success, status_code, response_body, error,
         latency_ms, idempotent_replay}。"""
@@ -103,7 +104,7 @@ class DeviceGateway:
         #    skip_log=True，只执行 HTTP；DeviceCallLog 回到主线程写（见第 4 步）。
         result = await asyncio.to_thread(
             execute_device_action,
-            device, action, params,
+            device, action, params, timeout,
             db=None, source=source, workflow_id=workflow_id, agent_id=agent_id,
             user_id=user_id, skip_log=True,
         )

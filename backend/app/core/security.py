@@ -11,10 +11,13 @@
 """
 import base64
 import hashlib
+import ipaddress
 import logging
 import secrets
+import socket
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlsplit
 
 import jwt
 from passlib.context import CryptContext
@@ -263,6 +266,59 @@ def decrypt_device_secret(ciphertext: Optional[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning("设备凭据解密失败: %s", exc)
         return ""
+
+
+_METADATA_HOSTS = {
+    "169.254.169.254",
+    "100.100.100.200",
+    "metadata.google.internal",
+    "metadata.goog",
+}
+
+
+def validate_outbound_url(url: str, *, field: str = "URL") -> None:
+    """设备出站地址只允许 http/https，并拒绝云元数据主机。内网地址允许。"""
+    if not url or not str(url).strip():
+        raise ValueError(f"{field} 不能为空")
+    parsed = urlsplit(str(url).strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"{field} 协议非法（仅允许 http/https）: {str(url)[:80]}")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError(f"{field} 缺少主机地址: {str(url)[:80]}")
+    if host in _METADATA_HOSTS:
+        raise ValueError(f"{field} 指向云元数据地址，已被安全策略拦截")
+
+
+def validate_public_fetch_url(url: str, *, field: str = "URL") -> None:
+    """用户提供的拉取地址：在出站基线之上再拒绝环回、链路本地和私网。"""
+    validate_outbound_url(url, field=field)
+    host = (urlsplit(str(url).strip()).hostname or "").lower()
+    addresses: list[str] = []
+    try:
+        ipaddress.ip_address(host)
+        addresses = [host]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror as exc:
+            raise ValueError(f"{field} 无法解析主机: {host}") from exc
+        addresses = [item[4][0] for item in infos if item[4]]
+    for raw in addresses:
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError(f"{field} 指向非公网地址，已被拒绝")
 
 
 # ============ 轻量数据库迁移 ============

@@ -746,6 +746,22 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
     except ImportError:  # pragma: no cover
         logger.debug("firewall 模块未安装，工具命名空间不注入 block_ip_on_firewall")
     try:
+        from app.devices.action_executor import execute_device_action_by_id
+
+        async def _execute_device_action_by_id(action_id, params=None, device_id=None, timeout=None):
+            return await execute_device_action_by_id(
+                action_id,
+                params=params,
+                device_id=device_id,
+                timeout=timeout,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+
+        namespace["execute_device_action_by_id"] = _execute_device_action_by_id
+    except ImportError:  # pragma: no cover
+        logger.debug("action_executor 未安装，工具命名空间不注入 execute_device_action_by_id")
+    try:
         import openpyxl  # noqa: F401
         namespace["openpyxl"] = openpyxl
     except ImportError:  # pragma: no cover

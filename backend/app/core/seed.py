@@ -836,8 +836,20 @@ _PLATFORM_QUERY_TOOLS = [
 ]
 
 
+_PLATFORM_DESCRIPTION = (
+    "平台统一入口。查询工具和已勾选设备上的契约工具可用。"
+    "设备范围由 enabled_devices 维护，不逐个登记动作名。写操作受角色权限和确认闸约束。"
+)
+_PLATFORM_PROMPT = (
+    "你是平台统一对话入口。只能使用已经挂载的工具。"
+    "设备能力只来自该智能体已勾选设备的契约工具：只读查询可直接调用；"
+    "写操作和封禁必须等待平台确认后再执行。未挂载的设备不要猜测动作或参数。"
+)
+_PLATFORM_GREETING = "你好，我是统一对话。可以查资产、威胁情报、白名单，以及已挂载设备上的动作。"
+
+
 def ensure_platform_agent() -> None:
-    """幂等创建已发布的统一对话入口。白名单只有查询工具，不挂设备写。"""
+    """幂等创建统一对话入口。已存在且仍是旧的拒绝设备提示词时，只更新提示词。"""
     db: Session = SessionLocal()
     try:
         from app.models.agent import Agent as AgentModel
@@ -846,24 +858,26 @@ def ensure_platform_agent() -> None:
 
         existing = db.query(AgentModel).filter(AgentModel.name == PLATFORM_AGENT_NAME).first()
         if existing is not None:
+            if "不要调用封禁" in (existing.system_prompt or ""):
+                existing.description = _PLATFORM_DESCRIPTION
+                existing.system_prompt = _PLATFORM_PROMPT
+                existing.greeting = _PLATFORM_GREETING
+                db.commit()
             return
         cfg = db.query(LLMConfig).order_by(LLMConfig.id.asc()).first()
         admin = db.query(User).filter(User.role == "admin").order_by(User.id.asc()).first()
         agent = AgentModel(
             name=PLATFORM_AGENT_NAME,
-            description="平台统一入口。只查询已挂载的只读工具，封禁和设备写入请使用处置智能体或工作流。",
+            description=_PLATFORM_DESCRIPTION,
             model_config_id=cfg.id if cfg else None,
-            system_prompt=(
-                "你是平台统一对话入口。只能使用已经挂载的查询工具回答问题。"
-                "不要调用封禁、设备写入或修改类操作。需要处置时，告诉用户去对应的处置智能体或已发布工作流。"
-            ),
+            system_prompt=_PLATFORM_PROMPT,
             temperature=0.3,
             max_tokens=2048,
             enabled_tools=list(_PLATFORM_QUERY_TOOLS),
             enabled_devices=[],
             enabled_workflows=[],
             max_iterations=8,
-            greeting="你好，我是统一对话。可以帮你查资产、威胁情报和白名单。封禁请使用处置智能体。",
+            greeting=_PLATFORM_GREETING,
             suggested_questions=[
                 "查一下这个 IP 是否在白名单",
                 "这个 IP 的威胁情报是什么",

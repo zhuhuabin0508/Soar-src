@@ -11,13 +11,15 @@
 import hashlib
 import json
 import logging
+import re
 import time as _time
-from urllib.parse import urlencode as _urlencode
 from typing import Any, Optional
+from urllib.parse import quote as _quote
+from urllib.parse import urlencode as _urlencode
 
 import httpx
 
-from app.core.security import decrypt_device_secret
+from app.core.security import decrypt_device_secret, validate_outbound_url
 from app.models.device import Device, DeviceAction, DeviceCallLog
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,14 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
     # 1) 拼接 URL
     base_url = (device.api_url or "").rstrip("/")
     api_path = (action.api_path or "").lstrip("/")
+    if "{" in api_path:
+        for key in re.findall(r"\{(\w+)\}", api_path):
+            value = params.pop(key, None)
+            if value is not None and str(value) != "":
+                api_path = api_path.replace("{" + key + "}", _quote(str(value), safe=""))
     url = f"{base_url}/{api_path}" if api_path else base_url
+    if url:
+        validate_outbound_url(url, field="设备 api_url")
 
     # 2) 请求头
     headers = {"Content-Type": "application/json"}
@@ -128,6 +137,7 @@ def _qingteng_login(device: Device, timeout: float, verify: bool):
     base_url = (device.api_url or "").rstrip("/")
     if not base_url:
         raise ValueError("设备未配置 api_url")
+    validate_outbound_url(f"{base_url}/v1/api/auth", field="设备 api_url")
     username = decrypt_device_secret(device.username or "")
     password = decrypt_device_secret(device.password or "")
     with httpx.Client(timeout=timeout, verify=verify) as client:
@@ -252,10 +262,16 @@ def execute_device_action(
     verify = bool(device.verify_tls)
     max_retries = device.max_retries if device.max_retries is not None else 0
 
-    method, url, headers, auth, req_body = _build_request(device, action, params)
+    try:
+        method, url, headers, auth, req_body = _build_request(device, action, params)
+    except ValueError as exc:
+        return {"success": False, "status_code": None, "response_body": None,
+                "error": str(exc), "latency_ms": 0}
     if not url:
         return {"success": False, "status_code": None, "response_body": None,
                 "error": "设备未配置 api_url 且动作未配置 api_path", "latency_ms": 0}
+
+    request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
 
     # 青藤签名协议：登录换取 comId/jwt/signKey 并对本业务请求做 SHA1 签名。
     # 若动作指向登录接口本身，则直接携带账号密码发送，不再走签名流程。
@@ -288,8 +304,7 @@ def execute_device_action(
             headers, req_body, url = _qingteng_signheaders(
                 comid, jwt, signkey, method, params, req_body, url
             )
-
-    request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
+            request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
 
     def _do_request() -> httpx.Response:
         with httpx.Client(timeout=timeout, verify=verify) as client:
@@ -406,3 +421,102 @@ def find_device_action_by_type(
         return device, None, f"设备「{device.name}」未配置启用的 {action_type} 动作"
 
     return device, action, None
+
+
+_TOOL_RESPONSE_MAX_CHARS = 30000
+
+
+async def execute_device_action_by_id(
+    action_id: int,
+    params: dict[str, Any] | None = None,
+    device_id: int | None = None,
+    timeout: float | None = None,
+    *,
+    agent_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """按动作 ID 执行。写动作经 DeviceGateway，并按动作风险核对设备权限。"""
+    try:
+        action_id = int(action_id)
+    except (TypeError, ValueError):
+        return {"error": "action_id 必须是数字（动作 ID）"}
+    if device_id is not None:
+        try:
+            device_id = int(device_id)
+        except (TypeError, ValueError):
+            return {"error": "device_id 必须是数字（设备 ID）"}
+    if params is not None and not isinstance(params, dict):
+        return {"error": "params 必须是对象（动作参数 key-value）"}
+
+    from app.core.tools.authz import user_may_call
+    from app.database import SessionLocal
+    from app.devices.as_tool import is_write_action
+    from app.devices.gateway import DeviceGateway, build_idempotency_key
+    from app.models.device import Device, DeviceAction
+    from app.models.user import User
+
+    db = SessionLocal()
+    try:
+        action = db.query(DeviceAction).filter(DeviceAction.id == action_id).first()
+        if action is None:
+            return {
+                "error": f"动作不存在: action_id={action_id}",
+                "hint": "先用 query_device_actions 查询设备支持的动作及其 action_id",
+            }
+        if device_id is not None and action.device_id != device_id:
+            return {
+                "error": (
+                    f"动作归属校验失败: action_id={action_id} 属于设备 {action.device_id}，"
+                    f"与传入 device_id={device_id} 不一致"
+                )
+            }
+        if not action.enabled:
+            return {"error": f"动作已禁用: {action.name} (action_id={action_id})"}
+        device = db.query(Device).filter(Device.id == action.device_id).first()
+        if device is None:
+            return {"error": f"动作所属设备不存在: device_id={action.device_id}"}
+        if not device.enabled:
+            return {"error": f"设备已禁用: {device.name}"}
+
+        write = is_write_action(action)
+        if user_id is not None:
+            user = db.query(User).filter(User.id == int(user_id)).first()
+            need = ("device", "edit") if write else ("device", "view")
+            if user is None or not user_may_call(user, db, need):
+                return {"error": f"当前用户无权执行该设备动作，需要 {need[0]}:{need[1]}"}
+
+        key = None
+        if write:
+            key = build_idempotency_key(
+                source="agent",
+                device_id=device.id,
+                action_type=action.action_type,
+                params=params or {},
+                agent_id=agent_id,
+            )
+        result = await DeviceGateway.invoke(
+            db,
+            device.id,
+            action_id=action.id,
+            params=params or {},
+            source="agent",
+            agent_id=agent_id,
+            user_id=user_id,
+            idempotency_key=key,
+            timeout=timeout,
+        )
+        result["device"] = {"id": device.id, "name": device.name, "type": device.type}
+        result["action"] = {
+            "id": action.id,
+            "action_type": action.action_type,
+            "name": action.name,
+        }
+        body = result.get("response_body")
+        if body is not None:
+            text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+            if len(text) > _TOOL_RESPONSE_MAX_CHARS:
+                result["response_body"] = text[:_TOOL_RESPONSE_MAX_CHARS]
+                result["response_truncated"] = True
+        return result
+    finally:
+        db.close()

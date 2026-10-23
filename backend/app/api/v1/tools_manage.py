@@ -261,7 +261,7 @@ def delete_tool(
     return {"ok": True}
 
 
-@router.post("/{tool_id:int}/test")
+@router.post("/{tool_id:int}/test", dependencies=[Depends(require_permission("tool", "edit"))])
 async def test_tool(
     tool_id: int, body: ToolTestRequest, db: Session = Depends(get_db)
 ) -> dict:
@@ -420,7 +420,7 @@ def _operations_from_spec(spec: dict) -> list[dict]:
     return operations
 
 
-@router.post("/import-openapi")
+@router.post("/import-openapi", dependencies=[Depends(require_permission("tool", "edit"))])
 async def import_openapi(body: OpenAPIImportRequest) -> dict:
     """解析 OpenAPI/Swagger JSON（或从 URL 拉取），返回操作列表供前端选择。
 
@@ -429,6 +429,12 @@ async def import_openapi(body: OpenAPIImportRequest) -> dict:
     logger.info("导入 OpenAPI: has_spec=%s, url=%s", bool(body.spec), body.url)
     spec_text = body.spec or ""
     if not spec_text and body.url:
+        try:
+            from app.core.security import validate_public_fetch_url
+
+            validate_public_fetch_url(body.url, field="OpenAPI URL")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             import httpx
 

@@ -49,6 +49,22 @@ def is_core_write_action(action) -> bool:
     )
 
 
+def policy_for_action_id(db, action_id) -> tuple[str, tuple[str, str]] | None:
+    """按已存储动作给出 (danger_level, required_permission)。查不到返回 None。"""
+    try:
+        aid = int(action_id)
+    except (TypeError, ValueError):
+        return None
+    from app.models.device import DeviceAction
+
+    action = db.query(DeviceAction).filter(DeviceAction.id == aid).first()
+    if action is None:
+        return None
+    if is_write_action(action):
+        return "high", ("device", "edit")
+    return "low", ("device", "view")
+
+
 def build_device_action_tool(
     db, device, action, *, agent_id: Optional[int] = None,
 ) -> ToolDescriptor:

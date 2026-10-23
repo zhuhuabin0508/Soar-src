@@ -596,11 +596,19 @@ class HermesToolEngine:
                     guardrail_action="allow",
                 )
 
+        _danger = self._danger_levels.get(effective_name, "low")
+        _need = self._required_permissions.get(effective_name)
+        if effective_name == "execute_device_action" and isinstance(tc.arguments, dict):
+            from app.devices.as_tool import policy_for_action_id
+
+            _policy = policy_for_action_id(self.db, tc.arguments.get("action_id"))
+            if _policy is not None:
+                _danger, _need = _policy
+
         # ===== 确认闸（阶段 6b）=====
         if self.user is not None:
             from app.core.tools.authz import user_may_call
 
-            _need = self._required_permissions.get(effective_name)
             if not user_may_call(self.user, self.db, _need):
                 duration_ms = int((time.time() - start_time) * 1000)
                 module, action = _need or ("", "")
@@ -617,14 +625,13 @@ class HermesToolEngine:
 
         from app.core.tools.call_gateway import authorize_tool_call, tier_of
 
-        _danger = self._danger_levels.get(effective_name, "low")
         if self.user is not None and tier_of(_danger) == "L3":
             _decision = authorize_tool_call(
                 self.db,
                 tool_name=effective_name,
                 arguments=tc.arguments if isinstance(tc.arguments, dict) else {},
                 danger_level=_danger,
-                required_permission=self._required_permissions.get(effective_name),
+                required_permission=_need,
                 user=self.user,
                 approved_ticket_id=self.approved_ticket_id,
                 self_gating=effective_name in self._self_gating,
@@ -703,7 +710,7 @@ class HermesToolEngine:
             tool_name=effective_name,
             arguments=tc.arguments if isinstance(tc.arguments, dict) else {},
             danger_level=_danger,
-            required_permission=self._required_permissions.get(effective_name),
+            required_permission=_need,
             user=self.user,
             approved_ticket_id=self.approved_ticket_id,
             self_gating=effective_name in self._self_gating,
