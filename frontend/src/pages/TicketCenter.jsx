@@ -1,6 +1,8 @@
 // 工单中心：工单列表（待我处理/我发起/我处理过/全部）+ 发起工单弹窗
 // - 发起弹窗：选择已发布流程 → 按首节点字段定义动态渲染表单 → 提交后跳转详情
 // - 告警一键发起：从告警列表跳转携带 state.alertPrefill，自动选中流程并按映射预填字段
+// - 相似工单推荐：IP 字段填值后防抖查询，按 源/目的 IP 匹配同流程历史工单（处置中/已完成），
+//   从右侧滑出面板展示工单信息（源+目的均相同 > 仅源相同 > 仅目的相同），可收起/展开
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -28,6 +30,12 @@ const PRIORITY_META = {
   medium: { label: '中', cls: 'bg-blue-500/10 text-blue-500' },
   high: { label: '高', cls: 'bg-amber-500/10 text-amber-500' },
   critical: { label: '紧急', cls: 'bg-red-500/10 text-red-500' },
+}
+// 相似工单命中等级徽标（后端 match_level：3=源+目的 / 2=源 / 1=目的或其它 IP）
+const MATCH_META = {
+  3: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  2: 'bg-blue-500/10 text-blue-500',
+  1: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
 }
 const VIEWS = [
   { key: 'my_pending', label: '待我处理' },
@@ -85,26 +93,14 @@ export default function TicketCenter() {
   // 发起时追加抄送（模板固定抄送之外手动加）
   const [extraCc, setExtraCc] = useState([])
   const [ccPickerOpen, setCcPickerOpen] = useState(false)
-  // 相似工单推荐（发起弹窗内，流程选定且有关键字段值后防抖查询）
+  // 相似工单推荐（发起弹窗内，流程选定且 IP 字段有值后防抖查询，右侧滑出面板展示）
   const [similar, setSimilar] = useState(null)
+  // 用户手动收起面板后不再遮挡表单；下次查询到新结果时自动重新滑出
+  const [similarHidden, setSimilarHidden] = useState(false)
 
-  // 相似工单：800ms 防抖按首节点字段值匹配同流程已完成工单（静默失败不阻塞发起）
+  // 相似工单：800ms 防抖按首节点 源/目的 IP 匹配同流程历史工单（静默失败不阻塞发起）
   // 请求序号守卫：防抖只清定时器，已发出的旧请求返回时不得覆盖新流程/新字段值的展示
   const similarReqSeq = useRef(0)
-  useEffect(() => {
-    const seq = ++similarReqSeq.current // 每次参数变化均使在途旧请求失效
-    if (!createOpen || !flowId) { setSimilar(null); return undefined }
-    const filled = Object.entries(values).some(
-      ([, v]) => v !== '' && v !== undefined && v !== null && v !== false,
-    )
-    if (!filled) { setSimilar(null); return undefined }
-    const timer = setTimeout(() => {
-      ticketApi.similarTickets({ flow_id: Number(flowId), field_values: values })
-        .then((res) => { if (similarReqSeq.current === seq) setSimilar(res.items || []) })
-        .catch(() => {})
-    }, 800)
-    return () => clearTimeout(timer)
-  }, [createOpen, flowId, values])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -189,6 +185,37 @@ export default function TicketCenter() {
 
   const currentFlow = flows.find((f) => f.id === Number(flowId))
   const currentFields = currentFlow?.first_node?.fields || []
+  // 首节点 IP 字段（相似工单匹配的探针字段）
+  const ipFields = useMemo(
+    () => currentFields.filter((f) => f.type === 'ip'),
+    [currentFields],
+  )
+  // 仅 IP 字段值变化才触发相似查询（非 IP 字段编辑不重复请求/重复滑出）
+  const ipProbeKey = useMemo(
+    () => JSON.stringify(ipFields.map((f) => [f.key, values[f.key] ?? ''])),
+    [ipFields, values],
+  )
+  useEffect(() => {
+    const seq = ++similarReqSeq.current // 每次参数变化均使在途旧请求失效
+    const filled = ipFields.some((f) => {
+      const v = values[f.key]
+      return v !== undefined && v !== null && v !== false && String(v).trim() !== ''
+    })
+    if (!createOpen || !flowId || !filled) { setSimilar(null); return undefined }
+    const timer = setTimeout(() => {
+      ticketApi.similarTickets({ flow_id: Number(flowId), field_values: values })
+        .then((res) => {
+          if (similarReqSeq.current !== seq) return
+          setSimilar(res.items || [])
+          // 查询到新的相似结果时自动重新滑出（用户上次手动收起后 IP 已变化）
+          if ((res.items || []).length) setSimilarHidden(false)
+        })
+        .catch(() => {})
+    }, 800)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createOpen, flowId, ipProbeKey])
+
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
     const out = []
@@ -357,6 +384,9 @@ export default function TicketCenter() {
   // 是否存在生效的筛选条件（用于区分空态文案与「清除筛选」引导）
   const hasActiveFilters = !!(status || priority || searchKw)
   const clearFilters = () => { setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setPage(1) }
+
+  // 右侧相似工单面板：有结果且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
+  const showSimilarPanel = !!(similar && similar.length > 0 && !similarHidden)
 
   const columns = [
     {
@@ -617,12 +647,12 @@ export default function TicketCenter() {
       </div>
       <Pagination page={page} pageSize={size} total={total} onPageChange={setPage} onPageSizeChange={(s) => { setSize(s); setPage(1) }} />
 
-      {/* 发起工单弹窗 */}
+      {/* 发起工单弹窗：相似工单推荐从右侧滑出面板展示（按 源/目的 IP 匹配历史工单） */}
       <Modal
         open={createOpen}
         title="发起工单"
         onClose={() => setCreateOpen(false)}
-        size="lg"
+        size={showSimilarPanel ? 'xl' : 'lg'}
         footer={
           <>
             <Button variant="secondary" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
@@ -632,7 +662,16 @@ export default function TicketCenter() {
           </>
         }
       >
-        <div className="space-y-4 py-2">
+        <div className="flex min-h-0 flex-1 items-start gap-4">
+          <div className="min-w-0 flex-1 space-y-4 py-2">
+          {similar && similar.length > 0 && similarHidden && (
+            <button type="button" onClick={() => setSimilarHidden(false)}
+              className="flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-amber-500/50"
+              title="展开右侧相似工单推荐面板">
+              <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
+              相似工单推荐 · {similar.length} 条（点击展开）
+            </button>
+          )}
           {alertPrefill && (
             <div className="flex items-start gap-1.5 rounded-md border border-primary/30 bg-primary/5 p-2.5 text-xs text-foreground">
               <Paperclip className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
@@ -821,34 +860,6 @@ export default function TicketCenter() {
             </div>
           )}
 
-          {/* 相似工单推荐：按已填关键字段（IP/下拉）匹配同流程已完成工单，可跳转参考 */}
-          {similar && similar.length > 0 && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
-              <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[13px] font-medium text-foreground">
-                <Lightbulb className="h-3.5 w-3.5 text-amber-500" />相似工单推荐
-                <span className="font-normal text-muted-foreground">同流程已完成的历史工单，可参考其处置结论</span>
-              </div>
-              <div className="space-y-1.5">
-                {similar.map((s) => (
-                  <button key={s.id} type="button" onClick={() => navigate(`/tickets/${s.id}`)}
-                    className="block w-full rounded border border-border bg-card px-3 py-2 text-left text-xs transition hover:border-primary/50"
-                    title="点击查看该工单详情">
-                    <div className="flex items-center gap-2">
-                      <span className="shrink-0 font-mono text-primary">{s.ticket_no}</span>
-                      <span className="min-w-0 flex-1 truncate font-medium text-foreground">{s.title}</span>
-                      <span className="shrink-0 whitespace-nowrap text-muted-foreground">
-                        {s.closed_at ? new Date(s.closed_at).toLocaleDateString('zh-CN') : '--'}
-                      </span>
-                    </div>
-                    {s.summary && (
-                      <p className="mt-1 line-clamp-2 break-all text-muted-foreground">处置参考：{s.summary}</p>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* 流转去向 */}
           {currentFlow && routeOptions.length > 1 && (
             <div>
@@ -899,6 +910,81 @@ export default function TicketCenter() {
             <RichEditable className={inputCls} minHeight={64} placeholder="补充说明本次工单背景，可直接粘贴截图" value={comment}
               onChange={setComment} />
           </div>
+          </div>
+
+          {/* 相似工单推荐：按 源/目的 IP 匹配同流程历史工单，右侧滑出面板展示工单信息 */}
+          {showSimilarPanel && (
+            <aside className="drawer-enter sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
+              <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
+                <Lightbulb className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                <span className="text-[13px] font-medium text-foreground">相似工单推荐</span>
+                <span className="text-[11px] tabular-nums text-muted-foreground">{similar.length} 条</span>
+                <button type="button" onClick={() => setSimilarHidden(true)}
+                  className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                  title="收起相似工单推荐（IP 变化后有新结果会重新滑出）">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div data-allow-scroll className="max-h-[62vh] space-y-2 overflow-y-auto overscroll-contain p-2.5">
+                {similar.map((s) => (
+                  <div key={s.id} className="rounded-md border border-border bg-card p-2.5 transition hover:border-primary/50">
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${MATCH_META[s.match_level] || MATCH_META[1]}`}
+                        title="与本工单源/目的 IP 的匹配等级">
+                        {s.match_label}
+                      </span>
+                      <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground"
+                        title={s.closed_at ? `完结时间：${new Date(s.closed_at).toLocaleString('zh-CN', { hour12: false })}` : ''}>
+                        {s.closed_at ? new Date(s.closed_at).toLocaleDateString('zh-CN') : '--'}
+                      </span>
+                    </div>
+                    <button type="button"
+                      onClick={() => { setCreateOpen(false); navigate(`/tickets/${s.id}`) }}
+                      className="block w-full text-left" title="点击查看该工单详情">
+                      <span className="block font-mono text-[13px] font-medium text-primary">{s.ticket_no}</span>
+                      <span className="mt-0.5 line-clamp-2 break-all text-[13px] font-medium text-foreground">{s.title}</span>
+                    </button>
+                    {(s.matched || []).length > 0 && (
+                      <div className="mt-1.5 space-y-0.5">
+                        {s.matched.map((m, i) => (
+                          <div key={i} className="flex items-center gap-1.5 text-[11px]">
+                            <span className="shrink-0 text-muted-foreground">{m.label}</span>
+                            <span className="truncate font-mono text-foreground/80" title={m.value}>{m.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                      {(() => {
+                        const sm = STATUS_META[s.status]
+                        return sm
+                          ? <span className={`rounded px-1.5 py-0.5 ${sm.cls}`}>{sm.label}</span>
+                          : null
+                      })()}
+                      {(() => {
+                        const pm = PRIORITY_META[s.priority]
+                        return pm
+                          ? <span className={`rounded px-1.5 py-0.5 ${pm.cls}`}>{pm.label}</span>
+                          : null
+                      })()}
+                      <span title="发起人">{s.created_by_name || '--'}</span>
+                      <span title={s.created_at ? `发起时间：${new Date(s.created_at).toLocaleString('zh-CN', { hour12: false })}` : ''}>
+                        发起 {s.created_at ? new Date(s.created_at).toLocaleDateString('zh-CN') : '--'}
+                      </span>
+                    </div>
+                    {s.summary && (
+                      <p className="mt-1.5 line-clamp-3 break-all text-[11px] leading-relaxed text-muted-foreground" title={s.summary}>
+                        处置参考：{s.summary}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-amber-500/20 px-3 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                按源/目的 IP 匹配同流程的历史工单（处置中/已完成），点击工单号可查看详情与处置结论
+              </div>
+            </aside>
+          )}
         </div>
       </Modal>
 

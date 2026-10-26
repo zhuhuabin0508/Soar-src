@@ -12,7 +12,8 @@
 - 转办/改派：当前节点处理人转给其他分组（接管当前节点）或指定人（认领锁定）
 - 认领：组内成员先到先得认领，认领后仅认领人/admin 可提交
 - 内部评论：时间线评论（区别于处置意见），通知发起人与处理组成员
-- 相似工单推荐：发起时按首节点关键字段值匹配同流程已完成工单
+- 相似工单推荐：发起时按首节点 源/目的 IP 匹配同流程历史工单（处置中/已完成）
+  （源+目的均相同 > 仅源相同 > 仅目的相同，均不同不返回）
 - 工单导出：按当前筛选条件导出 CSV（UTF-8 BOM）
 - 附件：通用上传 + query token 下载（截图等 file 类型字段）
 
@@ -20,6 +21,7 @@
 所有动作写审计日志，流转成功后通知下一分组。
 """
 import csv
+import ipaddress
 import io
 import logging
 import os
@@ -1365,7 +1367,49 @@ def export_tickets(
     )
 
 
-# ============ 相似工单推荐（发起时按首节点关键字段值匹配） ============
+# ============ 相似工单推荐（发起时按首节点 源/目的 IP 匹配） ============
+
+def _ip_field_role(field: dict) -> str:
+    """IP 字段角色：src=源 / dst=目的 / other=其它。
+
+    与发起时自动研判（ticket_enrichment）同口径：字段 key 或 alert_field_mapping
+    为 src_ip / dst_ip 优先；兜底按显示名判断（含「目的/目标」→ 目的，含「源」→ 源）。
+    """
+    key = str(field.get("key") or "")
+    mapping = str(field.get("alert_field_mapping") or "")
+    if key == "src_ip" or mapping == "src_ip":
+        return "src"
+    if key == "dst_ip" or mapping == "dst_ip":
+        return "dst"
+    label = str(field.get("label") or "")
+    if "目的" in label or "目标" in label:
+        return "dst"
+    if "源" in label:
+        return "src"
+    return "other"
+
+
+def _first_ip(value) -> str | None:
+    """字段值 → 首个有效 IP（支持逗号/分号分隔多值；无效返回 None）。
+
+    与自动研判的 IP 提取口径一致：多值取首个有效地址参与比对。
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    for part in s.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ipaddress.ip_address(part)
+            return part
+        except ValueError:
+            continue
+    return None
+
 
 @router.post("/similar")
 def similar_tickets(
@@ -1373,11 +1417,20 @@ def similar_tickets(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """相似工单推荐：按首节点关键字段值匹配同流程已完成工单。
+    """相似工单推荐：按首节点 源/目的 IP 匹配同流程历史工单（发起时右侧滑出展示）。
 
-    - 评分：首节点 ip 字段值相同 +3，select 字段值相同 +1；评分 > 0 的取前 5
-    - 返回 {items: [{id, ticket_no, title, closed_at, score, matched_labels, summary}]}，
-      summary 为最后一条带处置意见的摘要（200 字截断）
+    候选为同流程「处置中 + 已完成」的未归档工单（已取消不参与）。
+    匹配优先级（IP 地址类型字段参与，取首个有效 IP 比对）：
+    1. 源 IP + 目的 IP 均相同 → 相似度最高（match_level=3）；
+    2. 仅源 IP 相同 → 次之（match_level=2）；
+    3. 仅目的 IP 相同 → 再次（match_level=1，其余 ip 字段命中同此级）；
+    4. 源与目的均不相同 → 不返回（不展示相似工单）。
+
+    源/目的角色识别见 ``_ip_field_role``（key / alert_field_mapping 为
+    src_ip / dst_ip 优先，兜底显示名）。返回 {items: [...]}，每条含工单
+    信息（编号/标题/状态/优先级/发起人/发起与完结时间）、命中等级
+    （match_level / match_label）、命中 IP 明细（matched）与处置意见摘要
+    （summary，200 字截断，仅完结工单有）。
     """
     flow = db.query(TicketFlow).filter(TicketFlow.id == body.flow_id).first()
     if flow is None:
@@ -1387,24 +1440,39 @@ def similar_tickets(
     if not start_node:
         return {"items": []}
 
-    # 关键字段：首节点 ip / select 字段，且当前已填写
+    # 首节点 ip 字段 → (role, key, label, 当前已填的有效 IP)；未填有效 IP 不参与匹配
     values = body.field_values or {}
-    probes: list[tuple[str, str, str]] = []  # (key, label, type)
+    probes: list[tuple[str, str, str, str]] = []
     for f in start_node.get("fields") or []:
-        if not isinstance(f, dict) or f.get("type") not in ("ip", "select") or not f.get("key"):
+        if not isinstance(f, dict) or f.get("type") != "ip" or not f.get("key"):
             continue
-        v = values.get(f["key"])
-        if v is None or v is True or v is False or str(v).strip() == "":
+        ip = _first_ip(values.get(f["key"]))
+        if not ip:
             continue
-        probes.append((f["key"], f.get("label") or f["key"], f["type"]))
+        probes.append((
+            _ip_field_role(f),
+            str(f["key"]),
+            str(f.get("label") or f["key"]),
+            ip,
+        ))
     if not probes:
         return {"items": []}
 
+    # 候选：同流程「处置中 + 已完成」且未归档的历史工单（已取消不参与）；
+    # 最近活跃倒序取 1000 条，保证源+目的均相同的工单尽量不被挤出候选集
     candidates = (
-        db.query(Ticket)
-        .filter(Ticket.flow_id == flow.id, Ticket.status == "completed", Ticket.archived.is_(False))
-        .order_by(Ticket.closed_at.desc())
-        .limit(200)
+        db.query(
+            Ticket.id, Ticket.ticket_no, Ticket.title, Ticket.priority,
+            Ticket.status, Ticket.created_by_name, Ticket.created_at,
+            Ticket.closed_at, Ticket.updated_at,
+        )
+        .filter(
+            Ticket.flow_id == flow.id,
+            Ticket.status.in_(["processing", "completed"]),
+            Ticket.archived.is_(False),
+        )
+        .order_by(Ticket.updated_at.desc())
+        .limit(1000)
         .all()
     )
     create_values: dict[int, dict] = {}
@@ -1420,44 +1488,64 @@ def similar_tickets(
         ):
             create_values.setdefault(r.ticket_id, r.field_values or {})
 
-    scored: list[tuple[Ticket, int, list[str]]] = []
+    # 评分：源命中 +2、目的命中 +1（其余 ip 字段命中 +1）；
+    # 等级 3=源+目的 / 2=仅源 / 1=仅目的或其它，均未命中则排除
+    now = beijing_now()
+    scored: list[tuple[int, str, float, object, list[dict]]] = []
     for t in candidates:
         fv = create_values.get(t.id) or {}
-        score = 0
-        matched: list[str] = []
-        for key, label, ftype in probes:
-            v = fv.get(key)
-            if v is None or v is True or v is False or str(v).strip() == "":
-                continue
-            if str(v).strip() == str(values.get(key)).strip():
-                score += 3 if ftype == "ip" else 1
-                matched.append(label)
-        if score > 0:
-            scored.append((t, score, matched))
-    scored.sort(key=lambda x: (-x[1], -(x[0].closed_at or x[0].created_at or now).timestamp()))
+        src_hit = dst_hit = other_hit = False
+        matched: list[dict] = []
+        for role, key, label, ip in probes:
+            hip = _first_ip(fv.get(key))
+            if hip is not None and hip == ip:
+                matched.append({"label": label, "value": ip})
+                if role == "src":
+                    src_hit = True
+                elif role == "dst":
+                    dst_hit = True
+                else:
+                    other_hit = True
+        if src_hit and dst_hit:
+            level, level_label = 3, "源+目的IP均相同"
+        elif src_hit:
+            level, level_label = 2, "源IP相同"
+        elif dst_hit:
+            level, level_label = 1, "目的IP相同"
+        elif other_hit:
+            level, level_label = 1, "IP相同"
+        else:
+            continue
+        closed_ts = (t.closed_at or t.updated_at or t.created_at or now).timestamp()
+        scored.append((level, level_label, closed_ts, t, matched))
+    scored.sort(key=lambda x: (-x[0], -x[2]))
 
     # 处置意见摘要：最后一条带 comment 的 submit 记录
+    top = scored[:5]
     summaries: dict[int, str] = {}
-    top_ids = [t.id for t, _, _ in scored[:5]]
-    if top_ids:
+    if top:
         for r in (
             db.query(TicketNodeRecord)
-            .filter(TicketNodeRecord.ticket_id.in_(top_ids), TicketNodeRecord.action == "submit")
+            .filter(TicketNodeRecord.ticket_id.in_([x[3].id for x in top]), TicketNodeRecord.action == "submit")
             .order_by(TicketNodeRecord.id.asc())
             .all()
         ):
             if r.comment:
                 summaries[r.ticket_id] = r.comment
     items = []
-    for t, score, matched in scored[:5]:
+    for level, level_label, _, t, matched in top:
         items.append({
             "id": t.id,
             "ticket_no": t.ticket_no,
             "title": t.title,
-            "priority": PRIORITY_LABELS.get(t.priority, t.priority),
+            "priority": t.priority,
+            "status": t.status,
+            "created_by_name": t.created_by_name,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
             "closed_at": t.closed_at.isoformat() if t.closed_at else None,
-            "score": score,
-            "matched_labels": matched,
+            "match_level": level,
+            "match_label": level_label,
+            "matched": matched,
             "summary": (summaries.get(t.id) or "").strip()[:200],
         })
     return {"items": items}

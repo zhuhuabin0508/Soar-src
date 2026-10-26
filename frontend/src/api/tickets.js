@@ -61,7 +61,8 @@ export const ticketApi = {
   claimTicket: (id) => request(`/tickets/${id}/claim`, { method: 'POST' }),
   // 时间线内部评论（区别于处置意见，不产生流转副作用）
   addComment: (id, content) => request(`/tickets/${id}/comments`, { method: 'POST', body: { content } }),
-  // 相似工单推荐：发起时按首节点关键字段值（ip/select）匹配同流程已完成工单
+  // 相似工单推荐：发起时按首节点 源/目的 IP 匹配同流程历史工单（处置中/已完成）
+  //（源+目的均相同 > 仅源相同 > 仅目的相同，均不相同不返回）
   similarTickets: (body) => request('/tickets/similar', { method: 'POST', body }),
   // 封禁状态查询：批量查 IP 是否处于封禁期间（安全上下文封禁查询，最多 20 个）
   banStatus: (ips) => request(`/tickets/ban-status${_qs({ ips: ips.join(',') })}`),

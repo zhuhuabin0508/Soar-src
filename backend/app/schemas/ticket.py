@@ -127,6 +127,9 @@ class TicketComment(BaseModel):
 
 
 class TicketSimilar(BaseModel):
-    """相似工单推荐查询：按首节点关键字段值匹配同流程已完成工单。"""
+    """相似工单推荐查询：按首节点 源/目的 IP 匹配同流程历史工单（处置中/已完成）。
+
+    匹配优先级：源+目的 IP 均相同 > 仅源 IP 相同 > 仅目的 IP 相同，均不相同不返回。
+    """
     flow_id: int
     field_values: dict[str, Any] = Field(default_factory=dict)
