@@ -4,12 +4,17 @@
 """
 from __future__ import annotations
 
+import csv
 import io
 import json
 import logging
 import time
+from datetime import datetime
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from sqlalchemy import func, or_
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func, or_, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -118,6 +123,47 @@ SOURCE_GROUPS = {
 MAX_ROWS = 250000
 MAX_FILE_SIZE = 200 * 1024 * 1024
 UPSERT_CHUNK = 500
+# 导出流式分块行数：每块一次查询，避免一次性加载全表
+EXPORT_CHUNK = 2000
+# 导出尾部追加的业务列（与列表页展示口径一致，便于追溯入库/同步时间）
+EXPORT_TAIL_COLUMNS = ("source_id", "created_at", "updated_at")
+
+
+def _keyword_clauses(model, meta: dict, kw: str) -> list:
+    """构造 keyword 模糊搜索条件（列表与导出共用同一口径）。"""
+    like = f"%{kw}%"
+    clauses = [model.source_id.ilike(like)]
+    if hasattr(model, "cmdb_id"):
+        clauses.append(model.cmdb_id.ilike(like))
+    for field in meta.get("search_fields") or []:
+        if field in ("source_id", "_id"):
+            continue
+        col = getattr(model, excel_attr(field), None)
+        if col is not None:
+            clauses.append(col.ilike(like))
+    extra = getattr(model, "extra_excel", None)
+    if extra is not None:
+        for key in (*EXTRA_IP_KEYS, *EXTRA_NAME_KEYS):
+            clauses.append(extra[key].astext.ilike(like))
+    return clauses
+
+
+def _csv_val(val) -> str:
+    """导出单元格序列化：None→空串，datetime→YYYY-mm-dd HH:MM:SS。"""
+    if val is None:
+        return ""
+    if isinstance(val, datetime):
+        return val.strftime("%Y-%m-%d %H:%M:%S")
+    return str(val)
+
+
+def _row_cells(row, fields: list[str], extra_keys: list[str]) -> list[str]:
+    """导出行序列化：Excel 字段 + extra_excel 追加列 + 业务列（source_id/时间）。"""
+    cells = [_csv_val(getattr(row, excel_attr(f), "")) for f in fields]
+    extra = row.extra_excel if isinstance(row.extra_excel, dict) else {}
+    cells.extend(_csv_val(extra.get(k)) for k in extra_keys)
+    cells.extend(_csv_val(getattr(row, k, "")) for k in EXPORT_TAIL_COLUMNS)
+    return cells
 
 
 def _require_type(resource_type: str) -> dict:
@@ -336,22 +382,7 @@ def list_govcloud_assets(
     query = db.query(model)
     kw = keyword.strip()
     if kw:
-        like = f"%{kw}%"
-        clauses = [model.source_id.ilike(like)]
-        if hasattr(model, "cmdb_id"):
-            clauses.append(model.cmdb_id.ilike(like))
-        for field in meta.get("search_fields") or []:
-            if field in ("source_id", "_id"):
-                continue
-            attr = excel_attr(field)
-            col = getattr(model, attr, None)
-            if col is not None:
-                clauses.append(col.ilike(like))
-        extra = getattr(model, "extra_excel", None)
-        if extra is not None:
-            for key in (*EXTRA_IP_KEYS, *EXTRA_NAME_KEYS):
-                clauses.append(extra[key].astext.ilike(like))
-        query = query.filter(or_(*clauses))
+        query = query.filter(or_(*_keyword_clauses(model, meta, kw)))
 
     total = query.count()
     rows = (
@@ -367,6 +398,90 @@ def list_govcloud_assets(
         "columns": _excel_columns(resource_type),
         "items": [r.to_dict() for r in rows],
     }
+
+
+@router.get("/export")
+def export_govcloud_assets(
+    resource_type: str = Query(..., description="资源类型"),
+    keyword: str = Query("", description="与列表一致的搜索条件（可选）"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "view")),
+    request: Request = None,
+) -> StreamingResponse:
+    """导出指定资源类型为 CSV（UTF-8 BOM，Excel 可直接打开）。
+
+    - 列：该类型 Excel 字段（field_label 作表头）+ extra_excel 出现过的
+      额外列（追加尾部，爬虫新增列不丢）+ source_id/入库时间/更新时间
+    - 行：按 id 升序全量导出；传 keyword 时与列表搜索口径一致
+    - 流式分块写出，避免一次性加载全表（单次导入上限 25 万行）
+    """
+    meta = _require_type(resource_type)
+    model = _model(resource_type)
+    kw = keyword.strip()
+    clauses = _keyword_clauses(model, meta, kw) if kw else []
+
+    fields = RESOURCE_EXCEL_FIELDS[resource_type]
+    # extra_excel 中出现过的额外列（jsonb_object_keys 汇总去重），保证爬虫新列不丢；
+    # 排除与尾部业务列同名的键，避免 CSV 出现重复表头
+    extra_keys = sorted(
+        k for k in db.execute(
+            text(f"SELECT DISTINCT k FROM {model.__tablename__}, jsonb_object_keys(extra_excel) AS k")
+        ).scalars()
+        if k not in fields and k not in EXPORT_TAIL_COLUMNS
+    )
+    headers = (
+        [FIELD_LABELS.get(f, f) for f in fields]
+        + [FIELD_LABELS.get(k, k) for k in extra_keys]
+        + list(EXPORT_TAIL_COLUMNS)
+    )
+
+    # 审计：导出操作（GET 请求不被中间件捕获，需手动记录）
+    try:
+        log_audit(
+            db,
+            user_id=user.id,
+            username=user.username,
+            action="export",
+            resource_type="asset_discovery",
+            detail=f"{resource_type} keyword={kw!r}",
+            ip_address=get_client_ip(request) if request else None,
+            result="success",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("导出审计写入失败（忽略）: %s", exc)
+
+    def _iter_csv():
+        buf = io.StringIO()
+        buf.write("\ufeff")  # BOM：Excel 直接打开不乱码
+        csv.writer(buf).writerow(headers)
+        yield buf.getvalue()
+
+        last_id = 0
+        exported = 0
+        while True:
+            query = db.query(model).filter(model.id > last_id)
+            if clauses:
+                query = query.filter(or_(*clauses))
+            rows = query.order_by(model.id).limit(EXPORT_CHUNK).all()
+            if not rows:
+                break
+            chunk = io.StringIO()
+            writer = csv.writer(chunk)
+            for row in rows:
+                last_id = row.id
+                exported += 1
+                writer.writerow(_row_cells(row, fields, extra_keys))
+            yield chunk.getvalue()
+            if len(rows) < EXPORT_CHUNK:
+                break
+        logger.info("资产发现导出: type=%s keyword=%r rows=%d", resource_type, kw, exported)
+
+    filename = f"{meta['excel_name']}_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        _iter_csv(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.get("/assets/{resource_type}/{asset_id}")

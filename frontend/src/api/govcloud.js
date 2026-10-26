@@ -17,6 +17,30 @@ export const govCloudApi = {
   },
   get: (resourceType, id) => request(`/govcloud/assets/${encodeURIComponent(resourceType)}/${id}`),
   consistency: (resource_type) => request(`/govcloud/consistency?resource_type=${encodeURIComponent(resource_type)}`),
+  // 导出 CSV：直接触发浏览器下载（keyword 与列表搜索口径一致，name 用于文件名）
+  exportCsv: async (resourceType, keyword = '', name = '') => {
+    const qs = new URLSearchParams()
+    qs.set('resource_type', resourceType)
+    if (keyword) qs.set('keyword', keyword)
+    const resp = await fetch(`/api/v1/govcloud/export?${qs.toString()}`, { headers: { ...authHeader() } })
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try {
+        const d = await resp.json()
+        detail = d.detail || d.message || detail
+      } catch { /* ignore */ }
+      throw new Error(`导出失败：${detail}`)
+    }
+    const blob = await resp.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = `${name || resourceType}_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(blobUrl)
+  },
   batches: (resource_type) => {
     const qs = resource_type ? `?resource_type=${encodeURIComponent(resource_type)}` : ''
     return request(`/govcloud/batches${qs}`)

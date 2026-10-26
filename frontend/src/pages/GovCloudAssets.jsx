@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Boxes, CheckCircle2, FileSpreadsheet, Loader2, RefreshCw, Search, Server, Network, Globe, Cpu,
-  Upload, X, ShieldOff, Shield, Monitor,
+  Upload, Download, X, ShieldOff, Shield, Monitor,
 } from 'lucide-react'
 import { govCloudApi } from '../api/govcloud'
 import { toast } from '../store/toastStore'
@@ -148,6 +148,7 @@ export default function GovCloudAssets() {
   const [cons, setCons] = useState(null)
   const [importing, setImporting] = useState(false)
   const [importPhase, setImportPhase] = useState('')
+  const [exporting, setExporting] = useState(false)
   const [detail, setDetail] = useState(null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [listColumns, setListColumns] = useState([])
@@ -295,6 +296,20 @@ export default function GovCloudAssets() {
     }
   }
 
+  async function handleExport() {
+    if (!currentTable?.code) return
+    const name = currentTable.excel_name || currentTable.label
+    setExporting(true)
+    try {
+      await govCloudApi.exportCsv(currentTable.code, keyword, name)
+      toast.success(`已导出「${name}」${keyword ? `（关键词：${keyword}）` : ' 全部数据'}`)
+    } catch (e) {
+      toast.error(e.message || '导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   async function openDetail(id) {
     try {
       const rec = await govCloudApi.get(currentTable.code, id)
@@ -335,6 +350,18 @@ export default function GovCloudAssets() {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </Button>
+          {canView && sourceEnabled && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleExport}
+              disabled={exporting || loading || importing || !currentTable || total === 0}
+              title="导出当前数据表为 CSV（遵循搜索条件，含全部数据）"
+            >
+              {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+              {exporting ? '导出中' : `导出${currentTable?.excel_name || ' CSV'}`}
+            </Button>
+          )}
           {canEdit && sourceEnabled && (
             <Button
               variant="primary"
