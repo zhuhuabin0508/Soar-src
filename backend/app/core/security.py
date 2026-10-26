@@ -612,6 +612,18 @@ def run_lightweight_migrations(engine) -> None:
                 "aggregation_key": "VARCHAR(255) NOT NULL DEFAULT ''",
             },
         )
+        # ban_records 表新增工单同步来源列
+        # （工单应急处置节点提交后同步封禁记录：来源工单 + 封禁设备信息）
+        ensure_columns(
+            engine,
+            "ban_records",
+            {
+                "ticket_id": "INTEGER",
+                "ticket_no": "VARCHAR(32)",
+                "ticket_node": "VARCHAR(64)",
+                "ban_device": "VARCHAR(255)",
+            },
+        )
         # alert_rule_groups 表种子预置分组（表由 create_all 建立后补种子，幂等）
         try:
             from sqlalchemy import text as sa_text
@@ -1230,8 +1242,22 @@ def run_lightweight_migrations(engine) -> None:
                 "archived": "BOOLEAN NOT NULL DEFAULT FALSE",
                 # 发起时自动研判结果（资产匹配 + 威胁情报，src_ip/dst_ip），随工单流转
                 "enrichment_data": "JSON",
+                # 认领锁定：组内成员认领后仅认领人（或 admin）可提交
+                "claimed_by_id": "INTEGER",
+                # 并行会签：当前待处理分组 CSV（",3,5,"），普通节点为单分组
+                "current_group_ids": "VARCHAR(255)",
             },
         )
+        # 存量工单回填 current_group_ids（幂等：仅补 NULL 行），
+        # 使旧工单的"待我处理"筛选走 CSV 条件
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE tickets SET current_group_ids = ',' || current_group_id || ',' "
+                    "WHERE current_group_id IS NOT NULL AND current_group_ids IS NULL"
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("tickets.current_group_ids 回填失败（忽略）: %s", exc)
         try:
             _reset_govcloud_split_schema(engine)
         except Exception as extra_exc:  # noqa: BLE001

@@ -13,7 +13,6 @@ const TOOL_KEYWORDS = [
   { name: 'check_subnet', words: ['网段', '子网', 'subnet'] },
   { name: 'query_banned_ip', words: ['封禁记录', '已封禁', '历史违规', 'banned'] },
   { name: 'calculate_ban_duration', words: ['封禁时长', '封多久', 'duration'] },
-  { name: 'record_ban', words: ['封禁', '封堵', 'ban', 'block', '拉黑'] },
   { name: 'query_asset', words: ['查询资产', '资产清单'] },
   { name: 'add_asset', words: ['录入资产', '新增资产', '添加资产'] },
   { name: 'update_asset', words: ['更新资产', '修改资产'] },

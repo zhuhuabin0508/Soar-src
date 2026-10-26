@@ -23,6 +23,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_permission, require_role
 from app.models.alert_event import AlertEvent
 from app.models.banned_ip import BannedIP
+from app.models.ticket import Ticket
 from app.models.user import User
 from app.models.workflow_ban import (
     AgentInvocationLog, ApprovalTicket, BanRecord, MonitorLog,
@@ -46,7 +47,11 @@ _FINAL_RESULT_LABELS = {
     "monitoring": "持续监控", "cancelled": "已取消", "error": "异常", "skipped": "已跳过",
     "escalated": "已升级",
 }
-_BAN_SOURCE_LABELS = {"auto": "自动封禁", "approval": "审批封禁", "manual": "手动封禁", "chat": "聊天封禁"}
+_BAN_SOURCE_LABELS = {
+    "auto": "自动封禁", "approval": "审批封禁", "manual": "手动封禁", "chat": "聊天封禁", "ticket": "工单同步",
+}
+# 工单智能体研判建议动作中文（工单同步封禁详情的研判结论展示用）
+_TICKET_AGENT_ACTION_LABELS = {"ban": "建议封禁", "monitor": "观察监控", "ignore": "忽略（暂不处置）"}
 
 
 def _jload(raw, default=None):
@@ -614,6 +619,10 @@ def _record_item(db: Session, r: BanRecord) -> dict:
         "ban_source": r.ban_source or "auto",
         "ban_source_label": _BAN_SOURCE_LABELS.get(r.ban_source or "auto", r.ban_source or "auto"),
         "source_instance_id": r.source_instance_id,
+        # 工单同步来源信息（ban_source=ticket 时有值）
+        "ticket_id": r.ticket_id,
+        "ticket_no": r.ticket_no,
+        "ban_device": r.ban_device,
         "expire_time": r.expire_time,
         "remaining_ms": remaining_ms,
         "alert_count": alert_count,
@@ -676,6 +685,27 @@ def get_banned_ip(record_id: int, db: Session = Depends(get_db)) -> dict:
         )
         if ticket is not None:
             ticket_item = _ticket_item(ticket)
+    # 工单同步来源（ban_source=ticket）：取该工单安全上下文中此 IP 的智能体研判结论
+    if not decision and record.ticket_id:
+        tk = db.query(Ticket).filter(Ticket.id == record.ticket_id).first()
+        if tk is not None and isinstance(tk.enrichment_data, dict):
+            for src in tk.enrichment_data.get("sources") or []:
+                if (
+                    isinstance(src, dict)
+                    and src.get("ip") == record.ip
+                    and isinstance(src.get("agent"), dict)
+                    and not src["agent"].get("pending")
+                ):
+                    action = src["agent"].get("action")
+                    # 中文键结构，与详情弹窗「审批记录」等板块的展示风格一致
+                    decision = {
+                        "风险等级": src["agent"].get("risk_level") or "未知",
+                        "建议动作": _TICKET_AGENT_ACTION_LABELS.get(action, action or "未给出"),
+                        "监控建议": src["agent"].get("monitoring_advice") or "无",
+                        "研判理由": src["agent"].get("reasons") or [],
+                        "来源工单": f"{tk.ticket_no} {tk.title}",
+                    }
+                    break
     item["agent_decision"] = decision
     item["approval_ticket"] = ticket_item
 

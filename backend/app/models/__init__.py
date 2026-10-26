@@ -46,6 +46,7 @@ from app.models.ticket import (
     TicketGroup,
     TicketGroupMember,
     TicketFlow,
+    TicketFlowVersion,
     Ticket,
     TicketNodeRecord,
 )
@@ -132,6 +133,7 @@ __all__ = [
     "TicketGroup",
     "TicketGroupMember",
     "TicketFlow",
+    "TicketFlowVersion",
     "Ticket",
     "TicketNodeRecord",
     "WorkflowTriggerRule",

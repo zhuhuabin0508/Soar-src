@@ -2,23 +2,33 @@
 
 核心能力：
 - 工单发起：校验发起人属于流程的发起分组，字段按首节点定义校验，发起即对流程模板做快照
-- 工单列表：待我处理（当前节点分组=我的分组）/ 我发起 / 我处理过 / 全部，多维筛选分页
+- 工单列表：待我处理（当前节点分组=我的分组）/ 我发起 / 我处理过 / 全部，多维筛选分页，
+  附 SLA 剩余倒计时（超时红色高亮）与催办权限标记
 - 工单详情：完整节点处理时间线（上游节点字段对处理人只读展示）
 - 工单流转：当前节点分组内任一成员提交即代表全组（先到先得），字段按当前节点定义校验，
   流向必须在路由白名单内，未显式选择时按条件路由自动建议
 - 工单取消：仅发起人或 admin
+- 催办：发起人/抄送人/admin 对处理中工单一键催办（30 分钟限频），通知当前节点分组
+- 转办/改派：当前节点处理人转给其他分组（接管当前节点）或指定人（认领锁定）
+- 认领：组内成员先到先得认领，认领后仅认领人/admin 可提交
+- 内部评论：时间线评论（区别于处置意见），通知发起人与处理组成员
+- 相似工单推荐：发起时按首节点关键字段值匹配同流程已完成工单
+- 工单导出：按当前筛选条件导出 CSV（UTF-8 BOM）
 - 附件：通用上传 + query token 下载（截图等 file 类型字段）
 
 权限：``ticket:view`` 可查看，``ticket:edit`` 可发起/流转，取消=发起人或 admin。
 所有动作写审计日志，流转成功后通知下一分组。
 """
+import csv
+import io
 import logging
 import os
 import re
 import uuid
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -26,9 +36,13 @@ from app.core.sanitizer import sanitize_text
 from app.core.ticket_enrichment import build_ticket_enrichment, start_agent_analysis_bg
 from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config
 from app.core.ticket_flow import (
+    collect_ref_options,
     get_node,
+    get_node_pending_groups,
     get_start_node,
     is_end_node,
+    parse_duration,
+    strip_hidden_field_values,
     suggest_route,
     validate_field_values,
 )
@@ -37,12 +51,17 @@ from datetime import timedelta
 from app.core.timezone import beijing_now
 from app.database import get_db
 from app.dependencies import get_current_user, is_admin, require_permission
+from app.models.banned_ip import BannedIP
 from app.models.notification import Notification
 from app.models.ticket import (
     Ticket, TicketCc, TicketFlow, TicketGroup, TicketGroupMember, TicketNodeRecord,
 )
 from app.models.user import User
-from app.schemas.ticket import TicketAdvance, TicketCancel, TicketCcAdd, TicketCreate, TicketRollback
+from app.models.workflow_ban import BanRecord
+from app.schemas.ticket import (
+    TicketAdvance, TicketCancel, TicketCcAdd, TicketComment, TicketCreate,
+    TicketRollback, TicketSimilar, TicketTransfer,
+)
 from app.workflow.audit import write_audit
 
 logger = logging.getLogger(__name__)
@@ -98,8 +117,34 @@ def _my_group_ids(db: Session, user_id: int) -> list[int]:
     ]
 
 
-def _get_ticket_or_404(db: Session, ticket_id: int) -> Ticket:
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+def _csv_group_ids(ticket: Ticket) -> set[int]:
+    """工单当前待处理分组集合：优先 current_group_ids CSV，回退 current_group_id（旧数据）。"""
+    raw = getattr(ticket, "current_group_ids", None)
+    if raw:
+        return {int(x) for x in str(raw).split(",") if x.strip().isdigit()}
+    return {ticket.current_group_id} if ticket.current_group_id else set()
+
+
+def _set_current_groups(ticket: Ticket, node: dict | None) -> None:
+    """到达节点时重置待处理分组（并行会签=全部会签组；普通节点=单分组）。
+
+    current_group_id 始终指向首个待处理分组（兼容展示/转办/旧数据筛选）。
+    """
+    groups = get_node_pending_groups(node) if node else []
+    ticket.current_group_ids = ("," + ",".join(str(g) for g in groups) + ",") if groups else None
+    ticket.current_group_id = groups[0] if groups else None
+
+
+def _get_ticket_or_404(db: Session, ticket_id: int, *, for_update: bool = False) -> Ticket:
+    """取工单；``for_update=True`` 时行级加锁（SELECT ... FOR UPDATE）。
+
+    会签/认领/转办/催办等"读-改-写"并发敏感路径必须加锁，防止并发下重复会签、
+    认领互相覆盖（SQLite 无 FOR UPDATE，方言自动忽略，由库级锁兜底）。
+    """
+    query = db.query(Ticket).filter(Ticket.id == ticket_id)
+    if for_update:
+        query = query.with_for_update()
+    ticket = query.first()
     if ticket is None:
         raise HTTPException(status_code=404, detail="工单不存在")
     return ticket
@@ -151,33 +196,205 @@ def _resolve_route(
     return target
 
 
-def _notify_next_group(db: Session, ticket: Ticket, node_name: str, group_id: int | None) -> None:
-    """流转成功后精确通知下一分组成员。
+def _notify_next_group(db: Session, ticket: Ticket, node_name: str, group_ids: list[int] | int | None) -> None:
+    """流转成功后精确通知下一处理分组成员（并行会签=全部待签分组）。
 
     直接投递给分组成员（不走通知规则路由），避免未配置规则时回退全员广播、
     把节点待处理提醒发给无关人员（如其他分组的成员）。
     """
-    if not group_id:
+    if isinstance(group_ids, int):
+        group_ids = [group_ids]
+    ids = [g for g in (group_ids or []) if g]
+    if not ids:
         return
-    group = db.query(TicketGroup).filter(TicketGroup.id == group_id).first()
-    group_label = group.name if group else f"分组{group_id}"
-    user_ids = sorted({
+    sign_note = "，各组均需会签处理" if len(ids) > 1 else "（组内任一成员提交即代表全组）"
+    for gid in ids:
+        group = db.query(TicketGroup).filter(TicketGroup.id == gid).first()
+        group_label = group.name if group else f"分组{gid}"
+        user_ids = sorted({
+            uid for (uid,) in db.query(TicketGroupMember.user_id)
+            .filter(TicketGroupMember.group_id == gid)
+            .all()
+            if uid
+        })
+        if not user_ids:
+            logger.warning("流转通知无收件人（分组无成员）: ticket=%s group=%s", ticket.id, gid)
+            continue
+        _notify_user_ids(
+            db, ticket, user_ids,
+            title=f"工单待处理：{ticket.ticket_no}",
+            content=(
+                f"工单「{ticket.title}」已流转至节点「{node_name}」，"
+                f"请【{group_label}】跟进处理{sign_note}"
+            ),
+        )
+
+
+def _notify_sign_progress(
+    db: Session, ticket: Ticket, node: dict, remaining_ids: list[int], done: int, total: int
+) -> None:
+    """会签中间进度通知：提醒尚未会签的分组跟进。"""
+    if not remaining_ids:
+        return
+    node_label = node.get("name") or node.get("key")
+    for gid in remaining_ids:
+        group = db.query(TicketGroup).filter(TicketGroup.id == gid).first()
+        group_label = group.name if group else f"分组{gid}"
+        user_ids = sorted({
+            uid for (uid,) in db.query(TicketGroupMember.user_id)
+            .filter(TicketGroupMember.group_id == gid)
+            .all()
+            if uid
+        })
+        if not user_ids:
+            continue
+        _notify_user_ids(
+            db, ticket, user_ids,
+            title=f"工单会签进行中：{ticket.ticket_no}",
+            content=(
+                f"工单「{ticket.title}」在节点「{node_label}」会签进行中"
+                f"（已完成 {done}/{total} 组），请【{group_label}】尽快会签"
+            ),
+        )
+
+
+# ============ SLA 展示与共享筛选 ============
+
+# 催办限频：30 分钟内同一工单仅可催办一次
+URGE_INTERVAL_MINUTES = 30
+
+
+def _fmt_duration(minutes: float) -> str:
+    """分钟数 → 中文时长（X天X小时 / X小时X分 / X分钟）。"""
+    m = int(abs(minutes))
+    days, rem = divmod(m, 1440)
+    hours, mins = divmod(rem, 60)
+    if days:
+        return f"{days}天{hours}小时" if hours else f"{days}天"
+    if hours:
+        return f"{hours}小时{mins}分" if mins else f"{hours}小时"
+    return f"{mins}分钟"
+
+
+def _sla_remaining(ticket: Ticket, records: list, now, config: dict) -> tuple[float | None, bool, bool]:
+    """处理中工单的 SLA 倒计时：未响应看响应目标，已响应看解决目标。
+
+    返回 (剩余分钟, 是否超时, 是否有目标)；剩余为负即超时。
+    """
+    target = config.get(ticket.priority) or {}
+    resp_target = target.get("response")
+    res_target = target.get("resolve")
+    if not resp_target and not res_target:
+        return None, False, False
+    creates = [r for r in records if r.action == "create"]
+    has_submit = any(r.action == "submit" for r in records)
+    started = (creates[0].created_at if creates and creates[0].created_at else None) or ticket.created_at
+    if not has_submit and resp_target and started:
+        remaining = resp_target - (now - started).total_seconds() / 60
+    elif res_target and ticket.created_at:
+        remaining = res_target - (now - ticket.created_at).total_seconds() / 60
+    else:
+        return None, False, True
+    return remaining, remaining < 0, True
+
+
+def _apply_ticket_filters(
+    db: Session,
+    current_user: User,
+    view: str,
+    status: str | None,
+    flow_id: int | None,
+    priority: str | None,
+    archived: str,
+    q: str | None,
+):
+    """列表/导出共用的筛选逻辑：视图 + 归档 + 状态/流程/优先级/关键词。"""
+    query = db.query(Ticket)
+
+    if view == "my_pending":
+        my_groups = _my_group_ids(db, current_user.id)
+        if not my_groups:
+            return None
+        # 并行会签：工单可同时待多个分组处理（current_group_ids CSV），
+        # 任一命中即出现在"待我处理"；旧数据（CSV 为空）回退 current_group_id
+        group_cond = or_(
+            Ticket.current_group_id.in_(my_groups),
+            *[
+                Ticket.current_group_ids.like(f"%,{g},%")
+                for g in my_groups
+            ],
+        )
+        query = query.filter(
+            Ticket.status == "processing",
+            group_cond,
+        )
+    elif view == "created":
+        query = query.filter(Ticket.created_by_id == current_user.id)
+    elif view == "handled":
+        handled_ids = (
+            db.query(TicketNodeRecord.ticket_id)
+            .filter(TicketNodeRecord.handler_id == current_user.id)
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(Ticket.id.in_(handled_ids))
+    elif view == "cc":
+        # 抄送我的：直接抄送本人 + 抄送我所在分组（组内成员均可见）
+        my_groups = _my_group_ids(db, current_user.id)
+        cc_cond = (
+            (TicketCc.target_type == "user") & (TicketCc.target_id == current_user.id)
+        ) | (
+            (TicketCc.target_type == "group") & TicketCc.target_id.in_(my_groups or [-1])
+        )
+        cc_ids = (
+            db.query(TicketCc.ticket_id).filter(cc_cond).distinct().subquery()
+        )
+        query = query.filter(Ticket.id.in_(cc_ids))
+
+    # 归档过滤（应用于所有视图）
+    if archived == "only":
+        query = query.filter(Ticket.archived.is_(True))
+    elif archived != "include":
+        query = query.filter(Ticket.archived.is_(False))
+
+    if status:
+        query = query.filter(Ticket.status == status)
+    if flow_id:
+        query = query.filter(Ticket.flow_id == flow_id)
+    if priority:
+        query = query.filter(Ticket.priority == priority)
+    if q:
+        kw = f"%{q.strip()}%"
+        query = query.filter(or_(Ticket.ticket_no.like(kw), Ticket.title.like(kw)))
+    return query
+
+
+def _group_member_ids(db: Session, group_id: int | None) -> list[int]:
+    """分组成员用户 ID 列表（去重、去空）。"""
+    if not group_id:
+        return []
+    return sorted({
         uid for (uid,) in db.query(TicketGroupMember.user_id)
         .filter(TicketGroupMember.group_id == group_id)
         .all()
         if uid
     })
-    if not user_ids:
-        logger.warning("流转通知无收件人（分组无成员）: ticket=%s group=%s", ticket.id, group_id)
-        return
-    _notify_user_ids(
-        db, ticket, user_ids,
-        title=f"工单待处理：{ticket.ticket_no}",
-        content=(
-            f"工单「{ticket.title}」已流转至节点「{node_name}」，"
-            f"请【{group_label}】跟进处理（组内任一成员提交即代表全组）"
-        ),
+
+
+def _cc_ticket_ids_for_user(db: Session, user: User, ticket_ids: list[int]) -> set[int]:
+    """用户在指定工单集合中被抄送的工单 ID（直接抄送本人 + 抄送所在分组）。"""
+    if not ticket_ids:
+        return set()
+    my_groups = _my_group_ids(db, user.id)
+    cc_cond = (
+        (TicketCc.target_type == "user") & (TicketCc.target_id == user.id)
+    ) | (
+        (TicketCc.target_type == "group") & TicketCc.target_id.in_(my_groups or [-1])
     )
+    return {
+        tid for (tid,) in db.query(TicketCc.ticket_id)
+        .filter(cc_cond, TicketCc.ticket_id.in_(ticket_ids)).distinct().all()
+    }
 
 
 # ============ 抄送（CC）辅助 ============
@@ -323,7 +540,14 @@ def _ticket_list_item(ticket: Ticket, group_names: dict[int, str]) -> dict:
     data.pop("enrichment_data", None)
     data["status_label"] = STATUS_LABELS.get(ticket.status, ticket.status)
     data["priority_label"] = PRIORITY_LABELS.get(ticket.priority, ticket.priority)
-    data["current_group_name"] = group_names.get(ticket.current_group_id) if ticket.current_group_id else None
+    # 并行会签：展示全部待处理分组（多组标注会签）；普通节点回退单分组名
+    pending = sorted(_csv_group_ids(ticket))
+    data["current_group_ids"] = pending
+    names = [group_names.get(g) for g in pending if group_names.get(g)]
+    if len(pending) > 1:
+        data["current_group_name"] = "、".join(names) + "（会签）" if names else None
+    else:
+        data["current_group_name"] = group_names.get(ticket.current_group_id) if ticket.current_group_id else None
     return data
 
 
@@ -336,11 +560,17 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         .order_by(TicketNodeRecord.id.asc())
         .all()
     )
-    # 分组名映射（快照节点 + 当前节点涉及的分组）
+    # 分组名映射（快照节点 + 当前节点涉及分组，含并行会签 sign_groups）
     group_ids: set[int] = set()
     for n in snapshot.get("nodes") or []:
-        if isinstance(n, dict) and n.get("group_id"):
-            group_ids.add(int(n["group_id"]))
+        if isinstance(n, dict):
+            if n.get("group_id"):
+                group_ids.add(int(n["group_id"]))
+            for sg in n.get("sign_groups") or []:
+                if isinstance(sg, int) and not isinstance(sg, bool):
+                    group_ids.add(sg)
+    pending_groups = _csv_group_ids(ticket)
+    group_ids |= pending_groups
     if ticket.current_group_id:
         group_ids.add(ticket.current_group_id)
     group_names = _group_name_map(db, group_ids)
@@ -349,11 +579,54 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
     my_groups = set(_my_group_ids(db, current_user.id))
     admin = is_admin(current_user, db)
 
-    can_handle = (
+    # 基础处理权：处理中 + admin / 当前节点任一待处理分组成员（并行会签）/ 认领人
+    # （认领人含被改派到个人的用户——其可能不属于节点分组，若不放开该工单将无人能继续流转）
+    base_can_handle = (
         ticket.status == "processing"
         and bool(current_node)
-        and (admin or (current_node.get("group_id") in my_groups))
+        and (admin or bool(pending_groups & my_groups) or ticket.claimed_by_id == current_user.id)
     )
+    # 认领锁定：被认领后仅认领人（或 admin）可继续处理
+    claim_locked_by_other = (
+        ticket.claimed_by_id is not None
+        and ticket.claimed_by_id != current_user.id
+        and not admin
+    )
+    can_handle = bool(base_can_handle and not claim_locked_by_other)
+    # 催办权限：发起人 / 抄送人 / admin（处理中）
+    cc_user_ids = set(_resolve_cc_user_ids(db, _cc_rows(db, ticket.id)))
+    can_urge = bool(
+        ticket.status == "processing"
+        and (admin or ticket.created_by_id == current_user.id or current_user.id in cc_user_ids)
+    )
+    # 评论权限：发起人 / 当前节点处理人 / 抄送人 / admin（不限工单状态，与评论端点一致）
+    is_handler_any = bool(current_node and (pending_groups & my_groups))
+    can_comment = bool(
+        admin or ticket.created_by_id == current_user.id
+        or is_handler_any or current_user.id in cc_user_ids
+    )
+    # 认领人姓名（锁定展示）
+    claimed_by = (
+        db.query(User).filter(User.id == ticket.claimed_by_id).first()
+        if ticket.claimed_by_id else None
+    )
+
+    # 并行会签进度（当前节点为会签节点时返回，前端展示已签/待签分组）
+    sign_progress = None
+    if current_node and current_node.get("type") == "parallel":
+        all_ids = [g for g in get_node_pending_groups(current_node)]
+        pending_set = set(pending_groups)
+        sign_progress = {
+            "policy": current_node.get("finish_policy") or "all",
+            "signed": [
+                {"id": g, "name": group_names.get(g, f"分组{g}")}
+                for g in all_ids if g not in pending_set
+            ],
+            "pending": [
+                {"id": g, "name": group_names.get(g, f"分组{g}")}
+                for g in all_ids if g in pending_set
+            ],
+        }
 
     data = _ticket_list_item(ticket, group_names)
     data.update({
@@ -364,10 +637,20 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         "group_names": {str(k): v for k, v in group_names.items()},
         "current_node": current_node,
         "can_handle": can_handle,
+        # 认领：未锁定且具备基础处理权时可认领（先到先得；并行会签节点不支持认领）
+        "can_claim": bool(
+            base_can_handle and ticket.claimed_by_id is None
+            and (current_node or {}).get("type") != "parallel"
+        ),
+        "claimed_by_name": (claimed_by.display_name or claimed_by.username) if claimed_by else None,
+        "can_urge": can_urge,
+        "can_comment": can_comment,
         "can_cancel": (
             ticket.status == "processing"
             and (admin or ticket.created_by_id == current_user.id)
         ),
+        # 并行会签进度（非会签节点为 null）
+        "sign_progress": sign_progress,
         # 抄送：列表 + 管理权限（发起人 / 当前处理人 / admin；仅进行中可增减）
         "cc_targets": [r.to_dict() for r in _cc_rows(db, ticket.id)],
         "can_manage_cc": (
@@ -485,9 +768,13 @@ def create_ticket(
     if not admin and not (start_groups & my_groups):
         raise HTTPException(status_code=403, detail="您不属于该流程的可发起分组")
 
-    # 字段校验
-    values = _clean_field_values(body.field_values)
-    errors = validate_field_values(start_node.get("fields") or [], values)
+    # 字段校验（先剔除未命中匹配规则的扩展字段值，再校验必填/类型/枚举；
+    # 引用联动字段选项 = 本工单已提交值 + 本次提交值）
+    values = strip_hidden_field_values(
+        start_node.get("fields") or [], _clean_field_values(body.field_values)
+    )
+    ref_opts = collect_ref_options(nodes_json, [{"field_values": values}])
+    errors = validate_field_values(start_node.get("fields") or [], values, ref_options=ref_opts)
     if errors:
         raise HTTPException(status_code=422, detail="；".join(errors))
 
@@ -526,7 +813,6 @@ def create_ticket(
         status="completed" if end else "processing",
         current_node_key=route_to,
         current_node_name=target.get("name") or route_to,
-        current_group_id=None if end else target.get("group_id"),
         created_by_id=current_user.id,
         created_by_name=current_user.display_name or current_user.username,
         priority=body.priority,
@@ -538,6 +824,9 @@ def create_ticket(
         # 发起时自动研判结果（资产匹配 + 威胁情报），随工单流转只读展示
         enrichment_data=enrichment,
     )
+    # 到达目标节点：初始化待处理分组（并行会签=全部会签组）
+    if not end:
+        _set_current_groups(ticket, target)
     db.add(ticket)
     db.flush()
     db.add(TicketNodeRecord(
@@ -580,7 +869,7 @@ def create_ticket(
     # 抄送通知：发起即完结（直通 end）时直接发完结通知；否则发抄送知会
     _notify_cc_added(db, ticket, cc_rows_added, current_user, finished=end)
     if not end:
-        _notify_next_group(db, ticket, target.get("name") or route_to, target.get("group_id"))
+        _notify_next_group(db, ticket, target.get("name") or route_to, sorted(_csv_group_ids(ticket)))
     db.commit()
     db.refresh(ticket)
     # 智能体研判后台异步执行（LLM 耗时较长，不阻塞发起；完成后回写 enrichment_data）
@@ -623,62 +912,57 @@ def list_tickets(
     """工单列表：待我处理 / 我发起 / 我处理过 / 全部 + 状态/流程/优先级/关键词筛选。
 
     ``archived``：exclude=不含归档（默认）/ only=仅归档 / include=全部。
+    每项附 ``sla_text``/``sla_overdue``（处理中工单的 SLA 倒计时，超时标记）
+    与 ``can_urge``（发起人/抄送人/admin 可催办）。
     """
-    query = db.query(Ticket)
-
-    if view == "my_pending":
-        my_groups = _my_group_ids(db, current_user.id)
-        if not my_groups:
-            return {"items": [], "total": 0, "page": page, "size": size, "pages": 0}
-        query = query.filter(
-            Ticket.status == "processing",
-            Ticket.current_group_id.in_(my_groups),
-        )
-    elif view == "created":
-        query = query.filter(Ticket.created_by_id == current_user.id)
-    elif view == "handled":
-        handled_ids = (
-            db.query(TicketNodeRecord.ticket_id)
-            .filter(TicketNodeRecord.handler_id == current_user.id)
-            .distinct()
-            .subquery()
-        )
-        query = query.filter(Ticket.id.in_(handled_ids))
-    elif view == "cc":
-        # 抄送我的：直接抄送本人 + 抄送我所在分组（组内成员均可见）
-        my_groups = _my_group_ids(db, current_user.id)
-        cc_cond = (
-            (TicketCc.target_type == "user") & (TicketCc.target_id == current_user.id)
-        ) | (
-            (TicketCc.target_type == "group") & TicketCc.target_id.in_(my_groups or [-1])
-        )
-        cc_ids = (
-            db.query(TicketCc.ticket_id).filter(cc_cond).distinct().subquery()
-        )
-        query = query.filter(Ticket.id.in_(cc_ids))
-
-    # 归档过滤（应用于所有视图）
-    if archived == "only":
-        query = query.filter(Ticket.archived.is_(True))
-    elif archived != "include":
-        query = query.filter(Ticket.archived.is_(False))
-
-    if status:
-        query = query.filter(Ticket.status == status)
-    if flow_id:
-        query = query.filter(Ticket.flow_id == flow_id)
-    if priority:
-        query = query.filter(Ticket.priority == priority)
-    if q:
-        kw = f"%{q.strip()}%"
-        query = query.filter(or_(Ticket.ticket_no.like(kw), Ticket.title.like(kw)))
+    query = _apply_ticket_filters(db, current_user, view, status, flow_id, priority, archived, q)
+    if query is None:  # my_pending 且不在任何分组
+        return {"items": [], "total": 0, "page": page, "size": size, "pages": 0}
 
     query = query.order_by(Ticket.id.desc())
     total = query.count()
     tickets = query.offset((page - 1) * size).limit(size).all()
-    group_names = _group_name_map(db, {t.current_group_id for t in tickets if t.current_group_id})
+    # 分组名映射：含并行会签 CSV 内的全部待处理分组
+    list_group_ids: set[int] = {t.current_group_id for t in tickets if t.current_group_id}
+    for t in tickets:
+        list_group_ids |= _csv_group_ids(t)
+    group_names = _group_name_map(db, list_group_ids)
+
+    # SLA 倒计时：批量取本页工单的节点记录（create/submit 时间）
+    now = beijing_now()
+    sla_config = get_sla_config(db)
+    page_ids = [t.id for t in tickets]
+    rec_map: dict[int, list] = {}
+    if page_ids:
+        for r in (
+            db.query(TicketNodeRecord)
+            .filter(TicketNodeRecord.ticket_id.in_(page_ids))
+            .order_by(TicketNodeRecord.id.asc())
+            .all()
+        ):
+            rec_map.setdefault(r.ticket_id, []).append(r)
+    # 催办权限：admin / 发起人直判，其余查本页抄送关系（一次查询）
+    admin = is_admin(current_user, db)
+    cc_ids = set() if admin else _cc_ticket_ids_for_user(db, current_user, page_ids)
+
+    items = []
+    for t in tickets:
+        item = _ticket_list_item(t, group_names)
+        if t.status == "processing":
+            remaining, overdue, has_target = _sla_remaining(t, rec_map.get(t.id, []), now, sla_config)
+            if remaining is not None:
+                item["sla_text"] = ("超时 " if overdue else "剩余 ") + _fmt_duration(remaining)
+                item["sla_overdue"] = overdue
+            elif has_target:
+                item["sla_text"] = None
+                item["sla_overdue"] = False
+        item["can_urge"] = bool(
+            t.status == "processing"
+            and (admin or t.created_by_id == current_user.id or t.id in cc_ids)
+        )
+        items.append(item)
     return {
-        "items": [_ticket_list_item(t, group_names) for t in tickets],
+        "items": items,
         "total": total,
         "page": page,
         "size": size,
@@ -694,7 +978,7 @@ def ticket_monitor_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_monitor", "view")),
 ):
-    """工单监控大屏聚合数据（KPI / 趋势 / 分布 / SLA / 分组效能 / 流转节点 / 最新工单）。
+    """工单监控大屏聚合数据（KPI / 趋势 / 分布 / 来源平台统计 / SLA / 流转节点 / 最新工单）。
 
     数据均来自真实工单（排除归档），按大屏七个分区一次返回，前端 60s 轮询。
     需要独立权限 ticket_monitor:view（叠加 router 级 ticket:view）。
@@ -785,19 +1069,37 @@ def ticket_monitor_stats(
                 m[k] = m.get(k, 0) + 1
         return [{"name": k, "value": v} for k, v in sorted(m.items(), key=lambda x: -x[1])]
 
+    def _field_of(t, key):
+        rec = first_record.get(t.id)
+        return (rec.field_values or {}).get(key) if rec else None
+
     priority_dist = _count_by(tickets, lambda t: t.priority)
-    platform_dist = _count_by(
-        tickets,
-        lambda t: (first_record.get(t.id).field_values or {}).get("alert_platform")
-        if first_record.get(t.id)
-        else None,
-    )
-    type_dist = _count_by(
-        tickets,
-        lambda t: (first_record.get(t.id).field_values or {}).get("alert_type")
-        if first_record.get(t.id)
-        else None,
-    )
+    type_dist = _count_by(tickets, lambda t: _field_of(t, "alert_type"))
+
+    # —— 来源平台统计：工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决（口径与顶部 KPI 一致）——
+    platform_rows: dict[str, dict] = {}
+    for t in tickets:
+        platform = _field_of(t, "alert_platform")
+        if not platform:
+            continue
+        row = platform_rows.setdefault(platform, {
+            "name": platform,
+            "total": 0,
+            "today_new": 0,
+            "pending": 0,
+            "processing_active": 0,
+            "completed": 0,
+        })
+        row["total"] += 1
+        if t.created_at and t.created_at >= today_start:
+            row["today_new"] += 1
+        if t.status == "processing":
+            row["pending"] += 1
+            if t.id in today_submit_ids:
+                row["processing_active"] += 1
+        elif t.status == "completed":
+            row["completed"] += 1
+    platform_stats = sorted(platform_rows.values(), key=lambda r: -r["total"])
     severity_status = []
     for p in ("critical", "high", "medium", "low"):
         row = {"name": PRIORITY_LABELS.get(p, p), "processing": 0, "completed": 0, "cancelled": 0}
@@ -833,24 +1135,8 @@ def ticket_monitor_stats(
         "targets": sla_config,
     }
 
-    # —— 分组效能：处理量（提交流转）与当前待办 ——
+    # 分组名映射（用于流转节点显示处理分组）
     group_map = {g.id: g.name for g in db.query(TicketGroup).all()}
-    handled_count: dict[int, int] = {}
-    for r in records:
-        if r.action == "submit" and r.group_id:
-            handled_count[r.group_id] = handled_count.get(r.group_id, 0) + 1
-    pending_count: dict[int, int] = {}
-    for t in processing:
-        if t.current_group_id:
-            pending_count[t.current_group_id] = pending_count.get(t.current_group_id, 0) + 1
-    groups_stats = [
-        {
-            "name": group_map.get(gid, f"分组{gid}"),
-            "handled": handled_count.get(gid, 0),
-            "pending": pending_count.get(gid, 0),
-        }
-        for gid in sorted(set(handled_count) | set(pending_count))
-    ]
 
     # —— 处置状态流转：可指定流程（?flow_id=）或自动选取（进行中工单最多 / 最新）——
     # 节点序列始终读取流程模板当前定义（而非工单发起时的旧快照），模板修改重新发布后自动生效
@@ -911,10 +1197,11 @@ def ticket_monitor_stats(
     return {
         "kpi": kpi,
         "trend": trend,
-        "dist": {"priority": priority_dist, "platform": platform_dist, "type": type_dist},
+        "dist": {"priority": priority_dist, "type": type_dist},
+        # 来源平台统计表：各平台 工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决
+        "platform_stats": platform_stats,
         "severity_status": severity_status,
         "sla": sla,
-        "groups": groups_stats,
         # 大屏流程切换器数据：全部流程模板（含草稿/停用标记）
         "flows": [
             {
@@ -938,6 +1225,324 @@ def ticket_monitor_stats(
     }
 
 
+# ============ CSV 导出（须注册在 GET /{ticket_id} 之前，避免 "export" 被路径参数吞掉） ============
+
+# 导出上限：防御性兜底，避免极端存量下响应过大
+EXPORT_MAX_ROWS = 10000
+
+
+def _snapshot_field_labels(snapshot: dict) -> dict[str, str]:
+    """快照全部节点字段（含匹配规则扩展字段）key → label 映射。"""
+    m: dict[str, str] = {}
+    for n in snapshot.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        for f in n.get("fields") or []:
+            if isinstance(f, dict) and f.get("key"):
+                m[f["key"]] = f.get("label") or f["key"]
+                for r in f.get("rules") or []:
+                    for rf in (r.get("fields") or []):
+                        if isinstance(rf, dict) and rf.get("key"):
+                            m[rf["key"]] = rf.get("label") or rf["key"]
+    return m
+
+
+def _csv_cell_value(v) -> str:
+    """字段值 → CSV 单元格文本（布尔转是/否，其余字符串化）。"""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "是" if v else "否"
+    return str(v)
+
+
+# CSV 公式注入：以 = + - @（及制表符/回车）开头的单元格在 Excel/WPS 打开时会被当公式执行
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_formula_safe(v) -> str:
+    """整格文本防公式注入：危险前缀前置单引号（仅对独占单元格的文本使用，
+    拼接在「【节点】label：」前缀后的字段值不会被 Excel 解释为公式，保持原样）。"""
+    s = _csv_cell_value(v)
+    return ("'" + s) if s[:1] in _CSV_FORMULA_PREFIXES else s
+
+
+@router.get("/export")
+def export_tickets(
+    view: str = Query(default="all", pattern="^(my_pending|created|handled|cc|all)$"),
+    status: str | None = Query(default=None, pattern="^(processing|completed|cancelled)$"),
+    flow_id: int | None = Query(default=None),
+    priority: str | None = Query(default=None, pattern="^(low|medium|high|critical)$"),
+    archived: str = Query(default="exclude", pattern="^(exclude|only|include)$"),
+    q: str | None = Query(default=None, max_length=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """按当前筛选条件导出工单 CSV（UTF-8 BOM，Excel 可直接打开）。
+
+    列：工单号/标题/流程/状态/优先级/发起人/当前节点/当前处理分组/发起时间/完结时间/
+    处理时长分钟/SLA状态/表单字段内容（按节点·字段 label 汇总）/处置意见汇总。
+    """
+    query = _apply_ticket_filters(db, current_user, view, status, flow_id, priority, archived, q)
+    # 筛选结果为 None（view=my_pending 且用户不属于任何分组）时导出空表，
+    # 严禁回退为全量导出（越权泄露全部工单）
+    tickets = (
+        query.order_by(Ticket.id.desc()).limit(EXPORT_MAX_ROWS).all()
+        if query is not None
+        else []
+    )
+
+    now = beijing_now()
+    sla_config = get_sla_config(db)
+    group_names = _group_name_map(db, {t.current_group_id for t in tickets if t.current_group_id})
+    # 批量取节点记录（字段值/处置意见/SLA 倒计时）
+    rec_map: dict[int, list] = {}
+    if tickets:
+        for r in (
+            db.query(TicketNodeRecord)
+            .filter(TicketNodeRecord.ticket_id.in_([t.id for t in tickets]))
+            .order_by(TicketNodeRecord.id.asc())
+            .all()
+        ):
+            rec_map.setdefault(r.ticket_id, []).append(r)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "工单号", "标题", "流程模板", "状态", "优先级", "发起人", "当前节点", "当前处理分组",
+        "发起时间", "完结时间", "处理时长(分钟)", "SLA状态", "表单字段内容", "处置意见汇总",
+    ])
+    for t in tickets:
+        records = rec_map.get(t.id, [])
+        # 处理时长：完结=创建→关闭；进行中=创建→现在
+        duration = ""
+        if t.created_at:
+            end_at = t.closed_at or now
+            duration = str(int((end_at - t.created_at).total_seconds() // 60))
+        # SLA 状态：进行中显示倒计时，完结显示实际是否超时
+        sla_text = ""
+        if t.status == "processing":
+            remaining, overdue, _ = _sla_remaining(t, records, now, sla_config)
+            if remaining is not None:
+                sla_text = ("超时 " if overdue else "剩余 ") + _fmt_duration(remaining)
+        else:
+            sla_text = "超时" if evaluate_ticket_sla(t, records, now, sla_config)["timeout"] else "达标"
+        # 表单字段内容：按节点汇总 "【节点】label：value"
+        label_map = _snapshot_field_labels(t.flow_snapshot if isinstance(t.flow_snapshot, dict) else {})
+        fields_parts = []
+        comment_parts = []
+        for r in records:
+            if r.action in ("create", "submit") and r.field_values:
+                seg = "；".join(
+                    f"{label_map.get(k, k)}：{_csv_cell_value(v)}"
+                    for k, v in r.field_values.items()
+                )
+                fields_parts.append(f"【{r.node_name or r.node_key}】{seg}")
+            if r.action == "submit" and r.comment:
+                comment_parts.append(f"【{r.node_name or r.node_key}·{r.handler_name}】{r.comment}")
+        writer.writerow([
+            t.ticket_no,
+            _csv_formula_safe(t.title),
+            _csv_formula_safe(t.flow_name),
+            STATUS_LABELS.get(t.status, t.status),
+            PRIORITY_LABELS.get(t.priority, t.priority),
+            _csv_formula_safe(t.created_by_name),
+            _csv_formula_safe(t.current_node_name) if t.status == "processing" else "",
+            _csv_formula_safe(group_names.get(t.current_group_id, "")) if t.status == "processing" else "",
+            t.created_at.strftime("%Y-%m-%d %H:%M:%S") if t.created_at else "",
+            t.closed_at.strftime("%Y-%m-%d %H:%M:%S") if t.closed_at else "",
+            duration,
+            sla_text,
+            " ".join(fields_parts),
+            " ".join(comment_parts),
+        ])
+
+    filename = f"工单导出_{now.strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+# ============ 相似工单推荐（发起时按首节点关键字段值匹配） ============
+
+@router.post("/similar")
+def similar_tickets(
+    body: TicketSimilar,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """相似工单推荐：按首节点关键字段值匹配同流程已完成工单。
+
+    - 评分：首节点 ip 字段值相同 +3，select 字段值相同 +1；评分 > 0 的取前 5
+    - 返回 {items: [{id, ticket_no, title, closed_at, score, matched_labels, summary}]}，
+      summary 为最后一条带处置意见的摘要（200 字截断）
+    """
+    flow = db.query(TicketFlow).filter(TicketFlow.id == body.flow_id).first()
+    if flow is None:
+        raise HTTPException(status_code=404, detail="流程模板不存在")
+    nodes_json = flow.nodes if isinstance(flow.nodes, dict) else {}
+    start_node = get_start_node(nodes_json)
+    if not start_node:
+        return {"items": []}
+
+    # 关键字段：首节点 ip / select 字段，且当前已填写
+    values = body.field_values or {}
+    probes: list[tuple[str, str, str]] = []  # (key, label, type)
+    for f in start_node.get("fields") or []:
+        if not isinstance(f, dict) or f.get("type") not in ("ip", "select") or not f.get("key"):
+            continue
+        v = values.get(f["key"])
+        if v is None or v is True or v is False or str(v).strip() == "":
+            continue
+        probes.append((f["key"], f.get("label") or f["key"], f["type"]))
+    if not probes:
+        return {"items": []}
+
+    candidates = (
+        db.query(Ticket)
+        .filter(Ticket.flow_id == flow.id, Ticket.status == "completed", Ticket.archived.is_(False))
+        .order_by(Ticket.closed_at.desc())
+        .limit(200)
+        .all()
+    )
+    create_values: dict[int, dict] = {}
+    if candidates:
+        for r in (
+            db.query(TicketNodeRecord)
+            .filter(
+                TicketNodeRecord.ticket_id.in_([t.id for t in candidates]),
+                TicketNodeRecord.action == "create",
+            )
+            .order_by(TicketNodeRecord.id.asc())
+            .all()
+        ):
+            create_values.setdefault(r.ticket_id, r.field_values or {})
+
+    scored: list[tuple[Ticket, int, list[str]]] = []
+    for t in candidates:
+        fv = create_values.get(t.id) or {}
+        score = 0
+        matched: list[str] = []
+        for key, label, ftype in probes:
+            v = fv.get(key)
+            if v is None or v is True or v is False or str(v).strip() == "":
+                continue
+            if str(v).strip() == str(values.get(key)).strip():
+                score += 3 if ftype == "ip" else 1
+                matched.append(label)
+        if score > 0:
+            scored.append((t, score, matched))
+    scored.sort(key=lambda x: (-x[1], -(x[0].closed_at or x[0].created_at or now).timestamp()))
+
+    # 处置意见摘要：最后一条带 comment 的 submit 记录
+    summaries: dict[int, str] = {}
+    top_ids = [t.id for t, _, _ in scored[:5]]
+    if top_ids:
+        for r in (
+            db.query(TicketNodeRecord)
+            .filter(TicketNodeRecord.ticket_id.in_(top_ids), TicketNodeRecord.action == "submit")
+            .order_by(TicketNodeRecord.id.asc())
+            .all()
+        ):
+            if r.comment:
+                summaries[r.ticket_id] = r.comment
+    items = []
+    for t, score, matched in scored[:5]:
+        items.append({
+            "id": t.id,
+            "ticket_no": t.ticket_no,
+            "title": t.title,
+            "priority": PRIORITY_LABELS.get(t.priority, t.priority),
+            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+            "score": score,
+            "matched_labels": matched,
+            "summary": (summaries.get(t.id) or "").strip()[:200],
+        })
+    return {"items": items}
+
+
+# ============ 封禁状态查询 ============
+
+# 封禁来源/等级中文（与工作台展示一致）
+_BAN_SOURCE_LABELS = {
+    "auto": "自动封禁", "approval": "审批封禁", "manual": "手动封禁",
+    "chat": "聊天封禁", "ticket": "工单同步",
+}
+_BAN_LEVEL_LABELS = {"low": "低", "medium": "中", "high": "高", "serious": "严重", "critical": "严重"}
+
+
+@router.get("/ban-status")
+def get_ban_status(
+    ips: str = Query(..., description="逗号分隔的 IP 列表，最多 20 个"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """批量查询 IP 是否处于封禁期间（安全上下文封禁查询）。
+
+    同时检查工作台封禁记录（ban_records，含工单同步）与旧版已封禁列表
+    （banned_ips），返回每个 IP 的全部生效中封禁详情；未封禁则 banned=false。
+    """
+    ip_list = list(dict.fromkeys(x.strip() for x in ips.split(",") if x.strip()))
+    if not ip_list:
+        raise HTTPException(status_code=400, detail="请提供至少一个 IP 地址")
+    if len(ip_list) > 20:
+        raise HTTPException(status_code=400, detail="单次最多查询 20 个 IP")
+    now = beijing_now()
+    result: dict[str, dict] = {ip: {"banned": False, "items": []} for ip in ip_list}
+
+    # 工作台封禁记录（永久封禁 expire_time 为空，视为生效中）
+    for r in (
+        db.query(BanRecord)
+        .filter(BanRecord.ip.in_(ip_list), BanRecord.status == "active")
+        .all()
+    ):
+        if not r.is_permanent and (r.expire_time is None or r.expire_time <= now):
+            continue
+        result[r.ip]["banned"] = True
+        result[r.ip]["items"].append({
+            "source": r.ban_source,
+            "source_label": _BAN_SOURCE_LABELS.get(r.ban_source or "", r.ban_source or "未知"),
+            "ban_level": r.ban_level,
+            "ban_level_label": _BAN_LEVEL_LABELS.get(r.ban_level or "", r.ban_level or "-"),
+            "started_at": r.created_at.isoformat() if r.created_at else None,
+            "expire_time": r.expire_time.isoformat() if r.expire_time else None,
+            "is_permanent": bool(r.is_permanent),
+            "remaining_ms": int((r.expire_time - now).total_seconds() * 1000)
+            if (r.expire_time and not r.is_permanent) else None,
+            "reason": r.reason or "",
+            "ban_device": r.ban_device,
+            "ticket_id": r.ticket_id,
+            "ticket_no": r.ticket_no,
+        })
+
+    # 旧版 banned_ips（补充历史手动/智能体封禁，防遗漏）
+    for b in (
+        db.query(BannedIP)
+        .filter(BannedIP.ip.in_(ip_list), BannedIP.status == "active")
+        .all()
+    ):
+        if b.expired_at and b.expired_at <= now:
+            continue
+        result[b.ip]["banned"] = True
+        result[b.ip]["items"].append({
+            "source": b.source,
+            "source_label": "手动封禁" if b.source == "manual" else "旧版封禁记录",
+            "ban_level": b.ban_level,
+            "ban_level_label": _BAN_LEVEL_LABELS.get(b.ban_level or "", b.ban_level or "-"),
+            "started_at": b.created_at.isoformat() if b.created_at else None,
+            "expire_time": b.expired_at.isoformat() if b.expired_at else None,
+            "is_permanent": False,
+            "remaining_ms": int((b.expired_at - now).total_seconds() * 1000) if b.expired_at else None,
+            "reason": b.reason or "",
+            "ban_device": b.device_name or None,
+            "ticket_id": None,
+            "ticket_no": None,
+        })
+    return result
+
+
 # ============ 详情 ============
 
 @router.get("/{ticket_id}")
@@ -949,6 +1554,66 @@ def get_ticket(
     """工单详情：处理时间线 + 当前节点操作表单 + 权限上下文。"""
     ticket = _get_ticket_or_404(db, ticket_id)
     return _ticket_detail(db, ticket, current_user)
+
+
+# ============ 封禁同步 ============
+
+def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict, user: User) -> None:
+    """封禁同步动作：节点配置 ban_sync 且开关字段命中时写入工作台已封禁 IP 列表。
+
+    - 仅写 BanRecord（ban_source=ticket 工单同步），不同步 legacy banned_ips
+    - 按 (ticket_id, ticket_node) 去重，回退后重新提交不会重复产生封禁记录
+    - 时长字段用 parse_duration 解析（"永久" 或 "30天"/"12小时"/"45分钟"）
+    """
+    cfg = node.get("ban_sync") if isinstance(node, dict) else None
+    if not isinstance(cfg, dict) or not cfg:
+        return
+    sv = values.get(cfg.get("switch_field"))
+    if isinstance(sv, bool):
+        sv = "是" if sv else "否"
+    if str(sv if sv is not None else "") != str(cfg.get("switch_value") or "是"):
+        return
+    raw_ip = values.get(cfg.get("ip_field"))
+    # 非字符串值（如多值控件传入的列表）先归一化，防止 str() 后写入脏数据
+    if isinstance(raw_ip, (list, tuple)):
+        raw_ip = next((x for x in raw_ip if str(x or "").strip()), None)
+    ip = str(raw_ip or "").strip()
+    duration_raw = values.get(cfg.get("duration_field"))
+    device = str(values.get(cfg.get("device_field")) or "").strip() if cfg.get("device_field") else ""
+    if not ip or duration_raw in (None, ""):
+        logger.warning("封禁同步跳过（IP/时长未填）: ticket=%s node=%s", ticket.ticket_no, node.get("key"))
+        return
+    permanent, seconds = parse_duration(duration_raw)
+    if not permanent and seconds < 0:
+        logger.warning("封禁同步跳过（时长格式非法: %r）: ticket=%s", duration_raw, ticket.ticket_no)
+        return
+    dup = (
+        db.query(BanRecord)
+        .filter(BanRecord.ticket_id == ticket.id, BanRecord.ticket_node == str(node.get("key") or ""))
+        .first()
+    )
+    if dup is not None:
+        return
+    now = beijing_now()
+    record = BanRecord(
+        ip=ip,
+        ban_level="medium",
+        ban_duration=0 if permanent else seconds,
+        is_permanent=permanent,
+        expire_time=None if permanent else now + timedelta(seconds=seconds),
+        reason=f"工单同步：{ticket.title}",
+        ban_source="ticket",
+        status="active",
+        ticket_id=ticket.id,
+        ticket_no=ticket.ticket_no,
+        ticket_node=str(node.get("key") or ""),
+        ban_device=device or None,
+    )
+    db.add(record)
+    logger.info(
+        "封禁同步: ticket=%s ip=%s permanent=%s duration=%ss device=%s, operator=%s",
+        ticket.ticket_no, ip, permanent, 0 if permanent else seconds, device or "-", user.username,
+    )
 
 
 # ============ 流转 ============
@@ -964,9 +1629,11 @@ def advance_ticket(
 
     - field_values 按当前节点字段定义校验
     - route_to 必须在当前节点路由白名单内；未提供时按条件路由自动建议
+    - 并行会签节点：按 finish_policy 等待全部会签分组提交后才流转
+      （all=全部完成 / any=任一即过）；中间会签提交不改变停留节点
     - 流向结束节点时工单完成
     """
-    ticket = _get_ticket_or_404(db, ticket_id)
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能再流转")
 
@@ -975,19 +1642,76 @@ def advance_ticket(
     if not current_node:
         raise HTTPException(status_code=400, detail="当前节点定义缺失（快照损坏）")
 
-    # 处理权限：admin 或属于当前节点分组
+    # 处理权限：admin / 属于当前节点任一待处理分组（并行会签）/ 认领人
+    # （认领人含被改派到个人的用户，其可能不属于节点分组）
     admin = is_admin(current_user, db)
     my_groups = set(_my_group_ids(db, current_user.id))
-    if not admin and current_node.get("group_id") not in my_groups:
-        raise HTTPException(status_code=403, detail="您不属于当前节点的处理分组")
+    pending = _csv_group_ids(ticket)
+    if not admin and ticket.claimed_by_id != current_user.id and not (pending & my_groups):
+        raise HTTPException(
+            status_code=403,
+            detail="您不属于当前节点的待处理分组（或所在分组已完成会签）",
+        )
+    # 认领锁定：被认领后仅认领人（或 admin）可提交
+    if ticket.claimed_by_id and ticket.claimed_by_id != current_user.id and not admin:
+        raise HTTPException(status_code=403, detail="工单已被其他成员认领，仅认领人或管理员可提交")
 
-    # 字段校验
-    values = _clean_field_values(body.field_values)
-    errors = validate_field_values(current_node.get("fields") or [], values)
+    # 字段校验（先剔除未命中匹配规则的扩展字段值，再校验必填/类型/枚举；
+    # 引用联动字段选项 = 本工单已提交记录值 + 本次提交值）
+    values = strip_hidden_field_values(
+        current_node.get("fields") or [], _clean_field_values(body.field_values)
+    )
+    submitted = (
+        db.query(TicketNodeRecord)
+        .filter(TicketNodeRecord.ticket_id == ticket.id)
+        .order_by(TicketNodeRecord.id.asc())
+        .all()
+    )
+    ref_opts = collect_ref_options(snapshot, [*submitted, {"field_values": values}])
+    errors = validate_field_values(current_node.get("fields") or [], values, ref_options=ref_opts)
     if errors:
         raise HTTPException(status_code=422, detail="；".join(errors))
 
-    # 路由解析
+    # —— 并行会签：未到完成条件时留在本节点，仅记录本分组会签 ——
+    if current_node.get("type") == "parallel":
+        # admin 提交固定视为一次签掉全部待签分组（卡签兜底语义保持一致，
+        # 避免同是 admin 却因是否属待签分组而出现两种签法）
+        newly_signed = set(pending) if admin else (pending & my_groups)
+        remaining = pending - newly_signed
+        policy = current_node.get("finish_policy") or "all"
+        if remaining and policy != "any":
+            total = len(get_node_pending_groups(current_node))
+            done = total - len(remaining)
+            db.add(TicketNodeRecord(
+                ticket_id=ticket.id,
+                node_key=current_node.get("key") or "",
+                node_name=current_node.get("name") or "",
+                group_id=min(newly_signed) if newly_signed else None,
+                handler_id=current_user.id,
+                handler_name=current_user.display_name or current_user.username,
+                action="submit",
+                field_values=values,
+                route_to=None,  # 会签中间提交：不流转，等待其余分组
+                comment=sanitize_text(body.comment) if body.comment else None,
+            ))
+            # 待处理分组去掉已签分组（current_group_id 指向下一个待签分组）
+            ticket.current_group_ids = "," + ",".join(str(g) for g in sorted(remaining)) + ","
+            ticket.current_group_id = min(remaining)
+            _notify_sign_progress(db, ticket, current_node, sorted(remaining), done, total)
+            db.commit()
+            db.refresh(ticket)
+            write_audit(
+                db, action="ticket_advance", resource_type="ticket", resource_id=ticket.id,
+                detail={"ticket_no": ticket.ticket_no, "node": current_node.get("key"),
+                        "sign_off": sorted(newly_signed), "remaining": sorted(remaining)},
+                operator=current_user.username, user_id=current_user.id,
+            )
+            logger.info("工单会签: id=%s no=%s node=%s %d/%d, operator=%s",
+                        ticket.id, ticket.ticket_no, current_node.get("key"), done, total,
+                        current_user.username)
+            return _ticket_detail(db, ticket, current_user)
+
+    # 路由解析（普通流转 / 会签完成后的最终流转，以最终提交人字段与去向为准）
     node_label = current_node.get("name") or current_node.get("key")
     route_to = _resolve_route(current_node.get("routes") or [], values, body.route_to, node_label)
     target = get_node(snapshot, route_to)
@@ -998,7 +1722,7 @@ def advance_ticket(
         ticket_id=ticket.id,
         node_key=current_node.get("key") or "",
         node_name=current_node.get("name") or "",
-        group_id=current_node.get("group_id"),
+        group_id=current_node.get("group_id") if current_node.get("type") != "parallel" else (min(pending & my_groups) if (pending & my_groups) else None),
         handler_id=current_user.id,
         handler_name=current_user.display_name or current_user.username,
         action="submit",
@@ -1007,22 +1731,32 @@ def advance_ticket(
         comment=sanitize_text(body.comment) if body.comment else None,
     ))
 
+    # 封禁同步动作：节点配置了 ban_sync 且命中开关条件时，写入工作台已封禁 IP 列表
+    # （附加动作在独立 SAVEPOINT 中执行：任何失败——含提交阶段的约束错误如 IP 超长——
+    #   仅回滚封禁记录自身，不阻塞工单流转主流程）
+    try:
+        with db.begin_nested():
+            _sync_ban_from_ticket(db, ticket, current_node, values, current_user)
+    except Exception:  # noqa: BLE001
+        logger.exception("封禁同步失败（不阻塞工单流转）: ticket=%s", ticket.ticket_no)
+
     end = is_end_node(target)
     ticket.current_node_key = route_to
     ticket.current_node_name = target.get("name") or route_to
-    ticket.current_group_id = None if end else target.get("group_id")
-    # 节点停留计时重置：进入新节点重新计时，超时提醒进度清零
+    # 节点停留计时重置：进入新节点重新计时，超时提醒进度清零；认领锁定随节点流转释放
+    _set_current_groups(ticket, None if end else target)
     ticket.arrived_at = None if end else beijing_now()
     ticket.first_reminded_at = None
     ticket.last_reminded_at = None
     ticket.remind_count = 0
+    ticket.claimed_by_id = None
     if end:
         ticket.status = "completed"
         ticket.closed_at = beijing_now()
         # 完结通知：把最终结果通知全部抄送人
         _notify_cc_finished(db, ticket, "完成")
     else:
-        _notify_next_group(db, ticket, target.get("name") or route_to, target.get("group_id"))
+        _notify_next_group(db, ticket, target.get("name") or route_to, sorted(_csv_group_ids(ticket)))
     db.commit()
     db.refresh(ticket)
     write_audit(
@@ -1053,7 +1787,7 @@ def rollback_ticket(
     - 回退后工单停留到上一节点重新处理，停留计时重置、超时提醒进度清零
     - 回退写入时间线（action=rollback）并精确通知上一节点分组成员（含回退原因）
     """
-    ticket = _get_ticket_or_404(db, ticket_id)
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能再回退")
 
@@ -1062,41 +1796,70 @@ def rollback_ticket(
     if not current_node:
         raise HTTPException(status_code=400, detail="当前节点定义缺失（快照损坏）")
 
-    # 处理权限：admin 或属于当前节点分组（与流转一致）
+    # 处理权限：admin / 待处理分组成员 / 认领人（与流转一致）
     admin = is_admin(current_user, db)
     my_groups = set(_my_group_ids(db, current_user.id))
-    if not admin and current_node.get("group_id") not in my_groups:
-        raise HTTPException(status_code=403, detail="您不属于当前节点的处理分组，不能回退")
+    pending = _csv_group_ids(ticket)
+    if not admin and ticket.claimed_by_id != current_user.id and not (pending & my_groups):
+        raise HTTPException(status_code=403, detail="您不属于当前节点的待处理分组，不能回退")
+    # 认领锁定：被认领后仅认领人（或 admin）可回退
+    if ticket.claimed_by_id and ticket.claimed_by_id != current_user.id and not admin:
+        raise HTTPException(status_code=403, detail="工单已被其他成员认领，仅认领人或管理员可回退")
 
     # 回退原因必填（schema 已校验 min_length，此处防御性兜底）
     reason = sanitize_text(body.comment).strip()
     if not reason:
         raise HTTPException(status_code=400, detail="回退原因不能为空")
 
-    # 找上一节点：最近一条把工单送入当前节点的记录（submit 流转 / create 发起）
-    prev = (
-        db.query(TicketNodeRecord)
-        .filter(
-            TicketNodeRecord.ticket_id == ticket.id,
-            TicketNodeRecord.route_to == ticket.current_node_key,
-            TicketNodeRecord.action.in_(("create", "submit")),
+    # 回退目标：白名单模式（rollback_to）→ 仅允许退回白名单内节点；
+    # 缺省 → 上一处理节点（最近一条把工单送入当前节点的 submit/create 来源）
+    whitelist = current_node.get("rollback_to")
+    if isinstance(whitelist, list):
+        if not whitelist:
+            raise HTTPException(status_code=400, detail="当前节点已配置禁止回退")
+        if body.target:
+            if body.target not in whitelist:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"回退目标 {body.target} 不在当前节点的回退白名单内",
+                )
+            target_key = body.target
+        elif len(whitelist) == 1:
+            target_key = whitelist[0]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="当前节点配置了多个可回退目标，请指定回退目标节点",
+            )
+        target = get_node(snapshot, target_key)
+        if target is None or is_end_node(target):
+            raise HTTPException(status_code=400, detail="回退目标节点定义缺失或不合法")
+    else:
+        # 找上一节点：最近一条把工单送入当前节点的记录（submit 流转 / create 发起）
+        prev = (
+            db.query(TicketNodeRecord)
+            .filter(
+                TicketNodeRecord.ticket_id == ticket.id,
+                TicketNodeRecord.route_to == ticket.current_node_key,
+                TicketNodeRecord.action.in_(("create", "submit")),
+            )
+            .order_by(TicketNodeRecord.id.desc())
+            .first()
         )
-        .order_by(TicketNodeRecord.id.desc())
-        .first()
-    )
-    if not prev or not prev.node_key or prev.node_key == ticket.current_node_key:
-        raise HTTPException(status_code=400, detail="当前节点为首节点，无上一步可回退")
+        if not prev or not prev.node_key or prev.node_key == ticket.current_node_key:
+            raise HTTPException(status_code=400, detail="当前节点为首节点，无上一步可回退")
+        if body.target and body.target != prev.node_key:
+            raise HTTPException(status_code=400, detail="当前节点仅支持退回上一步处理节点")
+        target = get_node(snapshot, prev.node_key)
+        if target is None or is_end_node(target):
+            raise HTTPException(status_code=400, detail="上一节点定义缺失或不合法，不能回退")
 
-    target = get_node(snapshot, prev.node_key)
-    if target is None or is_end_node(target):
-        raise HTTPException(status_code=400, detail="上一节点定义缺失或不合法，不能回退")
-
-    # 时间线记录：node=当前节点，route_to=上一节点，comment=回退原因
+    # 时间线记录：node=当前节点，route_to=回退目标，comment=回退原因
     db.add(TicketNodeRecord(
         ticket_id=ticket.id,
         node_key=current_node.get("key") or "",
         node_name=current_node.get("name") or "",
-        group_id=current_node.get("group_id"),
+        group_id=current_node.get("group_id") if current_node.get("type") != "parallel" else (min(pending & my_groups) if (pending & my_groups) else None),
         handler_id=current_user.id,
         handler_name=current_user.display_name or current_user.username,
         action="rollback",
@@ -1105,38 +1868,39 @@ def rollback_ticket(
         comment=reason,
     ))
 
-    # 工单停留回上一节点：计时重置、提醒进度清零
+    # 工单停留回目标节点：计时重置、提醒进度清零、认领锁定释放；
+    # 并行会签目标节点重新初始化全部会签分组（会签进度重置）
     ticket.current_node_key = target.get("key")
     ticket.current_node_name = target.get("name") or target.get("key")
-    ticket.current_group_id = target.get("group_id")
+    _set_current_groups(ticket, target)
     ticket.arrived_at = beijing_now()
     ticket.first_reminded_at = None
     ticket.last_reminded_at = None
     ticket.remind_count = 0
+    ticket.claimed_by_id = None
 
-    # 通知上一节点分组成员：工单被退回，需重新处理（含回退原因）
-    if target.get("group_id"):
-        group = db.query(TicketGroup).filter(TicketGroup.id == target["group_id"]).first()
-        group_label = group.name if group else f"分组{target['group_id']}"
+    # 通知目标节点待处理分组成员：工单被退回，需重新处理（含回退原因）
+    for gid in sorted(_csv_group_ids(ticket)):
+        group = db.query(TicketGroup).filter(TicketGroup.id == gid).first()
+        group_label = group.name if group else f"分组{gid}"
         user_ids = sorted({
             uid for (uid,) in db.query(TicketGroupMember.user_id)
-            .filter(TicketGroupMember.group_id == target["group_id"])
+            .filter(TicketGroupMember.group_id == gid)
             .all()
             if uid
         })
-        if user_ids:
-            _notify_user_ids(
-                db, ticket, user_ids,
-                title=f"工单退回：{ticket.ticket_no}",
-                content=(
-                    f"工单「{ticket.title}」已由「{current_node.get('name') or '当前节点'}」"
-                    f"退回至「{target.get('name') or target.get('key')}」，"
-                    f"回退原因：{reason}。请【{group_label}】重新跟进处理"
-                ),
-            )
-        else:
-            logger.warning("回退通知无收件人（分组无成员）: ticket=%s group=%s",
-                           ticket.id, target.get("group_id"))
+        if not user_ids:
+            logger.warning("回退通知无收件人（分组无成员）: ticket=%s group=%s", ticket.id, gid)
+            continue
+        _notify_user_ids(
+            db, ticket, user_ids,
+            title=f"工单退回：{ticket.ticket_no}",
+            content=(
+                f"工单「{ticket.title}」已由「{current_node.get('name') or '当前节点'}」"
+                f"退回至「{target.get('name') or target.get('key')}」，"
+                f"回退原因：{reason}。请【{group_label}】重新跟进处理"
+            ),
+        )
 
     db.commit()
     db.refresh(ticket)
@@ -1162,7 +1926,7 @@ def cancel_ticket(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """取消工单：仅发起人或 admin，需填写取消原因。"""
-    ticket = _get_ticket_or_404(db, ticket_id)
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
     admin = is_admin(current_user, db)
     if not admin and ticket.created_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="仅发起人或管理员可取消工单")
@@ -1192,6 +1956,342 @@ def cancel_ticket(
         operator=current_user.username, user_id=current_user.id,
     )
     logger.info("取消工单: id=%s no=%s, operator=%s", ticket.id, ticket.ticket_no, current_user.username)
+    return _ticket_detail(db, ticket, current_user)
+
+
+# ============ 催办（发起人/抄送人/admin，处理中工单，30 分钟限频） ============
+
+@router.post("/{ticket_id}/urge")
+def urge_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """催办工单：发起人/抄送人/admin 一键催办处理中工单，通知当前节点分组成员。
+
+    - 30 分钟内同一工单仅可催办一次（按最近一条催办时间线记录计算）
+    - 写入时间线（action=urge）与审计，不改变工单状态
+    """
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    if ticket.status != "processing":
+        raise HTTPException(status_code=400, detail="工单已完结，无需催办")
+
+    admin = is_admin(current_user, db)
+    cc_user_ids = set(_resolve_cc_user_ids(db, _cc_rows(db, ticket.id)))
+    if not admin and ticket.created_by_id != current_user.id and current_user.id not in cc_user_ids:
+        raise HTTPException(status_code=403, detail="仅发起人、抄送人或管理员可催办")
+
+    now = beijing_now()
+    last = (
+        db.query(TicketNodeRecord)
+        .filter(TicketNodeRecord.ticket_id == ticket.id, TicketNodeRecord.action == "urge")
+        .order_by(TicketNodeRecord.id.desc())
+        .first()
+    )
+    if last and last.created_at and (now - last.created_at).total_seconds() < URGE_INTERVAL_MINUTES * 60:
+        waited = int((now - last.created_at).total_seconds() // 60)
+        raise HTTPException(
+            status_code=429,
+            detail=f"催办太频繁，请 {max(URGE_INTERVAL_MINUTES - waited, 1)} 分钟后再试（30 分钟内仅可催办一次）",
+        )
+
+    operator_name = current_user.display_name or current_user.username
+    db.add(TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=ticket.current_node_key or "",
+        node_name=ticket.current_node_name or "",
+        group_id=ticket.current_group_id,
+        handler_id=current_user.id,
+        handler_name=operator_name,
+        action="urge",
+        field_values={},
+    ))
+    # 通知当前节点全部待处理分组成员（并行会签=全部待签分组；催办人自身不重复通知）
+    member_ids = sorted({
+        uid for gid in _csv_group_ids(ticket)
+        for uid in _group_member_ids(db, gid)
+        if uid != current_user.id
+    })
+    if member_ids:
+        _notify_user_ids(
+            db, ticket, member_ids,
+            title=f"工单催办提醒：{ticket.ticket_no}",
+            content=(
+                f"工单「{ticket.title}」已被 {operator_name} 催办，"
+                f"请尽快处理（当前节点：{ticket.current_node_name or '--'}）"
+            ),
+        )
+    else:
+        logger.warning("催办通知无收件人（分组无成员）: ticket=%s groups=%s",
+                       ticket.id, sorted(_csv_group_ids(ticket)))
+    db.commit()
+    db.refresh(ticket)
+    write_audit(
+        db, action="ticket_urge", resource_type="ticket", resource_id=ticket.id,
+        detail={"ticket_no": ticket.ticket_no, "node": ticket.current_node_key},
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("工单催办: id=%s no=%s, operator=%s", ticket.id, ticket.ticket_no, current_user.username)
+    return _ticket_detail(db, ticket, current_user)
+
+
+# ============ 转办/改派（当前节点处理人 → 其他分组或指定人） ============
+
+@router.post("/{ticket_id}/transfer")
+def transfer_ticket(
+    ticket_id: int,
+    body: TicketTransfer,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "edit")),
+) -> dict:
+    """转办/改派：当前节点处理人（或 admin）把工单转给其他分组或指定人处理。
+
+    - ``group_id``：目标分组接管当前节点处理（停留计时重置、提醒进度清零、认领释放）
+    - ``user_id``：指定人个人接管（认领锁定语义：仅其与 admin 可继续提交）
+    - 转办原因必填，写入时间线（action=transfer）+ 审计 + 通知目标
+    """
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    if ticket.status != "processing":
+        raise HTTPException(status_code=400, detail="工单已完结，不能转办")
+    if body.group_id is None and body.user_id is None:
+        raise HTTPException(status_code=400, detail="请选择转办目标（分组或人员）")
+    if body.group_id is not None and body.user_id is not None:
+        raise HTTPException(status_code=400, detail="转办目标只能选择分组或人员其中之一")
+
+    snapshot = ticket.flow_snapshot if isinstance(ticket.flow_snapshot, dict) else {}
+    current_node = get_node(snapshot, ticket.current_node_key) if ticket.current_node_key else None
+    if not current_node:
+        raise HTTPException(status_code=400, detail="当前节点定义缺失（快照损坏）")
+
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    pending = _csv_group_ids(ticket)
+    if not admin and ticket.claimed_by_id != current_user.id and not (pending & my_groups):
+        raise HTTPException(status_code=403, detail="您不属于当前节点的待处理分组，不能转办")
+    if ticket.claimed_by_id and ticket.claimed_by_id != current_user.id and not admin:
+        raise HTTPException(status_code=403, detail="工单已被其他成员认领，仅认领人或管理员可转办")
+    # 并行会签节点：多分组同时处理，转办会破坏会签语义（卡签可由 admin 提交兜底）
+    if current_node.get("type") == "parallel":
+        raise HTTPException(status_code=400, detail="并行会签节点不支持转办，请等待会签完成")
+
+    reason = sanitize_text(body.reason).strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="转办原因不能为空")
+    operator_name = current_user.display_name or current_user.username
+
+    if body.group_id is not None:
+        group = db.query(TicketGroup).filter(TicketGroup.id == body.group_id).first()
+        if group is None or not group.enabled:
+            raise HTTPException(status_code=404, detail="目标分组不存在或已停用")
+        if group.id in pending:
+            raise HTTPException(status_code=400, detail=f"工单当前已由「{group.name}」处理，无需转办")
+        target_label = f"分组「{group.name}」"
+    else:
+        user = db.query(User).filter(User.id == body.user_id).first()
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=404, detail="目标人员不存在或已停用")
+        if user.id == current_user.id:
+            raise HTTPException(status_code=400, detail="不能转办给自己（如需锁定处理请使用认领）")
+        target_label = f"人员「{user.display_name or user.username}」"
+
+    db.add(TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=current_node.get("key") or "",
+        node_name=current_node.get("name") or "",
+        group_id=ticket.current_group_id,
+        handler_id=current_user.id,
+        handler_name=operator_name,
+        action="transfer",
+        field_values={},
+        comment=f"转办至{target_label}。原因：{reason}",
+    ))
+
+    if body.group_id is not None:
+        # 分组接管：停留计时重置、提醒进度清零、认领释放（待处理分组整体替换）
+        ticket.current_group_id = group.id
+        ticket.current_group_ids = f",{group.id},"
+        ticket.claimed_by_id = None
+        ticket.arrived_at = beijing_now()
+        ticket.first_reminded_at = None
+        ticket.last_reminded_at = None
+        ticket.remind_count = 0
+        member_ids = [uid for uid in _group_member_ids(db, group.id) if uid != current_user.id]
+        if member_ids:
+            _notify_user_ids(
+                db, ticket, member_ids,
+                title=f"工单转办：{ticket.ticket_no}",
+                content=(
+                    f"工单「{ticket.title}」已转办至您所在分组「{group.name}」"
+                    f"（操作人：{operator_name}），转办原因：{reason}，请跟进处理"
+                ),
+            )
+        else:
+            logger.warning("转办通知无收件人（分组无成员）: ticket=%s group=%s", ticket.id, group.id)
+    else:
+        # 指定人接管：认领锁定语义
+        ticket.claimed_by_id = user.id
+        _notify_user_ids(
+            db, ticket, [user.id],
+            title=f"工单改派：{ticket.ticket_no}",
+            content=(
+                f"工单「{ticket.title}」已改派给您个人处理（操作人：{operator_name}），"
+                f"原因：{reason}，请尽快跟进"
+            ),
+        )
+
+    db.commit()
+    db.refresh(ticket)
+    write_audit(
+        db, action="ticket_transfer", resource_type="ticket", resource_id=ticket.id,
+        detail={
+            "ticket_no": ticket.ticket_no, "to_group_id": body.group_id,
+            "to_user_id": body.user_id, "reason": reason,
+        },
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("工单转办: id=%s no=%s to=%s, operator=%s",
+                ticket.id, ticket.ticket_no, target_label, current_user.username)
+    return _ticket_detail(db, ticket, current_user)
+
+
+# ============ 认领（组内先到先得，认领后锁定） ============
+
+@router.post("/{ticket_id}/claim")
+def claim_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "edit")),
+) -> dict:
+    """认领工单：当前节点分组成员先到先得认领，认领后其他成员不可再提交（锁定）。
+
+    - 认领后仅认领人（或 admin）可流转/回退/转办；流转、回退、转办到分组时自动释放
+    - 写入时间线（action=claim）+ 审计；通知组内其他成员已被认领
+    """
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    if ticket.status != "processing":
+        raise HTTPException(status_code=400, detail="工单已完结，不能认领")
+
+    snapshot = ticket.flow_snapshot if isinstance(ticket.flow_snapshot, dict) else {}
+    current_node = get_node(snapshot, ticket.current_node_key) if ticket.current_node_key else None
+    if not current_node:
+        raise HTTPException(status_code=400, detail="当前节点定义缺失（快照损坏）")
+
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    pending = _csv_group_ids(ticket)
+    if not admin and not (pending & my_groups):
+        raise HTTPException(status_code=403, detail="您不属于当前节点的待处理分组，不能认领")
+    # 并行会签节点：多分组同时处理，单人认领会锁定其他分组，不支持认领
+    if current_node.get("type") == "parallel":
+        raise HTTPException(status_code=400, detail="并行会签节点不支持认领（多分组同时处理）")
+    if ticket.claimed_by_id:
+        if ticket.claimed_by_id == current_user.id:
+            raise HTTPException(status_code=400, detail="您已认领该工单，无需重复认领")
+        raise HTTPException(status_code=400, detail="该工单已被其他成员认领")
+
+    operator_name = current_user.display_name or current_user.username
+    ticket.claimed_by_id = current_user.id
+    db.add(TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=current_node.get("key") or "",
+        node_name=current_node.get("name") or "",
+        group_id=current_node.get("group_id"),
+        handler_id=current_user.id,
+        handler_name=operator_name,
+        action="claim",
+        field_values={},
+    ))
+    # 通知当前全部待处理分组的其他成员：工单已被认领，避免重复处理
+    # （用待处理分组全集而非节点配置分组——转办后节点配置分组已非实际处理方）
+    member_ids = sorted({
+        uid for gid in _csv_group_ids(ticket)
+        for uid in _group_member_ids(db, gid)
+        if uid != current_user.id
+    })
+    if member_ids:
+        _notify_user_ids(
+            db, ticket, member_ids,
+            title=f"工单已被认领：{ticket.ticket_no}",
+            content=(
+                f"工单「{ticket.title}」已由 {operator_name} 认领处理"
+                f"（节点：{ticket.current_node_name or '--'}），请勿重复处理"
+            ),
+        )
+    db.commit()
+    db.refresh(ticket)
+    write_audit(
+        db, action="ticket_claim", resource_type="ticket", resource_id=ticket.id,
+        detail={"ticket_no": ticket.ticket_no, "node": ticket.current_node_key},
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("工单认领: id=%s no=%s, operator=%s", ticket.id, ticket.ticket_no, current_user.username)
+    return _ticket_detail(db, ticket, current_user)
+
+
+# ============ 内部评论（时间线，区别于处置意见） ============
+
+@router.post("/{ticket_id}/comments")
+def add_ticket_comment(
+    ticket_id: int,
+    body: TicketComment,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """添加内部评论：写入处理时间线（action=comment），不改变工单状态与流转。
+
+    权限：发起人 / 当前节点处理分组成员 / 抄送人 / admin。
+    通知发起人与当前节点分组成员（评论人除外）。
+    """
+    ticket = _get_ticket_or_404(db, ticket_id)
+
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    snapshot = ticket.flow_snapshot if isinstance(ticket.flow_snapshot, dict) else {}
+    current_node = get_node(snapshot, ticket.current_node_key) if ticket.current_node_key else None
+    cc_user_ids = set(_resolve_cc_user_ids(db, _cc_rows(db, ticket.id)))
+    # 处理人判定与详情 can_comment 同口径：按当前待处理分组（含会签/转办后变化），而非节点配置分组
+    is_handler = bool(current_node and (_csv_group_ids(ticket) & my_groups))
+    if not (admin or ticket.created_by_id == current_user.id or is_handler or current_user.id in cc_user_ids):
+        raise HTTPException(status_code=403, detail="仅发起人、处理人、抄送人或管理员可评论")
+
+    content = sanitize_text(body.content).strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="评论内容不能为空")
+    operator_name = current_user.display_name or current_user.username
+    db.add(TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=ticket.current_node_key or "",
+        node_name=ticket.current_node_name or "",
+        group_id=ticket.current_group_id if ticket.status == "processing" else None,
+        handler_id=current_user.id,
+        handler_name=operator_name,
+        action="comment",
+        field_values={},
+        comment=content,
+    ))
+    # 通知：发起人 + 当前节点全部待处理分组成员（处理中，含会签/转办后变化），排除评论人
+    notify_ids: set[int] = set()
+    if ticket.status == "processing":
+        notify_ids.update(
+            uid for gid in _csv_group_ids(ticket) for uid in _group_member_ids(db, gid)
+        )
+    if ticket.created_by_id:
+        notify_ids.add(ticket.created_by_id)
+    notify_ids.discard(current_user.id)
+    if notify_ids:
+        _notify_user_ids(
+            db, ticket, sorted(notify_ids),
+            title=f"工单新评论：{ticket.ticket_no}",
+            content=f"{operator_name} 在工单「{ticket.title}」中评论：{content[:120]}",
+        )
+    db.commit()
+    db.refresh(ticket)
+    write_audit(
+        db, action="ticket_comment", resource_type="ticket", resource_id=ticket.id,
+        detail={"ticket_no": ticket.ticket_no, "length": len(content)},
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("工单评论: id=%s no=%s, operator=%s", ticket.id, ticket.ticket_no, current_user.username)
     return _ticket_detail(db, ticket, current_user)
 
 

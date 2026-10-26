@@ -108,22 +108,32 @@ def scan_ticket_timeouts() -> dict:
                 if not due:
                     continue
 
-                group_label = f"分组{ticket.current_group_id}"
+                # 待处理分组：并行会签=全部待签分组（CSV），旧数据回退 current_group_id
+                raw_ids = getattr(ticket, "current_group_ids", None)
+                if raw_ids:
+                    gids = [int(x) for x in str(raw_ids).split(",") if x.strip().isdigit()]
+                elif ticket.current_group_id:
+                    gids = [ticket.current_group_id]
+                else:
+                    gids = []
+                group_labels: list[str] = []
                 user_ids: set[int] = set()
-                if ticket.current_group_id:
+                for gid in gids:
                     group = (
                         db.query(TicketGroup)
-                        .filter(TicketGroup.id == ticket.current_group_id)
+                        .filter(TicketGroup.id == gid)
                         .first()
                     )
-                    if group:
-                        group_label = group.name
+                    group_labels.append(group.name if group else f"分组{gid}")
                     rows = (
                         db.query(TicketGroupMember.user_id)
-                        .filter(TicketGroupMember.group_id == ticket.current_group_id)
+                        .filter(TicketGroupMember.group_id == gid)
                         .all()
                     )
-                    user_ids = {uid for (uid,) in rows if uid}
+                    user_ids |= {uid for (uid,) in rows if uid}
+                group_label = "、".join(group_labels) or (
+                    "无分组" if ticket.current_group_id is None else f"分组{ticket.current_group_id}"
+                )
                 # 精确投递给当前处理分组成员（不走通知规则路由，
                 # 避免未配置规则时回退全员广播打扰无关人员）
                 if not user_ids:

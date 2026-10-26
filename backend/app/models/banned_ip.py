@@ -1,8 +1,8 @@
 """已封禁 IP 记录模型。
 
 存储被封禁的 IP 信息，包括封禁等级、时长、过期时间、地区、违规次数等。
-供 IP 风险研判智能体的 query_banned_ip / record_ban 工具使用，
-以及前端「已封禁 IP」页面展示。
+供 IP 风险研判智能体的 query_banned_ip 工具读取；写入方为封禁工作台与
+工单流转的封禁同步（ban_sync），以及前端「已封禁 IP」页面展示。
 """
 from sqlalchemy import Column, DateTime, Integer, String, Text
 

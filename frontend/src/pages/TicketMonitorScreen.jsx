@@ -7,14 +7,14 @@
 // 七个分区（代码内以注释分隔）：
 //   ① 顶部：标题栏 + 核心 KPI 总览
 //   ② 左上：工单趋势分析（近 24 小时 / 7 天 / 30 天，新增 vs 关闭）
-//   ③ 左下：事件类型与等级分布（类型/来源环形 + 严重度×状态堆叠条形）
+//   ③ 左下：事件类型与等级分布（类型环形 + 严重度×状态堆叠条形）
 //   ④ 中央：处置状态流转图（流光连线）+ 最新工单实时列表
 //   ⑤ 右上：SLA 时效分析（达标率仪表 + 响应/解决时长 + 超时率）
-//   ⑥ 右下：团队效能分析（各处理分组处理量 / 当前待办）
+//   ⑥ 右下：来源平台统计（各平台 工单总量 / 今日新增 / 待处理 / 处理中 / 已解决）
 //   ⑦ 底部：最新工单滚动明细（跑马灯）
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { AlertTriangle, Activity, TimerReset, Users } from 'lucide-react'
+import { AlertTriangle, Activity, Layers, TimerReset } from 'lucide-react'
 import { ticketApi } from '../api/tickets'
 
 // ============ 主题常量（参考大屏风格：深蓝黑底 + 灰蓝科技蓝 + 橙色强调 + 青色装饰） ============
@@ -260,8 +260,8 @@ const SEG_LABEL = {
   fontFamily: 'monospace', formatter: (p) => (p.value > 0 ? p.value : ''),
 }
 
-// 分布模块视图 Tab：告警类型 / 来源平台 / 严重度×状态
-const DIST_TABS = [['type', '告警类型'], ['platform', '来源平台'], ['sev', '严重度×状态']]
+// 分布模块视图 Tab：告警类型 / 严重度×状态
+const DIST_TABS = [['type', '告警类型'], ['sev', '严重度×状态']]
 
 function DistPanel({ dist, severityStatus }) {
   const [tab, setTab] = useState('type')
@@ -332,7 +332,7 @@ function DistPanel({ dist, severityStatus }) {
       {tab === 'sev' ? (
         <ReactECharts key="sev" option={stackOption} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }} />
       ) : (
-        <ReactECharts key={tab} option={pieOption(tab === 'type' ? dist?.type : dist?.platform)} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }} />
+        <ReactECharts key={tab} option={pieOption(dist?.type)} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }} />
       )}
     </Panel>
   )
@@ -586,43 +586,62 @@ function SlaPanel({ sla }) {
   )
 }
 
-// ============ ⑥ 右下：团队效能分析 ============
-function GroupPanel({ groups }) {
-  const rows = groups || []
-  const option = useMemo(() => ({
-    ...CHART_BASE,
-    grid: { left: 96, right: 40, top: 30, bottom: 10 },
-    legend: {
-      data: ['累计处理量', '当前待办'], top: 0, itemWidth: 12, itemHeight: 8,
-      textStyle: { color: C.subText, fontSize: 11 },
-    },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 12 } },
-    xAxis: { type: 'value', minInterval: 1, name: '件', nameTextStyle: { color: C.subText, fontSize: 11 }, splitLine: { lineStyle: { color: C.split } }, ...axisStyle() },
-    yAxis: {
-      type: 'category', inverse: true,
-      data: rows.length ? rows.map((g) => g.name) : ['--'],
-      ...axisStyle({ fontSize: 12 }),
-    },
-    series: [
-      {
-        name: '累计处理量', type: 'bar', barWidth: 10,
-        itemStyle: { borderRadius: 2, color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [
-          { offset: 0, color: C.techBlue }, { offset: 1, color: C.paleBlue }] } },
-        label: { show: true, position: 'right', color: C.text, fontSize: 11, fontFamily: 'monospace' },
-        data: rows.length ? rows.map((g) => g.handled) : [],
-      },
-      {
-        name: '当前待办', type: 'bar', barWidth: 10,
-        itemStyle: { borderRadius: 2, color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0, colorStops: [
-          { offset: 0, color: C.accent }, { offset: 1, color: '#F2A06A' }] } },
-        label: { show: true, position: 'right', color: C.text, fontSize: 11, fontFamily: 'monospace' },
-        data: rows.length ? rows.map((g) => g.pending) : [],
-      },
-    ],
-  }), [rows])
+// ============ ⑥ 右下：来源平台统计（各平台 工单总量 / 今日新增 / 待处理 / 处理中 / 已解决） ============
+// 列定义：字段 / 表头 / 列宽 / 数值颜色 / 表头 tooltip
+// 口径与顶部 KPI 一致：待处理=进行中工单，处理中=今日有提交流转且仍在处理中
+const PLATFORM_COLS = [
+  ['total', '工单总量', 58, C.lightBlue, ''],
+  ['today_new', '今日新增', 52, C.paleBlue, ''],
+  ['pending', '待处理', 46, C.orange, '状态为处理中的工单'],
+  ['processing_active', '处理中', 46, C.techBlue, '今日有提交流转且仍在处理中'],
+  ['completed', '已解决', 46, C.green, ''],
+]
+
+// 数值千位分隔；null/undefined 显示 --
+const fmtInt = (n) => (n === null || n === undefined ? '--' : (n || 0).toLocaleString('en-US'))
+
+// 统计表：数值列右对齐等宽字体，零值置灰；平台较多时滚动
+function PlatformStatsTable({ rows }) {
+  const list = rows || []
   return (
-    <Panel title="团队效能分析" subtitle="TEAM PERFORMANCE" icon={Users} className="h-[376px]" bodyClassName="px-2 py-1">
-      <ReactECharts option={option} notMerge style={{ height: '100%' }} />
+    <div className="flex h-full flex-col">
+      {/* 表头 */}
+      <div className="flex shrink-0 items-center gap-2 px-2 pb-1.5 text-[11px]" style={{ color: C.subText }}>
+        <span className="min-w-0 flex-1 truncate">来源平台</span>
+        {PLATFORM_COLS.map(([key, label, w, , tip]) => (
+          <span key={key} className="shrink-0 text-right" style={{ width: w }} title={tip || undefined}>{label}</span>
+        ))}
+      </div>
+      {/* 数据行 */}
+      <div className="platform-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1">
+        {list.length === 0 && (
+          <div className="flex flex-1 items-center justify-center text-[13px]" style={{ color: C.subText }}>暂无数据</div>
+        )}
+        {list.map((r) => (
+          <div key={r.name}
+            className="flex shrink-0 items-center gap-2 rounded border px-2 py-[7px] text-[12px] transition"
+            style={{ borderColor: 'rgba(96,138,188,0.18)', background: 'rgba(18,34,52,0.45)' }}>
+            <span className="min-w-0 flex-1 truncate font-medium" style={{ color: C.text }} title={r.name}>{r.name}</span>
+            {PLATFORM_COLS.map(([key, , w, color]) => {
+              const v = r[key] ?? 0
+              return (
+                <span key={key} className="shrink-0 text-right font-mono tabular-nums"
+                  style={{ width: w, color: v > 0 ? color : 'rgba(147,166,184,0.45)' }}>
+                  {fmtInt(v)}
+                </span>
+              )
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PlatformPanel({ rows }) {
+  return (
+    <Panel title="来源平台统计" subtitle="PLATFORM STATISTICS" icon={Layers} className="h-[376px]" bodyClassName="px-3 py-2">
+      <PlatformStatsTable rows={rows} />
     </Panel>
   )
 }
@@ -741,6 +760,10 @@ export default function TicketMonitorScreen() {
         .row-enter { animation: rowEnter 0.5s ease-out; }
         @keyframes marqueeEnter { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
         .marquee-enter { animation: marqueeEnter 0.8s ease-out; }
+        /* 来源平台统计表滚动条（细条深色，与大屏风格一致） */
+        .platform-scroll::-webkit-scrollbar { width: 4px; }
+        .platform-scroll::-webkit-scrollbar-thumb { background: rgba(96,138,188,0.35); border-radius: 2px; }
+        .platform-scroll::-webkit-scrollbar-track { background: transparent; }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .screen-fade { animation: fadeIn 0.6s ease-out; }
         /* 系统开启"减少动态效果"时关闭装饰动画 */
@@ -791,8 +814,8 @@ export default function TicketMonitorScreen() {
           <div className="flex w-[470px] shrink-0 flex-col gap-3">
             {/* ⑤ SLA 时效分析 */}
             <SlaPanel sla={stats?.sla} />
-            {/* ⑥ 团队效能分析 */}
-            <GroupPanel groups={stats?.groups} />
+            {/* ⑥ 来源平台统计 */}
+            <PlatformPanel rows={stats?.platform_stats} />
           </div>
         </div>
 

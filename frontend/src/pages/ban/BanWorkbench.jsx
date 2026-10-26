@@ -21,8 +21,8 @@ const STATUS_VARIANT = {
   active: 'danger', pending_approval: 'warning', expired: 'neutral', unbanned: 'neutral', cancelled: 'neutral',
 }
 const LEVEL_LABELS = { critical: '严重', high: '高', medium: '中', low: '低' }
-// 封禁来源徽章：自动（工作流直接封禁）/ 审批（人工确认后封禁）/ 手动（工作台发起）/ 聊天（智能体聊天发起）
-const SOURCE_VARIANT = { auto: 'danger', approval: 'warning', manual: 'info', chat: 'secondary' }
+// 封禁来源徽章：自动（工作流直接封禁）/ 审批（人工确认后封禁）/ 手动（工作台发起）/ 聊天（智能体聊天发起）/ 工单（工单流转同步）
+const SOURCE_VARIANT = { auto: 'danger', approval: 'warning', manual: 'info', chat: 'secondary', ticket: 'primary' }
 const DURATION_OPTIONS = [
   { v: 1800, label: '30 分钟' }, { v: 3600, label: '1 小时' }, { v: 21600, label: '6 小时' },
   { v: 43200, label: '12 小时' }, { v: 86400, label: '1 天' }, { v: 604800, label: '7 天' },
@@ -169,14 +169,18 @@ export default function BanWorkbench({ embedded = false }) {
       key: 'ban_source', header: '封禁方式', width: '95px',
       render: (r) => <Badge variant={SOURCE_VARIANT[r.ban_source] || 'neutral'}>{r.ban_source_label || r.ban_source || '--'}</Badge>,
     },
+    {
+      key: 'ban_device', header: '封禁设备', width: '110px',
+      render: (r) => <span className="block max-w-[100px] truncate text-muted-foreground" title={r.ban_device}>{r.ban_device || '--'}</span>,
+    },
     { key: 'status', header: '当前状态', width: '95px', render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status_label}</Badge> },
     { key: 'ban_level', header: '封禁等级', width: '85px', render: (r) => <span>{LEVEL_LABELS[r.ban_level] || r.ban_level || '--'}</span> },
     {
       key: 'reason', header: '封禁原因', width: '210px',
       render: (r) => <span className="block max-w-[200px] truncate text-muted-foreground" title={r.reason}>{r.reason || '--'}</span>,
     },
-    { key: 'created_at', header: '封禁时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
-    { key: 'expire_time', header: '到期时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
+    { key: 'created_at', header: '开始封禁时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
+    { key: 'expire_time', header: '解封时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
     {
       key: 'remaining', header: '剩余时长', width: '100px',
       render: (r) => (
@@ -270,8 +274,24 @@ export default function BanWorkbench({ embedded = false }) {
               <div><span className="text-muted-foreground">封禁方式：</span><Badge variant={SOURCE_VARIANT[t.ban_source] || 'neutral'}>{t.ban_source_label || t.ban_source || '--'}</Badge></div>
               <div><span className="text-muted-foreground">风险等级：</span><Badge variant={riskVariant(t.risk_level)}>{t.risk_level || '未知'}</Badge></div>
               <div><span className="text-muted-foreground">封禁等级：</span>{LEVEL_LABELS[t.ban_level] || t.ban_level || '--'}</div>
-              <div><span className="text-muted-foreground">封禁时间：</span><span className="font-mono text-xs">{fmtTime(t.created_at)}</span></div>
-              <div><span className="text-muted-foreground">到期时间：</span><span className="font-mono text-xs">{t.is_permanent ? '永久' : fmtTime(t.expire_time)}</span></div>
+              <div><span className="text-muted-foreground">开始封禁时间：</span><span className="font-mono text-xs">{fmtTime(t.created_at)}</span></div>
+              <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs">{t.is_permanent ? '永久' : fmtTime(t.expire_time)}</span></div>
+              <div><span className="text-muted-foreground">封禁设备：</span>{t.ban_device || '--'}</div>
+              {t.ticket_id && (
+                <div>
+                  <span className="text-muted-foreground">来源工单：</span>
+                  <button
+                    className="inline-flex items-center gap-1 text-primary transition hover:underline"
+                    onClick={() => {
+                      if (!guardNavPermission('ticket', 'view', '工单详情')) return
+                      setDetail(null) // 先关详情弹窗再跳转，保证点击必有反馈
+                      navigate(`/tickets/${t.ticket_id}`)
+                    }}
+                  >
+                    <ExternalLink className="h-3 w-3" /> {t.ticket_no || `#${t.ticket_id}`}
+                  </button>
+                </div>
+              )}
               <div><span className="text-muted-foreground">剩余时长：</span>{t.is_permanent ? '永久' : fmtRemaining(t.remaining_ms)}</div>
               <div><span className="text-muted-foreground">封禁工具记录：</span><span className="font-mono text-xs">{t.record_id || '--'}</span></div>
               {t.unban_time && <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs">{fmtTime(t.unban_time)}</span></div>}

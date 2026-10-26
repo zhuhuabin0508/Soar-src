@@ -200,7 +200,6 @@ _JUDGMENT_CORE_TOOL_NAMES = frozenset({
     "check_whitelist",
     "check_subnet",
     "query_banned_ip",
-    "record_ban",
     "calculate_ban_duration",
     "block_ip_on_firewall",
 })

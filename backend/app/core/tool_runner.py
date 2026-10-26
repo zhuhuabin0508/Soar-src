@@ -784,7 +784,9 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
     except ImportError:  # pragma: no cover
         logger.debug("discovery_search 未安装，工具命名空间不注入 run_search_discovered_assets")
 
-    # 数据库访问注入：允许工具查询/写入已封禁 IP 表（query_banned_ip / record_ban 等）
+    # 数据库访问注入：允许工具查询已封禁 IP 表（query_banned_ip 等只读场景）
+    # 注意：智能体只做研判与建议，不提供任何写入封禁记录的能力（record_ban 已禁用，
+    # record_chat_ban 注入已移除），封禁一律由人工在工作台/工单流转中执行。
     # 同时注入 KnowledgeBase / KnowledgeSegment，供 get_asset_info 查询知识库名称和精确 IP 匹配
     # 注入 Asset 供资产管理智能体的 query_asset / add_asset / update_asset 等工具读写资产表
     # 注入 Device / DeviceAction 供 query_device_actions 等设备对接工具查询设备与动作清单
@@ -804,41 +806,6 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["Asset"] = Asset
         namespace["Device"] = Device
         namespace["DeviceAction"] = DeviceAction
-
-        # 供 record_ban 工具调用：把智能体聊天发起的封禁也同步写入封禁记录表（ban_source=chat），
-        # 使「人工通过智能体聊天封禁」与工作流/手动封禁统一展示在工作台封禁记录中。
-        def record_chat_ban(ip, ban_level, ban_duration, is_permanent, expire_time, reason, region):
-            """在封禁记录表记录一次聊天封禁；IP 已有 active 记录则不重复创建。"""
-            s = SessionLocal()
-            try:
-                existing = (
-                    s.query(BanRecord)
-                    .filter(BanRecord.ip == ip, BanRecord.status == "active")
-                    .first()
-                )
-                if existing:
-                    return {"ok": True, "ip": ip, "action": "skipped", "why": "active record exists"}
-                rec = BanRecord(
-                    ip=ip,
-                    ban_level=ban_level,
-                    ban_duration=ban_duration if not is_permanent else 0,
-                    is_permanent=is_permanent,
-                    expire_time=expire_time,
-                    reason=reason or "智能体聊天发起封禁",
-                    region=region or "",
-                    ban_source="chat",
-                    status="active",
-                )
-                s.add(rec)
-                s.commit()
-                return {"ok": True, "ip": ip, "action": "created"}
-            except Exception as exc:  # noqa: BLE001
-                s.rollback()
-                return {"ok": False, "error": str(exc)}
-            finally:
-                s.close()
-
-        namespace["record_chat_ban"] = record_chat_ban
     except ImportError:  # pragma: no cover
         logger.debug("数据库模块未安装，工具命名空间不注入 SessionLocal/BannedIP/BanRecord/KnowledgeBase/Asset")
     # 当前智能体 ID：供资产工具按 agent_id 作用域过滤（agent_id+identifier 去重）

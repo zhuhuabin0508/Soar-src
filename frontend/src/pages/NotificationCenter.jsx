@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Megaphone, AlertTriangle, XCircle, ExternalLink, Settings2 } from 'lucide-react'
-import { notificationsApi } from '../api/notifications'
+import {
+  Bell, Megaphone, AlertTriangle, XCircle, ExternalLink, Settings2,
+  Activity, ShieldAlert, RefreshCw, MessageSquare, Clock, Ticket,
+} from 'lucide-react'
+import { notificationsApi, notificationRulesApi } from '../api/notifications'
 import NotificationRulesPanel from '../components/NotificationRulesPanel'
 import { EmptyState, Skeleton, CompactSelect } from '../components/ui'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
@@ -16,33 +19,49 @@ function buildNotificationLink(n) {
       execution: `/executions?focus=${n.related_id}`,
       agent: `/agents/${n.related_id}/monitor`,
       tool: `/tools?focus=${n.related_id}`,
-      knowledge_base: `/knowledge-bases?focus=${n.related_id}`,
+      knowledge_base: `/knowledge-base?focus=${n.related_id}`,
       user: `/users?focus=${n.related_id}`,
+      ticket: `/tickets/${n.related_id}`,
+      feedback: `/feedbacks/mine?focus=${n.related_id}`,
+      llm_config: `/llm-configs?focus=${n.related_id}`,
+      parse_template: `/strategies?focus=${n.related_id}`,
+      alert_rule: `/alerts?focus=${n.related_id}`,
+      log_receiver: `/receivers?focus=${n.related_id}`,
     }
     if (map[n.related_type]) return map[n.related_type]
   }
   // 按通知类型 fallback
   const typeMap = {
     announcement: '/notifications',
-    system_alert: '/system/monitor',
+    system_alert: '/system-monitor',
     execution_failed: '/executions',
+    approval_pending: '/approvals',
+    workflow_alert: '/approvals?tab=all',
+    model_alert: '/llm-configs',
+    parse_alert: '/strategies',
+    receiver_alert: '/receivers',
+    alert_high_risk: '/alerts',
+    feedback: '/feedbacks/mine',
   }
   return typeMap[n.type] || null
 }
 
-// 类型图标映射：按语义色着色（公告 info / 系统告警 warning / 执行失败 destructive）
+// 类型图标 / 语义色 / 中文标签映射（event-types 接口异常时的兜底）
 const TYPE_META = {
-  announcement: { icon: <Megaphone className="h-4 w-4" />, cls: 'bg-info/10 text-info hover:bg-info/20' },
-  system_alert: { icon: <AlertTriangle className="h-4 w-4" />, cls: 'bg-warning/10 text-warning hover:bg-warning/20' },
-  execution_failed: { icon: <XCircle className="h-4 w-4" />, cls: 'bg-destructive/10 text-destructive hover:bg-destructive/20' },
+  announcement: { icon: Megaphone, cls: 'bg-info/10 text-info hover:bg-info/20', label: '公告' },
+  system_update: { icon: RefreshCw, cls: 'bg-info/10 text-info hover:bg-info/20', label: '系统更新' },
+  system_alert: { icon: AlertTriangle, cls: 'bg-warning/10 text-warning hover:bg-warning/20', label: '系统资源告警' },
+  alert_high_risk: { icon: ShieldAlert, cls: 'bg-destructive/10 text-destructive hover:bg-destructive/20', label: '高危告警命中' },
+  receiver_alert: { icon: AlertTriangle, cls: 'bg-warning/10 text-warning hover:bg-warning/20', label: '日志接收异常' },
+  parse_alert: { icon: AlertTriangle, cls: 'bg-warning/10 text-warning hover:bg-warning/20', label: '解析成功率异常' },
+  execution_failed: { icon: XCircle, cls: 'bg-destructive/10 text-destructive hover:bg-destructive/20', label: '工作流执行失败' },
+  approval_pending: { icon: Clock, cls: 'bg-info/10 text-info hover:bg-info/20', label: '待审批提醒' },
+  workflow_alert: { icon: ShieldAlert, cls: 'bg-warning/10 text-warning hover:bg-warning/20', label: '封禁工作流告警' },
+  workflow: { icon: Activity, cls: 'bg-primary/10 text-primary hover:bg-primary/20', label: '工作流运营通知' },
+  model_alert: { icon: AlertTriangle, cls: 'bg-warning/10 text-warning hover:bg-warning/20', label: '模型健康异常' },
+  feedback: { icon: MessageSquare, cls: 'bg-info/10 text-info hover:bg-info/20', label: '反馈' },
+  ticket: { icon: Ticket, cls: 'bg-primary/10 text-primary hover:bg-primary/20', label: '工单' },
 }
-
-const TYPE_OPTIONS = [
-  { value: '', label: '全部类型' },
-  { value: 'announcement', label: '公告' },
-  { value: 'system_alert', label: '系统告警' },
-  { value: 'execution_failed', label: '执行失败' },
-]
 
 const READ_OPTIONS = [
   { value: '', label: '全部' },
@@ -51,7 +70,8 @@ const READ_OPTIONS = [
 ]
 
 function getTypeIcon(type) {
-  return TYPE_META[type]?.icon || <Bell className="h-4 w-4" />
+  const Icon = TYPE_META[type]?.icon || Bell
+  return <Icon className="h-4 w-4" />
 }
 
 // 类型图标外框语义色（rounded-full p-1.5 bg-*/10）
@@ -105,6 +125,17 @@ function NotificationCenter() {
   // 筛选条件
   const [typeFilter, setTypeFilter] = useState('')
   const [readFilter, setReadFilter] = useState('')
+  // 类型筛选选项：优先取后端 /notification-rules/event-types（与通知规则配置同源），
+  // 接口异常时回退 TYPE_META 静态清单
+  const [typeOptions, setTypeOptions] = useState(
+    [{ value: '', label: '全部类型' }].concat(
+      Object.entries(TYPE_META).map(([value, m]) => ({ value, label: m.label })),
+    ),
+  )
+  // 类型 → 中文标签（列表徽标 / 详情弹窗展示用）
+  const [typeLabels, setTypeLabels] = useState(
+    Object.fromEntries(Object.entries(TYPE_META).map(([v, m]) => [v, m.label])),
+  )
   // 操作进行中：null | 'all' | <id>
   const [actionId, setActionId] = useState(null)
   // 通知详情弹窗
@@ -131,6 +162,29 @@ function NotificationCenter() {
   useEffect(() => {
     load()
   }, [load])
+
+  // 拉取事件类型清单（与通知规则配置同源），补充工单类型后构建筛选项与标签映射
+  useEffect(() => {
+    let cancelled = false
+    notificationRulesApi
+      .eventTypes()
+      .then((res) => {
+        if (cancelled) return
+        const ets = (res?.event_types || []).filter((et) => et.value && et.value !== '*')
+        if (ets.length === 0) return
+        // 合并 TYPE_META 里的工单（不在可配置清单中，但列表会出现）
+        const merged = [...ets]
+        if (!merged.some((et) => et.value === 'ticket')) {
+          merged.push({ value: 'ticket', label: TYPE_META.ticket.label, desc: '工单通知（精确投递）', group: '工单' })
+        }
+        setTypeOptions(
+          [{ value: '', label: '全部类型' }].concat(merged.map((et) => ({ value: et.value, label: et.label }))),
+        )
+        setTypeLabels(Object.fromEntries(merged.map((et) => [et.value, et.label])))
+      })
+      .catch(() => {/* 接口异常时保留 TYPE_META 兜底 */})
+    return () => { cancelled = true }
+  }, [])
 
   // 客户端筛选（API 仅支持 limit/offset）
   const filtered = items.filter((n) => {
@@ -228,7 +282,7 @@ function NotificationCenter() {
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="min-w-0">
           <h1 className="text-[22px] font-bold tracking-tight text-foreground">通知中心</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">实时接收系统公告、系统告警与执行失败通知</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">站内通知统一收件箱；各模块事件的通知投递均可在「通知规则」中配置（工单除外）</p>
         </div>
         {tab === 'list' && (
           <button
@@ -287,7 +341,7 @@ function NotificationCenter() {
               onChange={(e) => setTypeFilter(e.target.value)}
               size="lg"
             >
-              {TYPE_OPTIONS.map((o) => (
+              {typeOptions.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
@@ -373,8 +427,8 @@ function NotificationCenter() {
                           </span>
                         )}
                         {n.type && (
-                          <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                            {n.type}
+                          <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title={n.type}>
+                            {typeLabels[n.type] || n.type}
                           </span>
                         )}
                         {hasRelated && (
@@ -485,8 +539,8 @@ function NotificationCenter() {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-base font-semibold text-foreground">{detailItem.title || '(无标题)'}</span>
                 {detailItem.type && (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {detailItem.type}
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title={detailItem.type}>
+                    {typeLabels[detailItem.type] || detailItem.type}
                   </span>
                 )}
                 {!detailItem.is_read && (

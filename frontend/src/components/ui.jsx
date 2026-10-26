@@ -726,7 +726,11 @@ export function CompactSelect({
       close()
     }
     const onKey = (e) => { if (e.key === 'Escape') close() }
-    const onScroll = () => close()
+    const onScroll = (e) => {
+      // 菜单内部滚动（选项较多时可滚动浏览）不关闭，仅外部滚动时关闭
+      if (e.target?.closest?.('[data-compact-select-menu]')) return
+      close()
+    }
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('keydown', onKey)
     document.addEventListener('scroll', onScroll, true)

@@ -43,6 +43,10 @@ REMOVED_BUILTIN_TOOLS: set[str] = {
     "qingteng_system_audit",
     "qingteng_microseg",
     "qingteng_export_all",
+    # ---- 智能体主动封禁工具（2026-10 按用户要求退役，定义已从 builtin.py 移除）----
+    # 智能体只做研判并给出建议，不主动写封禁记录；封禁一律由人工在工作台/
+    # 工单流转中执行（工单同步 ban_sync 与工作台手动封禁不受影响）
+    "record_ban",
 }
 
 LEGACY_DEPRECATED_TOOL_NAMES: set[str] = {

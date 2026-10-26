@@ -31,16 +31,30 @@ router = APIRouter(
     tags=["notification-rules"],
 )
 
-# 系统支持的事件类型清单（供前端下拉选择）
+# 系统支持的事件类型清单（供前端下拉选择）。
+# 覆盖所有走 dispatch_notification 规则路由的通知产生点（工单除外：
+# 工单通知由工单模块精确投递给处理人/抄送人，不经过通知规则）。
+# group 用于前端下拉分组展示。
 EVENT_TYPES = [
-    {"value": "feedback", "label": "反馈提交", "desc": "用户提交反馈时通知"},
-    {"value": "model_alert", "label": "模型告警", "desc": "模型健康检查异常时通知"},
-    {"value": "system_update", "label": "系统更新", "desc": "系统版本升级时通知"},
-    {"value": "announcement", "label": "公告", "desc": "管理员发布公告"},
-    {"value": "system_alert", "label": "系统告警", "desc": "系统级异常告警"},
-    {"value": "execution_failed", "label": "执行失败", "desc": "工作流执行失败时通知"},
-    {"value": "approval_pending", "label": "待审批", "desc": "产生待审批任务时通知"},
-    {"value": "*", "label": "全部事件", "desc": "匹配所有通知事件（通配）"},
+    # 系统类
+    {"value": "announcement", "label": "公告", "desc": "管理员发布公告", "group": "系统"},
+    {"value": "system_update", "label": "系统更新", "desc": "系统版本升级时通知", "group": "系统"},
+    {"value": "system_alert", "label": "系统资源告警", "desc": "CPU / 内存 / 磁盘超过阈值时通知", "group": "系统"},
+    # 告警接入类
+    {"value": "alert_high_risk", "label": "高危告警命中", "desc": "告警规则命中高危及以上告警时通知", "group": "告警接入"},
+    {"value": "receiver_alert", "label": "日志接收异常", "desc": "日志接收器收流异常时通知", "group": "告警接入"},
+    {"value": "parse_alert", "label": "解析成功率异常", "desc": "解析模板成功率低于阈值时通知", "group": "告警接入"},
+    # 工作流类
+    {"value": "execution_failed", "label": "工作流执行失败", "desc": "工作流执行失败时通知", "group": "工作流"},
+    {"value": "approval_pending", "label": "待审批提醒", "desc": "产生待审批任务时通知", "group": "工作流"},
+    {"value": "workflow_alert", "label": "封禁工作流告警", "desc": "熔断暂停 / 触发限频 / 审批超时驳回时通知", "group": "工作流"},
+    {"value": "workflow", "label": "工作流运营通知", "desc": "自动解封 / 持续监控 / 实例异常时通知", "group": "工作流"},
+    # 模型类
+    {"value": "model_alert", "label": "模型健康异常", "desc": "模型健康检查失败或恢复时通知", "group": "模型"},
+    # 反馈类
+    {"value": "feedback", "label": "反馈提交", "desc": "用户提交新反馈时通知（回复/状态通知直达提交人，不走规则）", "group": "反馈"},
+    # 通配
+    {"value": "*", "label": "全部事件", "desc": "匹配所有通知事件（通配）", "group": "通用"},
 ]
 
 

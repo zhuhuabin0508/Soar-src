@@ -402,7 +402,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "description": (
             "查询某个 IP 是否已被封禁，返回其封禁状态、等级、时长、过期时间、违规次数等。"
             "在封禁工作流中应先调用此工具判断是否已封禁，避免重复处置。"
-            "数据来自 BannedIP 表（由 record_ban 工具写入，前端「已封禁 IP」页面展示）。"
+            "数据来自 BannedIP 表（封禁工作台与工单封禁同步写入，前端「已封禁 IP」页面展示）。"
         ),
         "parameters_schema": [
             {"name": "ip", "type": "String", "required": True, "description": "待查询的 IP 地址"},
@@ -449,7 +449,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "依据地域（深圳/国内非深圳/境外）与违规次数，按规则矩阵计算封禁等级与时长。"
             "规则：深圳[首次3天/二次7天/三次30天]；国内非深圳[首次7天/二次30天/三次365天]；"
             "境外[首次30天/二次365天/三次永久]。确认为 C2服务器/勒索软件通信/APT攻击时直接永久封禁。"
-            "返回等级、时长、是否永久、过期时间，供 record_ban 使用。"
+            "返回等级、时长、是否永久、过期时间，供封禁处置决策使用。"
         ),
         "parameters_schema": [
             {"name": "region", "type": "String", "required": True, "description": "IP 归属地（含'深圳'/'中国'/'境外'等关键字，用于地域分类）"},
@@ -525,95 +525,6 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "        'offense': offense,\n"
             "        'violation_count': violation_count,\n"
             "    }\n"
-        ),
-        "tool_type": "code",
-        "category": "security",
-        "enabled": True,
-    },
-    {
-        "name": "record_ban",
-        "description": (
-            "将封禁处置结果写入数据库（BannedIP 表）。若该 IP 已有记录则累加违规次数并更新封禁信息，"
-            "否则新建记录。写入后可由 block_ip_on_firewall 工具执行实际封禁，前端「已封禁 IP」页面会展示该记录。"
-        ),
-        "parameters_schema": [
-            {"name": "ip", "type": "String", "required": True, "description": "待封禁的 IP 地址"},
-            {"name": "ban_level", "type": "String", "required": True, "description": "封禁等级：low/medium/high/serious（由 calculate_ban_duration 计算）"},
-            {"name": "ban_duration", "type": "Number", "required": True, "description": "封禁时长（秒，永久封禁时传 0，由 calculate_ban_duration 计算）"},
-            {"name": "is_permanent", "type": "Boolean", "required": False, "description": "是否永久封禁（由 calculate_ban_duration 判定，True 时忽略 ban_duration 并将过期时间设为 9999-12-31）"},
-            {"name": "reason", "type": "String", "required": False, "description": "封禁原因说明"},
-            {"name": "region", "type": "String", "required": False, "description": "IP 归属地区（可选）"},
-        ],
-        "code": (
-            "async def run(**kwargs):\n"
-            "    ip = kwargs.get('ip') or ''\n"
-            "    if not ip:\n"
-            "        return {'error': '请提供 ip 参数'}\n"
-            "    ban_level = kwargs.get('ban_level') or 'medium'\n"
-            "    ban_duration = int(kwargs.get('ban_duration') or 0)\n"
-            "    is_permanent = bool(kwargs.get('is_permanent', False))\n"
-            "    reason = kwargs.get('reason') or ''\n"
-            "    region = kwargs.get('region') or ''\n"
-            "    # 计算过期时间：永久封禁用 9999-12-31，否则按 ban_duration 计算\n"
-            "    if is_permanent or ban_duration <= 0:\n"
-            "        expired_at = datetime(9999, 12, 31, 23, 59, 59)\n"
-            "        ban_duration = 0\n"
-            "        is_permanent = True\n"
-            "    else:\n"
-            "        expired_at = datetime.utcnow() + timedelta(hours=8, seconds=ban_duration)\n"
-            "    db = SessionLocal()\n"
-            "    try:\n"
-            "        existing = db.query(BannedIP).filter(BannedIP.ip == ip).first()\n"
-            "        if existing:\n"
-            "            # 已有记录：累加违规次数，更新封禁信息\n"
-            "            existing.violation_count = (existing.violation_count or 0) + 1\n"
-            "            existing.ban_level = ban_level\n"
-            "            existing.ban_duration = ban_duration\n"
-            "            existing.expired_at = expired_at\n"
-            "            if region:\n"
-            "                existing.region = region\n"
-            "            existing.reason = reason\n"
-            "            existing.status = 'active'\n"
-            "            db.commit()\n"
-            "            # 同步写入封禁记录表（ban_source=chat），工作台统一展示聊天封禁\n"
-            "            try:\n"
-            "                record_chat_ban(ip, ban_level, ban_duration, is_permanent, expired_at, reason, region)\n"
-            "            except Exception:\n"
-            "                pass\n"
-            "            return {\n"
-            "                'ok': True, 'ip': ip, 'action': 'updated',\n"
-            "                'ban_level': ban_level, 'ban_duration': ban_duration,\n"
-            "                'is_permanent': is_permanent,\n"
-            "                'violation_count': existing.violation_count,\n"
-            "            }\n"
-            "        # 新记录\n"
-            "        record = BannedIP(\n"
-            "            ip=ip,\n"
-            "            ban_level=ban_level,\n"
-            "            ban_duration=ban_duration,\n"
-            "            expired_at=expired_at,\n"
-            "            region=region,\n"
-            "            violation_count=1,\n"
-            "            reason=reason,\n"
-            "            status='active',\n"
-            "        )\n"
-            "        db.add(record)\n"
-            "        db.commit()\n"
-            "        # 同步写入封禁记录表（ban_source=chat），工作台统一展示聊天封禁\n"
-            "        try:\n"
-            "            record_chat_ban(ip, ban_level, ban_duration, is_permanent, expired_at, reason, region)\n"
-            "        except Exception:\n"
-            "            pass\n"
-            "        return {\n"
-            "            'ok': True, 'ip': ip, 'action': 'created',\n"
-            "            'ban_level': ban_level, 'ban_duration': ban_duration,\n"
-            "            'is_permanent': is_permanent,\n"
-            "        }\n"
-            "    except Exception as exc:\n"
-            "        db.rollback()\n"
-            "        return {'error': f'记录封禁失败: {exc}'}\n"
-            "    finally:\n"
-            "        db.close()\n"
         ),
         "tool_type": "code",
         "category": "security",

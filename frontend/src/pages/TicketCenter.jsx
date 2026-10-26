@@ -1,11 +1,11 @@
 // 工单中心：工单列表（待我处理/我发起/我处理过/全部）+ 发起工单弹窗
 // - 发起弹窗：选择已发布流程 → 按首节点字段定义动态渲染表单 → 提交后跳转详情
 // - 告警一键发起：从告警列表跳转携带 state.alertPrefill，自动选中流程并按映射预填字段
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   TicketCheck, Plus, Search, Paperclip, X, Eye, Rocket, ChevronRight, Archive, ArchiveRestore, Monitor, Trash2,
-  RefreshCw, AlertTriangle,
+  RefreshCw, AlertTriangle, Download, Zap, Lightbulb,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -14,7 +14,7 @@ import { inputCls, inputBaseCls, labelCls, hintCls } from '../components/propert
 import { Button, PageContainer, DataTable, Pagination, CompactSelect, DatePicker } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
-import { evalRoutes, FIELD_TYPE_LABELS } from '../utils/ticketFlow'
+import { evalRoutes, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
 
@@ -50,18 +50,25 @@ export default function TicketCenter() {
   const canMonitor = hasPermission('ticket_monitor', 'view')
   const navigate = useNavigate()
   const location = useLocation()
+  // 筛选条件 URL 持久化：初始化读参数，变更时写回（刷新/分享不丢）
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  const [view, setView] = useState('my_pending')
+  const [view, setView] = useState(() => {
+    const v = searchParams.get('view')
+    return VIEWS.some((x) => x.key === v) ? v : 'my_pending'
+  })
   const [list, setList] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [size, setSize] = useState(20)
   const [loading, setLoading] = useState(false)
-  const [status, setStatus] = useState('')
-  const [priority, setPriority] = useState('')
-  const [keyword, setKeyword] = useState('')
-  const [searchKw, setSearchKw] = useState('')
+  const [status, setStatus] = useState(() => searchParams.get('status') || '')
+  const [priority, setPriority] = useState(() => searchParams.get('priority') || '')
+  const [keyword, setKeyword] = useState(() => searchParams.get('q') || '')
+  const [searchKw, setSearchKw] = useState(() => searchParams.get('q') || '')
   const [deletingId, setDeletingId] = useState(null)
+  const [urgingId, setUrgingId] = useState(null)
+  const [exporting, setExporting] = useState(false)
 
   // 发起弹窗
   const [createOpen, setCreateOpen] = useState(false)
@@ -78,6 +85,26 @@ export default function TicketCenter() {
   // 发起时追加抄送（模板固定抄送之外手动加）
   const [extraCc, setExtraCc] = useState([])
   const [ccPickerOpen, setCcPickerOpen] = useState(false)
+  // 相似工单推荐（发起弹窗内，流程选定且有关键字段值后防抖查询）
+  const [similar, setSimilar] = useState(null)
+
+  // 相似工单：800ms 防抖按首节点字段值匹配同流程已完成工单（静默失败不阻塞发起）
+  // 请求序号守卫：防抖只清定时器，已发出的旧请求返回时不得覆盖新流程/新字段值的展示
+  const similarReqSeq = useRef(0)
+  useEffect(() => {
+    const seq = ++similarReqSeq.current // 每次参数变化均使在途旧请求失效
+    if (!createOpen || !flowId) { setSimilar(null); return undefined }
+    const filled = Object.entries(values).some(
+      ([, v]) => v !== '' && v !== undefined && v !== null && v !== false,
+    )
+    if (!filled) { setSimilar(null); return undefined }
+    const timer = setTimeout(() => {
+      ticketApi.similarTickets({ flow_id: Number(flowId), field_values: values })
+        .then((res) => { if (similarReqSeq.current === seq) setSimilar(res.items || []) })
+        .catch(() => {})
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [createOpen, flowId, values])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -93,6 +120,17 @@ export default function TicketCenter() {
   }, [view, status, priority, searchKw, page, size])
 
   useEffect(() => { load() }, [load])
+
+  // 筛选条件写回 URL（replace 不产生历史记录；分享链接可还原视图与筛选）
+  useEffect(() => {
+    const p = {}
+    if (view !== 'my_pending') p.view = view
+    if (status) p.status = status
+    if (priority) p.priority = priority
+    if (searchKw) p.q = searchKw
+    setSearchParams(p, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, status, priority, searchKw])
 
   // 告警一键发起：携带 state.alertPrefill 自动打开发起弹窗并预填
   useEffect(() => {
@@ -120,6 +158,7 @@ export default function TicketCenter() {
     setRouteTo('')
     setComment('')
     setExtraCc([])
+    setMissingKeys([]) // 清掉上次校验失败的红框标记，避免重开弹窗残留
     ticketApi.flowOptions()
       .then((res) => {
         const opts = (res.items || []).filter((f) => f.can_initiate)
@@ -130,11 +169,11 @@ export default function TicketCenter() {
       .catch((e) => toast.error(e.message || '加载流程失败'))
   }
 
-  // 选择流程：初始化首节点字段值（告警预填按映射）
+  // 选择流程：初始化首节点字段值（含匹配规则下的扩展字段 default；告警预填按映射）
   const selectFlow = (f, prefill = null) => {
     setFlowId(f.id)
     const init = {}
-    ;(f.first_node?.fields || []).forEach((fd) => {
+    flatFieldDefs(f.first_node?.fields).forEach((fd) => {
       let v = fd.default ?? ''
       if (prefill && fd.alert_field_mapping) {
         const mapped = prefill.alert?.[fd.alert_field_mapping]
@@ -150,8 +189,26 @@ export default function TicketCenter() {
 
   const currentFlow = flows.find((f) => f.id === Number(flowId))
   const currentFields = currentFlow?.first_node?.fields || []
+  // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
+  const renderFields = useMemo(() => {
+    const out = []
+    for (const f of currentFields) {
+      out.push({ field: f, ext: false })
+      matchedRuleFields(f, values[f.key]).forEach((rf) => out.push({ field: rf, ext: true }))
+    }
+    return out
+  }, [currentFields, values])
   const { options: routeOptions, suggested: routeSuggested } = useMemo(
     () => evalRoutes(currentFlow?.first_node?.routes, values),
+    [currentFlow, values],
+  )
+
+  // 引用联动字段选项：发起表单仅有本次填写值（与后端 create_ticket 口径一致）
+  const refOpts = useMemo(
+    () => collectRefOptions(
+      { nodes: currentFlow?.first_node ? [currentFlow.first_node] : [] },
+      [{ field_values: values }],
+    ),
     [currentFlow, values],
   )
 
@@ -193,21 +250,23 @@ export default function TicketCenter() {
       document.querySelector('[data-fkey="__title"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
-    const missing = currentFields.filter((f) => f.required
+    const missing = renderFields.filter(({ field: f }) => f.required
       && (values[f.key] === undefined || values[f.key] === null || values[f.key] === ''))
     if (missing.length) {
-      setMissingKeys(missing.map((f) => f.key))
-      toast.error(`请填写必填字段：${missing.map((f) => f.label).join('、')}`)
-      document.querySelector(`[data-fkey="${missing[0].key}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setMissingKeys(missing.map(({ field: f }) => f.key))
+      toast.error(`请填写必填字段：${missing.map(({ field: f }) => f.label).join('、')}`)
+      document.querySelector(`[data-fkey="${missing[0].field.key}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
+    // 未命中规则的扩展字段的值不提交
+    const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
     if (routeOptions.length > 1 && !routeTo) return toast.error('请选择流转去向')
     setCreating(true)
     ticketApi.createTicket({
       flow_id: Number(flowId),
       title: title.trim(),
       priority: ticketPriority,
-      field_values: values,
+      field_values: submitValues,
       route_to: routeTo || (routeSuggested || ''),
       comment: comment.trim() || null,
       related_alert_id: alertPrefill?.alert?.id || null,
@@ -263,6 +322,28 @@ export default function TicketCenter() {
 
   const fmtTime = (v) => (v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '--')
 
+  // 催办：通知当前节点处理分组（30 分钟限频由服务端校验）
+  const handleUrge = (r) => {
+    setUrgingId(r.id)
+    ticketApi.urgeTicket(r.id)
+      .then(() => toast.success(`已向「${r.current_group_name || '当前处理分组'}」发送催办提醒：${r.ticket_no}`))
+      .catch((e) => toast.error(e.message || '催办失败'))
+      .finally(() => setUrgingId(null))
+  }
+
+  // 导出：按当前视图与筛选条件导出 CSV（Excel 可直接打开）
+  const handleExport = () => {
+    setExporting(true)
+    ticketApi.exportTickets({
+      view: view === 'archived' ? 'all' : view,
+      archived: view === 'archived' ? 'only' : 'exclude',
+      status, priority, q: searchKw,
+    })
+      .then(() => toast.success('工单导出已开始下载'))
+      .catch((e) => toast.error(e.message || '导出失败'))
+      .finally(() => setExporting(false))
+  }
+
   // 状态指标条统计：从当前列表派生（不新增请求）
   const listStats = useMemo(() => {
     const s = { processing: 0, completed: 0, cancelled: 0, critical: 0 }
@@ -305,6 +386,24 @@ export default function TicketCenter() {
       },
     },
     {
+      // SLA 剩余倒计时（处理中工单）：超时红色高亮，未配目标显示 --
+      key: 'sla', header: 'SLA', width: '110px',
+      render: (r) => {
+        if (r.status !== 'processing' || !r.sla_text) {
+          return <span className="text-xs text-muted-foreground" title="按优先级 SLA 目标（响应/解决时限）计算，未配置目标或已完结">--</span>
+        }
+        return r.sla_overdue ? (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-1 text-xs font-medium text-red-500"
+            title="SLA 已超时（按优先级目标：响应=发起→首次提交，解决=创建→关闭）">
+            <AlertTriangle className="h-3 w-3" />{r.sla_text}
+          </span>
+        ) : (
+          <span className="whitespace-nowrap tabular-nums text-xs text-muted-foreground"
+            title="SLA 剩余时间（未响应按响应目标，已响应按解决目标）">{r.sla_text}</span>
+        )
+      },
+    },
+    {
       key: 'status', header: '状态', width: '110px',
       render: (r) => {
         const m = STATUS_META[r.status] || { label: r.status || '--', cls: 'bg-muted text-muted-foreground' }
@@ -326,13 +425,19 @@ export default function TicketCenter() {
       render: (r) => <span className="tabular-nums text-muted-foreground" title={fmtTime(r.created_at)}>{fmtTime(r.created_at)}</span>,
     },
     {
-      key: 'actions', header: '操作', width: '270px',
+      key: 'actions', header: '操作', width: '320px',
       render: (r) => (
         <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
           <button onClick={(e) => { e.stopPropagation(); navigate(`/tickets/${r.id}`) }}
             className="btn-secondary btn-sm" title="查看工单详情">
             <Eye className="h-3 w-3" />详情
           </button>
+          {r.status === 'processing' && r.can_urge && (
+            <button onClick={(e) => { e.stopPropagation(); handleUrge(r) }} disabled={urgingId === r.id}
+              className="btn-secondary btn-sm" title="催办当前节点处理分组（30 分钟内仅可催办一次）">
+              <Zap className="h-3 w-3" />{urgingId === r.id ? '催办中' : '催办'}
+            </button>
+          )}
           {canDelete && r.archived && (
             <button onClick={(e) => { e.stopPropagation(); handleUnarchive(r) }}
               className="btn-secondary btn-sm" title="取消归档，恢复在默认列表展示">
@@ -379,6 +484,10 @@ export default function TicketCenter() {
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新工单列表">
             <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
           </button>
+          <button type="button" onClick={handleExport} disabled={exporting || loading} className="btn-secondary btn-sm"
+            title="按当前视图与筛选条件导出 CSV（UTF-8 BOM，Excel 可直接打开）">
+            <Download className="mr-1 h-3.5 w-3.5" />{exporting ? '导出中' : '导出'}
+          </button>
           {canEdit && (
             <Button variant="primary" size="sm" onClick={openCreate}>
               <Plus className="mr-1 h-3.5 w-3.5" />发起工单
@@ -404,13 +513,13 @@ export default function TicketCenter() {
 
       {/* 筛选行 */}
       <div className="mb-4 mt-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card px-4 py-2.5">
-        <CompactSelect size="lg" block className="w-28" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
+        <CompactSelect size="lg" block className="w-32" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
           <option value="">全部状态</option>
           <option value="processing">进行中</option>
           <option value="completed">已完成</option>
           <option value="cancelled">已取消</option>
         </CompactSelect>
-        <CompactSelect size="lg" block className="w-28" value={priority} onChange={(e) => { setPriority(e.target.value); setPage(1) }}>
+        <CompactSelect size="lg" block className="w-32" value={priority} onChange={(e) => { setPriority(e.target.value); setPage(1) }}>
           <option value="">全部优先级</option>
           <option value="low">低</option>
           <option value="medium">中</option>
@@ -570,8 +679,9 @@ export default function TicketCenter() {
                 {currentFlow.first_node?.name || '发起节点'} · 填写字段
               </div>
               <div className="grid grid-cols-2 gap-4 p-4">
-                {currentFields.map((f) => (
-                  <div key={`${currentFlow?.id || 'f'}-${f.key}`} data-fkey={f.key} className={f.type === 'textarea' ? 'col-span-2' : ''}>
+                {renderFields.map(({ field: f, ext }) => {
+                const control = (
+                  <>
                     <label className={labelCls}>
                       {f.label || f.key}
                       {f.required && <span className="text-red-500">*</span>}
@@ -634,10 +744,107 @@ export default function TicketCenter() {
                       <input className={fieldCls(f)} placeholder={f.placeholder || (f.type === 'ip' ? '如：192.168.1.10' : '')} value={values[f.key] ?? ''}
                         onChange={(e) => setFieldValue(f.key, e.target.value)} />
                     )}
+                    {f.type === 'reference' && (() => {
+                      const opts = refOpts[f.key] || []
+                      if (f.allow_custom) {
+                        return (
+                          <>
+                            <input className={fieldCls(f)} list={`ref-opts-${f.key}`}
+                              placeholder={f.placeholder || '可输入，或从已填过的值中选择'}
+                              value={values[f.key] ?? ''} onChange={(e) => setFieldValue(f.key, e.target.value)} />
+                            <datalist id={`ref-opts-${f.key}`}>
+                              {opts.map((o) => <option key={o} value={o} />)}
+                            </datalist>
+                          </>
+                        )
+                      }
+                      return (
+                        <CompactSelect size="lg" block value={values[f.key] ?? ''}
+                          onChange={(e) => setFieldValue(f.key, e.target.value)}>
+                          <option value="">{opts.length ? '请选择' : '暂无可选项（被引用字段尚未填写）'}</option>
+                          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </CompactSelect>
+                      )
+                    })()}
+                    {f.type === 'duration' && (() => {
+                      const parts = durationToParts(values[f.key])
+                      return (
+                        <div className="flex items-center gap-2">
+                          {parts.permanent ? (
+                            <span className="flex h-9 flex-1 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground">
+                              永久封禁
+                            </span>
+                          ) : (
+                            <>
+                              <input type="number" min="0" className={fieldCls(f)} placeholder="如：30"
+                                value={parts.num}
+                                onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, num: e.target.value }))} />
+                              <div className="w-24 shrink-0">
+                                <CompactSelect size="lg" block value={parts.unit}
+                                  onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, unit: e.target.value }))}>
+                                  {DURATION_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+                                </CompactSelect>
+                              </div>
+                            </>
+                          )}
+                          <label className="flex shrink-0 cursor-pointer items-center gap-1.5"
+                            title="勾选后不设到期时间，需手动解封">
+                            <input type="checkbox" className="h-4 w-4 accent-primary" checked={parts.permanent}
+                              onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, permanent: e.target.checked }))} />
+                            <span className="text-sm text-foreground">永久</span>
+                          </label>
+                        </div>
+                      )
+                    })()}
                     {f.type === 'switch' && !f.required && <p className={hintCls}>开关型字段提交 是/否</p>}
+                  </>
+                )
+                if (ext) {
+                  // 命中匹配规则的扩展字段：分组容器内展示
+                  return (
+                    <div key={`${currentFlow?.id || 'f'}-${f.key}`} data-fkey={f.key}
+                      className="col-span-2 rounded-md border-l-2 border-primary/40 bg-primary/[0.03] px-3 py-2.5">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className={f.type === 'textarea' ? 'col-span-2' : ''}>{control}</div>
+                      </div>
+                    </div>
+                  )
+                }
+                return (
+                  <div key={`${currentFlow?.id || 'f'}-${f.key}`} data-fkey={f.key} className={f.type === 'textarea' ? 'col-span-2' : ''}>
+                    {control}
                   </div>
-                ))}
+                )
+                })}
                 {!currentFields.length && <div className="col-span-2 py-2 text-center text-sm text-muted-foreground">该节点无需填写字段</div>}
+              </div>
+            </div>
+          )}
+
+          {/* 相似工单推荐：按已填关键字段（IP/下拉）匹配同流程已完成工单，可跳转参考 */}
+          {similar && similar.length > 0 && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[13px] font-medium text-foreground">
+                <Lightbulb className="h-3.5 w-3.5 text-amber-500" />相似工单推荐
+                <span className="font-normal text-muted-foreground">同流程已完成的历史工单，可参考其处置结论</span>
+              </div>
+              <div className="space-y-1.5">
+                {similar.map((s) => (
+                  <button key={s.id} type="button" onClick={() => navigate(`/tickets/${s.id}`)}
+                    className="block w-full rounded border border-border bg-card px-3 py-2 text-left text-xs transition hover:border-primary/50"
+                    title="点击查看该工单详情">
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 font-mono text-primary">{s.ticket_no}</span>
+                      <span className="min-w-0 flex-1 truncate font-medium text-foreground">{s.title}</span>
+                      <span className="shrink-0 whitespace-nowrap text-muted-foreground">
+                        {s.closed_at ? new Date(s.closed_at).toLocaleDateString('zh-CN') : '--'}
+                      </span>
+                    </div>
+                    {s.summary && (
+                      <p className="mt-1 line-clamp-2 break-all text-muted-foreground">处置参考：{s.summary}</p>
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
           )}
@@ -688,7 +895,7 @@ export default function TicketCenter() {
           )}
 
           <div>
-            <label className={labelCls}>发起备注（选填）<span className="ml-1 font-normal text-muted-foreground">支持粘贴截图</span></label>
+            <label className={labelCls}>发起备注（选填）</label>
             <RichEditable className={inputCls} minHeight={64} placeholder="补充说明本次工单背景，可直接粘贴截图" value={comment}
               onChange={setComment} />
           </div>

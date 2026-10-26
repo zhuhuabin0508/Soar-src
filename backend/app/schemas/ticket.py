@@ -7,7 +7,7 @@
 """
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============ 分组 ============
@@ -92,5 +92,41 @@ class TicketCancel(BaseModel):
 
 
 class TicketRollback(BaseModel):
-    """回退工单：当前节点处理人退回上一节点，必须填写回退原因。"""
+    """回退工单：当前节点处理人退回上一节点，必须填写回退原因。
+
+    ``target``：回退目标节点 key（可选）。当前节点配置了回退白名单
+    （rollback_to）时必传且必须在白名单内；未配置白名单时忽略
+    （始终退回上一处理节点）。
+    """
     comment: str = Field(..., min_length=1, max_length=1000, description="回退原因（必填）")
+    target: Optional[str] = Field(None, max_length=64, description="回退目标节点 key（白名单模式下必传）")
+
+
+class TicketTransfer(BaseModel):
+    """转办/改派：当前节点处理人把工单转给其他分组或指定人，必须填写转办原因。
+
+    ``group_id`` 与 ``user_id`` 二选一：分组接管当前节点处理（计时重置）；
+    指定人个人接管（认领锁定语义，仅其可继续提交）。
+    """
+    group_id: Optional[int] = None
+    user_id: Optional[int] = None
+    reason: str = Field(..., min_length=1, max_length=1000, description="转办原因（必填）")
+
+    @model_validator(mode="after")
+    def _check_target(self) -> "TicketTransfer":
+        if self.group_id is None and self.user_id is None:
+            raise ValueError("请选择转办目标（分组或人员）")
+        if self.group_id is not None and self.user_id is not None:
+            raise ValueError("转办目标只能选择分组或人员其中之一")
+        return self
+
+
+class TicketComment(BaseModel):
+    """时间线内部评论（区别于处置意见，不产生流转副作用）。"""
+    content: str = Field(..., min_length=1, max_length=2000, description="评论内容（必填）")
+
+
+class TicketSimilar(BaseModel):
+    """相似工单推荐查询：按首节点关键字段值匹配同流程已完成工单。"""
+    flow_id: int
+    field_values: dict[str, Any] = Field(default_factory=dict)

@@ -2,13 +2,13 @@
 // - 上游节点字段对处理人只读展示；当前节点表单按快照字段定义动态渲染
 // - 处理权限由服务端返回（can_handle：当前节点分组成员或 admin；先到先得）
 // - 流转去向：按条件路由自动建议，处理人可确认调整；到达结束节点后工单完成
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, CheckCircle2, XCircle, Clock, Paperclip, X,
   SendHorizonal, Ban, UserRound, ChevronRight, Flag, Link2, Archive, ArchiveRestore,
-  ShieldCheck, Database, AlertTriangle, ClipboardList, Plus, UsersRound,
-  Download, CornerUpLeft, Bot,
+  ShieldCheck, ShieldBan, Database, AlertTriangle, ClipboardList, Plus, UsersRound, Users,
+  Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -17,7 +17,7 @@ import { inputCls, labelCls, hintCls } from '../components/property/FormControls
 import { Button, PageContainer, CompactSelect, DatePicker } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
-import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS } from '../utils/ticketFlow'
+import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
 
@@ -33,13 +33,20 @@ const PRIORITY_META = {
   critical: { label: '紧急', cls: 'bg-red-500/10 text-red-500' },
 }
 const ACTION_META = {
-  create: { label: '发起工单', cls: 'bg-primary/10 text-primary' },
-  submit: { label: '提交流转', cls: 'bg-emerald-500/10 text-emerald-500' },
-  cancel: { label: '取消工单', cls: 'bg-red-500/10 text-red-500' },
-  rollback: { label: '退回上一步', cls: 'bg-amber-500/10 text-amber-500' },
+  create: { label: '发起工单', cls: 'bg-primary/10 text-primary', dot: 'border-primary' },
+  submit: { label: '提交流转', cls: 'bg-emerald-500/10 text-emerald-500', dot: 'border-emerald-500' },
+  cancel: { label: '取消工单', cls: 'bg-red-500/10 text-red-500', dot: 'border-red-500' },
+  rollback: { label: '退回上一步', cls: 'bg-amber-500/10 text-amber-500', dot: 'border-amber-500' },
+  urge: { label: '催办', cls: 'bg-amber-500/10 text-amber-500', dot: 'border-amber-500' },
+  transfer: { label: '转办', cls: 'bg-sky-500/10 text-sky-500', dot: 'border-sky-500' },
+  claim: { label: '认领', cls: 'bg-violet-500/10 text-violet-500', dot: 'border-violet-500' },
+  comment: { label: '评论', cls: 'bg-muted text-muted-foreground', dot: 'border-muted-foreground/50' },
 }
 // 流转记录 comment 的显示标题（按动作区分语义）
-const ACTION_COMMENT_LABELS = { create: '发起备注', submit: '处置意见', cancel: '取消原因', rollback: '回退原因' }
+const ACTION_COMMENT_LABELS = {
+  create: '发起备注', submit: '处置意见', cancel: '取消原因', rollback: '回退原因',
+  transfer: '转办原因', comment: '评论内容',
+}
 
 // 字段值只读展示（KV 行）
 function FieldValueView({ field, value }) {
@@ -152,7 +159,7 @@ function AssetMatchFields({ asset, fallbackIp }) {
   )
 }
 
-function EnrichSourceView({ s }) {
+function EnrichSourceView({ s, onFill }) {
   const t = s.threat
   const geo = t?.geo_info || {}
   const geoText = [geo.country, geo.region, geo.city, geo.isp].filter(Boolean).join(' / ')
@@ -261,6 +268,13 @@ function EnrichSourceView({ s }) {
             <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
               <Bot className="h-3.5 w-3.5 text-primary" />智能体研判
               <span className="font-normal text-muted-foreground">IP风险智能研判与封禁决策</span>
+              {onFill && s.agent && !s.agent.pending && (
+                <button type="button" onClick={() => onFill(s)}
+                  className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[11px] font-normal text-primary transition hover:bg-primary/10"
+                  title="将智能体研判结果一键填入处理意见，可编辑后提交">
+                  <Sparkles className="h-3 w-3" />填入处置意见
+                </button>
+              )}
             </div>
             {s.agent?.pending ? (
               <div className="flex items-center gap-2.5 text-[13px] text-muted-foreground">
@@ -308,7 +322,7 @@ function EnrichSourceView({ s }) {
 
 // 自动研判卡片：发起时对 src_ip/dst_ip 按字段开关执行资产匹配 + 威胁情报查询
 //（auto_enrich）与智能体研判（auto_agent），随工单流转只读展示
-function EnrichmentView({ enrichment }) {
+function EnrichmentView({ enrichment, onFill }) {
   if (!enrichment?.sources?.length) return null
   return (
     <div className="rounded-md border border-border bg-card p-5">
@@ -323,10 +337,120 @@ function EnrichmentView({ enrichment }) {
         )}
       </div>
       <div className="space-y-3">
-        {enrichment.sources.map((s) => <EnrichSourceView key={`${s.role}-${s.ip}`} s={s} />)}
+        {enrichment.sources.map((s) => <EnrichSourceView key={`${s.role}-${s.ip}`} s={s} onFill={onFill} />)}
       </div>
       {!!enrichment.errors?.length && (
         <div className="mt-2 break-all text-xs text-amber-500">部分研判失败：{enrichment.errors.join('；')}</div>
+      )}
+    </div>
+  )
+}
+
+// 封禁剩余时长格式化（毫秒 → X天X小时 / X小时X分 / X分钟）
+function fmtBanRemaining(ms) {
+  const m = Math.max(0, Math.floor(ms / 60000))
+  const d = Math.floor(m / 1440)
+  const h = Math.floor((m % 1440) / 60)
+  const mm = m % 60
+  if (d) return `${d}天${h}小时`
+  if (h) return `${h}小时${mm}分`
+  return `${mm}分钟`
+}
+
+// 安全上下文 · 封禁查询：进入 Tab 自动查询工单涉及的 IP，支持手动输入任意 IP 查询
+function BanStatusView({ autoIps }) {
+  const navigate = useNavigate()
+  const { id: currentTicketId } = useParams()
+  const [query, setQuery] = useState(autoIps.join('，'))
+  const [result, setResult] = useState(null)
+  const [loading, setLoading] = useState(false)
+  // 请求序号 + 卸载守卫：连续查询时慢的旧响应不覆盖新结果；切 Tab 卸载后不再 setState
+  const reqSeq = useRef(0)
+  const mounted = useRef(true)
+  useEffect(() => () => { mounted.current = false }, [])
+  const doQuery = useCallback((ipsStr) => {
+    const ips = [...new Set(String(ipsStr).split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean))]
+    if (!ips.length) return
+    if (ips.length > 20) return toast.error('单次最多查询 20 个 IP')
+    const seq = ++reqSeq.current
+    const ok = () => mounted.current && reqSeq.current === seq
+    setLoading(true)
+    ticketApi.banStatus(ips)
+      .then((res) => { if (ok()) setResult(res) })
+      .catch((e) => { if (ok()) toast.error(e.message || '查询封禁状态失败') })
+      .finally(() => { if (ok()) setLoading(false) })
+  }, [])
+  useEffect(() => { if (autoIps.length) doQuery(autoIps.join(',')) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const entries = result ? Object.entries(result) : []
+  return (
+    <div className="rounded-md border border-border bg-card p-5">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <ShieldBan className="h-4 w-4 text-primary" />
+        <span className="font-semibold text-foreground">已封禁 IP 查询</span>
+        <span className="text-xs text-muted-foreground">查询 IP 地址是否正处于封禁期间（工作台封禁记录 / 工单同步 / 旧版封禁列表）</span>
+      </div>
+      <div className="mb-3 flex gap-2">
+        <input className={inputCls} placeholder="输入 IP 地址，多个 IP 用逗号分隔"
+          value={query} onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) doQuery(query) }} />
+        <Button size="sm" className="shrink-0" loading={loading} disabled={!query.trim()} onClick={() => doQuery(query)}>
+          <Search className="mr-1 h-3.5 w-3.5" />查询
+        </Button>
+      </div>
+      {!result && !loading && (
+        <p className={hintCls}>{autoIps.length ? '正在自动查询工单涉及的 IP…' : '暂无自动查询的 IP，可手动输入 IP 查询封禁状态'}</p>
+      )}
+      {!!entries.length && (
+        <div className="space-y-2">
+          {entries.map(([ip, st]) => (
+            <div key={ip} className="rounded-md border border-border p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-sm font-medium text-foreground">{ip}</span>
+                {st.banned ? (
+                  <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
+                ) : (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">未封禁</span>
+                )}
+              </div>
+              {st.banned ? (
+                <div className="mt-2 space-y-2">
+                  {st.items.map((it, i) => (
+                    <div key={i} className="rounded-md bg-muted p-2.5 text-[13px]">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span className="font-medium text-foreground">{it.source_label}</span>
+                        <span className="text-muted-foreground">等级：{it.ban_level_label}</span>
+                        <span className="text-muted-foreground">
+                          {it.is_permanent ? '永久封禁' : `解封时间：${it.expire_time ? new Date(it.expire_time).toLocaleString('zh-CN', { hour12: false }) : '--'}`}
+                        </span>
+                        {!it.is_permanent && it.remaining_ms != null && (
+                          <span className="text-muted-foreground">剩余：{fmtBanRemaining(it.remaining_ms)}</span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-muted-foreground">开始封禁时间：{it.started_at ? new Date(it.started_at).toLocaleString('zh-CN', { hour12: false }) : '--'}</div>
+                      {it.ban_device && <div className="mt-1 text-muted-foreground">封禁设备：{it.ban_device}</div>}
+                      {it.reason && <div className="mt-1 break-all text-muted-foreground">原因：{it.reason}</div>}
+                      {it.ticket_id && (
+                        // 来源即当前工单时 navigate 同路由无任何变化，改为静态标识避免“点击无响应”
+                        Number(it.ticket_id) === Number(currentTicketId) ? (
+                          <span className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-muted-foreground">
+                            <Link2 className="h-3.5 w-3.5" />封禁来源：当前工单 {it.ticket_no}
+                          </span>
+                        ) : (
+                          <button onClick={() => navigate(`/tickets/${it.ticket_id}`)}
+                            className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-primary hover:underline">
+                            <Link2 className="h-3.5 w-3.5" />查看来源工单 {it.ticket_no}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-1.5 text-[13px] text-muted-foreground">该 IP 暂未封禁</p>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
@@ -349,22 +473,36 @@ export default function TicketDetail() {
   // 回退上一步：弹窗 + 必填原因
   const [rollbackOpen, setRollbackOpen] = useState(false)
   const [rollbackReason, setRollbackReason] = useState('')
+  const [rollbackTarget, setRollbackTarget] = useState('')
   const [rollingBack, setRollingBack] = useState(false)
   const [uploadingKey, setUploadingKey] = useState('')
   // 详情页 Tab：工单详情（流转历史）/ 安全上下文（自动研判）
   const [activeTab, setActiveTab] = useState('detail')
   // 抄送选择弹窗开关
   const [ccPickerOpen, setCcPickerOpen] = useState(false)
+  // 催办（发起人/抄送人/admin 对处理中工单一键提醒当前节点分组）
+  const [urging, setUrging] = useState(false)
+  // 组内认领锁定（认领后本节点仅认领人/admin 可提交）
+  const [claiming, setClaiming] = useState(false)
+  // 转办/改派（当前节点处理人 → 其他分组或指定人）
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [transferTarget, setTransferTarget] = useState('') // 'group:{id}' | 'user:{id}'
+  const [transferReason, setTransferReason] = useState('')
+  const [transferring, setTransferring] = useState(false)
+  const [transferOptions, setTransferOptions] = useState({ users: [], groups: [] })
+  // 时间线内部评论（区别于处置意见）
+  const [commentDraft, setCommentDraft] = useState('')
+  const [commenting, setCommenting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
     ticketApi.getTicket(id)
       .then((res) => {
         setTicket(res)
-        // 初始化当前节点表单
+        // 初始化当前节点表单（含匹配规则下的扩展字段 default）
         if (res.can_handle && res.current_node) {
           const init = {}
-          ;(res.current_node.fields || []).forEach((f) => {
+          flatFieldDefs(res.current_node.fields).forEach((f) => {
             let v = f.default ?? ''
             if (f.type === 'switch') v = v === true || v === 'true' || v === '是'
             init[f.key] = v
@@ -405,6 +543,39 @@ export default function TicketDetail() {
     [currentNode, values],
   )
   const currentFields = currentNode?.fields || []
+  // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
+  const renderFields = useMemo(() => {
+    const out = []
+    for (const f of currentFields) {
+      out.push({ field: f, ext: false })
+      matchedRuleFields(f, values[f.key]).forEach((rf) => out.push({ field: rf, ext: true }))
+    }
+    return out
+  }, [currentFields, values]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 引用联动字段选项：本工单已提交记录值 + 本次提交值（与后端 advance_ticket 口径一致）
+  const refOpts = useMemo(
+    () => collectRefOptions(ticket?.flow_snapshot, [...(ticket?.records || []), { field_values: values }]),
+    [ticket, values],
+  )
+
+  // 工单涉及的 IP（安全上下文 Tab 自动封禁查询）：研判 IP + IP 类型字段已填的 IPv4 值
+  const ticketIps = useMemo(() => {
+    const out = []
+    const push = (v) => {
+      const s = String(v || '').trim()
+      if (/^(\d{1,3}\.){3}\d{1,3}$/.test(s) && !out.includes(s)) out.push(s)
+    }
+    ;(ticket?.enrichment_data?.sources || []).forEach((s) => push(s.ip))
+    const ipKeys = new Set()
+    ;(ticket?.flow_snapshot?.nodes || []).forEach((n) => {
+      flatFieldDefs(n.fields || []).forEach((f) => { if (f.type === 'ip') ipKeys.add(f.key) })
+    })
+    ;(ticket?.records || []).forEach((r) => {
+      Object.entries(r.field_values || {}).forEach(([k, v]) => { if (ipKeys.has(k)) push(v) })
+    })
+    return out.slice(0, 20)
+  }, [ticket])
 
   // 步骤条节点顺序：处理节点 + 结束
   const stepNodes = useMemo(() => {
@@ -449,28 +620,37 @@ export default function TicketDetail() {
   }
 
   const handleSubmit = () => {
-    const missing = currentFields.filter((f) => f.required
+    const missing = renderFields.filter(({ field: f }) => f.required
       && (values[f.key] === undefined || values[f.key] === null || values[f.key] === ''))
     if (missing.length) {
-      setMissingKeys(missing.map((f) => f.key))
-      toast.error(`请填写必填字段：${missing.map((f) => f.label).join('、')}`)
-      document.querySelector(`[data-fkey="${missing[0].key}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      setMissingKeys(missing.map(({ field: f }) => f.key))
+      toast.error(`请填写必填字段：${missing.map(({ field: f }) => f.label).join('、')}`)
+      document.querySelector(`[data-fkey="${missing[0].field.key}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
+    // 未命中规则的扩展字段的值不提交
+    const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
     if (routeOptions.length > 1 && !routeTo) return toast.error('请选择流转去向')
     const targetKey = routeTo || routeSuggested || ''
     const target = nodes.find((n) => n.key === targetKey)
-    confirm({
-      title: '确认提交流转',
-      message: target?.type === 'end'
-        ? '提交后工单将流转至结束节点并标记为已完成，确认提交？'
-        : `提交后工单将流转至「${target?.name || targetKey}」（由${ticket.group_names?.[String(target?.group_id)] || '对应分组'}处理），组内任一成员提交即代表全组。确认提交？`,
-      confirmText: '提交流转',
-    }).then((ok) => {
+    // 会签感知的确认文案：当前并行节点中间提交 / 目标并行节点 / 目标结束 / 普通流转
+    const sp = ticket?.sign_progress
+    let message
+    if (currentNode?.type === 'parallel' && (sp?.pending?.length || 0) > 1) {
+      message = `本节点为并行会签节点（待签 ${sp.pending.length} 组），本次提交代表本分组完成会签，其余分组全部会签完成后工单才继续流转。确认提交？`
+    } else if (target?.type === 'end') {
+      message = '提交后工单将流转至结束节点并标记为已完成，确认提交？'
+    } else if (target?.type === 'parallel') {
+      const names = (target.sign_groups || []).map((g) => ticket.group_names?.[String(g)]).filter(Boolean).join('、')
+      message = `提交后工单将流转至「${target.name || targetKey}」，由${names || '多分组'}并行会签（${target.finish_policy === 'any' ? '任一分组提交即流转' : '全部完成后才继续流转'}）。确认提交？`
+    } else {
+      message = `提交后工单将流转至「${target?.name || targetKey}」（由${ticket.group_names?.[String(target?.group_id)] || '对应分组'}处理），组内任一成员提交即代表全组。确认提交？`
+    }
+    confirm({ title: '确认提交流转', message, confirmText: '提交流转' }).then((ok) => {
       if (!ok) return
       setSubmitting(true)
       ticketApi.advanceTicket(id, {
-        field_values: values,
+        field_values: submitValues,
         route_to: targetKey,
         comment: comment.trim() || null,
       })
@@ -495,30 +675,45 @@ export default function TicketDetail() {
       .finally(() => setCancelling(false))
   }
 
-  // 回退上一步：来源 = 最近一条把工单送入当前节点的记录（create 发起 / submit 流转）
-  // create 直接落在首节点时来源即首节点自身，此时无上家可退
-  const rollbackSource = useMemo(() => {
+  // 回退目标：白名单（rollback_to）→ 白名单内节点；缺省 → 自动上一节点
+  // （来源 = 最近一条把工单送入当前节点的记录 create 发起 / submit 流转；
+  //   会签中间提交 route_to 为空不影响判断；create 落在首节点时无上家可退）
+  const rollbackTargets = useMemo(() => {
+    const rb = currentNode?.rollback_to
+    if (Array.isArray(rb)) {
+      return rb.map((k) => nodes.find((n) => n.key === k)).filter((n) => n && n.type !== 'end')
+    }
     const records = ticket?.records || []
     for (let i = records.length - 1; i >= 0; i -= 1) {
       const r = records[i]
       if ((r.action === 'submit' || r.action === 'create') && r.route_to === ticket?.current_node_key) {
-        if (r.node_key === ticket.current_node_key) return null
-        return nodes.find((n) => n.key === r.node_key) || null
+        if (r.node_key === ticket.current_node_key) return []
+        const src = nodes.find((n) => n.key === r.node_key)
+        return src ? [src] : []
       }
     }
-    return null
-  }, [ticket, nodes])
-  const canRollback = !!ticket?.can_handle && !!rollbackSource
+    return []
+  }, [ticket, nodes, currentNode])
+  const canRollback = !!ticket?.can_handle && rollbackTargets.length > 0
+  // 当前选中的回退目标节点（单目标直接取；多目标按弹窗下拉选择）
+  const rollbackTargetNode = rollbackTargets.length === 1
+    ? rollbackTargets[0]
+    : rollbackTargets.find((n) => n.key === rollbackTarget)
 
   const handleRollback = () => {
     if (!rollbackReason.trim()) return toast.error('请填写回退原因')
+    if (rollbackTargets.length > 1 && !rollbackTarget) return toast.error('请选择回退目标节点')
     setRollingBack(true)
-    ticketApi.rollbackTicket(id, { comment: rollbackReason.trim() })
+    ticketApi.rollbackTicket(id, {
+      comment: rollbackReason.trim(),
+      target: rollbackTargets.length > 1 ? rollbackTarget : (currentNode?.rollback_to && rollbackTargets[0]?.key) || undefined,
+    })
       .then((res) => {
-        toast.success(`工单已退回至「${res.current_node_name}」，已通知上一节点处理组`)
+        toast.success(`工单已退回至「${res.current_node_name}」，已通知目标节点处理组`)
         setTicket(res)
         setRollbackOpen(false)
         setRollbackReason('')
+        setRollbackTarget('')
         setValues({})
         setComment('')
       })
@@ -572,10 +767,103 @@ export default function TicketDetail() {
     })
   }
 
+  // 催办：通知当前节点分组成员（后端 30 分钟限频）
+  const handleUrge = () => {
+    setUrging(true)
+    ticketApi.urgeTicket(id)
+      .then((res) => { setTicket(res); toast.success('已向当前节点处理分组发送催办提醒') })
+      .catch((e) => toast.error(e.message || '催办失败'))
+      .finally(() => setUrging(false))
+  }
+
+  // 认领锁定：确认后本节点仅认领人（或管理员）可提交，流转/退回后自动释放
+  const handleClaim = () => {
+    confirm({
+      title: '认领本节点',
+      message: '认领后本节点将锁定为仅您（或管理员）可提交处理，其他组员转为只读；提交流转或退回后自动释放。确认认领？',
+      confirmText: '确认认领',
+    }).then((ok) => {
+      if (!ok) return
+      setClaiming(true)
+      ticketApi.claimTicket(id)
+        .then((res) => { setTicket(res); toast.success('认领成功，本节点已锁定为您处理') })
+        .catch((e) => toast.error(e.message || '认领失败'))
+        .finally(() => setClaiming(false))
+    })
+  }
+
+  // 打开转办弹窗：加载启用用户 + 启用分组（复用抄送候选数据源）
+  const openTransfer = () => {
+    setTransferTarget('')
+    setTransferReason('')
+    ticketApi.ccOptions()
+      .then((res) => {
+        setTransferOptions({
+          users: (res.users || []).filter((u) => u.is_active),
+          groups: (res.groups || []).filter((g) => g.enabled),
+        })
+        setTransferOpen(true)
+      })
+      .catch((e) => toast.error(e.message || '加载转办对象失败'))
+  }
+
+  // 转办：分组模式=变更当前节点处理组；人员模式=该人个人接管（复用认领锁定）
+  const handleTransfer = () => {
+    if (!transferTarget) return toast.error('请选择转办分组或人员')
+    if (!transferReason.trim()) return toast.error('请填写转办原因')
+    const [kind, rawId] = transferTarget.split(':')
+    const body = { reason: transferReason.trim() }
+    if (kind === 'group') body.group_id = Number(rawId)
+    else body.user_id = Number(rawId)
+    setTransferring(true)
+    ticketApi.transferTicket(id, body)
+      .then((res) => {
+        toast.success('转办成功，已通知对方')
+        setTicket(res)
+        setTransferOpen(false)
+        setValues({})
+        setComment('')
+        setMissingKeys([])
+      })
+      .catch((e) => toast.error(e.message || '转办失败'))
+      .finally(() => setTransferring(false))
+  }
+
+  // 时间线内部评论：写入流转历史（action=comment），不改工单状态
+  const handleAddComment = () => {
+    const content = commentDraft.trim()
+    if (!content) return toast.error('评论内容不能为空')
+    setCommenting(true)
+    ticketApi.addComment(id, content)
+      .then((res) => { setTicket(res); setCommentDraft(''); toast.success('评论已发布') })
+      .catch((e) => toast.error(e.message || '评论失败'))
+      .finally(() => setCommenting(false))
+  }
+
+  // AI 处置意见一键填充：把智能体研判结果整理为多行文本追加到处理意见
+  const fillFromAgent = (s) => {
+    const a = s?.agent
+    if (!a) return
+    const lines = [`【智能体研判·${s.label || s.role} ${s.ip}】`]
+    lines.push(`风险等级：${a.risk_level || '未知'}`)
+    const actionText = AGENT_ACTION_LABELS[a.action] || a.action
+    lines.push(`处置建议：${actionText}${a.monitoring_advice ? `（${a.monitoring_advice}）` : ''}`)
+    if (Array.isArray(a.reasons) && a.reasons.length) {
+      lines.push('决策依据：')
+      a.reasons.forEach((r) => lines.push(`- ${String(r)}`))
+    } else if (a.reasons != null && a.reasons !== '') {
+      lines.push(`决策依据：${String(a.reasons)}`)
+    }
+    setComment((c) => (c && c.trim() ? `${c}\n${lines.join('\n')}` : lines.join('\n')))
+    toast.success('已将智能体研判结果填入处置意见，可编辑后提交')
+  }
+
   if (loading) {
     return (
       <PageContainer>
-        <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">加载中...</div>
+        <div className="flex h-64 items-center justify-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />加载中...
+        </div>
       </PageContainer>
     )
   }
@@ -583,8 +871,6 @@ export default function TicketDetail() {
 
   const st = STATUS_META[ticket.status] || STATUS_META.processing
   const pr = PRIORITY_META[ticket.priority] || PRIORITY_META.medium
-  // 自动研判数据存在时才显示「安全上下文」Tab（存量工单无数据则隐藏）
-  const hasEnrichment = !!(ticket.enrichment_data?.sources?.length)
 
   return (
     <PageContainer>
@@ -597,7 +883,7 @@ export default function TicketDetail() {
             </button>
             <div className="flex flex-wrap items-center gap-3">
               <span className="font-mono text-sm font-semibold text-primary">{ticket.ticket_no}</span>
-              <h1 className="text-[20px] font-bold text-foreground">{ticket.title}</h1>
+              <h1 className="text-[20px] font-semibold text-foreground">{ticket.title}</h1>
               <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ${st.cls}`}>
                 <st.Icon className="h-3.5 w-3.5" />{st.label}
               </span>
@@ -643,6 +929,12 @@ export default function TicketDetail() {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {ticket.can_urge && (
+              <Button variant="secondary" size="sm" loading={urging} onClick={handleUrge}
+                title="向当前节点处理分组发送催办提醒（30 分钟内仅可催办一次）">
+                <Zap className="mr-1 h-3.5 w-3.5" />催办
+              </Button>
+            )}
             {ticket.can_cancel && (
               <Button variant="danger" size="sm" onClick={() => { setCancelReason(''); setCancelOpen(true) }}>
                 <Ban className="mr-1 h-3.5 w-3.5" />取消工单
@@ -665,19 +957,17 @@ export default function TicketDetail() {
       {/* Tab 行：工单详情（流转历史）/ 安全上下文（自动研判） */}
       <div className="mb-4 flex items-center gap-1 overflow-x-auto border-b border-border">
         <button
-          className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition ${activeTab === 'detail' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          className={`flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${activeTab === 'detail' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('detail')}
         >
           <ClipboardList className="h-3.5 w-3.5" />工单详情
         </button>
-        {hasEnrichment && (
-          <button
-            className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-medium transition ${activeTab === 'enrich' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setActiveTab('enrich')}
-          >
-            <ShieldCheck className="h-3.5 w-3.5" />安全上下文
-          </button>
-        )}
+        <button
+          className={`flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${activeTab === 'enrich' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('enrich')}
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />安全上下文
+        </button>
       </div>
 
       <div className="flex items-start gap-4">
@@ -700,8 +990,16 @@ export default function TicketDetail() {
                         {isEnd ? '✓' : done || (isEnd && endDone) ? '✓' : i + 1}
                       </span>
                       <span>{n.name || n.key}</span>
-                      {!isEnd && ticket.group_names?.[String(n.group_id)] && (
+                      {n.type === 'parallel' && (
+                        <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${active ? 'bg-primary/15 text-primary' : 'bg-violet-500/15 text-violet-500'}`}>会签</span>
+                      )}
+                      {!isEnd && n.type !== 'parallel' && ticket.group_names?.[String(n.group_id)] && (
                         <span className="text-[11px] font-normal text-muted-foreground">（{ticket.group_names[String(n.group_id)]}）</span>
+                      )}
+                      {!isEnd && n.type === 'parallel' && (
+                        <span className="text-[11px] font-normal text-muted-foreground">
+                          （{(n.sign_groups || []).map((g) => ticket.group_names?.[String(g)]).filter(Boolean).join('、') || '多分组'}会签）
+                        </span>
                       )}
                     </div>
                     {i < stepNodes.length - 1 && <ChevronRight className="mx-0.5 h-4 w-4 text-muted-foreground" />}
@@ -720,7 +1018,7 @@ export default function TicketDetail() {
             </div>
             {(ticket.records || []).length > 0 ? (
               <div className="relative space-y-4 pl-7">
-                <div className="absolute bottom-3 left-[11px] top-3 w-px bg-border" />
+                <div className="absolute bottom-3 left-[5px] top-3 w-px bg-border" />
                 {ticket.records.map((r) => {
                   const nodeDef = nodes.find((n) => n.key === r.node_key)
                   const defs = fieldDefMap(nodeDef?.fields)
@@ -728,7 +1026,7 @@ export default function TicketDetail() {
                   const routeTarget = r.route_to ? nodes.find((n) => n.key === r.route_to) : null
                   return (
                     <div key={r.id} className="relative">
-                      <span className="absolute -left-7 top-6 flex h-[11px] w-[11px] items-center justify-center rounded-full border-2 border-primary bg-card" />
+                      <span className={`absolute -left-7 top-6 flex h-[11px] w-[11px] items-center justify-center rounded-full border-2 bg-card ${am.dot}`} />
                       <div className="rounded-md border border-border p-4">
                         <div className="mb-3 flex flex-wrap items-center gap-2">
                           <span className="rounded bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">{r.node_key}</span>
@@ -766,9 +1064,18 @@ export default function TicketDetail() {
                             {r.action === 'rollback'
                               ? <><CornerUpLeft className="h-3.5 w-3.5 text-amber-500" />退回至「{routeTarget.name || routeTarget.key}」</>
                               : <><SendHorizonal className="h-3.5 w-3.5" />流转至「{routeTarget.name || routeTarget.key}」</>}
-                            {routeTarget.type !== 'end' && ticket.group_names?.[String(routeTarget.group_id)] && (
-                              <span>（{ticket.group_names[String(routeTarget.group_id)]}处理）</span>
+                            {routeTarget.type !== 'end' && (
+                              routeTarget.type === 'parallel' ? (
+                                <span>（{(routeTarget.sign_groups || []).map((g) => ticket.group_names?.[String(g)]).filter(Boolean).join('、') || '多分组'}并行会签）</span>
+                              ) : ticket.group_names?.[String(routeTarget.group_id)] && (
+                                <span>（{ticket.group_names[String(routeTarget.group_id)]}处理）</span>
+                              )
                             )}
+                          </div>
+                        )}
+                        {!r.route_to && nodeDef?.type === 'parallel' && r.action === 'submit' && (
+                          <div className="mt-2 flex items-center gap-1.5 text-xs text-violet-500">
+                            <Users className="h-3.5 w-3.5" />会签提交：本分组已完成，等待其余分组会签
                           </div>
                         )}
                       </div>
@@ -779,11 +1086,29 @@ export default function TicketDetail() {
             ) : (
               <div className="rounded-md border border-dashed border-border py-8 text-center text-sm text-muted-foreground">暂无流转记录</div>
             )}
+            {/* 内部评论：写入时间线（区别于处置意见），通知发起人与当前处理组 */}
+            {ticket.can_comment && (
+              <div className="mt-4 flex items-center gap-2 border-t border-border pt-4">
+                <input className={inputCls} placeholder="添加评论：对处理过程的补充说明（Enter 发布）"
+                  value={commentDraft} disabled={commenting}
+                  onChange={(e) => setCommentDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && commentDraft.trim()) handleAddComment()
+                  }} />
+                <Button variant="secondary" size="sm" className="shrink-0" loading={commenting}
+                  disabled={!commentDraft.trim()} onClick={handleAddComment}>
+                  <MessageSquare className="mr-1 h-3.5 w-3.5" />评论
+                </Button>
+              </div>
+            )}
           </div>
           </>
           )}
           {activeTab === 'enrich' && (
-            <EnrichmentView enrichment={ticket.enrichment_data} />
+            <>
+              <BanStatusView autoIps={ticketIps} />
+              <EnrichmentView enrichment={ticket.enrichment_data} onFill={ticket.can_handle ? fillFromAgent : undefined} />
+            </>
           )}
         </div>
 
@@ -794,50 +1119,39 @@ export default function TicketDetail() {
               <div className="mb-1 flex items-center gap-2 font-semibold text-foreground">
                 <Flag className="h-4 w-4 text-primary" />当前节点：{currentNode?.name || '--'}
               </div>
-              <p className="mb-4 text-xs text-muted-foreground">
-                您属于「{ticket.group_names?.[String(currentNode?.group_id)] || '当前分组'}」，组内任一成员提交即代表全组（先到先得）
-              </p>
-              {/* 安全上下文摘要（完整卡片见左侧详情，辅助处理人快速研判） */}
-              {ticket.enrichment_data?.sources?.length > 0 && (
-                <div className="mb-4 space-y-1.5 rounded-md border border-border bg-muted p-3">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    <ShieldCheck className="h-3.5 w-3.5 text-primary" />安全上下文（发起时自动研判）
+              {currentNode?.type === 'parallel' && (
+                <p className="mb-2 text-xs text-muted-foreground">
+                  本节点为并行会签节点，由「{(currentNode.sign_groups || []).map((g) => ticket.group_names?.[String(g)]).filter(Boolean).join('、') || '多分组'}」各自处理，
+                  {currentNode.finish_policy === 'any' ? '任一分组提交即流转' : '全部会签完成后才流转'}
+                </p>
+              )}
+              {/* 并行会签进度：已签 / 待签分组（后端 sign_progress） */}
+              {currentNode?.type === 'parallel' && ticket.sign_progress && (
+                <div className="mb-4 space-y-1 rounded-md border border-violet-500/30 bg-violet-500/[0.08] px-3 py-2.5 text-xs">
+                  <div className="flex items-center gap-1.5 font-medium text-violet-500">
+                    <Users className="h-3.5 w-3.5 shrink-0" />会签进度
+                    <span className="font-normal text-muted-foreground">（{ticket.sign_progress.policy === 'any' ? '任一分组提交即流转' : '全部会签完成才流转'}）</span>
                   </div>
-                  {ticket.enrichment_data.sources.map((s) => (
-                    <div key={`${s.role}-${s.ip}`} className="flex flex-wrap items-center gap-1.5 text-[13px]">
-                      <span className="shrink-0 text-muted-foreground">{s.label || s.role}：</span>
-                      <span className="shrink-0 font-mono text-foreground">{s.ip}</span>
-                      <span className="text-muted-foreground">·</span>
-                      {s.asset?.matched ? (
-                        <Link
-                          to={`/assets/list?keyword=${encodeURIComponent(s.asset.asset_ip || s.ip)}`}
-                          onClick={(e) => { if (!guardNavPermission('asset_list', 'view', '资产清单')) e.preventDefault() }}
-                          className="shrink-0 text-primary hover:underline"
-                          title={`查看资产：${s.asset.asset_name || '--'}（${s.asset.asset_ip || s.ip}）`}
-                        >
-                          资产「{s.asset.asset_name || '--'}」
-                        </Link>
-                      ) : (
-                        <span className="shrink-0 text-muted-foreground">资产未匹配</span>
-                      )}
-                      <span className="text-muted-foreground">·</span>
-                      {s.threat?.is_malicious ? (
-                        <span className="shrink-0 font-medium text-red-500">
-                          恶意（置信度 {Math.round((s.threat.confidence || 0) * 100)}%
-                          {s.threat.severity ? ` · ${THREAT_SEVERITY_LABELS[s.threat.severity] || s.threat.severity}` : ''}）
-                        </span>
-                      ) : s.threat ? (
-                        <span className="shrink-0 text-emerald-500">无威胁记录</span>
-                      ) : (
-                        <span className="shrink-0 text-muted-foreground">情报不可用</span>
-                      )}
-                    </div>
-                  ))}
+                  <div className="text-muted-foreground">
+                    已签：<span className="text-foreground">{ticket.sign_progress.signed?.length ? ticket.sign_progress.signed.map((g) => g.name).join('、') : '暂无'}</span>
+                  </div>
+                  <div className="text-muted-foreground">
+                    待签：<span className="text-foreground">{ticket.sign_progress.pending?.length ? ticket.sign_progress.pending.map((g) => g.name).join('、') : '全部完成'}</span>
+                  </div>
                 </div>
               )}
+              {/* 认领锁定提示：被认领后其他组员只读 */}
+              {ticket.claimed_by_name && (
+                <p className="mb-4 flex items-start gap-1.5 rounded-md border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-500">
+                  <UserCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  已由 {ticket.claimed_by_name} 认领处理，本节点仅认领人或管理员可提交
+                </p>
+              )}
+              {!ticket.claimed_by_name && !(currentNode?.type === 'parallel' && ticket.sign_progress) && <div className="mb-4" />}
               <div className="space-y-4">
-                {currentFields.map((f) => (
-                  <div key={`${currentNode?.key || 'n'}-${f.key}`} data-fkey={f.key} className={f.type === 'textarea' ? 'col-span-2' : ''}>
+                {renderFields.map(({ field: f, ext }) => {
+                const control = (
+                  <>
                     <label className={labelCls}>
                       {f.label || f.key}
                       {f.required && <span className="text-red-500">*</span>}
@@ -902,8 +1216,73 @@ export default function TicketDetail() {
                       <input className={fieldCls(f)} placeholder={f.placeholder || (f.type === 'ip' ? '如：192.168.1.10' : '')} value={values[f.key] ?? ''}
                         onChange={(e) => setFieldValue(f.key, e.target.value)} />
                     )}
-                  </div>
-                ))}
+                    {f.type === 'reference' && (() => {
+                      const opts = refOpts[f.key] || []
+                      if (f.allow_custom) {
+                        return (
+                          <>
+                            <input className={fieldCls(f)} list={`ref-opts-${f.key}`}
+                              placeholder={f.placeholder || '可输入，或从已填过的值中选择'}
+                              value={values[f.key] ?? ''} onChange={(e) => setFieldValue(f.key, e.target.value)} />
+                            <datalist id={`ref-opts-${f.key}`}>
+                              {opts.map((o) => <option key={o} value={o} />)}
+                            </datalist>
+                          </>
+                        )
+                      }
+                      return (
+                        <CompactSelect size="lg" block value={values[f.key] ?? ''}
+                          onChange={(e) => setFieldValue(f.key, e.target.value)}>
+                          <option value="">{opts.length ? '请选择' : '暂无可选项（被引用字段尚未填写）'}</option>
+                          {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </CompactSelect>
+                      )
+                    })()}
+                    {f.type === 'duration' && (() => {
+                      const parts = durationToParts(values[f.key])
+                      return (
+                        <div className="flex items-center gap-2">
+                          {parts.permanent ? (
+                            <span className="flex h-9 flex-1 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground">
+                              永久封禁
+                            </span>
+                          ) : (
+                            <>
+                              <input type="number" min="0" className={fieldCls(f)} placeholder="如：30"
+                                value={parts.num}
+                                onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, num: e.target.value }))} />
+                              <div className="w-24 shrink-0">
+                                <CompactSelect size="lg" block value={parts.unit}
+                                  onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, unit: e.target.value }))}>
+                                  {DURATION_UNITS.map((u) => <option key={u} value={u}>{u}</option>)}
+                                </CompactSelect>
+                              </div>
+                            </>
+                          )}
+                          <label className="flex shrink-0 cursor-pointer items-center gap-1.5"
+                            title="勾选后不设到期时间，需手动解封">
+                            <input type="checkbox" className="h-4 w-4 accent-primary" checked={parts.permanent}
+                              onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, permanent: e.target.checked }))} />
+                            <span className="text-sm text-foreground">永久</span>
+                          </label>
+                        </div>
+                      )
+                    })()}
+                  </>
+                )
+                if (ext) {
+                  // 命中匹配规则的扩展字段：分组容器内展示
+                  return (
+                    <div key={`${currentNode?.key || 'n'}-${f.key}`} data-fkey={f.key}
+                      className="rounded-md border-l-2 border-primary/40 bg-primary/[0.03] px-3 py-2.5">
+                      <div>{control}</div>
+                    </div>
+                  )
+                }
+                return (
+                  <div key={`${currentNode?.key || 'n'}-${f.key}`} data-fkey={f.key}>{control}</div>
+                )
+                })}
                 {!currentFields.length && <div className="rounded-md border border-dashed border-border py-4 text-center text-sm text-muted-foreground">本节点无需填写字段</div>}
 
                 {routeOptions.length > 1 && (
@@ -933,7 +1312,7 @@ export default function TicketDetail() {
                 )}
 
                 <div>
-                  <label className={labelCls}>处理意见（选填）<span className="ml-1 font-normal text-muted-foreground">支持粘贴截图</span></label>
+                  <label className={labelCls}>处理意见（选填）</label>
                   <RichEditable className={inputCls} minHeight={64} placeholder="填写本节点的处理说明，可直接粘贴截图" value={comment}
                     onChange={setComment} />
                 </div>
@@ -941,8 +1320,23 @@ export default function TicketDetail() {
                   <SendHorizonal className="mr-1 h-4 w-4" />提交流转
                 </Button>
                 {canRollback && (
-                  <Button variant="secondary" className="w-full" disabled={submitting} onClick={() => setRollbackOpen(true)}>
-                    <CornerUpLeft className="mr-1 h-4 w-4" />退回上一步（{rollbackSource?.name || rollbackSource?.key}）
+                  <Button variant="secondary" className="w-full" disabled={submitting}
+                    onClick={() => { setRollbackTarget(rollbackTargets.length === 1 ? rollbackTargets[0].key : ''); setRollbackOpen(true) }}>
+                    <CornerUpLeft className="mr-1 h-4 w-4" />
+                    {rollbackTargets.length === 1
+                      ? `退回上一步（${rollbackTargets[0].name || rollbackTargets[0].key}）`
+                      : `退回指定节点（${rollbackTargets.length} 个可选）`}
+                  </Button>
+                )}
+                {ticket.can_claim && (
+                  <Button variant="secondary" className="w-full" disabled={submitting} loading={claiming} onClick={handleClaim}>
+                    <UserCheck className="mr-1 h-4 w-4" />认领本节点（锁定后仅我可提交）
+                  </Button>
+                )}
+                {/* 并行会签节点不支持转办（多分组同时处理，由后端拒绝；前端直接隐藏） */}
+                {currentNode?.type !== 'parallel' && (
+                  <Button variant="secondary" className="w-full" disabled={submitting} onClick={openTransfer}>
+                    <ArrowRightLeft className="mr-1 h-4 w-4" />转办 / 改派
                   </Button>
                 )}
               </div>
@@ -955,7 +1349,9 @@ export default function TicketDetail() {
                   <span>
                     工单当前停留于「{ticket.current_node_name}」，
                     由「{ticket.current_group_name || '对应分组'}」处理；
-                    您不在该分组内，本节点内容对您只读。
+                    {ticket.claimed_by_name
+                      ? `已由 ${ticket.claimed_by_name} 认领，本节点仅认领人或管理员可提交，您当前只读。`
+                      : '您不在该分组内，本节点内容对您只读。'}
                   </span>
                 </div>
               ) : (
@@ -981,6 +1377,9 @@ export default function TicketDetail() {
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">发起人</span><span className="text-foreground">{ticket.created_by_name || '--'}</span></div>
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">发起时间</span><span className="tabular-nums text-foreground">{ticket.created_at ? new Date(ticket.created_at).toLocaleString('zh-CN', { hour12: false }) : '--'}</span></div>
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">完结时间</span><span className="tabular-nums text-foreground">{ticket.closed_at ? new Date(ticket.closed_at).toLocaleString('zh-CN', { hour12: false }) : '--'}</span></div>
+              {ticket.claimed_by_name && (
+                <div className="flex justify-between gap-3"><span className="text-muted-foreground">认领人</span><span className="text-foreground">{ticket.claimed_by_name}</span></div>
+              )}
               {(ticket.remind_count || 0) > 0 && (
                 <div className="flex justify-between gap-3">
                   <span className="text-muted-foreground">超时提醒</span>
@@ -1022,10 +1421,10 @@ export default function TicketDetail() {
         </div>
       </Modal>
 
-      {/* 回退上一步弹窗（必填回退原因，回退后通知上一节点处理组） */}
+      {/* 回退弹窗：白名单多目标时可选回退目标节点（必填原因，回退后通知目标节点处理组） */}
       <Modal
         open={rollbackOpen}
-        title="退回上一步"
+        title={rollbackTargets.length > 1 ? '退回指定节点' : '退回上一步'}
         onClose={() => setRollbackOpen(false)}
         size="sm"
         footer={
@@ -1037,13 +1436,64 @@ export default function TicketDetail() {
       >
         <div className="space-y-3 py-2">
           <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-500">
-            退回后工单将回到「{rollbackSource?.name || rollbackSource?.key}」节点重新处理，
-            由该节点处理组跟进；回退原因将写入流转历史并通知对方。
+            {rollbackTargetNode
+              ? `退回后工单将回到「${rollbackTargetNode.name || rollbackTargetNode.key}」节点重新处理，由该节点处理组跟进；回退原因将写入流转历史并通知对方。`
+              : '请选择回退目标节点；退回后由该节点处理组跟进，回退原因将写入流转历史并通知对方。'}
           </div>
+          {rollbackTargets.length > 1 && (
+            <div>
+              <label className={labelCls}>回退目标<span className="text-red-500">*</span></label>
+              <CompactSelect size="lg" block value={rollbackTarget} onChange={(e) => setRollbackTarget(e.target.value)}>
+                <option value="">请选择回退目标节点</option>
+                {rollbackTargets.map((n) => <option key={n.key} value={n.key}>{n.name || n.key}</option>)}
+              </CompactSelect>
+            </div>
+          )}
           <div>
             <label className={labelCls}>回退原因<span className="text-red-500">*</span></label>
             <textarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明退回该工单的原因" value={rollbackReason}
               onChange={(e) => setRollbackReason(e.target.value)} />
+          </div>
+        </div>
+      </Modal>
+
+      {/* 转办/改派弹窗：转给其他分组（变更当前节点处理组）或指定人员（个人接管锁定） */}
+      <Modal
+        open={transferOpen}
+        title="转办 / 改派"
+        onClose={() => setTransferOpen(false)}
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setTransferOpen(false)}>返回</Button>
+            <Button variant="primary" size="sm" loading={transferring} onClick={handleTransfer}>确认转办</Button>
+          </>
+        }
+      >
+        <div className="space-y-3 py-2">
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-500">
+            转办给分组：当前节点处理组整体变更为该分组（节点计时与提醒重新计算）；
+            转办给人员：由该人员个人接管并锁定提交权。转办原因将写入流转历史并通知对方。
+          </div>
+          <div>
+            <label className={labelCls}>转办对象<span className="text-red-500">*</span></label>
+            <CompactSelect size="lg" block value={transferTarget} onChange={(e) => setTransferTarget(e.target.value)}>
+              <option value="">请选择转办分组或人员</option>
+              <optgroup label="转办给分组">
+                {transferOptions.groups
+                  .filter((g) => g.id !== currentNode?.group_id)
+                  .map((g) => <option key={`g-${g.id}`} value={`group:${g.id}`}>{g.name}</option>)}
+              </optgroup>
+              <optgroup label="转办给人员（个人接管锁定）">
+                {transferOptions.users
+                  .map((u) => <option key={`u-${u.id}`} value={`user:${u.id}`}>{u.display_name || u.username}</option>)}
+              </optgroup>
+            </CompactSelect>
+          </div>
+          <div>
+            <label className={labelCls}>转办原因<span className="text-red-500">*</span></label>
+            <textarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明转办原因（如职责调整、需专业组处理等）" value={transferReason}
+              onChange={(e) => setTransferReason(e.target.value)} />
           </div>
         </div>
       </Modal>

@@ -8,6 +8,7 @@
 
 权限：``ticket_config:view`` 可查看，``ticket_config:edit`` 可增删改/发布。
 """
+import copy
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,9 +17,10 @@ from sqlalchemy.orm import Session
 
 from app.core.sanitizer import sanitize_text
 from app.core.ticket_flow import validate_flow_structure
+from app.core.timezone import to_beijing_iso
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
-from app.models.ticket import Ticket, TicketFlow, TicketGroup
+from app.models.ticket import Ticket, TicketFlow, TicketFlowVersion, TicketGroup
 from app.models.user import User
 from app.schemas.ticket import FlowCreate, FlowUpdate
 from app.workflow.audit import write_audit
@@ -63,6 +65,22 @@ def _flow_payload(flow: TicketFlow, ticket_count: int | None = None) -> dict:
     data["node_count"] = len(flow.nodes.get("nodes") or []) if isinstance(flow.nodes, dict) else 0
     if ticket_count is not None:
         data["ticket_count"] = ticket_count
+    return data
+
+
+def _version_payload(v: TicketFlowVersion, with_nodes: bool = False) -> dict:
+    """版本存档序列化：列表只给摘要（nodes 体积大），详情按需带全量。"""
+    data = {
+        "id": v.id,
+        "version": v.version,
+        "name": v.name,
+        "description": v.description,
+        "node_count": len((v.nodes or {}).get("nodes") or []) if isinstance(v.nodes, dict) else 0,
+        "published_by": v.published_by,
+        "published_at": to_beijing_iso(v.published_at),
+    }
+    if with_nodes:
+        data["nodes"] = v.nodes
     return data
 
 
@@ -171,7 +189,10 @@ def publish_flow(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_config", "edit")),
 ) -> dict:
-    """发布流程模板：结构校验通过后置为已发布（is_draft=False，version+1）。"""
+    """发布流程模板：结构校验通过后置为已发布（is_draft=False，version+1）。
+
+    发布成功同时写入版本存档（ticket_flow_versions），供版本历史查看与回滚。
+    """
     flow = _get_flow_or_404(db, flow_id)
     errors = validate_flow_structure(flow.nodes, group_ok=_group_ok_factory(db))
     if errors:
@@ -180,6 +201,15 @@ def publish_flow(
     flow.is_draft = False
     flow.enabled = True
     flow.version = (flow.version or 0) + 1
+    # 深拷贝快照：JSON 列不追踪原位修改，直接赋引用会在后续编辑时污染存档
+    db.add(TicketFlowVersion(
+        flow_id=flow.id,
+        version=flow.version,
+        name=flow.name,
+        description=flow.description,
+        nodes=copy.deepcopy(flow.nodes),
+        published_by=current_user.username,
+    ))
     db.commit()
     db.refresh(flow)
     write_audit(
@@ -189,6 +219,73 @@ def publish_flow(
     )
     logger.info("发布工单流程模板: id=%s name=%s v%s, operator=%s",
                 flow.id, flow.name, flow.version, current_user.username)
+    return _flow_payload(flow)
+
+
+# ============ 版本管理 ============
+
+@router.get("/{flow_id}/versions")
+def list_flow_versions(flow_id: int, db: Session = Depends(get_db)) -> dict:
+    """版本存档列表（摘要，不含 nodes 主体），按版本号倒序。"""
+    _get_flow_or_404(db, flow_id)
+    rows = (
+        db.query(TicketFlowVersion)
+        .filter(TicketFlowVersion.flow_id == flow_id)
+        .order_by(TicketFlowVersion.version.desc())
+        .all()
+    )
+    return {"items": [_version_payload(v) for v in rows]}
+
+
+@router.get("/{flow_id}/versions/{version}")
+def get_flow_version(flow_id: int, version: int, db: Session = Depends(get_db)) -> dict:
+    """版本存档详情（含完整 nodes，供前端 diff）。"""
+    _get_flow_or_404(db, flow_id)
+    snap = (
+        db.query(TicketFlowVersion)
+        .filter(TicketFlowVersion.flow_id == flow_id, TicketFlowVersion.version == version)
+        .first()
+    )
+    if snap is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    return _version_payload(snap, with_nodes=True)
+
+
+@router.post("/{flow_id}/versions/{version}/rollback")
+def rollback_flow_version(
+    flow_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket_config", "edit")),
+) -> dict:
+    """回滚到指定发布版本：存档内容覆盖当前模板（名称/描述/nodes）。
+
+    回滚后回到草稿态，检查确认后需重新发布才生效；进行中工单不受影响。
+    """
+    flow = _get_flow_or_404(db, flow_id)
+    snap = (
+        db.query(TicketFlowVersion)
+        .filter(TicketFlowVersion.flow_id == flow_id, TicketFlowVersion.version == version)
+        .first()
+    )
+    if snap is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    if snap.nodes == flow.nodes and snap.name == flow.name and snap.description == flow.description:
+        raise HTTPException(status_code=400, detail="当前内容与该版本一致，无需回滚")
+
+    flow.name = snap.name
+    flow.description = snap.description
+    flow.nodes = copy.deepcopy(snap.nodes)  # 拷贝隔离，避免后续编辑反向污染存档
+    flow.is_draft = True
+    db.commit()
+    db.refresh(flow)
+    write_audit(
+        db, action="ticket_flow_rollback", resource_type="ticket_flow", resource_id=flow.id,
+        detail={"name": flow.name, "rollback_to_version": version},
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("回滚工单流程模板: id=%s 回滚到 v%s, operator=%s",
+                flow_id, version, current_user.username)
     return _flow_payload(flow)
 
 
@@ -203,6 +300,8 @@ def delete_flow(
     count = db.query(func.count(Ticket.id)).filter(Ticket.flow_id == flow_id).scalar()
     if count:
         raise HTTPException(status_code=400, detail=f"该模板已被 {count} 条工单引用，禁止删除")
+    # 版本存档随模板一并清理（无工单引用才可删，存档无独立保留价值）
+    db.query(TicketFlowVersion).filter(TicketFlowVersion.flow_id == flow_id).delete()
     db.delete(flow)
     db.commit()
     write_audit(

@@ -254,13 +254,17 @@ export default function TicketGroupManage() {
             <textarea className={`${inputCls} resize-y`} rows={2} placeholder="分组职责说明（选填）"
               value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
-          <div className="flex items-center justify-between">
+          <div>
             <label className={labelCls}>启用状态</label>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input type="checkbox" className="h-4 w-4 accent-primary" checked={form.enabled}
-                onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
-              <span className="text-sm text-foreground">{form.enabled ? '启用' : '停用'}</span>
-            </label>
+            <div className="flex items-center gap-5">
+              {[true, false].map((b) => (
+                <label key={String(b)} className="flex cursor-pointer items-center gap-1.5">
+                  <input type="radio" name="group-enabled" className="h-4 w-4 accent-primary" checked={form.enabled === b}
+                    onChange={() => setForm({ ...form, enabled: b })} />
+                  <span className="text-sm text-foreground">{b ? '启用' : '停用'}</span>
+                </label>
+              ))}
+            </div>
           </div>
         </div>
       </Modal>

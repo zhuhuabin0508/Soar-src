@@ -84,7 +84,17 @@ class TicketFlow(Base):
               "routes": [                   # 流转路由（按序匹配，可带条件）
                 {"to": "n2", "label": "需应急", "when": {"field": "is_need_emergency", "op": "eq", "value": "是"}},
                 {"to": "end", "label": "默认", "when": null}
-              ]
+              ],
+              "rollback_to": ["n1"]        # 回退白名单（可选）：本节点仅允许退回这些节点；
+                                           # 空数组=禁止回退；缺省=退回上一处理节点（默认）
+            },
+            {
+              "key": "n_sign",             # 并行会签节点：多个分组同时处理
+              "name": "多方会签",
+              "type": "parallel",          # parallel=并行会签（用 sign_groups 代替 group_id）
+              "sign_groups": [3, 5],       # 会签分组列表（至少 2 组才有会签意义）
+              "finish_policy": "all",      # all=全部会签完成才流转 / any=任一分组提交即流转
+              "fields": [], "routes": [...]
             }
           ]
         }
@@ -119,6 +129,39 @@ class TicketFlow(Base):
         return f"<TicketFlow id={self.id} name={self.name!r} draft={self.is_draft}>"
 
 
+class TicketFlowVersion(Base):
+    """流程模板发布版本存档：每次发布时写入完整快照。
+
+    - 与 ``TicketFlow.version`` 对应：发布 version 自增后落一条存档
+    - 回滚：用存档内容覆盖当前模板（name/description/nodes），回到草稿态需重新发布
+    - 老模板（启用存档前发布的版本）无对应记录，自下一次发布起开始存档
+    """
+
+    __tablename__ = "ticket_flow_versions"
+    __table_args__ = (
+        UniqueConstraint("flow_id", "version", name="uq_ticket_flow_version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    flow_id = Column(Integer, ForeignKey("ticket_flows.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=True)
+    nodes = Column(JSON, nullable=False, default=dict)
+    published_by = Column(String(64), nullable=True)
+    published_at = Column(DateTime, server_default=func.now())
+
+    def to_dict(self) -> dict:
+        result = {}
+        for column in self.__table__.columns:
+            value = getattr(self, column.name)
+            result[column.name] = to_beijing_iso(value) if hasattr(value, "isoformat") else value
+        return result
+
+    def __repr__(self) -> str:
+        return f"<TicketFlowVersion id={self.id} flow={self.flow_id} v{self.version}>"
+
+
 class Ticket(Base):
     """工单实例。
 
@@ -132,6 +175,8 @@ class Ticket(Base):
     - ``arrived_at``：进入当前节点时间（节点停留超时提醒的计时起点，流转时重置）
     - ``first_reminded_at`` / ``last_reminded_at`` / ``remind_count``：超时提醒进度
     - ``archived``：归档标记（软删除，仅完结工单可归档，可取消归档恢复）
+    - ``claimed_by_id``：认领人（组内先到先得认领后锁定，仅认领人/admin 可提交；
+      流转/回退/转办到分组时自动释放）
     - ``enrichment_data``：发起时对 src_ip / dst_ip 自动研判的结果
       （资产库匹配 + 威胁情报查询，JSON 结构见 app.core.ticket_enrichment），
       随工单全程流转，各节点处理人只读可见
@@ -164,6 +209,11 @@ class Ticket(Base):
     remind_count = Column(Integer, nullable=False, default=0)
     # 归档标记（阶段2）：软删除，列表默认排除归档工单
     archived = Column(Boolean, nullable=False, default=False)
+    # 认领锁定：组内成员认领后仅认领人（或 admin）可提交，流转/回退/转办到分组时释放
+    claimed_by_id = Column(Integer, nullable=True)
+    # 当前待处理分组 CSV（",3,5,"）：并行会签节点为全部待签分组，普通节点为单个分组；
+    # current_group_id 始终指向其中首个（兼容展示/转办），NULL = 已完结/无分组
+    current_group_ids = Column(String(255), nullable=True)
     # 发起时自动研判结果（资产匹配 + 威胁情报，按 src_ip/dst_ip），随工单流转
     enrichment_data = Column(JSON, nullable=True)
 
@@ -219,7 +269,8 @@ class TicketNodeRecord(Base):
     - ``node_key`` / ``node_name``：快照中的节点标识与名称（含发起节点 start）
     - ``group_id``：该节点的处理分组（发起节点为发起人所在分组，可为空）
     - ``handler_id`` / ``handler_name``：实际处理人（先到先得：组内任一人提交即代表全组）
-    - ``action``：create=发起 / submit=提交流转 / cancel=取消 / end=结束落位
+    - ``action``：create=发起 / submit=提交流转 / cancel=取消 / end=结束落位 /
+      rollback=退回上一步 / urge=催办 / transfer=转办 / claim=认领 / comment=内部评论
     - ``field_values``：本节点填写的字段值 JSON
     - ``route_to``：流转去向节点 key（结束为 end）
     - ``comment``：处理意见

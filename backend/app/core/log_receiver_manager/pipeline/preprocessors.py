@@ -114,6 +114,12 @@ def parse_qingteng_syslog(text: str) -> Optional[dict]:
     # （系统口径 0严重/1高危/2中危/3低危/4信息），避免"信息"被当成"严重"计入高危及以上。
     _QT_SEV_TO_RISK = {"0": 4, "1": 3, "2": 2, "3": 1, "4": 0}
     sev = flat.get("severity")
+    if sev is None or str(sev).strip() == "":
+        # 部分日志类型（如 web_command）不带 severity，仅有文本 event_level
+        # （info/low/medium/high/critical，青藤口径 0信息/1低危/2中危/3高危/4危急）
+        # → 先推导为 severity 再统一翻译；未知文本保持缺失（策略侧回退"未知"等级）
+        _QT_LEVEL_TEXT_TO_SEV = {"info": "0", "low": "1", "medium": "2", "high": "3", "critical": "4"}
+        sev = _QT_LEVEL_TEXT_TO_SEV.get(str(flat.get("event_level") or "").strip().lower())
     if sev is not None:
         try:
             flat["severity"] = _QT_SEV_TO_RISK.get(str(int(float(str(sev)))), str(sev))

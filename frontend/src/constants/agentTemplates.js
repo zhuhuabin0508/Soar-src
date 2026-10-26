@@ -96,13 +96,13 @@ export const AGENT_TEMPLATES = [
   {
     id: 'ban_decision',
     name: '封禁决策员',
-    description: 'IP 风险研判 + 封禁时长计算 + 记录封禁，适用于封禁工作流',
+    description: 'IP 风险研判 + 封禁时长建议，给出处置建议而不执行封禁',
     scenario: '封禁工作流、IP 风险处置',
     tags: ['封禁决策', 'IP 风险', '工作流'],
     icon: 'ban',
     form: {
       name: '封禁决策员',
-      description: '综合白名单、资产、威胁情报与历史封禁记录，计算并执行封禁决策',
+      description: '综合白名单、资产、威胁情报与历史封禁记录，给出封禁等级与时长建议（不执行封禁）',
       greeting: '你好，我是封禁决策助手。提供待处置 IP 或告警上下文，我会给出封禁等级与时长建议。',
       suggested_questions: ['请对 45.227.255.206 做封禁决策', '该 IP 是否已有封禁记录？'],
       system_prompt: `你是 IP 风险研判与封禁决策专家。
@@ -114,11 +114,12 @@ export const AGENT_TEMPLATES = [
 4. get_threat_intel：查询恶意标签与置信度
 5. query_banned_ip：查询历史封禁与违规次数
 6. calculate_ban_duration：按地域、违规次数、威胁标签计算时长
-7. 确认需封禁后调用 record_ban 写入封禁记录
+7. 输出封禁建议（等级、时长、是否永久），由人工在工作台或工单流转中执行封禁
 
 ## 原则
-- 内网 IP 禁止自动封禁
-- 出口/NAT 地址封禁前必须说明影响范围
+- 内网 IP 不建议封禁
+- 出口/NAT 地址建议封禁前说明影响范围
+- 你只做研判与建议，不执行任何封禁动作
 - 输出需包含：决策理由、ban_level、时长、是否永久`,
       temperature: 0.2,
       max_iterations: 10,
@@ -130,7 +131,6 @@ export const AGENT_TEMPLATES = [
         'get_threat_intel',
         'query_banned_ip',
         'calculate_ban_duration',
-        'record_ban',
       ],
       enabled_asset_types: ['host_asset', 'network_segment', 'egress_ip'],
       tool_configs: { tool_search: { enabled: 'off' } },
@@ -138,15 +138,14 @@ export const AGENT_TEMPLATES = [
     kb_names: ['安全响应规范', '常用研判口径'],
     skill_names: [],
     wizardStep: 'ability',
-    tool_guide: '已按「封禁决策」链路预选工具，从研判到计算时长再到写入封禁记录，一般无需再选其他。',
+    tool_guide: '已按「封禁决策」链路预选工具，从研判到计算建议时长；智能体只给建议，封禁由人工执行。',
     tool_hints: {
       check_whitelist: '白名单命中则终止，避免误封',
       search_assets: '确认是否为关键业务或出口地址',
       search_discovered_assets: '确认 IP 是否落在已发现的云主机或弹性IP上',
       get_threat_intel: '获取恶意标签，影响封禁等级',
       query_banned_ip: '查历史封禁与违规次数',
-      calculate_ban_duration: '按规则计算封禁时长',
-      record_ban: '写入封禁记录',
+      calculate_ban_duration: '按规则计算建议封禁时长',
     },
     kb_guide: '已预选内置响应规范，辅助封禁决策口径。',
   },

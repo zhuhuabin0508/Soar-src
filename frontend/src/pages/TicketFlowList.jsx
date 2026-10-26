@@ -4,7 +4,7 @@
 // - 导出：模板名称/描述/nodes 导出为 JSON；导入：JSON 创建为草稿副本，检查后重新发布
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { GitGraph, Plus, Pencil, Trash2, Rocket, FileJson, Power, Download, Upload, RefreshCw, ChevronDown } from 'lucide-react'
+import { GitGraph, Plus, Pencil, Trash2, Rocket, FileJson, Power, Download, Upload, RefreshCw, MoreVertical } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Button, PageContainer, DataTable, Pagination, EmptyState } from '../components/ui'
@@ -24,19 +24,19 @@ export default function TicketFlowList() {
   const [togglingId, setTogglingId] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
 
-  // 头部「更多」下拉菜单（ref + document 监听点击外部关闭，不用全屏遮罩避免拦截交互）
-  const [dataMenuOpen, setDataMenuOpen] = useState(false)
-  const dataMenuRef = useRef(null)
+  // 行内「更多」下拉菜单（ref + document 监听点击外部关闭，不用全屏遮罩避免拦截交互）
+  const [rowMenuId, setRowMenuId] = useState(null)
+  const rowMenuRef = useRef(null)
   useEffect(() => {
-    if (!dataMenuOpen) return
+    if (rowMenuId == null) return
     const onDocMouseDown = (e) => {
-      if (dataMenuRef.current && !dataMenuRef.current.contains(e.target)) {
-        setDataMenuOpen(false)
+      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target)) {
+        setRowMenuId(null)
       }
     }
     document.addEventListener('mousedown', onDocMouseDown)
     return () => document.removeEventListener('mousedown', onDocMouseDown)
-  }, [dataMenuOpen])
+  }, [rowMenuId])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -196,33 +196,50 @@ export default function TicketFlowList() {
       render: (r) => <span className="tabular-nums text-muted-foreground">{r.updated_at ? new Date(r.updated_at).toLocaleString('zh-CN', { hour12: false }) : '--'}</span>,
     },
     {
-      key: 'actions', header: '操作', width: '415px',
+      // 操作收敛：高频「编辑 / 发布」平铺，导出 / 停用 / 删除收进「更多」下拉（规范：>3 个操作收敛）
+      key: 'actions', header: '操作', width: '235px',
       render: (r) => (
-        <div className="flex items-center gap-1.5 whitespace-nowrap">
-          <button onClick={(e) => { e.stopPropagation(); exportFlow(r) }}
-            className="btn-secondary btn-sm" title="导出为 JSON 文件（可在其他环境导入）">
-            <Download className="h-3 w-3" />导出
-          </button>
-          {canEdit && (
+        <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
+          {canEdit ? (
             <>
               <button onClick={(e) => { e.stopPropagation(); openEdit(r) }} className="btn-secondary btn-sm" title="编辑流程">
                 <Pencil className="h-3 w-3" />编辑
               </button>
-              {!r.is_draft && (
-                <button onClick={(e) => { e.stopPropagation(); handleToggle(r) }} disabled={togglingId === r.id}
-                  className="btn-secondary btn-sm" title={r.enabled ? '停用（停用后不能发起工单）' : '启用'}>
-                  <Power className="h-3 w-3" />{r.enabled ? '停用' : '启用'}
-                </button>
-              )}
               <button onClick={(e) => { e.stopPropagation(); handlePublish(r) }} disabled={publishingId === r.id}
                 className="btn-secondary btn-sm" title={r.is_draft ? '发布后才能发起工单' : '重新发布'}>
                 <Rocket className="h-3 w-3" />{publishingId === r.id ? '发布中' : '发布'}
               </button>
-              <button onClick={(e) => { e.stopPropagation(); handleDelete(r) }} disabled={deletingId === r.id}
-                className="btn-danger btn-sm" title="删除模板">
-                <Trash2 className="h-3 w-3" />{deletingId === r.id ? '删除中' : '删除'}
-              </button>
+              <div className="relative" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => setRowMenuId(rowMenuId === r.id ? null : r.id)}
+                  className={`btn-secondary btn-sm !px-2 ${rowMenuId === r.id ? 'ring-1 ring-ring' : ''}`} title="更多操作">
+                  <MoreVertical className="h-3 w-3" />
+                </button>
+                {rowMenuId === r.id && (
+                  <div ref={rowMenuRef} className="absolute right-0 top-full z-20 mt-1 w-36 rounded-md border border-border bg-popover p-1 shadow-lg">
+                    <button type="button" onClick={() => { setRowMenuId(null); exportFlow(r) }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground transition hover:bg-accent">
+                      <Download className="h-3.5 w-3.5 text-muted-foreground" />导出 JSON
+                    </button>
+                    {!r.is_draft && (
+                      <button type="button" onClick={() => { setRowMenuId(null); handleToggle(r) }} disabled={togglingId === r.id}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                        title={r.enabled ? '停用后不能发起工单' : '启用'}>
+                        <Power className="h-3.5 w-3.5 text-muted-foreground" />{r.enabled ? '停用' : '启用'}
+                      </button>
+                    )}
+                    <button type="button" onClick={() => { setRowMenuId(null); handleDelete(r) }} disabled={deletingId === r.id}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50">
+                      <Trash2 className="h-3.5 w-3.5" />{deletingId === r.id ? '删除中' : '删除'}
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
+          ) : (
+            <button onClick={(e) => { e.stopPropagation(); exportFlow(r) }}
+              className="btn-secondary btn-sm" title="导出为 JSON 文件（可在其他环境导入）">
+              <Download className="h-3 w-3" />导出
+            </button>
           )}
         </div>
       ),
@@ -248,30 +265,15 @@ export default function TicketFlowList() {
             <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
           </button>
           {canEdit && (
-            <div className="relative" ref={dataMenuRef}>
-              <button
-                type="button"
-                onClick={() => setDataMenuOpen((v) => !v)}
-                disabled={importing}
-                className={`btn-secondary btn-sm ${dataMenuOpen ? 'ring-1 ring-ring' : ''}`}
-                title="从 JSON 文件导入模板"
-              >
-                <Upload className="mr-1 h-3.5 w-3.5" />{importing ? '导入中' : '导入'}
-                <ChevronDown className={`ml-1 h-3 w-3 transition-transform ${dataMenuOpen ? 'rotate-180' : ''}`} />
-              </button>
-              {dataMenuOpen && (
-                <div className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-border bg-popover p-1 shadow-lg">
-                  <button
-                    type="button"
-                    onClick={() => { importRef.current?.click(); setDataMenuOpen(false) }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground transition hover:bg-accent"
-                  >
-                    <FileJson className="h-3.5 w-3.5 text-muted-foreground" />
-                    导入 JSON 模板
-                  </button>
-                </div>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={() => importRef.current?.click()}
+              disabled={importing}
+              className="btn-secondary btn-sm"
+              title="从 JSON 文件导入模板"
+            >
+              <Upload className="mr-1 h-3.5 w-3.5" />{importing ? '导入中' : '导入'}
+            </button>
           )}
           {canEdit && (
             <Button variant="primary" size="sm" onClick={openNew}>

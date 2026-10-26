@@ -408,24 +408,33 @@ function FieldMapRow({ field, label, modes, cfg, onChange }) {
       <FieldSelect className="w-full" value={value || ''} onChange={(v) => onChange({ mode, value: v })} />
     )
   } else if (mode === 'keep') {
-    valueCtl = <input className={`${inputBaseCls} h-8 w-full`} disabled value="" placeholder="沿用解析结果" />
-  } else {
-    valueCtl = <input className={`${inputBaseCls} h-8 w-full`} disabled value="" placeholder="请选择取值方式" />
+    valueCtl = <input className={`${inputBaseCls} h-8 w-full`} disabled value="" placeholder="保留解析结果（不覆盖）" />
+  }
+  // 未选模式：值区域整体渲染为一个全宽取值方式下拉（点击即选），
+  // 避免出现看似可点实则禁用的"假输入框"（点击无响应）
+  if (!mode) {
+    return (
+      <div className="flex items-center gap-2.5 py-1.5">
+        <span className="w-[104px] shrink-0 truncate text-[13px] text-foreground" title={label}>{label}</span>
+        <CompactSelect size="md" block className="flex-1" title="选择取值方式" value=""
+          onChange={(e) => setMode(e.target.value)}>
+          <option value="">请选择取值方式（静态值 / 字段映射 / 保留解析结果）</option>
+          {modes.map((m) => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
+        </CompactSelect>
+      </div>
+    )
   }
   return (
     <div className="flex items-center gap-2.5 py-1.5">
       <span className="w-[104px] shrink-0 truncate text-[13px] text-foreground" title={label}>{label}</span>
       <CompactSelect size="md" className="w-[120px] shrink-0" value={mode} onChange={(e) => setMode(e.target.value)}>
-        {!mode && <option value="">取值方式</option>}
         {modes.map((m) => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
       </CompactSelect>
       <div className="min-w-[120px] flex-1">{valueCtl}</div>
-      {mode ? (
-        <button type="button" className={DEL_BTN_CLS} title="清除该字段配置"
-          onClick={() => onChange(null)}>
-          <Trash2 className="h-4 w-4" />
-        </button>
-      ) : <span className="w-8 shrink-0" />}
+      <button type="button" className={DEL_BTN_CLS} title="清除该字段配置"
+        onClick={() => onChange(null)}>
+        <Trash2 className="h-4 w-4" />
+      </button>
     </div>
   )
 }
@@ -1228,7 +1237,7 @@ export default function AlertRuleEditPage() {
         </div>
 
         {/* ===== 右栏：sticky 摘要 + 测试面板 ===== */}
-        <div className="w-full space-y-4 xl:w-[calc(33%-13px)] xl:shrink-0">
+        <div className="w-full min-w-0 space-y-4 xl:flex-1">
           <div className="space-y-4 xl:sticky xl:top-[72px]">
             {/* 规则摘要 */}
             <div className="card border-primary/20 bg-primary/[0.04] p-5">

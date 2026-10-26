@@ -140,8 +140,7 @@ export default function TicketSlaConfig() {
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">SLA 目标配置</h1>
           <p className="mt-2 text-[13px] text-muted-foreground">
-            按工单优先级设定响应时限与解决时限：响应 = 工单发起 → 首次节点提交；解决 = 工单创建 → 完成关闭。
-            超出目标即计为 SLA 超时，作用于监控大屏的 SLA 时效分析与超时预警；留空表示该维度不设目标（不参与统计）。
+            按工单优先级设定响应与解决时限，超出即计为 SLA 超时并作用于监控大屏时效分析；留空表示不设目标。
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -183,7 +182,8 @@ export default function TicketSlaConfig() {
         <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-card px-6 py-4 text-[13px] text-muted-foreground">
           <TimerReset className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
-            口径说明：进行中工单按当前时间实时判断是否超出目标；已取消工单仅统计响应超时（取消不计解决）；
+            口径说明：响应 = 工单发起 → 首次节点提交；解决 = 工单创建 → 完成关闭。
+            进行中工单按当前时间实时判断是否超出目标；已取消工单仅统计响应超时（取消不计解决）；
             流程模板中节点级的「超时提醒」仍用于通知中心提醒处理分组，与大屏 SLA 统计口径相互独立。
           </p>
         </div>

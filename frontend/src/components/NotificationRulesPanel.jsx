@@ -424,11 +424,38 @@ export default function NotificationRulesPanel() {
                   onChange={(e) => setForm((f) => ({ ...f, event_type: e.target.value }))}
                 >
                   {eventTypes.length > 0 ? (
-                    eventTypes.map((et) => (
-                      <option key={et.value} value={et.value}>
-                        {et.label}（{et.value}）— {et.desc}
-                      </option>
-                    ))
+                    // 按分组聚合为 optgroup；无分组 / 通用（通配 *）项平铺在末尾。
+                    // 注意：CompactSelect 用 Children.toArray 解析子节点，
+                    // 不能用 Fragment 包裹，必须直接返回元素数组。
+                    (() => {
+                      const groups = []
+                      const flat = []
+                      eventTypes.forEach((et) => {
+                        if (et.group && et.group !== '通用') {
+                          const last = groups[groups.length - 1]
+                          if (last && last.label === et.group) last.items.push(et)
+                          else groups.push({ label: et.group, items: [et] })
+                        } else {
+                          flat.push(et)
+                        }
+                      })
+                      return [
+                        ...groups.map((g) => (
+                          <optgroup key={g.label} label={g.label}>
+                            {g.items.map((it) => (
+                              <option key={it.value} value={it.value}>
+                                {it.label}（{it.value}）— {it.desc}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )),
+                        ...flat.map((et) => (
+                          <option key={et.value} value={et.value}>
+                            {et.label}（{et.value}）— {et.desc}
+                          </option>
+                        )),
+                      ]
+                    })()
                   ) : (
                     <option value={form.event_type}>{form.event_type}</option>
                   )}
