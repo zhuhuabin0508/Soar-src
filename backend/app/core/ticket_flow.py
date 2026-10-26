@@ -16,10 +16,13 @@
             {"key": "src_ip", "label": "源IP地址", "type": "ip",
              "required": true, "options": [], "placeholder": "",
              "default": "", "alert_field_mapping": "src_ip",
-             "auto_enrich": true, "auto_agent": false,
+             "auto_asset": true, "auto_intel": true, "auto_agent": false,
              "rules": []}
-            # auto_enrich：仅 ip 类型字段有效，控制发起时资产匹配 +
-            # 威胁情报查询，默认 true（开启）
+            # auto_asset：仅 ip 类型字段有效，控制发起时资产匹配，
+            # 默认 true（开启）
+            # auto_intel：仅 ip 类型字段有效，控制发起时威胁情报查询，
+            # 默认 true（开启）；存量模板的旧合并键 auto_enrich
+            #（同时控制两者）仍被识别，按其值兜底
             # auto_agent：仅 ip 类型字段有效，控制发起时智能体研判
             #（IP 风险研判与封禁决策智能体），默认 false（关闭）
             # rules：匹配规则（仅 select/switch 字段可配），形如

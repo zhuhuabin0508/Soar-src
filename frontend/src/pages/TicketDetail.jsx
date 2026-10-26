@@ -320,8 +320,8 @@ function EnrichSourceView({ s, onFill }) {
   )
 }
 
-// 自动研判卡片：发起时对 src_ip/dst_ip 按字段开关执行资产匹配 + 威胁情报查询
-//（auto_enrich）与智能体研判（auto_agent），随工单流转只读展示
+// 自动研判卡片：发起时对 src_ip/dst_ip 按字段开关执行资产匹配（auto_asset）、
+// 威胁情报查询（auto_intel）与智能体研判（auto_agent），随工单流转只读展示
 function EnrichmentView({ enrichment, onFill }) {
   if (!enrichment?.sources?.length) return null
   return (

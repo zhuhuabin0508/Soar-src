@@ -1,11 +1,11 @@
 """工单发起时自动研判：源/目的 IP 资产匹配 + 威胁情报查询 + 智能体研判。
 
 发起工单时对首节点 ``src_ip`` / ``dst_ip`` 字段自动执行（按字段开关）：
-1. 资产匹配（``auto_enrich``，默认开启）：复用告警资产富化
+1. 资产匹配（``auto_asset``，默认开启）：复用告警资产富化
    （AssetLibEnricher）的资产索引（单 IP 精确 + CIDR/起止范围包含，
    内存缓存 TTL 600s，资产写接口 commit 后主动失效），
    与告警「关联资产」同一套口径；
-2. 威胁情报（``auto_enrich``，默认开启）：复用工具 ``get_threat_intel``
+2. 威胁情报（``auto_intel``，默认开启）：复用工具 ``get_threat_intel``
    （app.tools.context_tools），与智能体工具 API 调用一致；
 3. 智能体研判（``auto_agent``，默认关闭）：调用 IP 风险研判智能体
    （``agent_client.analyze_ip_risk``，即「IP风险智能研判与封禁决策」，
@@ -45,9 +45,10 @@
 设计要点：
 - 字段定位：首节点字段中 type=ip 且 key 为 src_ip / dst_ip
   （兜底 alert_field_mapping 为 src_ip / dst_ip）；
-- 开关：字段 ``auto_enrich`` 显式为 False 时跳过资产匹配与威胁情报
+- 开关：资产匹配 ``auto_asset`` 与威胁情报 ``auto_intel`` 独立控制
   （默认开启）；``auto_agent`` 显式为 True 时追加智能体研判
-  （默认关闭），兼容存量流程模板无该键的情况；
+  （默认关闭）。兼容存量模板：字段仅有旧合并键 ``auto_enrich``
+  （同时控制资产匹配与威胁情报）时，两个开关均按其值兜底；
 - 多值 IP（逗号/分号分隔）取第一个有效地址；
 - 单个来源研判失败仅记入 errors，不阻塞工单发起。
 """
@@ -99,9 +100,10 @@ def _locate_ip_fields(field_defs: list, values: dict) -> list[dict]:
     """从首节点字段定义中定位 src_ip / dst_ip 字段并提取有效 IP。
 
     匹配规则：字段 key 为 src_ip / dst_ip（兜底 alert_field_mapping），
-    且字段值为有效 IP。返回 ``[{role, label, ip, enrich, agent}]``，
-    其中 ``enrich``（资产匹配+威胁情报）默认 True，
-    ``agent``（智能体研判）默认 False。
+    且字段值为有效 IP。返回 ``[{role, label, ip, asset, intel, agent}]``，
+    其中 ``asset``（资产匹配）与 ``intel``（威胁情报）默认 True、
+    ``agent``（智能体研判）默认 False；仅有旧合并键 ``auto_enrich``
+    的存量模板按其值兜底。
     """
     found: list[dict] = []
     for f in field_defs or []:
@@ -115,11 +117,19 @@ def _locate_ip_fields(field_defs: list, values: dict) -> list[dict]:
         ip = _extract_ip(values.get(key))
         if not ip:
             continue
+        legacy = f.get("auto_enrich")
+        asset = f.get("auto_asset")
+        if asset is None:
+            asset = legacy is not False
+        intel = f.get("auto_intel")
+        if intel is None:
+            intel = legacy is not False
         found.append({
             "role": role,
             "label": f.get("label") or key,
             "ip": ip,
-            "enrich": f.get("auto_enrich") is not False,
+            "asset": asset,
+            "intel": intel,
             "agent": f.get("auto_agent") is True,
         })
     return found
@@ -316,7 +326,7 @@ def build_ticket_enrichment(db, field_defs: list, values: dict, title: str = "")
     Args:
         title: 工单标题，作为智能体研判的告警上下文（alert_name）。
 
-    资产匹配与威胁情报同步执行（毫秒级）；智能体研判仅写入
+    资产匹配与威胁情报按各自开关独立执行（毫秒级）；智能体研判仅写入
     ``{"pending": true}`` 占位，由 ``start_agent_analysis_bg`` 后台
     线程异步完成并回写（LLM 耗时较长，不阻塞工单发起与流转）。
     无有效 src_ip / dst_ip，或全部开关关闭时返回 None（不留空结构）。
@@ -326,27 +336,28 @@ def build_ticket_enrichment(db, field_defs: list, values: dict, title: str = "")
     if not located:
         return None
     # 全部开关关闭：无需研判
-    if not any(item["enrich"] or item["agent"] for item in located):
+    if not any(item["asset"] or item["intel"] or item["agent"] for item in located):
         return None
 
     # 威胁情报批量并发查询（Mock 0.3-0.8s 延迟，并发后仅一次等待）；
-    # 未开启基础研判（auto_enrich=False）的 IP 以 None 占位跳过
-    enrich_ips = [item["ip"] if item["enrich"] else None for item in located]
-    threats = _query_threat_intel_batch([ip for ip in enrich_ips if ip])
+    # 未开启威胁情报（auto_intel=False）的 IP 不参与批量
+    intel_ips = [item["ip"] if item["intel"] else None for item in located]
+    threats = _query_threat_intel_batch([ip for ip in intel_ips if ip])
     threat_iter = iter(threats)
 
     sources: list[dict] = []
     errors: list[str] = []
     for item in located:
         entry = {"role": item["role"], "label": item["label"], "ip": item["ip"]}
-        if item["enrich"]:
-            threat = next(threat_iter)
+        if item["asset"]:
             try:
                 entry["asset"] = _match_asset(db, item["ip"])
             except Exception as exc:  # noqa: BLE001
                 logger.warning("工单资产匹配失败, ip=%s: %s", item["ip"], exc)
                 entry["asset"] = {"matched": False}
                 errors.append(f"{item['label']} 资产匹配失败: {exc}")
+        if item["intel"]:
+            threat = next(threat_iter)
             if isinstance(threat, dict) and not threat.get("error"):
                 entry["threat"] = threat
             else:
@@ -358,10 +369,11 @@ def build_ticket_enrichment(db, field_defs: list, values: dict, title: str = "")
         sources.append(entry)
 
     logger.info(
-        "工单自动研判完成: roles=%s, 资产命中=%s/%d, 智能体研判=%d, 错误=%d",
+        "工单自动研判完成: roles=%s, 资产命中=%s/%d, 威胁情报=%d, 智能体研判=%d, 错误=%d",
         [item["role"] for item in located],
         sum(1 for s in sources if s.get("asset", {}).get("matched")),
-        len(sources),
+        sum(1 for item in located if item["asset"]),
+        sum(1 for item in located if item["intel"]),
         sum(1 for s in sources if s.get("agent")),
         len(errors),
     )

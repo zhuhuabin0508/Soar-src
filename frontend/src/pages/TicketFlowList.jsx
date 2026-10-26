@@ -3,6 +3,7 @@
 // - 已发布的模板被编辑后自动回到草稿态，需重新发布才能发起工单
 // - 导出：模板名称/描述/nodes 导出为 JSON；导入：JSON 创建为草稿副本，检查后重新发布
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { GitGraph, Plus, Pencil, Trash2, Rocket, FileJson, Power, Download, Upload, RefreshCw, MoreVertical } from 'lucide-react'
 import { toast } from '../store/toastStore'
@@ -10,6 +11,82 @@ import { confirm } from '../components/ConfirmDialog'
 import { Button, PageContainer, DataTable, Pagination, EmptyState } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
+
+// ============ 行内「更多」下拉菜单 ============
+// portal 到 body + fixed 定位（按按钮坐标计算位置）：避免被表格容器 overflow 裁剪
+function FlowRowMenu({ row, onExport, onToggle, onDelete, toggling, deleting }) {
+  const [open, setOpen] = useState(false)
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+  const btnRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onMouse = (e) => {
+      if (btnRef.current && btnRef.current.contains(e.target)) return
+      const menu = document.getElementById('flow-row-menu')
+      if (menu && menu.contains(e.target)) return
+      setOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    const onScroll = () => setOpen(false)
+    document.addEventListener('mousedown', onMouse)
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('scroll', onScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', onMouse)
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('scroll', onScroll, true)
+    }
+  }, [open])
+
+  const toggleMenu = () => {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      const menuW = 144
+      const menuH = 130
+      const left = Math.min(rect.right - menuW, window.innerWidth - menuW - 8)
+      const top = Math.min(rect.bottom + 4, window.innerHeight - menuH - 8)
+      setMenuPos({ top, left })
+    }
+    setOpen((v) => !v)
+  }
+
+  const act = (fn) => () => { setOpen(false); fn(row) }
+
+  const items = [
+    { icon: Download, label: '导出 JSON', onClick: act(onExport) },
+    ...(!row.is_draft ? [{
+      icon: Power,
+      label: row.enabled ? '停用' : '启用',
+      onClick: act(onToggle),
+      disabled: toggling,
+      title: row.enabled ? '停用后不能发起工单' : '启用',
+    }] : []),
+    { icon: Trash2, label: deleting ? '删除中' : '删除', onClick: act(onDelete), danger: true, disabled: deleting },
+  ]
+
+  return (
+    <div onClick={(e) => e.stopPropagation()}>
+      <button ref={btnRef} type="button" onClick={toggleMenu}
+        className={`btn-secondary btn-sm !px-2 ${open ? 'ring-1 ring-ring' : ''}`} title="更多操作">
+        <MoreVertical className="h-3 w-3" />
+      </button>
+      {open && createPortal(
+        <div id="flow-row-menu"
+          className="fixed z-[9999] w-36 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-2xl"
+          style={{ top: menuPos.top, left: menuPos.left }}>
+          {items.map((it) => (
+            <button key={it.label} type="button" onClick={it.onClick} disabled={it.disabled} title={it.title}
+              className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${it.danger ? 'text-destructive' : 'text-foreground'}`}>
+              <it.icon className="h-3.5 w-3.5 shrink-0" />{it.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
 
 export default function TicketFlowList() {
   const canEdit = hasPermission('ticket_config', 'edit')
@@ -23,20 +100,6 @@ export default function TicketFlowList() {
   const [publishingId, setPublishingId] = useState(null)
   const [togglingId, setTogglingId] = useState(null)
   const [deletingId, setDeletingId] = useState(null)
-
-  // 行内「更多」下拉菜单（ref + document 监听点击外部关闭，不用全屏遮罩避免拦截交互）
-  const [rowMenuId, setRowMenuId] = useState(null)
-  const rowMenuRef = useRef(null)
-  useEffect(() => {
-    if (rowMenuId == null) return
-    const onDocMouseDown = (e) => {
-      if (rowMenuRef.current && !rowMenuRef.current.contains(e.target)) {
-        setRowMenuId(null)
-      }
-    }
-    document.addEventListener('mousedown', onDocMouseDown)
-    return () => document.removeEventListener('mousedown', onDocMouseDown)
-  }, [rowMenuId])
 
   const load = useCallback(() => {
     setLoading(true)
@@ -209,31 +272,14 @@ export default function TicketFlowList() {
                 className="btn-secondary btn-sm" title={r.is_draft ? '发布后才能发起工单' : '重新发布'}>
                 <Rocket className="h-3 w-3" />{publishingId === r.id ? '发布中' : '发布'}
               </button>
-              <div className="relative" onClick={(e) => e.stopPropagation()}>
-                <button onClick={() => setRowMenuId(rowMenuId === r.id ? null : r.id)}
-                  className={`btn-secondary btn-sm !px-2 ${rowMenuId === r.id ? 'ring-1 ring-ring' : ''}`} title="更多操作">
-                  <MoreVertical className="h-3 w-3" />
-                </button>
-                {rowMenuId === r.id && (
-                  <div ref={rowMenuRef} className="absolute right-0 top-full z-20 mt-1 w-36 rounded-md border border-border bg-popover p-1 shadow-lg">
-                    <button type="button" onClick={() => { setRowMenuId(null); exportFlow(r) }}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground transition hover:bg-accent">
-                      <Download className="h-3.5 w-3.5 text-muted-foreground" />导出 JSON
-                    </button>
-                    {!r.is_draft && (
-                      <button type="button" onClick={() => { setRowMenuId(null); handleToggle(r) }} disabled={togglingId === r.id}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                        title={r.enabled ? '停用后不能发起工单' : '启用'}>
-                        <Power className="h-3.5 w-3.5 text-muted-foreground" />{r.enabled ? '停用' : '启用'}
-                      </button>
-                    )}
-                    <button type="button" onClick={() => { setRowMenuId(null); handleDelete(r) }} disabled={deletingId === r.id}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-destructive transition hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50">
-                      <Trash2 className="h-3.5 w-3.5" />{deletingId === r.id ? '删除中' : '删除'}
-                    </button>
-                  </div>
-                )}
-              </div>
+              <FlowRowMenu
+                row={r}
+                onExport={exportFlow}
+                onToggle={handleToggle}
+                onDelete={handleDelete}
+                toggling={togglingId === r.id}
+                deleting={deletingId === r.id}
+              />
             </>
           ) : (
             <button onClick={(e) => { e.stopPropagation(); exportFlow(r) }}

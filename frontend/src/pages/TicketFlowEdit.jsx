@@ -547,7 +547,7 @@ export default function TicketFlowEdit() {
     if (!selected) return
     const fields = selected.fields || []
     // key 唯一性按平铺集合（顶层 + 全部扩展字段）处理
-    patchNode(selected.key, { fields: [...fields, { key: nextFieldKey(flatFields(fields)), label: '', type: 'text', required: false, options: [], placeholder: '', default: '', alert_field_mapping: '', auto_enrich: true, auto_agent: false, rules: [] }] })
+    patchNode(selected.key, { fields: [...fields, { key: nextFieldKey(flatFields(fields)), label: '', type: 'text', required: false, options: [], placeholder: '', default: '', alert_field_mapping: '', auto_asset: true, auto_intel: true, auto_agent: false, rules: [] }] })
   }
 
   const patchField = (fkey, patch) => {
@@ -1402,13 +1402,23 @@ export default function TicketFlowEdit() {
                               {f.type === 'ip' && (
                                 <>
                                   <div>
-                                    <label className={labelCls}>自动研判</label>
+                                    <label className={labelCls}>资产匹配</label>
                                     <label className="flex cursor-pointer items-center gap-2 py-[7px]"
-                                      title="发起工单时自动对该 IP 执行资产匹配与威胁情报查询；仅标识（key）或告警字段映射为 src_ip / dst_ip 的字段生效，默认开启">
+                                      title="发起工单时自动在资产库中匹配该 IP（与告警「关联资产」同一套口径）；仅标识（key）或告警字段映射为 src_ip / dst_ip 的字段生效，默认开启">
                                       <input type="checkbox" className="h-4 w-4 accent-primary" disabled={!canEdit}
-                                        checked={f.auto_enrich !== false}
-                                        onChange={(e) => patchField(f.key, { auto_enrich: e.target.checked })} />
-                                      <span className="text-sm text-foreground">资产匹配 + 威胁情报</span>
+                                        checked={(f.auto_asset ?? (f.auto_enrich !== false)) !== false}
+                                        onChange={(e) => patchField(f.key, { auto_asset: e.target.checked })} />
+                                      <span className="text-sm text-foreground">资产库匹配</span>
+                                    </label>
+                                  </div>
+                                  <div>
+                                    <label className={labelCls}>威胁情报</label>
+                                    <label className="flex cursor-pointer items-center gap-2 py-[7px]"
+                                      title="发起工单时自动查询该 IP 的威胁情报；仅标识（key）或告警字段映射为 src_ip / dst_ip 的字段生效，默认开启">
+                                      <input type="checkbox" className="h-4 w-4 accent-primary" disabled={!canEdit}
+                                        checked={(f.auto_intel ?? (f.auto_enrich !== false)) !== false}
+                                        onChange={(e) => patchField(f.key, { auto_intel: e.target.checked })} />
+                                      <span className="text-sm text-foreground">威胁情报查询</span>
                                     </label>
                                   </div>
                                   <div>
