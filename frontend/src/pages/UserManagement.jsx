@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import {
   Trash2, MoreHorizontal, Eye, KeyRound, Power, LogOut, UserX, UserCheck,
   ChevronUp, ChevronDown, Users, Eye as EyeIcon, EyeOff, RefreshCw,
-  FileText, ChevronRight, CheckCircle2,
+  FileText, ChevronRight, CheckCircle2, Upload, Download, FileSpreadsheet,
 } from 'lucide-react'
 import { usersApi } from '../api/users'
 import { rolesApi } from '../api/roles'
@@ -444,6 +444,13 @@ function UserManagement() {
     authApi.getPasswordPolicy().then(setPwdPolicy).catch(() => {})
   }, [])
 
+  // 批量导入
+  const [importOpen, setImportOpen] = useState(false)
+  const [importFile, setImportFile] = useState(null)
+  const [importStrategy, setImportStrategy] = useState('skip')
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState(null)
+
   const canView = hasPermission('user', 'view')
   const canEdit = hasPermission('user', 'edit')
   const canDelete = hasPermission('user', 'delete')
@@ -690,6 +697,52 @@ function UserManagement() {
     toast.success(`重置完成：${ok} 个${fail > 0 ? `，失败 ${fail} 个` : ''}`)
   }
 
+  // ============ 批量导入 / 导出 ============
+  const openImport = () => {
+    setImportFile(null)
+    setImportStrategy('skip')
+    setImportResult(null)
+    setImportOpen(true)
+  }
+
+  const handleDownloadTemplate = async () => {
+    try {
+      await usersApi.importTemplate()
+    } catch (err) {
+      toast.error(`模板下载失败：${err.message || err}`)
+    }
+  }
+
+  const handleImport = async () => {
+    if (!importFile) {
+      toast.warning('请先选择要导入的文件')
+      return
+    }
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const result = await usersApi.import(importFile, importStrategy)
+      setImportResult(result)
+      if ((result.inserted || 0) + (result.updated || 0) > 0) await load()
+      toast.success(`导入完成：新增 ${result.inserted || 0} 个，更新 ${result.updated || 0} 个`)
+    } catch (err) {
+      toast.error(`导入失败：${err.message || err}`)
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleExport = async () => {
+    const hasSelected = selectedKeys.length > 0
+    try {
+      await usersApi.export(hasSelected ? selectedKeys : null)
+      toast.success(hasSelected ? `已导出选中的 ${selectedKeys.length} 个用户` : `已导出全部 ${rows.length} 个用户`)
+      if (hasSelected) clear()
+    } catch (err) {
+      toast.error(`导出失败：${err.message || err}`)
+    }
+  }
+
   const handleToggleActive = async (row) => {
     const _ok = await confirm({
       message: row.is_active
@@ -894,6 +947,22 @@ function UserManagement() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm">刷新</button>
+          {canView && (
+            <button
+              type="button"
+              onClick={handleExport}
+              className="btn-secondary btn-sm"
+              title={selectedKeys.length ? `导出选中的 ${selectedKeys.length} 个用户` : '导出全部用户'}
+            >
+              <Download className="mr-1 h-3.5 w-3.5" />
+              {selectedKeys.length ? `导出选中(${selectedKeys.length})` : '导出'}
+            </button>
+          )}
+          {canEdit && (
+            <button type="button" onClick={openImport} className="btn-secondary btn-sm">
+              <Upload className="mr-1 h-3.5 w-3.5" />导入
+            </button>
+          )}
           {canEdit && (
             <button type="button" onClick={openCreate} className="btn-primary btn-sm">+ 新建用户</button>
           )}
@@ -1219,6 +1288,94 @@ function UserManagement() {
         <p className="mt-2 text-[11px] text-muted-foreground">
           所有选中用户将使用相同的新密码，重置后请通知用户尽快修改。
         </p>
+      </Modal>
+
+      {/* 批量导入弹窗 */}
+      <Modal
+        open={importOpen}
+        title="批量导入用户"
+        onClose={() => setImportOpen(false)}
+        maxWidth="max-w-lg"
+        footer={
+          <>
+            <button type="button" onClick={() => setImportOpen(false)} className="btn-secondary">关闭</button>
+            <button type="button" onClick={handleImport} disabled={importing || !importFile} className="btn-primary">
+              {importing ? '导入中…' : '开始导入'}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-md border border-border bg-secondary/40 px-3 py-2">
+            <span className="text-xs text-muted-foreground">首次使用请下载标准模板，按模板列填写</span>
+            <button
+              type="button"
+              onClick={handleDownloadTemplate}
+              className="flex items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" />下载模板
+            </button>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium">选择文件（.xlsx / .csv）</label>
+            <input
+              type="file"
+              accept=".xlsx,.csv"
+              onChange={(e) => { setImportFile(e.target.files?.[0] || null); setImportResult(null) }}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground file:mr-3 file:cursor-pointer file:rounded file:border-0 file:bg-primary/15 file:px-2 file:py-1 file:text-primary"
+            />
+            {importFile && (
+              <p className="mt-1 text-[11px] text-muted-foreground">已选择：{importFile.name}</p>
+            )}
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium">已存在用户处理</label>
+            <div className="flex gap-2">
+              {[
+                { value: 'skip', label: '跳过（保留原数据）' },
+                { value: 'overwrite', label: '覆盖（按非空列更新）' },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setImportStrategy(opt.value)}
+                  className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                    importStrategy === opt.value
+                      ? 'border-primary bg-primary/15 text-primary'
+                      : 'border-border bg-secondary text-muted-foreground hover:border-primary/50'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {importResult && (
+            <div className="rounded-md border border-border bg-secondary/40 p-3 text-xs">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                <span>共 {importResult.total} 条</span>
+                <span className="text-emerald-600 dark:text-emerald-400">新增 {importResult.inserted || 0}</span>
+                <span className="text-blue-600 dark:text-blue-400">更新 {importResult.updated || 0}</span>
+                <span className="text-amber-600 dark:text-amber-400">跳过 {importResult.skipped || 0}</span>
+                <span className={importResult.errors?.length ? 'text-destructive' : 'text-muted-foreground'}>
+                  失败 {importResult.errors?.length || 0}
+                </span>
+              </div>
+              {importResult.errors?.length > 0 && (
+                <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-[11px] text-destructive">
+                  {importResult.errors.map((e, i) => (
+                    <li key={i}>
+                      第 {e.row} 行{e.username ? `（${e.username}）` : ''}：{e.msg}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            新建用户的初始密码需满足密码复杂度策略，且首次登录需修改密码；导出文件不含密码，可编辑后直接导入。
+          </p>
+        </div>
       </Modal>
 
       {/* 用户详情抽屉 */}

@@ -3,10 +3,14 @@
 仅授权用户可查看用户列表，编辑/删除需更高权限。
 不可删除/禁用当前登录账号，系统至少保留一个管理员。
 """
+import csv
+import io
 import logging
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -105,6 +109,370 @@ def create_user(
     db.refresh(user)
     logger.info("用户创建: id=%s, username=%s", user.id, user.username)
     return user
+
+
+# ==================== 批量导入 / 导出 ====================
+
+# 导入模板列（顺序即模板列顺序）
+_IMPORT_HEADERS = ["用户名", "初始密码", "显示名", "邮箱", "角色", "状态", "允许登录方式", "手机", "部门"]
+# 导出列（不含密码哈希等敏感字段）
+_EXPORT_HEADERS = ["用户名", "显示名", "邮箱", "角色", "状态", "允许登录方式", "手机", "部门", "创建时间", "最后登录时间"]
+_LOGIN_METHOD_VALUES = {"password", "otp", "sso"}
+_BUILTIN_ROLES = {"admin", "analyst", "viewer"}
+
+
+def _xlsx_bytes(rows: list[list], sheet_name: str = "Sheet1") -> bytes:
+    """生成 .xlsx 字节流（首行表头蓝底白字，参考 duty 模块样式）。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    header_fill = PatternFill(start_color="FF0066CC", end_color="FF0066CC", fill_type="solid")
+    header_font = Font(color="FFFFFFFF", bold=True)
+    for r_idx, row in enumerate(rows, 1):
+        for c_idx, val in enumerate(row, 1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            if r_idx == 1:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center")
+    # 简单列宽：表头字符数 * 2 + 4
+    for c_idx, h in enumerate(rows[0] if rows else [], 1):
+        ws.column_dimensions[get_column_letter(c_idx)].width = min(40, len(str(h)) * 2 + 8)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _parse_import_rows(filename: str, raw: bytes) -> list[list]:
+    """解析上传文件为行列表（含表头行）。支持 .xlsx / .csv。"""
+    name = (filename or "").lower()
+    if name.endswith(".xlsx"):
+        from openpyxl import load_workbook
+
+        try:
+            wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Excel 文件解析失败: {exc}") from exc
+        ws = wb.active
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            rows.append(["" if c is None else str(c).strip() for c in row])
+        return rows
+    if name.endswith(".csv"):
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")
+        return [["" if c is None else str(c).strip() for c in row] for row in csv.reader(io.StringIO(text))]
+    raise ValueError("仅支持 .xlsx / .csv 文件")
+
+
+def _parse_bool(val: str) -> Optional[bool]:
+    """解析状态列：启用/true/是/1 → True；禁用/false/否/0 → False；其他 → None。"""
+    v = (val or "").strip().lower()
+    if v in ("启用", "true", "是", "1", "yes"):
+        return True
+    if v in ("禁用", "false", "否", "0", "no"):
+        return False
+    return None
+
+
+def _parse_login_methods(val: str) -> Optional[list[str]]:
+    """解析允许登录方式列：逗号/顿号/分号分隔；空 → None（允许全部）。"""
+    v = (val or "").strip()
+    if not v:
+        return None
+    parts = [p.strip().lower() for p in v.replace("，", ",").replace("、", ",").replace(";", ",").split(",") if p.strip()]
+    invalid = [p for p in parts if p not in _LOGIN_METHOD_VALUES]
+    if invalid:
+        raise ValueError(f"允许登录方式取值无效: {'、'.join(invalid)}（仅支持 password/otp/sso）")
+    return parts or None
+
+
+@router.get("/import-template")
+def download_import_template(
+    _: User = Depends(require_permission("user", "view")),
+) -> StreamingResponse:
+    """下载用户批量导入 Excel 模板（含示例行与填写说明）。"""
+    example = ["zhangsan", "Init@2026", "张三", "zhangsan@example.com", "analyst", "启用", "password,otp", "13800138000", "安全运营部"]
+    notes = [
+        ["# 用户名（必填）：2-64 字符，唯一；初始密码（新建必填）：需满足系统密码复杂度策略"],
+        ["# 角色：admin / analyst / viewer 或系统中的自定义角色名；留空默认 analyst（仅管理员可指定其他角色）"],
+        ["# 状态：启用 / 禁用；留空默认启用（仅管理员可指定）；允许登录方式：password/otp/sso 逗号分隔，留空允许全部"],
+        ["# 已存在用户：跳过策略忽略该行；覆盖策略按非空列更新（初始密码非空则重置，留空保留原密码）"],
+        ["# 导入时请删除以 # 开头的说明行"],
+    ]
+    content = _xlsx_bytes([_IMPORT_HEADERS, example] + notes, "用户导入模板")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=users_import_template.xlsx"},
+    )
+
+
+@router.post("/import")
+async def import_users(
+    file: UploadFile = File(..., description="xlsx/csv 用户清单"),
+    conflict_strategy: str = Query("skip", description="冲突策略：skip 跳过已存在 / overwrite 覆盖更新"),
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission("user", "edit")),
+) -> dict:
+    """批量导入用户（xlsx/csv）。
+
+    安全防护（与单个创建/更新接口一致）：
+    - 非 admin 仅可导入 analyst 角色且默认启用的用户，不可指定其他角色/禁用状态；
+    - 非 admin 覆盖更新时仅更新资料字段（显示名/邮箱/手机/部门/登录方式/重置密码），
+      且不可覆盖管理员账号；
+    - 每行密码均做等保复杂度校验；新建用户强制首次登录改密。
+    - 返回 ``{total, inserted, updated, skipped, errors}``，行级错误不中断整体导入。
+    """
+    from app.core.security_policy import get_security_policy, validate_password_complexity
+
+    raw = await file.read()
+    try:
+        rows = _parse_import_rows(file.filename or "", raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="文件为空")
+    # 跳过首部空行，取第一个非空行为表头
+    header_idx = next((i for i, r in enumerate(rows) if any(c for c in r)), -1)
+    if header_idx < 0:
+        raise HTTPException(status_code=400, detail="文件为空")
+    header = rows[header_idx]
+    data_rows = rows[header_idx + 1:]
+    if len(data_rows) > 10000:
+        raise HTTPException(status_code=413, detail=f"行数过多（{len(data_rows)}），请分批导入（每次 ≤10000 行）")
+
+    # 列名 → 索引（容错包含匹配）
+    def col(name: str) -> int:
+        for i, h in enumerate(header):
+            if h and name in h:
+                return i
+        return -1
+
+    idx = {k: col(k) for k in _IMPORT_HEADERS}
+    if idx["用户名"] < 0:
+        raise HTTPException(status_code=400, detail="缺少必填列：用户名")
+
+    # 预加载：已有用户名、角色名 → ID、密码策略
+    existing_users: dict[str, User] = {u.username: u for u in db.query(User).all()}
+    roles_map: dict[str, int] = {r.name: r.id for r in db.query(Role).all()}
+    policy = get_security_policy(db)
+    strategy = conflict_strategy if conflict_strategy in ("skip", "overwrite") else "skip"
+    admin_op = is_admin(current, db)
+
+    def cell(row: list, key: str) -> str:
+        i = idx[key]
+        return row[i] if 0 <= i < len(row) else ""
+
+    total = inserted = updated = skipped = 0
+    errors: list[dict] = []
+    seen: set[str] = set()  # 文件内重复用户名去重
+
+    for line, row in enumerate(data_rows, start=header_idx + 2):
+        if not row or all(c == "" for c in row):
+            continue
+        first = row[0] or ""
+        if first.startswith("#"):
+            continue
+        total += 1
+        username = cell(row, "用户名")
+        password = cell(row, "初始密码")
+        display_name = cell(row, "显示名")
+        email = cell(row, "邮箱")
+        role_name = cell(row, "角色")
+        status_val = cell(row, "状态")
+        methods_val = cell(row, "允许登录方式")
+        phone = cell(row, "手机")
+        department = cell(row, "部门")
+
+        def fail(msg: str):
+            errors.append({"row": line, "username": username, "msg": msg})
+            nonlocal skipped
+            skipped += 1
+
+        if not username or not (2 <= len(username) <= 64):
+            fail("用户名必填且长度 2-64")
+            continue
+        if username in seen:
+            fail("文件内重复的用户名")
+            continue
+        seen.add(username)
+
+        # 状态 / 角色解析（带合法性校验）
+        is_active_val = _parse_bool(status_val)
+        if status_val.strip() and is_active_val is None:
+            fail(f"状态取值无效: {status_val}（应为 启用/禁用）")
+            continue
+        try:
+            allowed_methods = _parse_login_methods(methods_val)
+        except ValueError as exc:
+            fail(str(exc))
+            continue
+
+        role_id: Optional[int] = None
+        if role_name:
+            if role_name in roles_map:
+                role_id = roles_map[role_name]
+            elif role_name not in _BUILTIN_ROLES:
+                fail(f"角色不存在: {role_name}")
+                continue
+        # 非 admin 防特权提升：仅可导入默认启用的 analyst（状态留空视为默认启用，仅明确禁用被拒）
+        if not admin_op and (role_name not in ("", "analyst") or is_active_val is False):
+            fail("仅管理员可指定角色或禁用状态")
+            continue
+
+        existing = existing_users.get(username)
+        if existing and strategy == "skip":
+            skipped += 1
+            continue
+
+        if existing:
+            # ===== 覆盖更新 =====
+            if not admin_op and is_admin(existing, db):
+                fail("仅管理员可覆盖管理员账号")
+                continue
+            # 不可通过导入禁用/降级自己
+            if existing.id == current.id and is_active_val is False:
+                fail("不可禁用当前登录账号")
+                continue
+            # 非 admin 不可改角色/启用状态（敏感字段，与更新接口一致）
+            if not admin_op and (role_name or is_active_val is not None):
+                fail("仅管理员可修改用户角色或启用状态")
+                continue
+            # 密码校验前置：失败则整行跳过，不落任何字段修改
+            if password:
+                pwd_errors = validate_password_complexity(password, policy)
+                if pwd_errors:
+                    fail("；".join(pwd_errors))
+                    continue
+            if display_name:
+                existing.display_name = display_name
+            if email:
+                existing.email = email
+            if phone:
+                existing.phone = phone
+            if department:
+                existing.department = department
+            if allowed_methods is not None:
+                existing.allowed_login_methods = allowed_methods
+            if admin_op:
+                if role_name:
+                    existing.role = role_name
+                    existing.role_id = role_id
+                if is_active_val is not None:
+                    existing.is_active = is_active_val
+            if password:
+                existing.password_hash = hash_password(password)
+                existing.must_change_password = True
+            updated += 1
+        else:
+            # ===== 新建 =====
+            if not password:
+                fail("新建用户初始密码必填")
+                continue
+            pwd_errors = validate_password_complexity(password, policy)
+            if pwd_errors:
+                fail("；".join(pwd_errors))
+                continue
+            final_role = role_name or "analyst"
+            user = User(
+                username=username,
+                password_hash=hash_password(password),
+                display_name=display_name or None,
+                email=email or None,
+                role=final_role,
+                role_id=role_id,
+                is_active=is_active_val if is_active_val is not None else True,
+                allowed_login_methods=allowed_methods,
+                phone=phone or None,
+                department=department or None,
+                must_change_password=True,
+            )
+            db.add(user)
+            existing_users[username] = user
+            inserted += 1
+
+    db.commit()
+    logger.info(
+        "用户批量导入: operator=%s, total=%d, inserted=%d, updated=%d, skipped=%d, errors=%d",
+        current.username, total, inserted, updated, skipped, len(errors),
+    )
+    return {
+        "total": total,
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors[:100],
+    }
+
+
+@router.get("/export")
+def export_users(
+    ids: str = Query("", description="指定用户 ID 列表（逗号分隔）；为空导出全部"),
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission("user", "view")),
+    request: Request = None,
+) -> StreamingResponse:
+    """导出用户列表为 xlsx（不含密码等敏感字段）。
+
+    - 未传 ``ids``：导出全部用户；
+    - 传 ``ids``：只导出选中的用户（用于「导出选中」）。
+    """
+    from app.core.audit import get_client_ip, log_audit
+
+    query = db.query(User)
+    if ids:
+        id_list = [int(p) for p in ids.split(",") if p.strip().isdigit()]
+        if id_list:
+            query = query.filter(User.id.in_(id_list))
+    users = query.order_by(User.id).all()
+
+    # 角色名映射（自定义角色优先显示 role_name）
+    role_ids = {u.role_id for u in users if u.role_id}
+    roles_map: dict[int, str] = {}
+    if role_ids:
+        roles_map = {r.id: r.name for r in db.query(Role).filter(Role.id.in_(role_ids)).all()}
+
+    def _fmt(t) -> str:
+        return t.strftime("%Y-%m-%d %H:%M:%S") if t else ""
+
+    rows = [_EXPORT_HEADERS]
+    for u in users:
+        role_display = (roles_map.get(u.role_id) if u.role_id else None) or u.role
+        rows.append([
+            u.username,
+            u.display_name or "",
+            u.email or "",
+            role_display,
+            "启用" if u.is_active else "禁用",
+            ",".join(u.allowed_login_methods) if u.allowed_login_methods else "",
+            u.phone or "",
+            u.department or "",
+            _fmt(u.created_at),
+            _fmt(u.last_login_at),
+        ])
+
+    content = _xlsx_bytes(rows, "用户列表")
+    # 审计：导出操作（GET 请求不被中间件捕获，需手动记录）
+    log_audit(
+        db, user_id=current.id, username=current.username, action="export",
+        resource_type="user", ip_address=get_client_ip(request) if request else None,
+        result="success", detail={"count": len(users), "ids": ids},
+    )
+    db.commit()
+    filename = f"users_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.put("/{user_id}", response_model=UserOut)
