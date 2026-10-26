@@ -129,16 +129,17 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "description": (
             "资产检索：按 IP/名称/标识/部门查询资产清单"
             "（主机资产、网段/IP 信息、出口地址等已配置类型）。"
-            "传入单个 IP 会匹配包含该 IP 的 CIDR/范围资产。"
+            "传入单个 IP 会匹配包含该 IP 的 CIDR/范围资产，"
+            "并同时在资产发现（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP，"
+            "命中以「资产发现」分组返回；按名称/部门等文本查询时仅检索资产清单。"
             "支持逗号/分号/空白分隔批量查询（如 '1.2.3.4,5.6.7.8'），"
             "一次调用返回每个 IP 各自的命中——批量研判多个 IP 时必须合并为一次调用，不要逐个查询。"
             "用于研判时对比告警 IP 是否属于已知资产。"
             "按智能体勾选的资产类型检索：未勾选则不可用；勾选部分则只查这些类型；"
             "全部勾选则不按类型过滤。同一 IP 若出现在主机/网段/出口等多类下会全部返回。"
-            "不查询资产发现（云主机/裸金属/网络资源/弹性IP），该类数据使用 search_discovered_assets。"
         ),
         "parameters_schema": [
-            {"name": "keyword", "type": "String", "required": False, "description": "IP/名称/标识/负责人；单个 IP 会做网段包含匹配；支持逗号/分号/空白分隔批量查询多个 IP"},
+            {"name": "keyword", "type": "String", "required": False, "description": "IP/名称/标识/负责人；单个 IP 会做网段包含匹配并同步精确查询资产发现（云主机/裸金属/网络资源/弹性IP）；支持逗号/分号/空白分隔批量查询多个 IP"},
             {"name": "ip", "type": "String", "required": False, "description": "待查询 IP（与 keyword 二选一，优先 keyword）"},
             {"name": "department", "type": "String", "required": False, "description": "按使用单位/部门精确筛选"},
             {"name": "type_code", "type": "String", "required": False, "description": "忽略；范围由智能体勾选的资产类型决定，同一 IP 跨类型全部返回"},
@@ -170,6 +171,8 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "实例名、部门走模糊匹配，关键词至少 2 个字。"
             "支持逗号/分号/空白分隔批量查询，一次调用返回每个目标各自的命中。"
             "resource_type 可空；为空时四类都查。"
+            "按 IP 查询已由 search_assets 覆盖（其会同时检索资产清单与资产发现），"
+            "本工具主要用于按 CMDB ID、实例名、部门或指定资源类型检索资产发现数据。"
         ),
         "parameters_schema": [
             {"name": "keyword", "type": "String", "required": True, "description": "IP、CMDB ID、实例名或部门；支持逗号/分号/空白分隔批量查询"},

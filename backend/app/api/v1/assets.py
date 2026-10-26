@@ -10,6 +10,7 @@ import csv
 import io
 import ipaddress
 import logging
+import re
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -218,6 +219,11 @@ def _apply_template_to_asset(
             # 模板未定义的字段 → 归入 extra（兼容自定义扩展）
             extra_fields[key] = val
             continue
+
+        # 入库前校验 ip/cidr 类型字段：拦截倒置范围/巨型网段/残缺 IP 等脏数据
+        # （只拦截形似 IP 数据的错误值，主机名/文本不受影响）
+        if field_def.get("type") in ("ip", "cidr") and isinstance(val, str) and val:
+            _validate_ip_expression(val, field_def.get("label") or key)
 
         mapped_to = field_def.get("mapped_to", "extra")
 
@@ -1062,7 +1068,8 @@ _ASSET_FIELD_MAXLEN = {
     "department": 128,
     "owner": 128,
     "location": 128,
-    "ip": 128,
+    # ip 支持 256：多 IP/多 CIDR 逗号列表（128 截断曾把 /24 截成 /2 产生脏数据）
+    "ip": 256,
     "criticality": 16,
     "status": 32,
     "identifier_type": 32,
@@ -1090,6 +1097,139 @@ def _truncate_field(name: str, value, maxlen: int = None) -> str:
         logger.warning("导入字段 %s 超长（%d > %d），已截断: %s…", name, len(s), limit, s[:30])
         return s[:limit]
     return s
+
+
+# ============================================================================
+# 入库前 IP/CIDR/范围 校验（防脏数据）
+# ============================================================================
+# 历史脏数据案例（均已修正）：
+# - 172.46.9.1-17.46.9.62   丢字导致倒置范围 → 解析成 17.x-172.x 巨型区间
+# - 10.0.2.1-1.0.2.254      同上
+# - 176.16.173.1-176.13.173.254 同上
+# - 143.146.79.0/24 列宽截断成 143.146.79.0/2 → 覆盖 128.0.0.0/2 约 10 亿地址
+
+# IPv4 CIDR 最小前缀长度：/8（如 10.0.0.0/8）为合法大网段下限，/2~/7 视为笔误
+_IP_CIDR_MIN_PREFIX = 8
+# IP 范围最大跨度：一个 /8（16777216 地址），超过视为录入错误
+_IP_RANGE_MAX_ADDRS = 2 ** 24
+# "形似 IPv4 数据"：数字开头且带点组（10.1 / 172.46.9.1-... / 143.146.79.0/...），
+# 或"数字+斜杠/横线"（1-100、24/7 这类）→ 必须通过严格校验；
+# 纯数字或数字开头的文本（"2024"、"123办公室"）与主机名/纯文本放行
+_IPISH_RE = re.compile(r"^(?:\d{1,3}(?:\.\d{1,3})+|\d+[/-])")
+# "形似 IPv6 数据"（纯十六进制/冒号，可带掩码）
+_IPV6ISH_RE = re.compile(r"^[0-9A-Fa-f:]+(/\d+)?$")
+
+
+def _validate_ip_expression(value, field_label: str = "") -> None:
+    """入库前校验 IP/CIDR/范围表达式，拦截倒置范围、巨型网段、残缺 IP 等脏数据。
+
+    只拦截"看起来是 IP 数据但格式错误"的值；主机名、纯文本（含数字开头
+    的文本如 ``123办公室``）不受影响（与检索层 ``_value_to_intervals``
+    的尽力解析语义保持兼容）。
+
+    校验规则：
+    - 多值（逗号/分号/顿号/空白分隔，与检索层 ``_split_tokens`` 一致）
+      逐段校验，任一段非法即整体报错
+    - IPv4 CIDR：必须是合法网段，且前缀长度不得小于 /8
+    - IPv4 范围 start-end：两端必须是完整 IPv4（末段支持 192.0.2.1-100
+      短格式）；起始不得大于结束（倒置范围几乎必为丢字笔误）；
+      跨度不得超过一个 /8
+    - IPv4 单值：必须是完整合法 IPv4（残缺如 ``10.1`` 报错）
+    - IPv6：地址/网段须可解析
+
+    Raises:
+        ValueError: 校验失败，消息可直接展示给用户
+    """
+    s = str(value or "").strip()
+    if not s:
+        return
+    label = f"字段'{field_label}'" if field_label else "IP 字段"
+    for i, part in enumerate(re.split(r"[,;，；、\s]+", s)):
+        elem = part.strip()
+        if not elem:
+            continue
+        where = f"{label}第{i + 1}段 '{elem}'"
+        # 非形似 IP 数据（主机名/文本）：放行
+        if not _IPISH_RE.match(elem):
+            if ":" in elem and _IPV6ISH_RE.match(elem):
+                # 形似 IPv6：地址/网段须可解析
+                try:
+                    if "/" in elem:
+                        ipaddress.ip_network(elem, strict=False)
+                    else:
+                        ipaddress.ip_address(elem)
+                except ValueError:
+                    raise ValueError(f"{where} 不是合法的 IPv6 地址/网段")
+            continue
+        # ===== 形似 IPv4 数据：严格校验 =====
+        # CIDR：合法网段 + 前缀下限
+        if "/" in elem:
+            try:
+                net = ipaddress.ip_network(elem, strict=False)
+            except ValueError:
+                raise ValueError(f"{where} 不是合法的网段（CIDR）格式")
+            if net.version == 4 and net.prefixlen < _IP_CIDR_MIN_PREFIX:
+                raise ValueError(
+                    f"{where} 掩码 /{net.prefixlen} 过小（覆盖 {net.num_addresses:,} 个地址），"
+                    f"疑似笔误；IPv4 网段前缀不得小于 /{_IP_CIDR_MIN_PREFIX}"
+                )
+            continue
+        # 范围：start-end
+        if "-" in elem:
+            start_str, _, end_str = elem.partition("-")
+            start_str, end_str = start_str.strip(), end_str.strip()
+            try:
+                start_ip = ipaddress.IPv4Address(start_str)
+            except ValueError:
+                raise ValueError(f"{where} 范围起始地址无效：'{start_str}'（需完整 IPv4）")
+            if end_str.isdigit():
+                # 短格式：同前缀末段（192.0.2.1-100）
+                prefix = start_str.rsplit(".", 1)[0]
+                try:
+                    end_ip = ipaddress.IPv4Address(f"{prefix}.{end_str}")
+                except ValueError:
+                    raise ValueError(f"{where} 范围结束地址无效：'{end_str}'")
+            else:
+                try:
+                    end_ip = ipaddress.IPv4Address(end_str)
+                except ValueError:
+                    raise ValueError(f"{where} 范围结束地址无效：'{end_str}'（需完整 IPv4）")
+            if start_ip > end_ip:
+                raise ValueError(
+                    f"{where} 起始 IP 大于结束 IP（倒置范围，疑似丢字/笔误），"
+                    f"请修正为 {end_ip}-{start_ip}"
+                )
+            span = int(end_ip) - int(start_ip) + 1
+            if span > _IP_RANGE_MAX_ADDRS:
+                raise ValueError(
+                    f"{where} 范围跨度过大（{span:,} 个地址，超过一个 /8），疑似笔误"
+                )
+            continue
+        # 单值：必须完整合法
+        try:
+            ipaddress.IPv4Address(elem)
+        except ValueError:
+            raise ValueError(f"{where} 不是合法的完整 IPv4 地址（残缺 IP 请补全四段）")
+
+
+def _check_asset_field_len(identifier: str, ip_value: str) -> None:
+    """ip/identifier 列宽预检：超长直接报错，禁止静默截断。
+
+    截断会破坏 IP 表达式语义——历史案例：ip 列还是 varchar(128) 时，
+    129 字符的多 CIDR 列表被截断，末段 ``143.146.79.0/24`` 变成
+    ``143.146.79.0/2``，导致任意 128.x-191.x IP 误命中。
+    ip 列现已扩为 varchar(256)，此检查保留作为列宽防线（超长值报错
+    而非截断，用户可拆分导入）。
+    """
+    if identifier and len(identifier) > _ASSET_FIELD_MAXLEN["identifier"]:
+        raise ValueError(
+            f"identifier 值过长（{len(identifier)} > {_ASSET_FIELD_MAXLEN['identifier']} 字符）"
+        )
+    if ip_value and len(ip_value) > _ASSET_FIELD_MAXLEN["ip"]:
+        raise ValueError(
+            f"ip 值过长（{len(ip_value)} > {_ASSET_FIELD_MAXLEN['ip']} 字符），"
+            f"多 IP/网段合并存储超出列宽，请缩小范围或拆分为多条导入"
+        )
 
 
 # 导入支持的标准字段列名 → Asset 属性
@@ -1517,9 +1657,25 @@ async def import_assets(
                 identifier = id_list[0] if id_list else id_expr
                 ip_value = id_list[0] if id_list else ""
 
-            # 分发字段（标准/extra）
-            std_fields, extra_fields, _, _ = _apply_template_to_asset(template, raw_fields)
+            # 分发字段（标准/extra）；ip/cidr 类型字段在分发时做入库前校验
+            try:
+                std_fields, extra_fields, _, _ = _apply_template_to_asset(template, raw_fields)
+            except ValueError as exc:
+                errors.append({"row": idx, "msg": str(exc)})
+                skipped += 1
+                continue
             base_name = std_fields.get("name", "")
+
+            # ip/identifier 列宽预检：超长报错跳过，禁止静默截断（截断会破坏
+            # IP 表达式语义，历史案例：143.146.79.0/24 被截断成 143.146.79.0/2）
+            try:
+                _check_asset_field_len(
+                    identifier, std_fields.get("ip", ip_value if id_field_type == "ip" else ""),
+                )
+            except ValueError as exc:
+                errors.append({"row": idx, "msg": str(exc)})
+                skipped += 1
+                continue
 
             # 冲突检测：按 allow_aggregate 区分
             # 聚合模式下同标识+同部门才算冲突，允许不同使用单位共存
@@ -1607,6 +1763,15 @@ async def import_assets(
         # identifier 用第一个 IP（主 IP），ip 字段存全部 IP 的逗号分隔串
         identifier = ip_list[0]
         ip_value = ",".join(ip_list) if len(ip_list) > 1 else ip_list[0]
+
+        # 入库前校验 + 列宽预检（防倒置范围/巨型网段等脏数据；超长不截断）
+        try:
+            _validate_ip_expression(ip_expr, "ip")
+            _check_asset_field_len(identifier, ip_value)
+        except ValueError as exc:
+            errors.append({"row": idx, "msg": str(exc)})
+            skipped += 1
+            continue
 
         # 构造资产字段（标准字段 + extra_fields）
         fields: dict = {}
@@ -2174,14 +2339,23 @@ def create_asset(
         template = _get_template(db, body.type_code)
         if template is None:
             raise HTTPException(status_code=404, detail=f"模板不存在: {body.type_code}")
-        std_fields, extra_fields, identifier, identifier_type = _apply_template_to_asset(
-            template, body.fields
-        )
+        # ip/cidr 类型字段入库前校验（防倒置范围/巨型网段/残缺 IP）
+        try:
+            std_fields, extra_fields, identifier, identifier_type = _apply_template_to_asset(
+                template, body.fields
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
         if not identifier:
             raise HTTPException(
                 status_code=422,
                 detail=f"标识字段 '{template.identifier_field}' 不能为空",
             )
+        # ip/identifier 列宽预检：超长报错，禁止截断（截断会破坏 IP 表达式语义）
+        try:
+            _check_asset_field_len(identifier, std_fields.get("ip", ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
         # 查重：按 allow_aggregate 区分（聚合模式下同标识+同部门才算冲突）
         department = std_fields.get("department", "")
         existing = _check_identifier_conflict(
@@ -2234,6 +2408,14 @@ def create_asset(
     identifier = body.identifier.strip() or body.ip.strip()
     if not identifier:
         raise HTTPException(status_code=422, detail="IP 地址不能为空（作为资产唯一标识）")
+
+    # 入库前校验 + 列宽预检（防倒置范围/巨型网段等脏数据；超长不截断）
+    try:
+        _validate_ip_expression(body.ip, "ip")
+        _validate_ip_expression(body.identifier, "identifier")
+        _check_asset_field_len(identifier, body.ip or identifier)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     # 查重
     existing = db.query(Asset).filter(
@@ -2314,9 +2496,21 @@ def update_asset(
         if template is None and effective_type_code:
             raise HTTPException(status_code=404, detail=f"模板不存在: {effective_type_code}")
         if template is not None:
-            std_fields, extra_fields, new_identifier, new_id_type = _apply_template_to_asset(
-                template, body.fields
-            )
+            # ip/cidr 类型字段入库前校验（防倒置范围/巨型网段/残缺 IP）
+            try:
+                std_fields, extra_fields, new_identifier, new_id_type = _apply_template_to_asset(
+                    template, body.fields
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            # ip/identifier 列宽预检：超长报错，禁止截断
+            try:
+                _check_asset_field_len(
+                    new_identifier or record.identifier,
+                    std_fields.get("ip", record.ip or ""),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
             # 切换类型
             if body.type_code and body.type_code != record.type_code:
                 record.type_code = body.type_code
@@ -2381,6 +2575,19 @@ def update_asset(
         return d
 
     # ===== 兼容模式：直接更新标准字段 =====
+    # 入库前校验 + 列宽预检（防倒置范围/巨型网段等脏数据；超长不截断）
+    try:
+        if body.identifier is not None:
+            _validate_ip_expression(body.identifier, "identifier")
+        if body.ip is not None:
+            _validate_ip_expression(body.ip, "ip")
+        _check_asset_field_len(
+            body.identifier if body.identifier is not None else record.identifier,
+            body.ip if body.ip is not None else record.ip,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
     # 标量字段
     for field in [
         "type_code", "identifier", "identifier_type", "name", "asset_type",

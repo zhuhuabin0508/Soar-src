@@ -153,7 +153,9 @@ class Asset(Base):
     department = Column(String(128), default="")
     owner = Column(String(128), default="")
     location = Column(String(128), default="")
-    ip = Column(String(128), default="")
+    # IP/网段表达式：支持多值（逗号分隔的多 IP 或多 CIDR 列表），128 不够用
+    # （历史案例：129 字符多 CIDR 列表被截断成 128，末段 /24 变 /2 产生脏数据）
+    ip = Column(String(256), default="")
     # 重要性：low/medium/high/critical
     criticality = Column(String(16), default="medium")
     # 生命周期状态：in_use(在用)/idle(闲置)/repair(维修)/retired(报废)/lost(丢失)

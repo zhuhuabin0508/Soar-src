@@ -271,6 +271,8 @@ def _value_to_intervals(stored: str) -> list[tuple[int, int]]:
     - 单 IP: ``58.250.157.1`` → [ip, ip]
 
     解析失败的部分返回空区间（不影响其余部分）。
+    倒置范围（start > end）仅当两端同 /24 时交换匹配；跨网段倒置（如
+    ``172.46.9.1-17.46.9.62``）视为脏数据丢弃，避免生成误命中全网的巨型区间。
     """
     import ipaddress
 
@@ -316,7 +318,15 @@ def _value_to_intervals(stored: str) -> list[tuple[int, int]]:
                 end_ip = _parse_single_ip(end_str) or _complete_ip(end_str)
             if end_ip is not None:
                 s, e = int(start_ip), int(end_ip)
-                return [(s, e)] if s <= e else [(e, s)]
+                if s <= e:
+                    return [(s, e)]
+                # 倒置范围（start > end）：两端同 /24 视为笔误，交换后继续匹配
+                # （如 61.144.227.220-61.144.227.226）；跨网段倒置几乎必为脏数据
+                # （如 172.46.9.1-17.46.9.62，交换后会生成覆盖 17.x-172.x 的
+                # 巨型区间，导致任意 IP 误命中），直接丢弃。
+                if (s >> 8) == (e >> 8):
+                    return [(e, s)]
+                return []
         return []
 
     # 3. 单 IP 精确匹配 (58.250.157.1)
@@ -406,6 +416,86 @@ def _bucket_match_net(ns: int, ne: int) -> list[int]:
     return out
 
 
+def _split_tokens(keyword: str) -> list[str]:
+    """拆分多值 keyword：逗号/分号/空白（含中文标点）分隔。"""
+    import re
+
+    if not keyword:
+        return []
+    return [t for t in re.split(r"[,;，；、\s]+", keyword.strip()) if t]
+
+
+def _discovery_ip_tokens(keyword: str) -> list[str]:
+    """提取 keyword 中的 IPv4/CIDR token（规范化字符串），供资产发现查询。
+
+    资产发现数据约数十万行，只支持 IP/CIDR/CMDB ID 精确匹配，
+    因此仅把 IP 类 token 传给资产发现；名称/部门等文本 token 不在其检索范围。
+    """
+    import ipaddress
+
+    out: list[str] = []
+    for t in _split_tokens(keyword):
+        ip = _parse_single_ip(t)
+        if ip is not None:
+            out.append(str(ip))
+            continue
+        if "/" in t:
+            try:
+                out.append(str(ipaddress.IPv4Network(t.strip(), strict=False)))
+            except (ipaddress.NetmaskValueError, ipaddress.AddressValueError, ValueError):
+                continue
+    return out
+
+
+# 资产发现命中在 search_assets 返回结构中的分组键（与资产类型中文分组的顶层 key 并列）
+_DISCOVERY_GROUP_KEY = "资产发现"
+
+
+def _merge_discovery_results(payload: dict, discovery: dict) -> dict:
+    """把资产发现（综合运管平台爬取）命中合并进 search_assets 返回结构。
+
+    - 单查询目标：顶层追加 ``资产发现`` 分组（资产清单按类型分组的结构不变）
+    - 批量：每个 IP/CIDR 目标的条目追加 ``资产发现`` 分组，命中时 ``matched``
+      置 True；文本目标不追加（资产发现未查询该类关键词）
+    - 查询出错：追加 ``资产发现_error`` 说明；截断时追加 ``资产发现_truncated``。
+      两者均不影响资产清单结果。
+    """
+    if not isinstance(payload, dict) or not isinstance(discovery, dict):
+        return payload
+
+    def _attach(entry: dict, item: dict) -> None:
+        entry[_DISCOVERY_GROUP_KEY] = list(item.get("assets") or [])
+        if item.get("error"):
+            entry["资产发现_error"] = item["error"]
+        if item.get("truncated"):
+            entry["资产发现_truncated"] = True
+
+    if payload.get("batch"):
+        # discovery 返回可能是批量（多 token）或单目标（keyword 混有文本 token）两种形状
+        if discovery.get("batch"):
+            by_query = {item.get("query"): item for item in discovery.get("queries") or []}
+        elif discovery.get("query"):
+            by_query = {discovery.get("query"): discovery}
+        else:
+            # 整个资产发现查询失败（超时等，返回无 query 维度的 error 形状）：
+            # 顶层记一次错误说明，不影响资产清单结果
+            if discovery.get("error"):
+                payload["资产发现_error"] = discovery["error"]
+            return payload
+        for entry in payload.get("queries") or []:
+            item = by_query.get(entry.get("query"))
+            if item is None:
+                continue
+            _attach(entry, item)
+            if item.get("assets"):
+                entry["matched"] = True
+        return payload
+
+    # 单目标：discovery 返回本身就是该目标的命中
+    _attach(payload, discovery)
+    return payload
+
+
 def _should_attach_search_assets(
     enabled_tools: list[str] | None,
     enabled_asset_types: list[str] | None,
@@ -421,7 +511,11 @@ async def execute_search_assets(
     limit: int = 20,
     type_codes: list[str] | None = None,
 ):
-    """供工具沙箱 / 测试页调用的资产检索入口。"""
+    """供工具沙箱 / 测试页调用的资产检索入口。
+
+    行为与运行时 ``search_assets`` 一致：keyword 含 IPv4/CIDR 时，
+    除资产清单外同时检索资产发现数据并合并返回（见 ``_build_asset_tool``）。
+    """
     codes = list(type_codes or [])
     if not codes:
         # 无 agent 上下文（工具管理页测试 / 工作流 tool 节点直调）：
@@ -454,6 +548,14 @@ def _build_asset_tool(enabled_asset_types: list[str]):
       ``113.108.60.224-113.108.60.254`` 的网段资产。
     - keyword 为 CIDR（如 ``198.51.100.0/24``）时：做网段重叠判断。
     - keyword 非 IP 时：走 ilike 子串匹配（IP/名称/标识/负责人）。
+
+    资产发现联动（IP 查询）：
+    - keyword 含 IPv4/CIDR 时，除资产清单外**并发**检索资产发现数据
+      （综合运管平台爬取的云主机/裸金属/网络资源/弹性IP，精确匹配，见
+      ``app.agent.discovery_search``），命中以 ``资产发现`` 分组合并进返回
+      结构（见 ``_merge_discovery_results``）；查询失败只记日志，不影响
+      资产清单结果。
+    - 文本关键词（名称/部门等）仅检索资产清单。
     """
     type_codes_in = list(dict.fromkeys(enabled_asset_types or []))
     if not type_codes_in:
@@ -466,7 +568,8 @@ def _build_asset_tool(enabled_asset_types: list[str]):
         keyword: str = Field(
             "",
             description="按 IP/名称/标识/负责人模糊搜索。传入单个 IP（如 198.51.100.1）"
-            "会自动匹配包含该 IP 的网段/CIDR/范围资产。"
+            "会自动匹配包含该 IP 的网段/CIDR/范围资产，并同时在资产发现"
+            "（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP。"
             "支持逗号/分号/空白分隔批量查询（如 '198.51.100.1,203.0.113.5'），"
             "一次调用返回每个 IP 各自的命中，批量研判 IP 时务必合并为一次调用。",
         )
@@ -516,14 +619,6 @@ def _build_asset_tool(enabled_asset_types: list[str]):
             label = type_labels.get(code, code)
             result[label] = grouped.get(code, [])
         return result
-
-    def _split_tokens(keyword: str) -> list[str]:
-        """拆分多值 keyword：逗号/分号/空白（含中文标点）分隔。"""
-        import re
-
-        if not keyword:
-            return []
-        return [t for t in re.split(r"[,;，；、\s]+", keyword.strip()) if t]
 
     def _run_query_sync(keyword: str, department: str, limit: int):
         """同步执行检索（由 ``asyncio.to_thread`` 调度到线程池，不阻塞事件循环）。
@@ -637,9 +732,32 @@ def _build_asset_tool(enabled_asset_types: list[str]):
 
         # 同步 DB 查询 + CPU 逐行过滤放线程池执行：全表扫描曾直接跑在事件循环里，
         # 批量研判时多次调用会累积阻塞，导致 SSE 的 tool_end 推送发不出、前端转圈。
-        return await asyncio.to_thread(
+        inventory_task = asyncio.to_thread(
             _run_query_sync, keyword or "", department or "", int(limit or 20)
         )
+
+        # IP/CIDR 查询同时检索资产发现数据（综合运管平台爬取的云主机/裸金属/
+        # 网络资源/弹性IP，精确匹配），与资产清单查询并发执行；
+        # 失败只记日志，不影响资产清单结果（合并结构见 _merge_discovery_results）。
+        disc_tokens = _discovery_ip_tokens(keyword or "")
+
+        async def _discovery() -> Optional[dict]:
+            if not disc_tokens:
+                return None
+            try:
+                from app.agent.discovery_search import execute_search_discovered_assets
+
+                return await execute_search_discovered_assets(
+                    keyword=",".join(disc_tokens), limit=10
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("search_assets 资产发现查询失败（忽略）: %s", exc)
+                return None
+
+        inventory, discovery = await asyncio.gather(inventory_task, _discovery())
+        if discovery:
+            _merge_discovery_results(inventory, discovery)
+        return inventory
 
     scope_desc = (
         "已勾选全部资产类型，不按类型过滤；同一 IP 在主机资产/网段/出口地址等类型下的记录都会返回。"
@@ -649,12 +767,13 @@ def _build_asset_tool(enabled_asset_types: list[str]):
     return StructuredTool.from_function(
         name="search_assets",
         description=(
-            f"检索资产清单。{scope_desc}"
+            f"检索资产清单与资产发现数据。{scope_desc}"
             "支持逗号/分号/空白分隔的批量查询（如 '1.2.3.4,5.6.7.8'），"
             "一次调用返回每个查询目标各自的命中——批量研判多个 IP 时必须合并为一次调用，不要逐个查询。"
-            "传入单个 IP 会匹配包含该 IP 的网段/CIDR/范围/EIP；"
+            "传入单个 IP 会匹配包含该 IP 的网段/CIDR/范围/EIP，并同时在资产发现"
+            "（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP，命中以「资产发现」分组返回；"
             "传入 CIDR 会匹配重叠网段。"
-            "不查询资产发现（云主机/裸金属/网络资源/弹性IP），该类数据使用 search_discovered_assets。"
+            "按名称/部门等文本查询时仅检索资产清单。"
         ),
         args_schema=SearchAssetsArgs,
         coroutine=_coroutine,
