@@ -200,7 +200,47 @@ FIELD_LABELS: dict[str, str] = {
     "bind_instance_id": "绑定实例 ID",
 }
 
-SOURCE_ID_KEYS = ("_id", "instance_id", "inst_id")
+# source_id 优先：导出 CSV 回导场景保持唯一标识稳定；正常爬虫文件无 source_id 列不受影响
+SOURCE_ID_KEYS = ("source_id", "_id", "instance_id", "inst_id")
+
+
+def norm_header_key(s: str) -> str:
+    """表头归一化键：去空白 + 去下划线 + 小写。
+
+    「Instance Name」「INSTANCE_NAME」「instancename」均归一化为同一键，
+    保证别名字典的构建与导入端查找使用同一套口径。
+    """
+    return "".join(s.split()).replace("_", "").lower()
+
+
+# 表头归一化别名：中文标签（含导出 CSV 的表头）与英文标准字段名 → 英文字段名。
+# 让导出口径的 CSV（中文表头）可以直接再导入，并兼容英文表头的空格/大小写/驼峰变体。
+# 注1：「计算类型」为 computing_type / compute_type 共用标签，归一化后映射到
+#       compute_type（后写覆盖），两列都会保留展示，仅取值优先 compute_type。
+# 注2：_id 的归一化键是「id」，与通用「ID」表头语义冲突（可能是行号），
+#       不收录；CMDB ID 请写「CMDB ID」或「_id」。
+HEADER_ALIAS: dict[str, str] = {}
+for _field, _label in FIELD_LABELS.items():
+    HEADER_ALIAS[norm_header_key(_label)] = _field
+del _field, _label
+
+# 英文字段名自身的归一化形式（覆盖 Instance Name / InstanceName / INSTANCE_NAME
+# 等空格、大小写、下划线变体；norm(字段名) 对标准写法幂等）
+for _fields in RESOURCE_EXCEL_FIELDS.values():
+    for _field in _fields:
+        if _field == "_id":
+            continue  # 归一化键「id」与通用 ID 表头冲突，跳过
+        HEADER_ALIAS.setdefault(norm_header_key(_field), _field)
+del _fields, _field
+
+# 额外常见别名（手工制表常见写法，仅收录无歧义项）
+for _alias, _field in {
+    "ip地址": "ip_address",
+    "ipaddress地址": "ip_address",
+    "所属部门": "user_department",
+}.items():
+    HEADER_ALIAS.setdefault(norm_header_key(_alias), _field)
+del _alias, _field
 
 EXTRA_IP_KEYS = ("IP", "ip", "弹性IP")
 EXTRA_NAME_KEYS = ("实例名", "名称")

@@ -159,6 +159,58 @@ function AssetMatchFields({ asset, fallbackIp }) {
   )
 }
 
+// 资产发现命中字段展示映射（compact 结构通用字段；缺省键自动显示 --）
+const DISCOVERY_FIELD_LABELS = [
+  ['资源类型', 'resource_label'],
+  ['实例名称', 'instance_name'],
+  ['IP 地址', 'ip_address'],
+  ['浮动 IP', 'floatip_address'],
+  ['网段', 'cidr'],
+  ['所属部门', 'user_department'],
+  ['申请部门', 'applicant_department'],
+  ['操作系统', 'operating_system'],
+  ['主机状态', 'host_status'],
+  ['资源区域', 'biz_region_name'],
+  ['带宽(M)', 'bandwidth'],
+  ['绑定实例', 'bind_instance'],
+  ['CMDB ID', 'cmdb_id'],
+  ['实例 ID', 'instance_id'],
+  ['唯一标识', 'source_id'],
+]
+
+// 资产发现匹配结果展示：asset 为 discovery 命中结构（matches 多命中逐条展示）
+function DiscoveryMatchFields({ asset, fallbackIp }) {
+  const na = <span className="text-muted-foreground">--</span>
+  const matches = Array.isArray(asset.matches) && asset.matches.length ? asset.matches : [asset]
+  return (
+    <div className="space-y-2">
+      {matches.map((m, idx) => (
+        <div key={m.source_id || m.cmdb_id || idx} className="rounded border border-border/60 bg-background/40 p-2">
+          <div className="mb-1.5 flex flex-wrap items-center gap-2">
+            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">{m.resource_label || m.resource_type || '资产发现'}</span>
+            {matches.length > 1 && <span className="text-[11px] text-muted-foreground">#{idx + 1}</span>}
+          </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
+            {DISCOVERY_FIELD_LABELS.map(([label, key]) => {
+              const raw = m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null)
+              const text = fmtAssetVal(raw)
+              return (
+                <div key={key} className="flex min-w-0 items-start gap-2">
+                  <span className="shrink-0 text-muted-foreground">{label}：</span>
+                  <span className="min-w-0 break-all">{text != null ? text : na}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+      {asset.truncated ? (
+        <div className="text-xs text-muted-foreground">命中较多，仅展示前 {matches.length} 条，完整数据请点击资产名跳转资产发现查看</div>
+      ) : null}
+    </div>
+  )
+}
+
 function EnrichSourceView({ s, onFill }) {
   const t = s.threat
   const geo = t?.geo_info || {}
@@ -184,27 +236,59 @@ function EnrichSourceView({ s, onFill }) {
       </div>
       {/* 资产匹配 / 威胁情报 / 智能体研判分区展示（窄屏自动上下排列） */}
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        {/* 资产匹配子卡：命中时展示资产全部字段 */}
+        {/* 资产匹配子卡：资产发现与资产清单两来源都查，发现优先、并列展示 */}
         <div className="min-w-0 rounded-md border border-border bg-secondary p-3">
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-foreground">
             <Database className="h-3.5 w-3.5 shrink-0 text-primary" />资产匹配
             {s.asset?.matched ? (
-              <Link
-                to={`/assets/list?keyword=${encodeURIComponent(s.asset.asset_ip || s.ip)}`}
-                onClick={(e) => { if (!guardNavPermission('asset_list', 'view', '资产清单')) e.preventDefault() }}
-                className="min-w-0 break-all font-normal text-primary hover:underline"
-                title={`在资产清单中查看：${s.asset.asset_name || '--'}（${s.asset.asset_ip || s.ip}）`}
-              >
-                {s.asset.asset_name || '--'}
-              </Link>
+              s.asset.source === 'asset_discovery' ? (
+                <Link
+                  to={`/assets/discovery?keyword=${encodeURIComponent(s.asset.asset_ip || s.ip)}${s.asset.resource_type ? `&table=${encodeURIComponent(s.asset.resource_type)}` : ''}`}
+                  onClick={(e) => { if (!guardNavPermission('asset_discovery', 'view', '资产发现')) e.preventDefault() }}
+                  className="min-w-0 break-all font-normal text-primary hover:underline"
+                  title={`在资产发现中查看：${s.asset.asset_name || '--'}（${s.asset.asset_ip || s.ip}）`}
+                >
+                  {s.asset.asset_name || '--'}
+                </Link>
+              ) : (
+                <Link
+                  to={`/assets/list?keyword=${encodeURIComponent(s.asset.asset_ip || s.ip)}`}
+                  onClick={(e) => { if (!guardNavPermission('asset_list', 'view', '资产清单')) e.preventDefault() }}
+                  className="min-w-0 break-all font-normal text-primary hover:underline"
+                  title={`在资产清单中查看：${s.asset.asset_name || '--'}（${s.asset.asset_ip || s.ip}）`}
+                >
+                  {s.asset.asset_name || '--'}
+                </Link>
+              )
             ) : (
               <span className="font-normal text-muted-foreground">资产库未匹配</span>
             )}
           </div>
           {s.asset?.matched ? (
-            <AssetMatchFields asset={s.asset} fallbackIp={s.ip} />
+            <div className="space-y-3">
+              {/* 资产发现结果（优先）：多命中逐条展示 */}
+              {s.asset.discovery ? (
+                <div>
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-emerald-600">
+                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5">资产发现（综合运管平台）</span>
+                  </div>
+                  <DiscoveryMatchFields asset={s.asset.discovery} fallbackIp={s.ip} />
+                </div>
+              ) : null}
+              {/* 资产清单结果：命中时展示资产全部字段（旧结构工单无 discovery/inventory 键，退回 asset 本体渲染） */}
+              {s.asset.inventory || !s.asset.discovery ? (
+                <div>
+                  {s.asset.discovery ? (
+                    <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+                      <span className="rounded bg-muted px-1.5 py-0.5">资产清单</span>
+                    </div>
+                  ) : null}
+                  <AssetMatchFields asset={s.asset.inventory || s.asset} fallbackIp={s.ip} />
+                </div>
+              ) : null}
+            </div>
           ) : (
-            <div className="text-[13px] text-muted-foreground">资产库中未找到与该 IP 匹配的资产</div>
+            <div className="text-[13px] text-muted-foreground">资产发现与资产清单中均未找到与该 IP 匹配的资产</div>
           )}
         </div>
         {/* 威胁情报子卡：查询结果全量字段 */}

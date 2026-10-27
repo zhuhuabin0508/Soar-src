@@ -1,10 +1,13 @@
 """工单发起时自动研判：源/目的 IP 资产匹配 + 威胁情报查询 + 智能体研判。
 
 发起工单时对首节点 ``src_ip`` / ``dst_ip`` 字段自动执行（按字段开关）：
-1. 资产匹配（``auto_asset``，默认开启）：复用告警资产富化
-   （AssetLibEnricher）的资产索引（单 IP 精确 + CIDR/起止范围包含，
-   内存缓存 TTL 600s，资产写接口 commit 后主动失效），
-   与告警「关联资产」同一套口径；
+1. 资产匹配（``auto_asset``，默认开启）：**两个来源都查**——资产发现
+   （综合运管平台，IP 精确匹配，与智能体检索同口径）与资产清单
+   （复用告警资产富化 AssetLibEnricher 的索引：单 IP 精确 + CIDR/
+   起止范围包含，内存缓存 TTL 600s）。资产发现优先级更高：
+   ``asset.source`` 为主命中来源（发现命中 ``"asset_discovery"``，
+   否则清单命中 ``"asset_inventory"``），``discovery`` / ``inventory``
+   键各携完整命中结果（可同时命中并列展示）；
 2. 威胁情报（``auto_intel``，默认开启）：复用工具 ``get_threat_intel``
    （app.tools.context_tools），与智能体工具 API 调用一致；
 3. 智能体研判（``auto_agent``，默认关闭）：调用 IP 风险研判智能体
@@ -23,11 +26,11 @@
           "role": "src_ip",              # src_ip / dst_ip
           "label": "源IP地址",            # 快照字段显示名
           "ip": "10.144.1.2",
-          "asset": {"matched": true, "asset_id": 4665,
-                    "asset_name": "坪山新区内部网",
-                    "asset_ip": "10.144.1.2",
-                    "fields": {...资产全字段（同资产详情口径）+ tags...}},
-                                                # 命中时字段；未命中 {"matched": false}
+          "asset": {"matched": true, "source": "asset_discovery",
+                    "asset_name": "web-01", "asset_ip": "10.144.1.2",
+                    "discovery": {...资产发现命中（resource_label/matches...）...},
+                    "inventory": {...资产清单命中（asset_id/fields...）...}},
+                                                # 两来源都查、发现优先；未命中 {"matched": false}
           "threat": {...get_threat_intel 原样返回...},
           "agent": {"risk_level": "高危", "action": "ban",
                     "monitoring_advice": "封禁后持续观察该网段",
@@ -135,12 +138,54 @@ def _locate_ip_fields(field_defs: list, values: dict) -> list[dict]:
     return found
 
 
-def _match_asset(db, ip: str) -> dict:
-    """单 IP 匹配资产库（复用告警富化索引：单 IP 精确 + CIDR/范围包含）。
+# 资产发现命中的展示上限（安全上下文卡片展示够用，避免多命中撑爆）
+_DISCOVERY_MATCH_LIMIT = 5
 
-    命中时附带资产全字段（``fields``，与资产详情接口同口径：所有列 + 标签，
-    排除 raw_content 溯源长文本），供工单安全上下文完整展示资产信息；
-    保留 asset_id/asset_name/asset_ip 冗余键供前端兼容与跳转。
+
+def _match_discovery_asset(db, ip: str) -> Optional[dict]:
+    """查询资产发现（综合运管平台）数据。
+
+    复用资产发现检索 ``_search_token`` 的 IP 精确匹配口径（IP 列 +
+    extra_excel IP 键，全部资源类型），与智能体 ``search_assets`` /
+    ``search_discovered_assets`` 工具一致。命中返回
+    ``{resource_type, resource_label, asset_name, asset_ip, matches, truncated}``
+    （``matches`` 为全部命中记录）；未命中返回 None；查询失败仅记日志
+    返回 None（不影响工单发起）。
+    """
+    from app.agent.discovery_search import _search_token
+    from app.api.v1.govcloud import RESOURCE_TYPES
+
+    try:
+        result = _search_token(db, ip, list(RESOURCE_TYPES.keys()), _DISCOVERY_MATCH_LIMIT)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("工单资产发现查询失败, ip=%s: %s", ip, exc)
+        return None
+    matches = [m for m in (result.get("assets") or []) if isinstance(m, dict)]
+    if not matches:
+        return None
+    primary = matches[0]
+    return {
+        "resource_type": primary.get("resource_type") or "",
+        "resource_label": primary.get("resource_label") or "",
+        "asset_name": (
+            primary.get("instance_name")
+            or primary.get("inst_name")
+            or primary.get("name")
+            or primary.get("cmdb_id")
+            or ""
+        ),
+        "asset_ip": ip,
+        "matches": matches,
+        "truncated": bool(result.get("truncated")),
+    }
+
+
+def _match_inventory_asset(db, ip: str) -> Optional[dict]:
+    """查询资产清单（复用告警富化索引：单 IP 精确 + CIDR/范围包含）。
+
+    命中返回 ``{asset_id, asset_name, asset_ip, fields}``（``fields`` 与
+    资产详情接口同口径：所有列 + 标签，排除 raw_content 溯源长文本）；
+    未命中返回 None。
     """
     from app.models.asset import Asset
     from app.schemas.common import to_dict
@@ -154,9 +199,8 @@ def _match_asset(db, ip: str) -> dict:
         }
     hit = _match_asset_ip(ip, index)
     if not hit:
-        return {"matched": False}
+        return None
     result = {
-        "matched": True,
         "asset_id": hit[0],
         "asset_name": hit[1] or "",
         "asset_ip": ip,
@@ -171,6 +215,41 @@ def _match_asset(db, ip: str) -> dict:
         ]
         result["fields"] = d
     return result
+
+
+def _match_asset(db, ip: str) -> dict:
+    """单 IP 同时匹配资产发现与资产清单（两个来源都查）。
+
+    资产发现优先级高于资产清单：``source`` 取主命中来源（发现命中为
+    ``"asset_discovery"``，否则清单命中 ``"asset_inventory"``），头部
+    链接与资产名按主来源展示；``discovery`` / ``inventory`` 键各自携带
+    完整命中结果（可同时存在，也可为 None），前端按发现优先顺序并列
+    展示。两来源均未命中返回 ``{"matched": False}``。
+    """
+    inventory = _match_inventory_asset(db, ip)
+    discovery = _match_discovery_asset(db, ip)
+    if inventory is None and discovery is None:
+        return {"matched": False}
+    if discovery is not None:
+        primary = {
+            "source": "asset_discovery",
+            "asset_name": discovery.get("asset_name") or "",
+            "asset_ip": ip,
+            "resource_type": discovery.get("resource_type") or "",
+        }
+    else:
+        primary = {
+            "source": "asset_inventory",
+            "asset_name": inventory.get("asset_name") or "",
+            "asset_ip": ip,
+            "asset_id": inventory.get("asset_id"),
+        }
+    return {
+        "matched": True,
+        **primary,
+        "discovery": discovery,
+        "inventory": inventory,
+    }
 
 
 def _query_threat_intel_batch(ips: list[str]) -> list[dict]:

@@ -85,7 +85,7 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
       }
     >
       <p className="mb-3 text-xs text-muted-foreground">
-        来源：{sourceName}。请先选择插入方式，再选择爬虫产出的 .xlsx。
+        来源：{sourceName}。请先选择插入方式，再选择爬虫产出的 .xlsx / .csv。
       </p>
       <div className="grid gap-2 sm:grid-cols-2">
         <button
@@ -119,7 +119,7 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
         <input
           ref={pickRef}
           type="file"
-          accept=".xlsx"
+          accept=".xlsx,.csv"
           className="hidden"
           onChange={(e) => setFile(e.target.files?.[0] || null)}
         />
@@ -211,6 +211,14 @@ export default function GovCloudAssets() {
       .finally(() => setMetaLoading(false))
   }, [canView])
 
+  // URL keyword 预填（如工单安全上下文「在资产发现中查看」跳转）：仅首次挂载读取，
+  // 预填后 keyword 状态变化会驱动列表按该关键词过滤
+  useEffect(() => {
+    const kw = (searchParams.get('keyword') || '').trim()
+    if (kw) setKeyword(kw)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const load = useCallback(async () => {
     if (!canView || !sourceEnabled || !currentTable?.code) {
       setLoading(false)
@@ -263,8 +271,9 @@ export default function GovCloudAssets() {
 
   async function handleImport(file, mode) {
     if (!file || !currentTable?.code) return
-    if (!file.name.toLowerCase().endsWith('.xlsx')) {
-      toast.error('请上传爬虫产出的 .xlsx 文件')
+    const name = file.name.toLowerCase()
+    if (!name.endsWith('.xlsx') && !name.endsWith('.csv')) {
+      toast.error('请上传爬虫产出的 .xlsx / .csv 文件')
       return
     }
     const tableName = currentTable.excel_name || currentTable.label
@@ -492,7 +501,7 @@ export default function GovCloudAssets() {
                           {t.consistent ? '已对齐' : '未对齐'}
                         </Badge>
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">.xlsx · 全量爬取</div>
+                      <div className="mt-1 text-xs text-muted-foreground">.xlsx / .csv · 全量爬取</div>
                     </button>
                   )
                 })}

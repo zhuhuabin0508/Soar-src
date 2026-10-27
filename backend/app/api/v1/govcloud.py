@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import get_client_ip, log_audit
 from app.core.govcloud_schema import (
+    HEADER_ALIAS,
     EXTRA_IP_KEYS,
     EXTRA_NAME_KEYS,
     FIELD_LABELS,
@@ -27,6 +28,7 @@ from app.core.govcloud_schema import (
     RESOURCE_EXCEL_FIELDS,
     SOURCE_ID_KEYS,
     excel_attr,
+    norm_header_key,
     skip_excel_header,
 )
 from app.core.timezone import beijing_now
@@ -188,6 +190,67 @@ def _cell_value(val) -> str:
     return str(val).strip()
 
 
+def _normalize_header(key: str) -> str:
+    """表头归一化：中文标签（如导出 CSV 的表头「实例名称/IP」）与英文字段名的
+    空格/大小写/下划线变体（「Instance Name」「INSTANCE_NAME」）映射回英文字段名，
+    使导出口径的文件可直接再导入；未知表头原样返回（进 extra_excel），
+    统计类表头不受影响。键口径与 HEADER_ALIAS 构建共用 norm_header_key。
+    """
+    k = (key or "").strip()
+    if not k or skip_excel_header(k):
+        return k
+    field = HEADER_ALIAS.get(norm_header_key(k))
+    return field if field else k
+
+
+def _decode_csv_bytes(raw: bytes) -> str:
+    """CSV 解码：UTF-8（含 BOM）优先，GBK/GB18030 兜底（Excel 中文另存常见）。"""
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("gb18030")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV 编码无法解析（支持 UTF-8 / GBK，请勿使用 UTF-16 等格式另存）",
+        )
+
+
+def _rows_from_grid(rows_iter) -> list[dict]:
+    """CSV / Excel 共用的行构建：首行表头归一化，后续行按键取值。
+
+    口径：短行补空、空行跳过、统计类表头列忽略、超过 MAX_ROWS 拒绝，
+    两种格式走同一实现，避免口径漂移。
+    """
+    try:
+        headers = [_normalize_header(_cell_value(h)) for h in next(rows_iter)]
+    except StopIteration:
+        return []
+    result: list[dict] = []
+    for row in rows_iter:
+        item = {}
+        empty = True
+        for i, key in enumerate(headers):
+            if skip_excel_header(key):
+                continue
+            val = _cell_value(row[i] if i < len(row) else "")
+            if val:
+                empty = False
+            item[key] = val
+        if not empty:
+            result.append(item)
+        if len(result) > MAX_ROWS:
+            raise HTTPException(status_code=413, detail=f"行数过多，最多 {MAX_ROWS} 行")
+    return result
+
+
+def _parse_csv(raw: bytes) -> list[dict]:
+    """解析 CSV（首行表头），行结构与 ``_parse_excel`` 同一套口径。"""
+    return _rows_from_grid(csv.reader(io.StringIO(_decode_csv_bytes(raw))))
+
+
 def _parse_excel(raw: bytes) -> list[dict]:
     """只读 Sheet「原始数据」，跳过「数据统计」页和统计类表头。"""
     from openpyxl import load_workbook
@@ -208,27 +271,7 @@ def _parse_excel(raw: bytes) -> list[dict]:
                 break
     if ws is None:
         return []
-    rows_iter = ws.iter_rows(values_only=True)
-    try:
-        headers = [_cell_value(h) for h in next(rows_iter)]
-    except StopIteration:
-        return []
-    result: list[dict] = []
-    for row in rows_iter:
-        item = {}
-        empty = True
-        for i, key in enumerate(headers):
-            if skip_excel_header(key):
-                continue
-            val = _cell_value(row[i] if i < len(row) else "")
-            if val:
-                empty = False
-            item[key] = val
-        if not empty:
-            result.append(item)
-        if len(result) > MAX_ROWS:
-            raise HTTPException(status_code=413, detail=f"行数过多，最多 {MAX_ROWS} 行")
-    return result
+    return _rows_from_grid(ws.iter_rows(values_only=True))
 
 
 def _source_id(row: dict) -> str:
@@ -258,6 +301,9 @@ def _row_to_values(resource_type: str, row: dict, batch_id: int, now) -> dict:
             continue
         val = _cell_value(raw)
         if key in RESERVED_COLUMNS:
+            if key == "source_id":
+                # 唯一标识已由 _source_id 使用（导出 CSV 回导场景），不再进 extra
+                continue
             extra[key] = val
             continue
         if key in known:
@@ -579,16 +625,18 @@ def check_consistency(
 
 @router.post("/import")
 async def import_govcloud_excel(
-    file: UploadFile = File(..., description="爬虫产出的 xlsx"),
+    file: UploadFile = File(..., description="爬虫产出的 xlsx / csv"),
     resource_type: str = Query("", description="cloud_host / bare_metal / e_government_network / elastic_ip"),
     mode: str = Query("full", description="导入模式：full 全量对齐 / incremental 增量 upsert 不删除"),
     request: Request = None,
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "edit")),
 ) -> dict:
-    filename = file.filename or "upload.xlsx"
-    if not filename.lower().endswith(".xlsx"):
-        raise HTTPException(status_code=400, detail="仅支持 .xlsx（爬虫输出格式）")
+    filename = file.filename or "upload"
+    lower = filename.lower()
+    is_csv = lower.endswith(".csv")
+    if not (is_csv or lower.endswith(".xlsx")):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx / .csv（爬虫输出格式）")
     import_mode = mode if mode in ("full", "incremental") else "full"
     raw = await file.read()
     if not raw:
@@ -599,9 +647,12 @@ async def import_govcloud_excel(
     rtype = infer_resource_type(filename, resource_type)
     model = _model(rtype)
     started = time.perf_counter()
-    rows = _parse_excel(raw)
+    rows = _parse_csv(raw) if is_csv else _parse_excel(raw)
     if not rows:
-        raise HTTPException(status_code=400, detail="未解析到数据行（请确认 Sheet「原始数据」，统计页不会导入）")
+        raise HTTPException(
+            status_code=400,
+            detail="未解析到数据行（xlsx 需 Sheet「原始数据」；csv 需首行为表头）",
+        )
 
     skipped = 0
     seen: dict[str, dict] = {}
@@ -616,6 +667,16 @@ async def import_govcloud_excel(
         seen[sid] = row
 
     unique_rows = list(seen.values())
+    if not unique_rows:
+        # 全部行都识别不出唯一标识：多为表头不匹配（如非爬虫口径的文件）。
+        # 直接拒绝，避免产生「全量 0 条」批次并把全量模式下库内数据误删。
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(rows)} 行均无法识别唯一标识（需要 _id / instance_id / source_id 列），"
+                "请确认表头与爬虫输出一致（导出的 CSV 可直接再导入）"
+            ),
+        )
     unique_ids = set(seen.keys())
     existing_ids = {r[0] for r in db.query(model.source_id).all()}
     inserted = len(unique_ids - existing_ids)
@@ -663,9 +724,10 @@ async def import_govcloud_excel(
     consistent = live == len(unique_ids) and skipped == 0 if import_mode == "full" else skipped == 0
     notes = []
     notes.append("全量导入：已删除文件中不存在的旧记录" if import_mode == "full" else "增量导入：仅新增/更新，未删除库内既有记录")
-    notes.append("未导入 Sheet「数据统计」")
+    if not is_csv:
+        notes.append("未导入 Sheet「数据统计」")
     if duplicate:
-        notes.append(f"Excel 内重复 source_id {duplicate} 条，已按最后一条保留")
+        notes.append(f"文件内重复 source_id {duplicate} 条，已按最后一条保留")
     if skipped:
         notes.append(f"缺少 _id/instance_id 跳过 {skipped} 条")
     if not consistent:
