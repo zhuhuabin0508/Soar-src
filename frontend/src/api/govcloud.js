@@ -45,6 +45,12 @@ export const govCloudApi = {
     const qs = resource_type ? `?resource_type=${encodeURIComponent(resource_type)}` : ''
     return request(`/govcloud/batches${qs}`)
   },
+  // 青藤主机同步：device_ids 为空同步全部已启用的青藤设备
+  // mode: full 全量对齐（删除青藤平台已不存在的主机）/ incremental 增量
+  syncQingteng: (deviceIds = [], mode = 'full') => request('/govcloud/qingteng/sync', {
+    method: 'POST',
+    body: JSON.stringify({ device_ids: deviceIds, mode: mode === 'incremental' ? 'incremental' : 'full' }),
+  }),
   importExcel: (file, resource_type, onProgress, mode = 'full') => new Promise((resolve, reject) => {
     const fd = new FormData()
     fd.append('file', file)

@@ -272,6 +272,11 @@ export const agents = {
     })
     return resp
   },
+  // 清空会话的服务端记忆（删除该会话持久化的全部消息记录，随后换新 session_id 开始全新会话）
+  clearChatSession: (id, sessionId) =>
+    request(`/agents/${id}/chat/session?session_id=${encodeURIComponent(sessionId || 'default')}`, {
+      method: 'DELETE',
+    }),
   executions: (id, limit = 50) =>
     request(`/agents/${id}/executions?limit=${limit}`),
   monitor: (id) => request(`/agents/${id}/monitor`),

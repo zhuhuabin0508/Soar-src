@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import logging
 import re
 
 from sqlalchemy import or_, text
@@ -8,6 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.v1.govcloud import RESOURCE_TYPES
 from app.core.govcloud_schema import EXTRA_IP_KEYS, EXTRA_NAME_KEYS
 from app.models.govcloud_asset import RESOURCE_MODELS
+
+logger = logging.getLogger(__name__)
 
 _MAX_LIMIT = 20
 _DEFAULT_LIMIT = 10
@@ -22,16 +25,19 @@ _IP_COLUMNS = {
     "bare_metal": ("ip_address", "floatip_address"),
     "e_government_network": ("ip_address",),
     "elastic_ip": ("ip_address", "floatip_address"),
+    # 青藤主机（API 同步）：IP 分布在多个专用列，JSONB 兜底列叫 extra（非 extra_excel）
+    "qingteng_host": ("display_ip", "connection_ip", "external_ip", "internal_ip", "proxy_ip"),
 }
 _CIDR_COLUMNS = {
     "e_government_network": ("cidr",),
 }
-_ID_COLUMNS = ("source_id", "cmdb_id", "instance_id")
+_ID_COLUMNS = ("source_id", "cmdb_id", "instance_id", "agent_id")
 _TEXT_COLUMNS = {
     "cloud_host": ("instance_name", "inst_name", "user_department", "applicant_department"),
     "bare_metal": ("instance_name", "inst_name", "user_department", "applicant_department"),
     "e_government_network": ("instance_name", "inst_name", "name", "user_department", "applicant_department"),
     "elastic_ip": ("instance_name", "inst_name", "user_department", "applicant_department"),
+    "qingteng_host": ("hostname", "biz_group", "charge_name", "remark", "qingteng_device_name", "host_location"),
 }
 _KEEP = (
     "id",
@@ -51,6 +57,26 @@ _KEEP = (
     "biz_region_name",
     "bandwidth",
     "bind_instance",
+)
+# 青藤主机输出保留字段（与 Excel 表字段体系不同，display_ip/hostname 会对齐到通用展示字段）
+_QT_KEEP = (
+    "id",
+    "source_id",
+    "agent_id",
+    "hostname",
+    "display_ip",
+    "connection_ip",
+    "external_ip",
+    "internal_ip",
+    "os_type",
+    "platform",
+    "agent_status_label",
+    "biz_group",
+    "charge_name",
+    "serial_number",
+    "last_online_time",
+    "qingteng_device_id",
+    "qingteng_device_name",
 )
 
 
@@ -92,7 +118,7 @@ def resolve_resource_types(resource_type: str) -> tuple[list[str], dict | None]:
         return list(RESOURCE_TYPES.keys()), None
     if code not in RESOURCE_TYPES:
         return [], {
-            "error": "未知资源类型，可选 cloud_host / bare_metal / e_government_network / elastic_ip",
+            "error": "未知资源类型，可选 cloud_host / bare_metal / e_government_network / elastic_ip / qingteng_host",
             "count": 0,
             "assets": [],
         }
@@ -121,7 +147,10 @@ def _columns(model, names):
 
 
 def _extra_text(model, key: str):
-    return model.extra_excel[key].astext
+    # Excel 表的 JSONB 列是 extra_excel；青藤主机表是 extra（键体系也不同，
+    # 查询不存在的键返回 NULL 不命中，无害——这里只为兼容两种列名不抛 AttributeError）
+    extra_col = getattr(model, "extra_excel", None) or getattr(model, "extra", None)
+    return extra_col[key].astext
 
 
 def _fill_display_fields(data: dict, extra: dict) -> None:
@@ -141,6 +170,22 @@ def _fill_display_fields(data: dict, extra: dict) -> None:
 
 def _compact(resource_type: str, mapping) -> dict:
     meta = RESOURCE_TYPES[resource_type]
+    if resource_type == "qingteng_host":
+        data = {
+            "source": "asset_discovery",
+            "resource_type": "qingteng_host",
+            "resource_label": meta.get("excel_name") or meta.get("label") or resource_type,
+        }
+        for key in _QT_KEEP:
+            value = mapping.get(key)
+            if value not in (None, ""):
+                data[key] = value
+        # 对齐 Excel 资产的通用展示字段：LLM 与合并逻辑统一按 ip_address / instance_name 理解
+        if not data.get("ip_address") and mapping.get("display_ip"):
+            data["ip_address"] = mapping["display_ip"]
+        if not data.get("instance_name") and mapping.get("hostname"):
+            data["instance_name"] = mapping["hostname"]
+        return data
     extra = mapping.get("extra_excel") or {}
     if not isinstance(extra, dict):
         extra = {}
@@ -180,7 +225,10 @@ def _query_table(db, resource_type: str, mode: str, token: str, limit: int) -> t
         clauses.extend(_extra_text(model, key).ilike(like) for key in EXTRA_NAME_KEYS)
     if not clauses:
         return [], False
-    selected = _columns(model, (*_KEEP, "extra_excel"))
+    if resource_type == "qingteng_host":
+        selected = _columns(model, (*_QT_KEEP, "extra"))
+    else:
+        selected = _columns(model, (*_KEEP, "extra_excel"))
     stmt = db.query(*selected).filter(or_(*clauses)).limit(limit)
     rows = stmt.all()
     names = [column.key for column in selected]
@@ -210,8 +258,17 @@ def _search_token(db, token: str, resource_types: list[str], limit: int) -> dict
         }
     assets = []
     truncated = False
+    type_errors = []
     for resource_type in resource_types:
-        found, hit_cap = _query_table(db, resource_type, mode, token, limit)
+        try:
+            found, hit_cap = _query_table(db, resource_type, mode, token, limit)
+        except SQLAlchemyError:
+            raise  # DB 级错误（超时等）按原有语义整体失败
+        except Exception as exc:  # noqa: BLE001
+            # 单个类型未适配/字段缺失：记录并跳过，不让其余类型的命中一起丢失
+            logger.warning("资产发现类型 %s 查询失败（跳过）: %s", resource_type, exc)
+            type_errors.append(f"{resource_type} 查询失败")
+            continue
         assets.extend(found)
         truncated = truncated or hit_cap
     return {
@@ -220,6 +277,7 @@ def _search_token(db, token: str, resource_types: list[str], limit: int) -> dict
         "count": len(assets),
         "truncated": truncated,
         "assets": assets,
+        **({"error": "；".join(type_errors)} if type_errors else {}),
     }
 
 

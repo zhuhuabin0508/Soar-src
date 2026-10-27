@@ -88,10 +88,13 @@ export const alertRuleApi = {
   }),
   // JSON 导入（重名跳过）
   import: (rules) => request('/alert-rules/import', { method: 'POST', body: { rules } }),
-  // JSON 导出（返回 Blob）
-  async export() {
+  // JSON 导出（返回 Blob；传 ids 数组只导选中的规则，不传导全量）
+  async export(ids = []) {
     const token = localStorage.getItem('soar_token')
-    const res = await fetch('/api/v1/alert-rules/export', {
+    const qs = Array.isArray(ids) && ids.length
+      ? `?ids=${ids.map((id) => encodeURIComponent(String(id))).join(',')}`
+      : ''
+    const res = await fetch(`/api/v1/alert-rules/export${qs}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
     if (!res.ok) {

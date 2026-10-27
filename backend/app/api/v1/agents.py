@@ -848,6 +848,49 @@ async def chat_agent(
     )
 
 
+@router.delete("/{agent_id}/chat/session")
+async def clear_chat_session(
+    agent_id: int,
+    session_id: str = Query(..., description="要清空的会话 ID"),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("agent", "execute")),
+):
+    """清空指定会话的服务端记忆（删除该会话持久化的全部消息记录）。
+
+    前端「清空对话」时携带旧 session_id 调用：旧消息从库中删除，
+    随后前端换新 session_id 开启全新会话（load_chat_history 为空）。
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    sid = _normalize_session_id(session_id)
+
+    from sqlalchemy import delete as sa_delete
+    from app.models.chat_message import ChatMessage
+
+    deleted = db.execute(
+        sa_delete(ChatMessage).where(
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.session_id == sid,
+            ChatMessage.user_id == current_user.id,
+        )
+    ).rowcount
+    db.commit()
+
+    from app.core.audit import log_audit
+    log_audit(
+        db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="agent.chat_session.clear",
+        resource_type="agent",
+        resource_id=str(agent_id),
+        detail=f"清空会话记忆: session={sid}, 删除 {deleted} 条消息",
+    )
+
+    return {"deleted": deleted, "session_id": sid}
+
+
 async def _resume_workflow_run(agent_id: int, run_id: str, body: ResumeRequest, db: Session, current_user):
     logger.info("恢复工作流运行: agent_id=%s, run_id=%s, decision=%s", agent_id, run_id, body.decision)
     agent = db.query(Agent).filter(Agent.id == agent_id).first()

@@ -495,11 +495,20 @@ def list_templates(current_user=Depends(require_permission("alert_rule", "view")
 
 @router.get("/export")
 def export_rules(
+    ids: str = "",
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("alert_rule", "view")),
 ):
-    """导出全部规则（JSON 全量配置，含草稿）。"""
-    rules = db.query(AlertRule).order_by(AlertRule.priority.asc(), AlertRule.id.asc()).all()
+    """导出规则（JSON 配置，含草稿）。
+
+    ids：逗号分隔的规则 ID。传了只导选中的规则；不传导全量。
+    """
+    query = db.query(AlertRule).order_by(AlertRule.priority.asc(), AlertRule.id.asc())
+    if (ids or "").strip():
+        # 有选中即严格按选中导出（ID 非法或已删除的不出现在结果里）
+        id_list = [int(p) for p in ids.split(",") if p.strip().isdigit()]
+        query = query.filter(AlertRule.id.in_(id_list))
+    rules = query.all()
     payload = {
         "version": 1,
         "exported_at": beijing_now().strftime("%Y-%m-%d %H:%M:%S"),

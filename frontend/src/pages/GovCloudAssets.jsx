@@ -3,14 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Boxes, CheckCircle2, FileSpreadsheet, Loader2, RefreshCw, Search, Server, Network, Globe, Cpu,
-  Upload, Download, X, ShieldOff, Shield, Monitor,
+  Upload, Download, X, ShieldOff, Shield, Monitor, AlertTriangle,
 } from 'lucide-react'
 import { govCloudApi } from '../api/govcloud'
 import { toast } from '../store/toastStore'
 import {
   PageContainer, PageHeader, Button, Badge, EmptyState, Pagination, LoadingState,
 } from '../components/ui'
-import { Modal } from '../components/Dialog'
+import { Modal, Drawer } from '../components/Dialog'
 import { inputCls } from '../components/property/FormControls'
 import { hasPermission } from '../utils/permissions'
 
@@ -50,19 +50,58 @@ function sourceTitle(group) {
   return group.index ? `${group.index} ${group.label}` : group.label
 }
 
+// 文件体积人性化展示
+function fmtSize(n) {
+  if (n == null || !Number.isFinite(n)) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+// 详情关键字段置顶排序权重（识别字段优先，其余保持原序）
+const DETAIL_PRIORITY = [
+  'instance_name', 'inst_name', 'name', 'host_name', 'hostname', 'computer_name',
+  'ip', 'ip_address', 'private_ip', 'public_ip', 'manage_ip', 'inner_ip',
+]
+
 function ImportDialog({ open, tableName, sourceName, importing, importPhase, onClose, onConfirm }) {
   const [mode, setMode] = useState('full')
   const [file, setFile] = useState(null)
+  // 格式错误在字段正下方红字提示（普通录入报错不弹全局弹窗）
+  const [fileError, setFileError] = useState('')
+  const [dragOver, setDragOver] = useState(false)
   const pickRef = useRef(null)
 
   useEffect(() => {
     if (open) {
       setMode('full')
       setFile(null)
+      setFileError('')
     }
   }, [open])
 
   if (!open) return null
+
+  // 本地校验：拦截非 .xlsx / .csv 文件（可重选）
+  function validateAndSet(f) {
+    if (!f) return
+    const name = (f.name || '').toLowerCase()
+    if (!name.endsWith('.xlsx') && !name.endsWith('.csv')) {
+      setFileError('仅支持爬虫产出的 .xlsx / .csv 文件')
+      setFile(null)
+      return
+    }
+    setFileError('')
+    setFile(f)
+  }
+
+  function handleDrop(e) {
+    e.preventDefault()
+    setDragOver(false)
+    if (importing) return
+    validateAndSet(e.dataTransfer.files?.[0])
+  }
+
   return (
     <Modal
       open={open}
@@ -92,12 +131,15 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
           type="button"
           disabled={importing}
           onClick={() => setMode('full')}
-          className={`rounded-lg border p-3 text-left ${
+          className={`rounded-lg border p-3 text-left transition-colors ${
             mode === 'full' ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted'
           }`}
         >
-          <div className="text-sm font-medium text-foreground">全量导入</div>
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <span className={`h-3.5 w-3.5 shrink-0 rounded-full border ${mode === 'full' ? 'border-[4.5px] border-primary bg-background' : 'border-muted-foreground/40'}`} aria-hidden />
+            全量导入
+          </div>
+          <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
             按 CMDB ID 新增或更新文件中的记录，并删除本次文件里没有的旧记录，与全量爬取对齐。
           </div>
         </button>
@@ -105,12 +147,15 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
           type="button"
           disabled={importing}
           onClick={() => setMode('incremental')}
-          className={`rounded-lg border p-3 text-left ${
+          className={`rounded-lg border p-3 text-left transition-colors ${
             mode === 'incremental' ? 'border-primary bg-primary/10' : 'border-border hover:bg-muted'
           }`}
         >
-          <div className="text-sm font-medium text-foreground">增量导入</div>
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <span className={`h-3.5 w-3.5 shrink-0 rounded-full border ${mode === 'incremental' ? 'border-[4.5px] border-primary bg-background' : 'border-muted-foreground/40'}`} aria-hidden />
+            增量导入
+          </div>
+          <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
             只新增或更新文件中的记录，不删除库内已有数据。适合补录、周中追加。
           </div>
         </button>
@@ -121,12 +166,48 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
           type="file"
           accept=".xlsx,.csv"
           className="hidden"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
+          onChange={(e) => {
+            validateAndSet(e.target.files?.[0])
+            // 允许重复选择同一文件
+            e.target.value = ''
+          }}
         />
-        <Button variant="secondary" size="sm" disabled={importing} onClick={() => pickRef.current?.click()}>
-          <FileSpreadsheet className="h-4 w-4" />
-          {file ? file.name : '选择 Excel 文件'}
-        </Button>
+        {/* 拖拽上传区：点击选择或直接拖入文件 */}
+        <button
+          type="button"
+          disabled={importing}
+          onClick={() => pickRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); if (!importing) setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          className={`flex w-full flex-col items-center gap-1.5 rounded-lg border border-dashed p-5 text-center transition-colors ${
+            importing ? 'cursor-not-allowed opacity-60'
+              : dragOver ? 'border-primary bg-primary/10'
+              : 'border-border hover:border-primary/40 hover:bg-muted/50'
+          }`}
+        >
+          <Upload className="h-5 w-5 text-muted-foreground" />
+          <span className="text-sm font-medium text-foreground">拖拽文件到此处，或点击选择</span>
+          <span className="text-xs text-muted-foreground">支持爬虫产出的 .xlsx / .csv 全量爬取文件</span>
+        </button>
+        {fileError && <p className="mt-1.5 text-xs text-destructive">{fileError}</p>}
+        {file && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2">
+            <FileSpreadsheet className="h-4 w-4 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate text-sm text-foreground">{file.name}</span>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{fmtSize(file.size)}</span>
+            {!importing && (
+              <button
+                type="button"
+                onClick={() => setFile(null)}
+                className="shrink-0 rounded p-1 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                aria-label="移除已选文件"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </Modal>
   )
@@ -148,6 +229,8 @@ export default function GovCloudAssets() {
   const [cons, setCons] = useState(null)
   const [importing, setImporting] = useState(false)
   const [importPhase, setImportPhase] = useState('')
+  // 青藤主机 API 同步中（登录青藤平台 → 分页拉取 linux/win 主机 → 入库）
+  const [syncing, setSyncing] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [detail, setDetail] = useState(null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -167,6 +250,8 @@ export default function GovCloudAssets() {
   const active = searchParams.get('table') || tables[0]?.code || ''
   const currentTable = tables.find((t) => t.code === active) || tables[0]
   const sourceEnabled = Boolean(currentGroup?.enabled && tables.length)
+  // 青藤来源：数据来自设备管理配置的青藤平台 API 同步（不支持 Excel 导入）
+  const isQingteng = currentGroup?.code === 'qingteng_host'
 
   // 对齐状态统计 + 资产总量（从当前来源数据表派生，供指标条与头部计数展示）
   const consStats = useMemo(() => {
@@ -199,6 +284,26 @@ export default function GovCloudAssets() {
     })
     return ordered
   }, [listColumns, currentTable?.excel_columns, items, fieldLabels])
+
+  // 数值/日期列启发式：采样当前页数据，80% 以上命中即按数值列处理（右对齐 + 等宽数字）。
+  // 编号/ID 类字段虽为数字串，但承担识别职责，保持左对齐不参与扫描比较。
+  const rightAlignKeys = useMemo(() => {
+    if (!items.length) return new Set()
+    const NUM_RE = /^-?[\d,]+(\.\d+)?%?$/
+    const DT_RE = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?/
+    const set = new Set()
+    displayColumns.forEach((col) => {
+      const key = col.key
+      const lower = key.toLowerCase()
+      if (lower === 'id' || lower.endsWith('_id') || lower.includes('_id')) return
+      const vals = items.map((r) => r[key]).filter((v) => v !== '' && v != null)
+      if (!vals.length) return
+      const hit = vals.filter((v) =>
+        typeof v === 'number' || NUM_RE.test(String(v).trim()) || DT_RE.test(String(v).trim()))
+      if (hit.length / vals.length >= 0.8) set.add(key)
+    })
+    return set
+  }, [displayColumns, items])
 
   useEffect(() => {
     if (!canView) return
@@ -319,6 +424,32 @@ export default function GovCloudAssets() {
     }
   }
 
+  // 青藤主机同步：登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库。
+  // 当前卡片带 device_id 时只同步该设备，否则同步全部已启用的青藤设备。
+  async function handleSync() {
+    const deviceIds = currentTable?.device_id ? [currentTable.device_id] : []
+    setSyncing(true)
+    try {
+      const result = await govCloudApi.syncQingteng(deviceIds)
+      const results = result?.results || []
+      const okItems = results.filter((r) => r.success)
+      const failItems = results.filter((r) => !r.success)
+      okItems.forEach((r) => {
+        toast.success(
+          `${r.device_name} 同步完成：拉取 ${r.excel_rows} 行 / 库内 ${r.live_count} 条${r.consistent ? '（已对齐）' : ''}`,
+        )
+      })
+      failItems.forEach((r) => toast.error(`${r.device_name} 同步失败：${r.error || '未知错误'}`))
+      if (!results.length) toast.success('同步完成')
+      setPage(1)
+      await load()
+    } catch (e) {
+      toast.error(e.message || '同步失败')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   async function openDetail(id) {
     try {
       const rec = await govCloudApi.get(currentTable.code, id)
@@ -352,10 +483,12 @@ export default function GovCloudAssets() {
               共 <span className="font-medium tabular-nums text-foreground">{consStats.total.toLocaleString()}</span> 条资产
             </span>
           )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">发现来源同级展示，当前已接入综合运管平台</span>
+          <span className="hidden text-xs text-muted-foreground xl:inline">
+            发现来源同级展示，综合运管平台每周全量爬取，青藤主机按设备 API 同步
+          </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={load} disabled={loading || importing || !sourceEnabled}>
+          <Button variant="secondary" size="sm" onClick={load} disabled={loading || importing || syncing || !sourceEnabled}>
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </Button>
@@ -364,24 +497,35 @@ export default function GovCloudAssets() {
               variant="secondary"
               size="sm"
               onClick={handleExport}
-              disabled={exporting || loading || importing || !currentTable || total === 0}
+              disabled={exporting || loading || importing || syncing || !currentTable || total === 0}
               title="导出当前数据表为 CSV（遵循搜索条件，含全部数据）"
             >
               {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
               {exporting ? '导出中' : `导出${currentTable?.excel_name || ' CSV'}`}
             </Button>
           )}
-          {canEdit && sourceEnabled && (
+          {canEdit && sourceEnabled && isQingteng ? (
             <Button
               variant="primary"
               size="sm"
-              disabled={importing || !currentTable}
+              disabled={syncing || loading || importing || !currentTable}
+              onClick={handleSync}
+              title="登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库"
+            >
+              {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              {syncing ? '同步中' : `同步${currentTable?.excel_name || '青藤主机'}`}
+            </Button>
+          ) : canEdit && sourceEnabled ? (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={importing || syncing || !currentTable}
               onClick={() => setImportOpen(true)}
             >
               {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
               {importing ? importPhase || '导入中' : `导入${currentTable?.excel_name || ' Excel'}`}
             </Button>
-          )}
+          ) : null}
         </div>
       </header>
 
@@ -486,7 +630,9 @@ export default function GovCloudAssets() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-2">
-                          <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-emerald-500'}`} />
+                          {isQingteng
+                            ? <Server className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
+                            : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
                           <span className={`truncate text-sm font-medium ${on ? 'text-primary' : 'text-foreground'}`}>
                             {t.excel_name || t.label}
                           </span>
@@ -497,11 +643,13 @@ export default function GovCloudAssets() {
                         <span className={`text-lg font-semibold tabular-nums ${t.total > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
                           {t.total == null ? '--' : t.total.toLocaleString()}
                         </span>
-                        <Badge variant={t.consistent ? 'success' : 'danger'}>
+                        <Badge variant={t.consistent ? 'success' : 'warning'}>
                           {t.consistent ? '已对齐' : '未对齐'}
                         </Badge>
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">.xlsx / .csv · 全量爬取</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {isQingteng ? 'API 同步 · linux / win 主机' : '.xlsx / .csv · 全量爬取'}
+                      </div>
                     </button>
                   )
                 })}
@@ -511,18 +659,19 @@ export default function GovCloudAssets() {
                 <div className={`mb-4 flex items-start gap-3 rounded-lg border px-4 py-3 text-sm ${
                   cons.consistent
                     ? 'border-success/30 bg-success/10 text-foreground'
-                    : 'border-destructive/30 bg-destructive/10 text-foreground'
+                    : 'border-warning/30 bg-warning/10 text-foreground'
                 }`}>
                   {cons.consistent
                     ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
-                    : <X className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />}
+                    : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />}
                   <div>
                     <div className="font-medium">
                       {currentTable?.excel_name || currentTable?.label}：{cons.message}
                     </div>
                     {cons.last_batch && (
                       <div className="mt-1 text-xs tabular-nums text-muted-foreground">
-                        最近导入 {cons.last_batch.filename} · Excel {(cons.excel_rows ?? 0).toLocaleString()} 行 ·
+                        {isQingteng ? '最近同步' : '最近导入'} {cons.last_batch.filename} ·
+                        {isQingteng ? ' 拉取' : ' Excel'} {(cons.excel_rows ?? 0).toLocaleString()} 行 ·
                         唯一 ID {(cons.unique_source_ids ?? 0).toLocaleString()} · 库内 {(cons.live_count ?? 0).toLocaleString()} ·
                         {fmtTime(cons.last_batch.created_at)}
                         {cons.last_batch.note ? ` · ${cons.last_batch.note}` : ''}
@@ -532,69 +681,74 @@ export default function GovCloudAssets() {
                 </div>
               )}
 
-              <div className="mb-3 flex items-center gap-2">
-                <div className="relative max-w-md flex-1">
+              {/* 单行内联筛选栏（轻量筛选形态）：关键词 + 对齐状态筛选 chips + 汇总统计 */}
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <div className="relative min-w-[220px] max-w-md flex-1">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <input
-                    className={`${inputCls} pl-8`}
+                    className={`${inputCls} pl-8 pr-8`}
                     placeholder={`搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`}
                     value={keyword}
                     onChange={(e) => { setKeyword(e.target.value); setPage(1) }}
                   />
+                  {keyword && (
+                    <button
+                      type="button"
+                      onClick={() => { setKeyword(''); setPage(1) }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                      aria-label="清除关键词"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                {tables.length > 0 && [
+                  { key: 'ok', label: '已对齐', dot: 'bg-success', active: 'bg-success/15 text-success ring-success/40' },
+                  { key: 'bad', label: '未对齐', dot: 'bg-warning', active: 'bg-warning/15 text-warning ring-warning/40' },
+                ].map((chip) => {
+                  const chipOn = consFilter === chip.key
+                  const count = chip.key === 'ok' ? consStats.ok : consStats.bad
+                  return (
+                    <button
+                      key={chip.key}
+                      type="button"
+                      onClick={() => setConsFilter(chipOn ? '' : chip.key)}
+                      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all duration-200 ${
+                        chipOn
+                          ? `border-transparent ring-1 ${chip.active}`
+                          : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                      }`}
+                      title={chipOn ? '点击取消该筛选' : `点击筛选「${chip.label}」的数据表`}
+                    >
+                      <span className={`h-1.5 w-1.5 rounded-full ${chip.dot}`} />
+                      {chip.label}
+                      <span className={`tabular-nums ${count > 0 ? '' : 'text-muted-foreground'}`}>{count}</span>
+                    </button>
+                  )
+                })}
+                {importing && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-transparent bg-info/15 px-3 py-1 text-xs font-medium text-info ring-1 ring-info/40">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-info" />
+                    导入中
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5" title="当前来源各数据表资产总量">
+                    <Boxes className="h-3.5 w-3.5 text-primary/80" />
+                    资产总量
+                    <span className={`font-semibold tabular-nums ${consStats.total > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
+                      {consStats.total > 0 ? consStats.total.toLocaleString() : '--'}
+                    </span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5" title="当前来源数据表数量">
+                    <FileSpreadsheet className="h-3.5 w-3.5 text-primary/80" />
+                    数据表
+                    <span className={`font-semibold tabular-nums ${tables.length > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
+                      {tables.length > 0 ? tables.length : '--'}
+                    </span>
+                  </span>
                 </div>
               </div>
-
-              {/* 状态指标条：对齐状态分布（点击筛选数据表卡片）+ 汇总 */}
-              {!loading && tables.length > 0 && (
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  {[
-                    { key: 'ok', label: '已对齐', dot: 'bg-success', active: 'bg-success/15 text-success ring-success/40' },
-                    { key: 'bad', label: '未对齐', dot: 'bg-destructive', active: 'bg-destructive/15 text-destructive ring-destructive/40' },
-                  ].map((chip) => {
-                    const active = consFilter === chip.key
-                    const count = chip.key === 'ok' ? consStats.ok : consStats.bad
-                    return (
-                      <button
-                        key={chip.key}
-                        type="button"
-                        onClick={() => setConsFilter(active ? '' : chip.key)}
-                        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all duration-200 ${
-                          active
-                            ? `border-transparent ring-1 ${chip.active}`
-                            : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
-                        }`}
-                        title={active ? '点击取消该筛选' : `点击筛选「${chip.label}」的数据表`}
-                      >
-                        <span className={`h-1.5 w-1.5 rounded-full ${chip.dot}`} />
-                        {chip.label}
-                        <span className={`tabular-nums ${count > 0 ? '' : 'text-muted-foreground'}`}>{count}</span>
-                      </button>
-                    )
-                  })}
-                  {importing && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-transparent bg-info/15 px-3 py-1 text-xs font-medium text-info ring-1 ring-info/40">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-info" />
-                      导入中
-                    </span>
-                  )}
-                  <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1.5" title="当前来源各数据表资产总量">
-                      <Boxes className="h-3.5 w-3.5 text-primary/80" />
-                      资产总量
-                      <span className={`font-semibold tabular-nums ${consStats.total > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
-                        {consStats.total > 0 ? consStats.total.toLocaleString() : '--'}
-                      </span>
-                    </span>
-                    <span className="inline-flex items-center gap-1.5" title="当前来源数据表数量">
-                      <FileSpreadsheet className="h-3.5 w-3.5 text-primary/80" />
-                      数据表
-                      <span className={`font-semibold tabular-nums ${tables.length > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
-                        {tables.length > 0 ? tables.length : '--'}
-                      </span>
-                    </span>
-                  </div>
-                </div>
-              )}
 
               </div>
               <div className="mt-3 flex min-h-0 w-full min-w-0 flex-1 flex-col">
@@ -605,25 +759,29 @@ export default function GovCloudAssets() {
               ) : items.length === 0 ? (
                 <div className="min-h-0 flex-1 overflow-auto">
                 <EmptyState
-                  icon={FileSpreadsheet}
+                  icon={isQingteng ? Server : FileSpreadsheet}
                   title={keyword ? '未找到匹配的资产' : `${currentTable?.excel_name || '当前表'}暂无数据`}
                   description={
                     keyword
                       ? '调整关键词或清除筛选条件后再试'
-                      : canEdit
-                        ? '请导入对应全量爬取 Excel（Sheet「原始数据」）'
-                        : '等待管理员导入全量爬取结果'
+                      : isQingteng
+                        ? (canEdit ? '点击同步从青藤平台拉取主机清单' : '等待管理员从青藤平台同步主机清单')
+                        : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
                   }
                   bordered
                   action={
                     keyword ? (
-                      <button type="button" onClick={() => { setKeyword(''); setPage(1) }} className="btn-secondary btn-sm">
+                      <Button variant="secondary" size="sm" onClick={() => { setKeyword(''); setPage(1) }}>
                         清除筛选
-                      </button>
+                      </Button>
+                    ) : canEdit && isQingteng ? (
+                      <Button variant="primary" size="sm" disabled={syncing} onClick={handleSync}>
+                        <RefreshCw className="h-3.5 w-3.5" /> 同步青藤主机
+                      </Button>
                     ) : canEdit ? (
-                      <button type="button" onClick={() => setImportOpen(true)} className="btn-primary btn-sm">
-                        <Upload className="mr-1 h-3.5 w-3.5" /> 导入 Excel
-                      </button>
+                      <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
+                        <Upload className="h-3.5 w-3.5" /> 导入 Excel
+                      </Button>
                     ) : undefined
                   }
                 />
@@ -634,7 +792,12 @@ export default function GovCloudAssets() {
                     <thead className="sticky top-0 z-10 text-xs text-muted-foreground">
                       <tr>
                         {displayColumns.map((col) => (
-                          <th key={col.key} className="whitespace-nowrap border-b border-border bg-muted px-3 py-2 font-medium">
+                          <th
+                            key={col.key}
+                            className={`whitespace-nowrap border-b border-border bg-muted px-3 py-2 font-medium ${
+                              rightAlignKeys.has(col.key) ? 'text-right' : ''
+                            }`}
+                          >
                             {col.label}
                           </th>
                         ))}
@@ -644,13 +807,15 @@ export default function GovCloudAssets() {
                       {items.map((row) => (
                         <tr
                           key={row.id}
-                          className="cursor-pointer border-t border-border hover:bg-muted"
+                          className="cursor-pointer border-t border-border table-row-hover"
                           onClick={() => openDetail(row.id)}
                         >
                           {displayColumns.map((col) => (
                             <td
                               key={col.key}
-                              className="max-w-[280px] truncate whitespace-nowrap px-3 py-2"
+                              className={`max-w-[280px] truncate whitespace-nowrap px-3 py-2 ${
+                                rightAlignKeys.has(col.key) ? 'text-right tabular-nums' : ''
+                              }`}
                               title={cellText(row[col.key])}
                             >
                               {cellText(row[col.key])}
@@ -683,25 +848,34 @@ export default function GovCloudAssets() {
         onClose={() => { if (!importing) setImportOpen(false) }}
         onConfirm={handleImport}
       />
-      <Modal
+      {/* 资产详情：右侧抽屉（保留列表背景上下文，便于对照相邻行浏览） */}
+      <Drawer
         open={detailOpen}
         title={detail?.instance_name || detail?.inst_name || detail?.name || '资产详情'}
         onClose={() => setDetailOpen(false)}
-        size="lg"
+        width="w-[640px]"
+        footer={
+          <Button variant="secondary" size="sm" onClick={() => setDetailOpen(false)}>关闭</Button>
+        }
       >
         {detail && (
-          <dl className="grid max-h-[70vh] grid-cols-1 gap-x-6 gap-y-3 overflow-auto sm:grid-cols-2">
+          <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
             {Object.entries(detail)
               .filter(([k]) => !HIDE_COLS.has(k))
+              .sort(([a], [b]) => {
+                const pa = DETAIL_PRIORITY.indexOf(a)
+                const pb = DETAIL_PRIORITY.indexOf(b)
+                return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb)
+              })
               .map(([k, v]) => (
-              <div key={k} className="min-w-0">
-                <dt className="text-xs text-muted-foreground">{fieldLabels[k] || k}</dt>
-                <dd className="break-all text-sm text-foreground">{cellText(v)}</dd>
-              </div>
-            ))}
+                <div key={k} className="min-w-0 border-b border-border/60 pb-3">
+                  <dt className="text-xs text-muted-foreground">{fieldLabels[k] || k}</dt>
+                  <dd className="mt-1 break-all text-sm font-medium text-foreground">{cellText(v)}</dd>
+                </div>
+              ))}
           </dl>
         )}
-      </Modal>
+      </Drawer>
     </div>
   )
 }

@@ -41,6 +41,7 @@ from app.models.log_receiver import (
     DeviceReceiveMetric,
     LogReceiver,
 )
+from app.models.qingteng_host import QingtengHostAsset
 from app.models.log_source_entry import LogSourceEntry
 from app.models.ticket import (
     TicketGroup,
@@ -111,6 +112,7 @@ __all__ = [
     "GovCloudBareMetal",
     "GovCloudNetwork",
     "GovCloudElasticIP",
+    "QingtengHostAsset",
     "BackupRecord",
     "Device",
     "DeviceAction",

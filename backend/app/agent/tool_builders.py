@@ -551,10 +551,10 @@ def _build_asset_tool(enabled_asset_types: list[str]):
 
     资产发现联动（IP 查询）：
     - keyword 含 IPv4/CIDR 时，除资产清单外**并发**检索资产发现数据
-      （综合运管平台爬取的云主机/裸金属/网络资源/弹性IP，精确匹配，见
-      ``app.agent.discovery_search``），命中以 ``资产发现`` 分组合并进返回
-      结构（见 ``_merge_discovery_results``）；查询失败只记日志，不影响
-      资产清单结果。
+      （综合运管平台爬取的云主机/裸金属/网络资源/弹性IP + 青藤 API 同步的
+      主机资产，精确匹配，见 ``app.agent.discovery_search``），命中以
+      ``资产发现`` 分组合并进返回结构（见 ``_merge_discovery_results``）；
+      查询失败只记日志，不影响资产清单结果。
     - 文本关键词（名称/部门等）仅检索资产清单。
     """
     type_codes_in = list(dict.fromkeys(enabled_asset_types or []))
@@ -771,7 +771,7 @@ def _build_asset_tool(enabled_asset_types: list[str]):
             "支持逗号/分号/空白分隔的批量查询（如 '1.2.3.4,5.6.7.8'），"
             "一次调用返回每个查询目标各自的命中——批量研判多个 IP 时必须合并为一次调用，不要逐个查询。"
             "传入单个 IP 会匹配包含该 IP 的网段/CIDR/范围/EIP，并同时在资产发现"
-            "（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP，命中以「资产发现」分组返回；"
+            "（云主机/裸金属/网络资源/弹性IP/青藤主机）中精确检索该 IP，命中以「资产发现」分组返回；"
             "传入 CIDR 会匹配重叠网段。"
             "按名称/部门等文本查询时仅检索资产清单。"
         ),

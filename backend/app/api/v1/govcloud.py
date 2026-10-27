@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -31,10 +32,18 @@ from app.core.govcloud_schema import (
     norm_header_key,
     skip_excel_header,
 )
+from app.core.qingteng_asset_sync import get_qingteng_devices, sync_device_hosts
 from app.core.timezone import beijing_now
 from app.database import get_db
 from app.dependencies import require_permission
+from app.models.device import Device
 from app.models.govcloud_asset import GovCloudImportBatch, RESOURCE_MODELS
+from app.models.qingteng_host import (
+    QingtengHostAsset,
+    QINGTENG_FIELD_LABELS,
+    QINGTENG_HOST_FIELDS,
+    QINGTENG_LIST_FIELDS,
+)
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -82,7 +91,22 @@ RESOURCE_TYPES = {
             "user_department", "applicant_department", "source_id",
         ),
     },
+    # 青藤主机：凭据来自设备管理（auth_type=qingteng），API 拉取入库而非 Excel 导入。
+    # resource_type 实际取值带设备维度："qingteng_host:<设备ID>"（每台青藤一张数据表卡片）。
+    "qingteng_host": {
+        "label": "青藤主机",
+        "excel_name": "青藤主机资产",
+        "source_group": "qingteng_host",
+        "filename_hints": (),
+        "search_fields": (
+            "hostname", "display_ip", "connection_ip", "external_ip",
+            "agent_id", "biz_group", "serial_number", "charge_name", "remark",
+        ),
+    },
 }
+
+# 青藤主机模型注册（数据表卡片由设备列表动态派生，见 meta/summary）
+RESOURCE_MODELS["qingteng_host"] = QingtengHostAsset
 
 SOURCE_GROUPS = {
     "itsm_ops": {
@@ -102,9 +126,9 @@ SOURCE_GROUPS = {
     "qingteng_host": {
         "label": "青藤主机资产发现",
         "index": "1.2",
-        "enabled": False,
+        "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
         "sort_order": 3,
-        "description": "青藤主机资产发现结果，后续接入",
+        "description": "登录设备管理中配置的青藤平台（支持多台），API 拉取 linux / win 主机清单入库",
     },
     "jiaotu_yunsuo": {
         "label": "椒图云锁主机资产发现",
@@ -129,6 +153,8 @@ UPSERT_CHUNK = 500
 EXPORT_CHUNK = 2000
 # 导出尾部追加的业务列（与列表页展示口径一致，便于追溯入库/同步时间）
 EXPORT_TAIL_COLUMNS = ("source_id", "created_at", "updated_at")
+# 青藤导出尾部业务列（额外带来源青藤平台名，多平台数据可追溯）
+QT_EXPORT_TAIL_COLUMNS = ("source_id", "qingteng_device_name", "created_at", "updated_at")
 
 
 def _keyword_clauses(model, meta: dict, kw: str) -> list:
@@ -159,25 +185,71 @@ def _csv_val(val) -> str:
     return str(val)
 
 
-def _row_cells(row, fields: list[str], extra_keys: list[str]) -> list[str]:
-    """导出行序列化：Excel 字段 + extra_excel 追加列 + 业务列（source_id/时间）。"""
+def _row_cells(
+    row,
+    fields: list[str],
+    extra_keys: list[str],
+    extra_col: str = "extra_excel",
+    tail: tuple = EXPORT_TAIL_COLUMNS,
+) -> list[str]:
+    """导出行序列化：字段列 + extra 追加列 + 业务尾部列（source_id/时间等）。"""
     cells = [_csv_val(getattr(row, excel_attr(f), "")) for f in fields]
-    extra = row.extra_excel if isinstance(row.extra_excel, dict) else {}
+    extra = getattr(row, extra_col, None)
+    extra = extra if isinstance(extra, dict) else {}
     cells.extend(_csv_val(extra.get(k)) for k in extra_keys)
-    cells.extend(_csv_val(getattr(row, k, "")) for k in EXPORT_TAIL_COLUMNS)
+    cells.extend(_csv_val(getattr(row, k, "")) for k in tail)
     return cells
 
 
-def _require_type(resource_type: str) -> dict:
-    meta = RESOURCE_TYPES.get(resource_type)
+def _resolve_type(resource_type: str) -> tuple[str, dict, int | None]:
+    """解析资源类型：支持青藤的设备维度 ``qingteng_host:<设备ID>``。
+
+    返回 (基础类型, 类型元数据, 设备 ID)。青藤之外的多余后缀视为非法。
+    """
+    base, _, dev = (resource_type or "").partition(":")
+    meta = RESOURCE_TYPES.get(base)
     if not meta:
         raise HTTPException(status_code=400, detail="不支持的资源类型")
+    if ":" in (resource_type or ""):
+        if base != "qingteng_host":
+            raise HTTPException(status_code=400, detail="该资源类型不支持设备维度参数")
+        if not dev or not dev.isdigit():
+            raise HTTPException(status_code=400, detail="青藤资源类型格式应为 qingteng_host:<设备ID>")
+        return base, meta, int(dev)
+    return base, meta, None
+
+
+def _require_type(resource_type: str) -> dict:
+    """按基础类型校验（兼容旧调用；带设备后缀时取基础类型元数据）。"""
+    base, meta, _ = _resolve_type(resource_type)
     return meta
 
 
 def _model(resource_type: str):
-    _require_type(resource_type)
-    return RESOURCE_MODELS[resource_type]
+    base, _, _ = _resolve_type(resource_type)
+    return RESOURCE_MODELS[base]
+
+
+def _device_filter(model, base: str, device_id: int | None):
+    """青藤模型按设备维度过滤（None 表示全部设备）。其它类型返回 None。"""
+    if base == "qingteng_host" and device_id is not None:
+        return model.qingteng_device_id == device_id
+    return None
+
+
+def _qt_columns() -> list[dict]:
+    """青藤主机列表页展示列（详情/导出用全量字段，见 export）。"""
+    return [{"key": k, "label": QINGTENG_FIELD_LABELS.get(k, k)} for k in QINGTENG_LIST_FIELDS]
+
+
+def _columns(resource_type: str) -> list[dict]:
+    base, _, _ = _resolve_type(resource_type)
+    if base == "qingteng_host":
+        return _qt_columns()
+    cols = []
+    for key in RESOURCE_EXCEL_FIELDS[base]:
+        cols.append({"key": key, "label": FIELD_LABELS.get(key, key)})
+    return cols
 
 
 def _cell_value(val) -> str:
@@ -334,39 +406,67 @@ def infer_resource_type(filename: str, explicit: str) -> str:
 
 def _excel_columns(resource_type: str) -> list[dict]:
     cols = []
-    for key in RESOURCE_EXCEL_FIELDS[resource_type]:
+    base, _, _ = _resolve_type(resource_type)
+    for key in RESOURCE_EXCEL_FIELDS[base]:
         cols.append({"key": key, "label": FIELD_LABELS.get(key, key)})
     return cols
 
 
-def _type_payload(code: str, meta: dict) -> dict:
+def _type_payload(code: str, meta: dict, device: Device | None = None) -> dict:
+    """资源类型 payload；青藤按设备生成（code 带设备维度，卡片名 = 设备名）。"""
+    real_code = f"{code}:{device.id}" if device else code
     return {
-        "code": code,
-        "label": meta["label"],
-        "excel_name": meta.get("excel_name") or meta["label"],
+        "code": real_code,
+        "label": (device.name if device else meta["label"]),
+        "excel_name": (device.name if device else meta.get("excel_name")) or meta["label"],
         "source_group": meta.get("source_group", "itsm_ops"),
-        "excel_columns": _excel_columns(code),
+        "excel_columns": _columns(real_code),
+        "device_id": device.id if device else None,
     }
+
+
+def _qingteng_table_payloads(db: Session) -> list[dict]:
+    """青藤数据表卡片：每台已启用的青藤设备一张（多青藤零配置纳管）。"""
+    return [
+        _type_payload("qingteng_host", RESOURCE_TYPES["qingteng_host"], device=dev)
+        for dev in get_qingteng_devices(db)
+    ]
 
 
 @router.get("/meta")
 def govcloud_meta(
+    db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
 ) -> dict:
-    types = [_type_payload(code, meta) for code, meta in RESOURCE_TYPES.items()]
+    qingteng_tables = _qingteng_table_payloads(db)
+    types = [
+        _type_payload(code, meta)
+        for code, meta in RESOURCE_TYPES.items()
+        if code != "qingteng_host"
+    ]
+    types.extend(qingteng_tables)
     groups = []
     for gcode, gmeta in SOURCE_GROUPS.items():
+        if gcode == "qingteng_host":
+            tables, enabled = qingteng_tables, bool(qingteng_tables)
+        else:
+            tables = [t for t in types if t["source_group"] == gcode]
+            enabled = bool(gmeta.get("enabled", True))
         groups.append({
             "code": gcode,
             "label": gmeta["label"],
             "index": gmeta.get("index", ""),
-            "enabled": bool(gmeta.get("enabled", True)),
+            "enabled": enabled,
             "sort_order": gmeta.get("sort_order", 0),
             "description": gmeta.get("description", ""),
-            "tables": [t for t in types if t["source_group"] == gcode],
+            "tables": tables,
         })
     groups.sort(key=lambda g: g["sort_order"])
-    return {"types": types, "groups": groups, "field_labels": FIELD_LABELS}
+    return {
+        "types": types,
+        "groups": groups,
+        "field_labels": {**FIELD_LABELS, **QINGTENG_FIELD_LABELS},
+    }
 
 
 @router.get("/summary")
@@ -375,10 +475,50 @@ def govcloud_summary(
     user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
 ) -> dict:
     groups = []
+    qingteng_devices = get_qingteng_devices(db)
     for gcode, gmeta in SOURCE_GROUPS.items():
         tables = []
+        if gcode == "qingteng_host":
+            # 每台青藤设备一张数据表卡片：总数/一致性按设备维度统计
+            for dev in qingteng_devices:
+                code = f"qingteng_host:{dev.id}"
+                live = int(
+                    db.query(func.count(QingtengHostAsset.id))
+                    .filter(QingtengHostAsset.qingteng_device_id == dev.id)
+                    .scalar() or 0
+                )
+                last_batch = (
+                    db.query(GovCloudImportBatch)
+                    .filter(GovCloudImportBatch.resource_type == code)
+                    .order_by(GovCloudImportBatch.id.desc())
+                    .first()
+                )
+                unique_ids = last_batch.unique_source_ids if last_batch else 0
+                consistent = (live == unique_ids and (last_batch.skipped == 0 if last_batch else True))
+                if last_batch is None:
+                    consistent = live == 0
+                tables.append({
+                    "code": code,
+                    "label": dev.name,
+                    "excel_name": dev.name,
+                    "excel_columns": _qt_columns(),
+                    "total": live,
+                    "consistent": consistent,
+                    "last_batch": last_batch.to_dict() if last_batch else None,
+                    "device_id": dev.id,
+                })
+            groups.append({
+                "code": gcode,
+                "label": gmeta["label"],
+                "index": gmeta.get("index", ""),
+                "enabled": bool(qingteng_devices),
+                "sort_order": gmeta.get("sort_order", 0),
+                "description": gmeta.get("description", ""),
+                "tables": tables,
+            })
+            continue
         for code, meta in RESOURCE_TYPES.items():
-            if meta.get("source_group") != gcode:
+            if meta.get("source_group") != gcode or code == "qingteng_host":
                 continue
             model = RESOURCE_MODELS[code]
             live = int(db.query(func.count(model.id)).scalar() or 0)
@@ -396,7 +536,7 @@ def govcloud_summary(
                 "code": code,
                 "label": meta["label"],
                 "excel_name": meta.get("excel_name") or meta["label"],
-                "excel_columns": _excel_columns(code),
+                "excel_columns": _columns(code),
                 "total": live,
                 "consistent": consistent,
                 "last_batch": last_batch.to_dict() if last_batch else None,
@@ -416,16 +556,19 @@ def govcloud_summary(
 
 @router.get("/assets")
 def list_govcloud_assets(
-    resource_type: str = Query(..., description="资源类型"),
+    resource_type: str = Query(..., description="资源类型（青藤为 qingteng_host:<设备ID>）"),
     keyword: str = Query("", description="名称/IP/部门/source_id 模糊搜索"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
 ) -> dict:
-    meta = _require_type(resource_type)
+    base, meta, device_id = _resolve_type(resource_type)
     model = _model(resource_type)
     query = db.query(model)
+    dev_filter = _device_filter(model, base, device_id)
+    if dev_filter is not None:
+        query = query.filter(dev_filter)
     kw = keyword.strip()
     if kw:
         query = query.filter(or_(*_keyword_clauses(model, meta, kw)))
@@ -441,14 +584,14 @@ def list_govcloud_assets(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "columns": _excel_columns(resource_type),
+        "columns": _columns(resource_type),
         "items": [r.to_dict() for r in rows],
     }
 
 
 @router.get("/export")
 def export_govcloud_assets(
-    resource_type: str = Query(..., description="资源类型"),
+    resource_type: str = Query(..., description="资源类型（青藤为 qingteng_host:<设备ID>）"),
     keyword: str = Query("", description="与列表一致的搜索条件（可选）"),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "view")),
@@ -457,28 +600,39 @@ def export_govcloud_assets(
     """导出指定资源类型为 CSV（UTF-8 BOM，Excel 可直接打开）。
 
     - 列：该类型 Excel 字段（field_label 作表头）+ extra_excel 出现过的
-      额外列（追加尾部，爬虫新增列不丢）+ source_id/入库时间/更新时间
+      额外列（追加尾部，爬虫新增列不丢）+ source_id/入库时间/更新时间；
+      青藤为全量主机字段 + extra + 来源青藤平台
     - 行：按 id 升序全量导出；传 keyword 时与列表搜索口径一致
     - 流式分块写出，避免一次性加载全表（单次导入上限 25 万行）
     """
-    meta = _require_type(resource_type)
+    base, meta, device_id = _resolve_type(resource_type)
     model = _model(resource_type)
     kw = keyword.strip()
-    clauses = _keyword_clauses(model, meta, kw) if kw else []
+    kw_clauses = _keyword_clauses(model, meta, kw) if kw else []
+    dev_filter = _device_filter(model, base, device_id)
 
-    fields = RESOURCE_EXCEL_FIELDS[resource_type]
-    # extra_excel 中出现过的额外列（jsonb_object_keys 汇总去重），保证爬虫新列不丢；
+    if base == "qingteng_host":
+        fields = list(QINGTENG_HOST_FIELDS)
+        labels = QINGTENG_FIELD_LABELS
+        extra_col = "extra"
+        tail = QT_EXPORT_TAIL_COLUMNS
+    else:
+        fields = RESOURCE_EXCEL_FIELDS[base]
+        labels = FIELD_LABELS
+        extra_col = "extra_excel"
+        tail = EXPORT_TAIL_COLUMNS
+    # extra 中出现过的额外列（jsonb_object_keys 汇总去重），保证新列不丢；
     # 排除与尾部业务列同名的键，避免 CSV 出现重复表头
     extra_keys = sorted(
         k for k in db.execute(
-            text(f"SELECT DISTINCT k FROM {model.__tablename__}, jsonb_object_keys(extra_excel) AS k")
+            text(f"SELECT DISTINCT k FROM {model.__tablename__}, jsonb_object_keys({extra_col}) AS k")
         ).scalars()
-        if k not in fields and k not in EXPORT_TAIL_COLUMNS
+        if k not in fields and k not in tail
     )
     headers = (
-        [FIELD_LABELS.get(f, f) for f in fields]
-        + [FIELD_LABELS.get(k, k) for k in extra_keys]
-        + list(EXPORT_TAIL_COLUMNS)
+        [labels.get(f, f) for f in fields]
+        + [labels.get(k, k) for k in extra_keys]
+        + list(tail)
     )
 
     # 审计：导出操作（GET 请求不被中间件捕获，需手动记录）
@@ -506,8 +660,10 @@ def export_govcloud_assets(
         exported = 0
         while True:
             query = db.query(model).filter(model.id > last_id)
-            if clauses:
-                query = query.filter(or_(*clauses))
+            if kw_clauses:
+                query = query.filter(or_(*kw_clauses))
+            if dev_filter is not None:
+                query = query.filter(dev_filter)
             rows = query.order_by(model.id).limit(EXPORT_CHUNK).all()
             if not rows:
                 break
@@ -516,13 +672,14 @@ def export_govcloud_assets(
             for row in rows:
                 last_id = row.id
                 exported += 1
-                writer.writerow(_row_cells(row, fields, extra_keys))
+                writer.writerow(_row_cells(row, fields, extra_keys, extra_col, tail))
             yield chunk.getvalue()
             if len(rows) < EXPORT_CHUNK:
                 break
         logger.info("资产发现导出: type=%s keyword=%r rows=%d", resource_type, kw, exported)
 
-    filename = f"{meta['excel_name']}_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
+    excel_name = meta.get("excel_name") or meta["label"]
+    filename = f"{excel_name}_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
         _iter_csv(),
         media_type="text/csv; charset=utf-8",
@@ -561,13 +718,17 @@ def list_batches(
 
 @router.get("/consistency")
 def check_consistency(
-    resource_type: str = Query(..., description="资源类型"),
+    resource_type: str = Query(..., description="资源类型（青藤为 qingteng_host:<设备ID>）"),
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
 ) -> dict:
-    _require_type(resource_type)
+    base, _, device_id = _resolve_type(resource_type)
     model = _model(resource_type)
-    live = int(db.query(func.count(model.id)).scalar() or 0)
+    dev_filter = _device_filter(model, base, device_id)
+    live_query = db.query(func.count(model.id))
+    if dev_filter is not None:
+        live_query = live_query.filter(dev_filter)
+    live = int(live_query.scalar() or 0)
     last_full = (
         db.query(GovCloudImportBatch)
         .filter(
@@ -645,6 +806,11 @@ async def import_govcloud_excel(
         raise HTTPException(status_code=413, detail="文件超过 200MB")
 
     rtype = infer_resource_type(filename, resource_type)
+    if rtype == "qingteng_host":
+        raise HTTPException(
+            status_code=400,
+            detail="青藤主机来自 API 同步（设备管理配置青藤设备后一键拉取），不支持 Excel 导入",
+        )
     model = _model(rtype)
     started = time.perf_counter()
     rows = _parse_csv(raw) if is_csv else _parse_excel(raw)
@@ -770,4 +936,83 @@ async def import_govcloud_excel(
         "duration_ms": batch.duration_ms,
         "note": batch.note,
         "batch": batch.to_dict(),
+    }
+
+
+class QingtengSyncRequest(BaseModel):
+    """青藤主机同步请求：不传 device_ids 同步全部已启用的青藤设备。"""
+    device_ids: list[int] = Field(default_factory=list, description="青藤设备 ID 列表（空 = 全部）")
+    mode: str = Field("full", description="full 全量对齐 / incremental 增量 upsert 不删除")
+
+
+@router.post("/qingteng/sync")
+def sync_qingteng_hosts(
+    payload: QingtengSyncRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "edit")),
+) -> dict:
+    """手动触发青藤主机同步：逐台登录青藤平台，分页拉取 linux / win 主机清单入库。
+
+    - 凭据复用设备管理（auth_type=qingteng 的 api_url/用户名/密码）；
+    - 单台失败不阻断其它设备，逐台返回结果；
+    - 同步口径与 Excel 导入对齐（full 删除青藤平台已不存在的记录）。
+    """
+    devices = get_qingteng_devices(db)
+    if payload.device_ids:
+        wanted = set(payload.device_ids)
+        devices = [d for d in devices if d.id in wanted]
+        missing = wanted - {d.id for d in devices}
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"青藤设备不存在或未启用: {sorted(missing)}，请到「设备管理」检查",
+            )
+    if not devices:
+        raise HTTPException(
+            status_code=400,
+            detail="没有已启用的青藤设备：请先在「设备管理」新建设备（认证方式选择「青藤签名」），"
+                   "配置 API 地址与 Console 用户名/密码后启用",
+        )
+
+    import_mode = payload.mode if payload.mode in ("full", "incremental") else "full"
+    results = []
+    for dev in devices:
+        try:
+            res = sync_device_hosts(db, dev, user_id=user.id, mode=import_mode)
+            results.append({"success": True, **res})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("青藤同步失败: device=%s(%d) err=%s", dev.name, dev.id, exc)
+            results.append({
+                "success": False,
+                "device_id": dev.id,
+                "device_name": dev.name,
+                "import_mode": import_mode,
+                "error": str(exc),
+            })
+
+    ok_count = sum(1 for r in results if r.get("success"))
+    try:
+        log_audit(
+            db,
+            user_id=user.id,
+            username=user.username,
+            action="sync",
+            resource_type="asset_discovery",
+            detail=(
+                f"qingteng {import_mode} devices={len(devices)} ok={ok_count} "
+                f"failed={len(results) - ok_count}"
+            ),
+            ip_address=get_client_ip(request) if request else None,
+            result="success" if ok_count == len(results) else "partial",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("同步审计写入失败（忽略）: %s", exc)
+
+    return {
+        "success": ok_count == len(results),
+        "mode": import_mode,
+        "device_count": len(devices),
+        "ok_count": ok_count,
+        "results": results,
     }

@@ -267,17 +267,24 @@ export default function AlertRules() {
     } else fn()
   }
 
-  // ===== 导出（JSON 全量，含草稿）=====
+  // ===== 导出（JSON，含草稿；勾选了规则只导选中，未勾选导全量）=====
   const handleExport = () => {
-    alertRuleApi.export()
-      .then((blob) => {
+    alertRuleApi.export(selectedKeys)
+      .then(async (blob) => {
+        // 从导出内容取实际条数（选中的规则可能已被删除）
+        let count = selectedKeys.length
+        try {
+          count = (JSON.parse(await blob.text())?.items?.length) ?? count
+        } catch { /* 解析失败按选中数提示 */ }
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
         a.download = `alert-rules-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`
         a.click()
         URL.revokeObjectURL(url)
-        toast.success('规则已导出')
+        toast.success(
+          selectedKeys.length ? `已导出选中的 ${count} 条规则` : `已导出全部 ${count} 条规则`,
+        )
       })
       .catch((e) => toast.error(e.message || '导出失败'))
   }
@@ -591,10 +598,11 @@ export default function AlertRules() {
                   <button
                     type="button"
                     onClick={() => { handleExport(); setDataMenuOpen(false) }}
+                    title={selectedKeys.length ? '只导出勾选的规则' : '导出全部规则（含草稿）'}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground transition hover:bg-accent"
                   >
                     <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                    导出规则
+                    {selectedKeys.length ? `导出选中（${selectedKeys.length} 条）` : '导出规则（全量）'}
                   </button>
                 </div>
               )}

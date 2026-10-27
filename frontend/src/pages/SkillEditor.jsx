@@ -2,7 +2,7 @@
  * SkillEditor —— 技能编辑抽屉
  *
  * 从右侧滑出的抽屉，适合编辑长提示词：
- * - 左侧：编辑区（行号 + {{变量}} 高亮 + 字数/Token 估算 + 全屏）
+ * - 左侧：编辑区（行号 + {{变量}} 高亮 + 字数/Token 估算 + 全屏 + 拖拽调高/记忆高度）
  * - 右侧：实时预览（渲染 {{变量}} + 分段结构）
  * - 顶部工具栏：AI 优化 / 检测问题 / 测试运行
  * - 分类支持自定义输入；标签支持多标签 chip 编辑
@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Wand2, ShieldCheck, Play, Maximize2, Minimize2, AlertTriangle, CheckCircle2,
-  X, Lightbulb, Eye,
+  X, Lightbulb, Eye, GripHorizontal,
 } from 'lucide-react'
 import { Drawer } from '../components/Dialog'
 import { inputCls, textareaCls, labelCls, hintCls } from '../components/property/FormControls'
@@ -96,6 +96,37 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
   const [testMessage, setTestMessage] = useState('')
   const textareaRef = useRef(null)
   const gutterRef = useRef(null)
+  // 编辑区高度：可拖拽调整并持久化（默认 480px，240-900px）
+  const [editorH, setEditorH] = useState(() => {
+    const saved = Number(localStorage.getItem('skill_editor_h'))
+    return Number.isFinite(saved) && saved >= 240 && saved <= 900 ? saved : 480
+  })
+
+  // 拖拽调高：松手时把最终高度写入 localStorage，下次打开记住
+  const startResize = (e) => {
+    if (fullscreen) return // 全屏走视口高度，不响应拖拽
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = editorH
+    let finalH = startH
+    const onMove = (ev) => {
+      finalH = Math.min(900, Math.max(240, startH + (ev.clientY - startY)))
+      setEditorH(finalH)
+    }
+    const onUp = () => {
+      localStorage.setItem('skill_editor_h', String(finalH))
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // 双击手柄恢复默认高度
+  const resetEditorH = () => {
+    setEditorH(480)
+    localStorage.setItem('skill_editor_h', '480')
+  }
 
   // 打开时用 initial 重置
   useEffect(() => {
@@ -387,7 +418,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
             <label className={`${labelCls} flex items-center justify-between`}>
               <span>技能正文 * <span className="text-muted-foreground">(注入到 Agent system prompt)</span></span>
             </label>
-            <div className="relative flex overflow-hidden rounded-md border border-border" style={{ height: fullscreen ? '70vh' : '340px' }}>
+            <div className="relative flex overflow-hidden rounded-md border border-border" style={{ height: fullscreen ? '82vh' : `${editorH}px` }}>
               {/* 行号 */}
               <div
                 ref={gutterRef}
@@ -423,11 +454,26 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
             <label className={labelCls}>
               <span className="inline-flex items-center gap-1"><Eye className="h-3 w-3" /> 实时预览</span>
             </label>
-            <div className="overflow-auto rounded-md border border-border bg-secondary p-3" style={{ height: fullscreen ? '70vh' : '340px' }}>
+            <div className="overflow-auto rounded-md border border-border bg-secondary p-3" style={{ height: fullscreen ? '82vh' : `${editorH}px` }}>
               <PreviewContent content={form.content} name={form.name} category={form.category} tags={form.tags} />
             </div>
           </div>
         </div>
+
+        {/* 拖拽调高手柄：上下拖动调整编辑区高度，双击恢复默认（全屏时不显示） */}
+        {!fullscreen && (
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="调整编辑区高度"
+            title="拖动调整编辑区高度，双击恢复默认"
+            onMouseDown={startResize}
+            onDoubleClick={resetEditorH}
+            className="group -mt-1 flex h-4 cursor-ns-resize select-none items-center justify-center text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+          >
+            <GripHorizontal className="h-3.5 w-8" aria-hidden />
+          </div>
+        )}
 
         {/* 检测结果 */}
         {checkResult && (

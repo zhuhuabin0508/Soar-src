@@ -239,17 +239,26 @@ export default function ChatPage() {
     })
   }, [])
 
-  // ----- 新建会话（清空当前智能体历史 + 生成新会话 ID） -----
+  // ----- 新建会话 / 清空对话（删除旧会话服务端记忆 + 清空本地历史 + 生成新会话 ID） -----
   const newConversation = useCallback(() => {
     if (!selectedAgentId) return
     if (streaming) abortStream()
+    // 旧会话的服务端记忆一并删除（真的清空，而非只清聊天框）；
+    // 删除失败不阻断——新 session_id 本身也不会加载旧历史
+    const oldSid = sessionIds[selectedAgentId]
+    if (oldSid) {
+      agentsApi
+        .clearChatSession(selectedAgentId, oldSid)
+        .catch(() => {})
+    }
     // 生成新 session_id，使后端加载空历史（与新对话匹配）
     const sid = genSessionId()
     saveSessionId(selectedAgentId, sid)
     setSessionIds((prev) => ({ ...prev, [selectedAgentId]: sid }))
     setHistories((prev) => ({ ...prev, [selectedAgentId]: [] }))
     saveHistory(selectedAgentId, [])
-  }, [selectedAgentId, streaming, abortStream])
+    toast.success('已清空对话记忆，下次发送为全新会话')
+  }, [selectedAgentId, streaming, abortStream, sessionIds])
 
   // ----- 更新当前消息列表 -----
   const updateMessages = useCallback(
@@ -752,7 +761,10 @@ export default function ChatPage() {
       // 刷新文件列表：智能体可能通过工具生成了输出文件（如 expand_risk_detail 的展开表）
       loadUploadedFiles()
     }
-  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, loadUploadedFiles])
+    // 注意：sessionIds 必须在依赖里——点「清空」会生成新 session_id，
+    // 缺失该依赖会让 sendText 闭包住旧值，下一句话仍带旧会话 ID 发出，
+    // 后端按旧会话加载历史，表现为"清空了聊天框但记忆还在"。
+  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, loadUploadedFiles, sessionIds])
 
   // ----- 发送消息（输入框入口，读取 inputText）-----
   const sendMessage = useCallback(() => {
