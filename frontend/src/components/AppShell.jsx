@@ -207,6 +207,7 @@ const BREADCRUMB_MAP = {
   '/deliverables': ['资源管理', '材料管理'],
   '/duty/members': ['运营管理', '值班管理', '值班人员'],
   '/duty/schedule': ['运营管理', '值班管理', '值班表'],
+  '/duty/schedule/graph': ['运营管理', '值班管理', '值班表（图形化）'],
   '/duty/leaves': ['运营管理', '值班管理', '请假管理'],
   '/duty/logs': ['运营管理', '值班管理', '调班记录'],
   '/tickets': ['运营管理', '工单中心'],

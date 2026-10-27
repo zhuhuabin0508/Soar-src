@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 # 值班类别
 DUTY_CATEGORIES = ("PERMANENT_DAY", "DAY", "NIGHT")
+# 值班表类型：日常运营 / 重保
+ROSTER_TYPES = ("DAILY", "RESERVE")
 # 班次
 SHIFTS = ("DAY", "NIGHT")
 # 值班记录状态
@@ -26,8 +28,9 @@ class DutyMemberCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="姓名")
     phone: str = Field(..., min_length=1, max_length=50, description="联系电话")
     group_name: str = Field("", max_length=100, description="所属组别")
-    duty_category: Literal["PERMANENT_DAY", "DAY", "NIGHT"] = Field(..., description="值班类别")
-    is_primary: bool = Field(False, description="是否主值班人（仅 PERMANENT_DAY 有效）")
+    # 值班类别已取消；保留可选字段兼容旧客户端，后端统一存 ANY
+    duty_category: Optional[Literal["PERMANENT_DAY", "DAY", "NIGHT", "ANY"]] = Field(None, description="值班类别（已废弃）")
+    is_primary: bool = Field(False, description="是否主值班人（已废弃）")
     sort_order: int = Field(0, description="排序权重（值小的优先轮换）")
     status: Literal["active", "inactive"] = Field("active", description="状态")
 
@@ -49,6 +52,8 @@ class ScheduleGenerateRequest(BaseModel):
 
     start_date: DateType = Field(..., description="起始日期")
     end_date: DateType = Field(..., description="结束日期")
+    # 值班表类型：DAILY=日常运营 / RESERVE=重保值班（同一日期两类表可并存）
+    roster_type: Literal["DAILY", "RESERVE"] = Field("DAILY", description="值班表类型")
     # 日期范围内已有记录时的处理策略：overwrite 覆盖重排 / fill 仅填充空缺日期
     conflict_strategy: Literal["overwrite", "fill"] = Field("overwrite", description="冲突策略")
     # 是否直接发布（True 生成后即为 published，False 仅生成 draft 供预览）
@@ -106,7 +111,53 @@ class ScheduleCopyRequest(BaseModel):
     source_start: DateType = Field(..., description="源起始日期")
     source_end: DateType = Field(..., description="源结束日期")
     target_start: DateType = Field(..., description="目标起始日期（按天平移源记录）")
+    roster_type: Literal["DAILY", "RESERVE"] = Field("DAILY", description="值班表类型（源与目标同一类型）")
     auto_publish: bool = Field(False, description="复制后是否直接发布")
+
+
+class GraphAssignRequest(BaseModel):
+    """图形化排班：将人员拖拽到某日某班次（member_id=None 表示清空该班次）。"""
+
+    duty_date: DateType = Field(..., description="值班日期")
+    roster_type: Literal["DAILY", "RESERVE"] = Field("DAILY", description="值班表类型")
+    shift: Literal["DAY", "NIGHT"] = Field(..., description="班次")
+    member_id: Optional[int] = Field(None, description="值班人员ID")
+    action: Literal["add", "remove"] = Field("add", description="add=追加到班次 / remove=从班次移除")
+    reason: str = Field("", max_length=500, description="调整原因")
+
+
+class ManualScheduleDay(BaseModel):
+    """手动新建值班表：单日白班/晚班人员。"""
+
+    duty_date: DateType = Field(..., description="值班日期")
+    day_member_ids: list[int] = Field(default_factory=list, description="白班人员ID列表")
+    night_member_ids: list[int] = Field(default_factory=list, description="晚班人员ID列表")
+
+
+class ManualScheduleCreateRequest(BaseModel):
+    """手动新建值班表：按日期范围提交每天的白班/晚班人员（替代原自动生成）。"""
+
+    start_date: DateType = Field(..., description="起始日期")
+    end_date: DateType = Field(..., description="结束日期")
+    roster_type: Literal["DAILY", "RESERVE"] = Field("DAILY", description="值班表类型")
+    conflict_strategy: Literal["overwrite", "fill"] = Field("overwrite", description="已有记录处理：overwrite 覆盖 / fill 仅创建缺失")
+    auto_publish: bool = Field(False, description="创建后是否直接发布")
+    days: list[ManualScheduleDay] = Field(default_factory=list, description="每天的排班人员")
+
+
+class RecordEditRequest(BaseModel):
+    """整条值班记录编辑（草稿/已发布均可）：一次更新白班、晚班与状态。
+
+    人员以 ID 列表提交，支持一个班次多人；旧的单值字段仅用于兼容，
+    同时提供时以列表为准。
+    """
+
+    day_member_ids: Optional[list[int]] = Field(None, description="白班人员ID列表（空列表=待分配）")
+    night_member_ids: Optional[list[int]] = Field(None, description="晚班人员ID列表（空列表=待分配）")
+    day_member_id: Optional[int] = Field(None, description="兼容字段：白班人员ID")
+    night_member_id: Optional[int] = Field(None, description="兼容字段：晚班人员ID")
+    status: Optional[Literal["draft", "published"]] = Field(None, description="记录状态")
+    reason: str = Field("", max_length=500, description="编辑原因（写入调班日志）")
 
 
 class MemberBatchStatusUpdate(BaseModel):

@@ -51,6 +51,7 @@ import DeliverableManagement from './pages/DeliverableManagement'
 import GovCloudAssets from './pages/GovCloudAssets'
 import DutyMemberManagement from './pages/DutyMemberManagement'
 import DutySchedule from './pages/DutySchedule'
+import DutyScheduleGraph from './pages/DutyScheduleGraph'
 import DutyLeave from './pages/DutyLeave'
 import DutyAdjustmentLogs from './pages/DutyAdjustmentLogs'
 import StrategyList from './pages/StrategyList'
@@ -185,6 +186,7 @@ const router = createBrowserRouter([
           // 运营管理 - 值班
           { path: '/duty/members', element: <RequirePermission perm={['duty_member', 'view']} label="值班人员"><DutyMemberManagement /></RequirePermission> },
           { path: '/duty/schedule', element: <RequirePermission perm={['duty_schedule', 'view']} label="值班表"><DutySchedule /></RequirePermission> },
+          { path: '/duty/schedule/graph', element: <RequirePermission perm={['duty_schedule', 'view']} label="值班表（图形化）"><DutyScheduleGraph /></RequirePermission> },
           { path: '/duty/leaves', element: <RequirePermission perm={['duty_leave', 'view']} label="请假管理"><DutyLeave /></RequirePermission> },
           { path: '/duty/logs', element: <RequirePermission perm={['duty_log', 'view']} label="调班记录"><DutyAdjustmentLogs /></RequirePermission> },
           // 运营管理 - 工单（工单中心 / 处理分组 / 流程模板）

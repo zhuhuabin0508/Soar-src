@@ -56,18 +56,29 @@ export const dutyApi = {
   },
 
   // ===== 值班表生成 / 查看 / 调整 =====
+  // roster_type：DAILY=日常运营 / RESERVE=重保（同一日期两类表并存，各接口按类型隔离）
   generate: (body) => request('/duty/schedule/generate', { method: 'POST', body }),
-  confirm: (startDate, endDate) =>
-    request(`/duty/schedule/confirm?start_date=${startDate}&end_date=${endDate}`, { method: 'POST' }),
+  confirm: (startDate, endDate, rosterType = 'DAILY') =>
+    request(`/duty/schedule/confirm${_qs({ start_date: startDate, end_date: endDate, roster_type: rosterType })}`, { method: 'POST' }),
   scheduleStats: (params) => request(`/duty/schedule/stats${_qs(params)}`),
   copySchedule: (body) => request('/duty/schedule/copy', { method: 'POST', body }),
   listSchedule: (params) => request(`/duty/schedule${_qs(params)}`),
-  monthSchedule: (year, month) => request(`/duty/schedule/month?year=${year}&month=${month}`),
+  monthSchedule: (year, month, rosterType = 'DAILY') =>
+    request(`/duty/schedule/month${_qs({ year, month, roster_type: rosterType })}`),
   adjust: (recordId, body) => request(`/duty/schedule/${recordId}`, { method: 'PUT', body }),
+  // 图形化排班：拖拽人员到某日某班次（member_id=null 清空），不存在记录时自动创建
+  graphAssign: (body) => request('/duty/schedule/graph/assign', { method: 'POST', body }),
+  // 整条值班记录编辑（草稿/已发布均可）：白班、晚班、状态一次提交
+  editRecord: (recordId, body) => request(`/duty/schedule/${recordId}/edit`, { method: 'PUT', body }),
+  // 手动新建值班表：按日期范围提交每天的白班/晚班人员（替代原自动生成）
+  manualCreate: (body) => request('/duty/schedule/manual-create', { method: 'POST', body }),
   updateRecordStatus: (recordId, status) =>
     request(`/duty/schedule/${recordId}/status`, { method: 'PUT', body: { status } }),
-  exportSchedule: (startDate, endDate) =>
-    _download(`/api/v1/duty/schedule/export?start_date=${startDate}&end_date=${endDate}`, `值班表_${startDate}_${endDate}.xlsx`),
+  exportSchedule: (startDate, endDate, rosterType = 'DAILY') =>
+    _download(
+      `/api/v1/duty/schedule/export${_qs({ start_date: startDate, end_date: endDate, roster_type: rosterType })}`,
+      `${rosterType === 'RESERVE' ? '重保' : rosterType === 'ALL' ? '全部' : '日常运营'}值班表_${startDate}_${endDate}.xlsx`,
+    ),
 
   // ===== 请假管理 =====
   leaves: (params) => request(`/duty/leaves${_qs(params)}`),
@@ -91,7 +102,7 @@ export const dutyApi = {
   deleteSpecialDate: (d) => request(`/duty/special-dates/${d}`, { method: 'DELETE' }),
 
   // ===== 值班监控大屏 =====
-  dashboard: () => request('/duty/dashboard'),
+  dashboard: (rosterType = 'DAILY') => request(`/duty/dashboard${_qs({ roster_type: rosterType })}`),
 }
 
 export default dutyApi

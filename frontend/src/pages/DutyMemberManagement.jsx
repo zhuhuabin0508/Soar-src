@@ -1,6 +1,6 @@
 // 值班人员管理页：列表 + 新增/编辑弹窗 + 批量导入 + 模板下载 + 批量启停 + 轮班公平性统计
 import { useState, useEffect, useCallback } from 'react'
-import { UserPlus, Upload, Download, Pencil, Trash2, Search, Users, Star, BarChart3, Power, PowerOff, GripVertical } from 'lucide-react'
+import { UserPlus, Upload, Download, Pencil, Trash2, Search, Users, BarChart3, Power, PowerOff, GripVertical } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
@@ -9,23 +9,10 @@ import { Button, PageContainer, DataTable, Pagination, Badge, CompactSelect, Dat
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
 
-const CATEGORY_META = {
-  PERMANENT_DAY: { label: '长期白班', variant: 'info', style: 'bg-blue-500/10 text-blue-500' },
-  DAY: { label: '白班', variant: 'primary', style: 'bg-emerald-500/10 text-emerald-500' },
-  NIGHT: { label: '晚班', variant: 'warning', style: 'bg-purple-500/10 text-purple-500' },
-}
-const CATEGORY_OPTIONS = [
-  { value: 'PERMANENT_DAY', label: '长期白班' },
-  { value: 'DAY', label: '白班' },
-  { value: 'NIGHT', label: '晚班' },
-]
-
 const EMPTY_FORM = {
   name: '',
   phone: '',
   group_name: '',
-  duty_category: 'NIGHT',
-  is_primary: false,
   sort_order: 0,
   status: 'active',
 }
@@ -41,7 +28,7 @@ export default function DutyMemberManagement() {
   const [loading, setLoading] = useState(false)
   const [selectedKeys, setSelectedKeys] = useState([])
 
-  const [filters, setFilters] = useState({ group_name: '', duty_category: '', keyword: '', status: '' })
+  const [filters, setFilters] = useState({ group_name: '', keyword: '', status: '' })
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null) // null=新增, 对象=编辑
@@ -85,8 +72,6 @@ export default function DutyMemberManagement() {
       name: row.name || '',
       phone: row.phone || '',
       group_name: row.group_name || '',
-      duty_category: row.duty_category || 'NIGHT',
-      is_primary: !!row.is_primary,
       sort_order: row.sort_order || 0,
       status: row.status || 'active',
     })
@@ -102,12 +87,8 @@ export default function DutyMemberManagement() {
       ? dutyApi.updateMember(editing.id, payload)
       : dutyApi.createMember(payload)
     action
-      .then((res) => {
-        if (editing && res.category_changed) {
-          toast.warning('值班类别已变更，将影响后续值班表生成，建议重新生成值班表')
-        } else {
-          toast.success(editing ? '已更新' : '已新增')
-        }
+      .then(() => {
+        toast.success(editing ? '已更新' : '已新增')
         setModalOpen(false)
         load()
       })
@@ -208,7 +189,7 @@ export default function DutyMemberManagement() {
     // 乐观更新：立即重算 sort_order 1..N 并刷新视图
     setList(next.map((m, i) => ({ ...m, sort_order: i + 1 })))
     dutyApi.reorderMembers(orderedIds)
-      .then(() => toast.success('值班顺序已更新，将影响后续排班轮换'))
+      .then(() => toast.success('人员排序已更新'))
       .catch((e) => { toast.error(e.message || '排序保存失败'); load() }) // 失败回滚至服务端顺序
   }
 
@@ -217,30 +198,9 @@ export default function DutyMemberManagement() {
       key: '__drag', header: '', width: '40px',
       render: () => <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground" />,
     }] : []),
-    {
-      key: 'name', header: '姓名', width: '140px',
-      render: (r) => (
-        <span className="flex items-center gap-1.5 text-sm font-medium">
-          {r.is_primary && r.duty_category === 'PERMANENT_DAY' && (
-            <Star className="h-3.5 w-3.5 fill-amber-500 text-amber-500" title="主值班人" />
-          )}
-          {r.name}
-        </span>
-      ),
-    },
+    { key: 'name', header: '姓名', width: '160px', render: (r) => <span className="text-sm font-medium">{r.name}</span> },
     { key: 'phone', header: '电话', width: '140px', render: (r) => <span className="tabular-nums">{r.phone || '-'}</span> },
     { key: 'group_name', header: '组别', width: '120px', render: (r) => r.group_name || '-' },
-    {
-      key: 'duty_category', header: '值班类别', width: '110px',
-      render: (r) => {
-        const m = CATEGORY_META[r.duty_category] || { label: r.duty_category, style: 'bg-muted text-muted-foreground' }
-        return <span className={`inline-block whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ${m.style}`}>{m.label}</span>
-      },
-    },
-    {
-      key: 'is_primary', header: '主值班人', width: '90px',
-      render: (r) => (r.duty_category === 'PERMANENT_DAY' ? (r.is_primary ? <Badge variant="success">是</Badge> : '否') : '-'),
-    },
     { key: 'sort_order', header: '排序', width: '70px', numeric: true, render: (r) => (r.sort_order ? r.sort_order : <span className="text-muted-foreground">0</span>) },
     {
       key: 'status', header: '状态', width: '90px',
@@ -279,7 +239,7 @@ export default function DutyMemberManagement() {
       <div className="mb-6 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-[22px] font-bold tracking-tight text-foreground">值班人员管理</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">管理值班人员信息，按值班类别（长期白班 / 白班 / 晚班）参与排班</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">管理值班人员信息；人员不再区分白班/晚班，所有启用人员均可排到任意班次</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button variant="ghost" size="sm" onClick={openStats}>
@@ -322,15 +282,6 @@ export default function DutyMemberManagement() {
         />
         <CompactSelect
           size="lg"
-          className="w-40"
-          value={filters.duty_category}
-          onChange={(e) => { setFilters((f) => ({ ...f, duty_category: e.target.value })); setPage(1); }}
-        >
-          <option value="">全部类别</option>
-          {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </CompactSelect>
-        <CompactSelect
-          size="lg"
           className="w-32"
           value={filters.status}
           onChange={(e) => { setFilters((f) => ({ ...f, status: e.target.value })); setPage(1) }}
@@ -341,7 +292,7 @@ export default function DutyMemberManagement() {
         </CompactSelect>
         <div className="flex-1" />
         <Button size="sm" variant="secondary" className="h-9 whitespace-nowrap" onClick={() => { setPage(1); load() }}>查询</Button>
-        <Button size="sm" variant="ghost" className="h-9 whitespace-nowrap" onClick={() => { setFilters({ group_name: '', duty_category: '', keyword: '', status: '' }); setPage(1) }}>重置</Button>
+        <Button size="sm" variant="ghost" className="h-9 whitespace-nowrap" onClick={() => { setFilters({ group_name: '', keyword: '', status: '' }); setPage(1) }}>重置</Button>
       </div>
 
       {/* 批量操作栏（选中时出现） */}
@@ -365,10 +316,10 @@ export default function DutyMemberManagement() {
             {canDrag ? (
               <>
                 <GripVertical className="h-3.5 w-3.5" />
-                <span>拖动行可调整<span className="text-foreground">值班轮换顺序</span>（按「排序」升序轮换），松开自动保存</span>
+                <span>拖动行可调整<span className="text-foreground">人员展示顺序</span>（按「排序」升序），松开自动保存</span>
               </>
             ) : (
-              <span>当前未显示全部人员，请先筛选类别或增大每页条数后再拖拽排序</span>
+              <span>当前未显示全部人员，请增大每页条数后再拖拽排序</span>
             )}
           </div>
         )}
@@ -430,13 +381,7 @@ export default function DutyMemberManagement() {
             <input className={inputCls} value={form.group_name} onChange={(e) => setForm({ ...form, group_name: e.target.value })} />
           </div>
           <div>
-            <label className={labelCls}>值班类别</label>
-            <CompactSelect size="lg" block value={form.duty_category} onChange={(e) => setForm({ ...form, duty_category: e.target.value })}>
-              {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </CompactSelect>
-          </div>
-          <div>
-            <label className={labelCls}>排序权重</label>
+            <label className={labelCls}>排序</label>
             <input type="number" className={inputCls} value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: e.target.value })} />
           </div>
           <div>
@@ -446,19 +391,9 @@ export default function DutyMemberManagement() {
               <option value="inactive">停用</option>
             </CompactSelect>
           </div>
-          <div className="col-span-2">
-            <label className="flex items-center gap-2 text-sm text-foreground">
-              <input type="checkbox" className="h-4 w-4 rounded border-border accent-primary"
-                checked={form.is_primary}
-                disabled={form.duty_category !== 'PERMANENT_DAY'}
-                onChange={(e) => setForm({ ...form, is_primary: e.target.checked })}
-              />
-              主值班人（仅「长期白班」有效，工作日白班默认由主值班人值守）
-            </label>
-          </div>
-          {editing && (
-            <p className="col-span-2 text-[11px] text-muted-foreground">提示：修改值班类别将影响后续值班表生成。</p>
-          )}
+          <p className="col-span-2 text-[11px] leading-relaxed text-muted-foreground">
+            值班人员不再区分白班/晚班类别，所有启用人员都可以被排到任意班次；一个班次可选择一名或多名人员。
+          </p>
         </div>
       </Modal>
 
@@ -530,20 +465,17 @@ export default function DutyMemberManagement() {
             <>
               {/* 公平性摘要 */}
               <div className="grid grid-cols-3 gap-2">
-                {Object.entries(statsData.fairness || {}).map(([cat, f]) => {
-                  const m = CATEGORY_META[cat] || { label: cat, variant: 'neutral' }
-                  return (
-                    <div key={cat} className="rounded-md border border-border bg-card px-3 py-2 text-xs">
-                      <div className="flex items-center gap-1.5"><Badge variant={m.variant}>{m.label}</Badge></div>
-                      <div className="mt-1.5 space-y-0.5 text-muted-foreground">
-                        <div>最多 <span className="font-semibold text-foreground tabular-nums">{f.max}</span></div>
-                        <div>最少 <span className="font-semibold text-foreground tabular-nums">{f.min}</span></div>
-                        <div>平均 <span className="font-semibold text-foreground tabular-nums">{f.avg}</span></div>
-                        <div>差距 <span className={`font-semibold tabular-nums ${f.gap > 2 ? 'text-warning' : 'text-success'}`}>{f.gap}</span></div>
-                      </div>
+                {Object.entries(statsData.fairness || {}).map(([cat, f]) => (
+                  <div key={cat} className="rounded-md border border-border bg-card px-3 py-2 text-xs">
+                    <div className="flex items-center gap-1.5"><Badge variant="primary">全部值班人员</Badge></div>
+                    <div className="mt-1.5 space-y-0.5 text-muted-foreground">
+                      <div>最多 <span className="font-semibold text-foreground tabular-nums">{f.max}</span></div>
+                      <div>最少 <span className="font-semibold text-foreground tabular-nums">{f.min}</span></div>
+                      <div>平均 <span className="font-semibold text-foreground tabular-nums">{f.avg}</span></div>
+                      <div>差距 <span className={`font-semibold tabular-nums ${f.gap > 2 ? 'text-warning' : 'text-success'}`}>{f.gap}</span></div>
                     </div>
-                  )
-                })}
+                  </div>
+                ))}
               </div>
 
               {/* 人员明细 */}
@@ -553,30 +485,25 @@ export default function DutyMemberManagement() {
                     <tr>
                       <th className="px-2 py-1.5 text-left">姓名</th>
                       <th className="px-2 py-1.5 text-left">组别</th>
-                      <th className="px-2 py-1.5 text-left">类别</th>
                       <th className="px-2 py-1.5 text-right">白班</th>
                       <th className="px-2 py-1.5 text-right">晚班</th>
                       <th className="px-2 py-1.5 text-right">合计</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(statsData.items || []).map((it) => {
-                      const m = CATEGORY_META[it.duty_category] || { label: it.duty_category, variant: 'neutral' }
-                      return (
-                        <tr key={it.id} className="border-t border-border">
-                          <td className="px-2 py-1 font-medium">{it.name}</td>
-                          <td className="px-2 py-1 text-muted-foreground">{it.group_name || '-'}</td>
-                          <td className="px-2 py-1"><Badge variant={m.variant}>{m.label}</Badge></td>
-                          <td className="px-2 py-1 text-right tabular-nums text-primary">{it.day_count}</td>
-                          <td className="px-2 py-1 text-right tabular-nums text-purple-500">{it.night_count}</td>
-                          <td className="px-2 py-1 text-right font-semibold tabular-nums">{it.total}</td>
-                        </tr>
-                      )
-                    })}
+                    {(statsData.items || []).map((it) => (
+                      <tr key={it.id} className="border-t border-border">
+                        <td className="px-2 py-1 font-medium">{it.name}</td>
+                        <td className="px-2 py-1 text-muted-foreground">{it.group_name || '-'}</td>
+                        <td className="px-2 py-1 text-right tabular-nums text-primary">{it.day_count}</td>
+                        <td className="px-2 py-1 text-right tabular-nums text-purple-500">{it.night_count}</td>
+                        <td className="px-2 py-1 text-right font-semibold tabular-nums">{it.total}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
-              <p className="text-[11px] text-muted-foreground">统计区间：{statsData.start_date} ~ {statsData.end_date}。差距为同类别内最多与最少之差，差距越大轮班越不均衡。</p>
+              <p className="text-[11px] text-muted-foreground">统计区间：{statsData.start_date} ~ {statsData.end_date}。差距为全部人员中最多与最少班次之差，差距越大排班越不均衡。</p>
             </>
           ) : (
             <div className="py-8 text-center text-sm text-muted-foreground">暂无数据</div>

@@ -1,10 +1,16 @@
 ﻿// 值班监控大屏：全屏暗色主题，实时展示当前班次、异常提醒、近7天排班与月度排班
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Maximize2, Minimize2, RefreshCw, AlertTriangle, CalendarDays, Sun, Moon, Phone, Clock, Users, ChevronLeft, ChevronRight, LayoutDashboard, Cpu, Package } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo, Fragment } from 'react'
+import { Maximize2, Minimize2, RefreshCw, AlertTriangle, CalendarDays, Sun, Moon, Phone, Clock, Users, ChevronLeft, ChevronRight, LayoutDashboard, Cpu, Package, ShieldCheck } from 'lucide-react'
 import dutyApi from '../api/duty'
 
 const WEEKDAY_CN = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const MONTH_CN = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月']
+
+// 值班大屏子视图：日常运营 / 重保，分别加载不同类型的值班表数据
+const ROSTER_VIEWS = [
+  { value: 'DAILY', label: '日常值班', icon: CalendarDays, color: '#3B82F6' },
+  { value: 'RESERVE', label: '重保值班', icon: ShieldCheck, color: '#EF4444' },
+]
 
 // 主题色
 const C = {
@@ -30,19 +36,22 @@ function dateColor(day) {
   return 'var(--foreground)'
 }
 
-function fmtMember(m) {
-  if (!m) return '--'
-  return m.name || '--'
+// 多人显示：姓名用逗号隔开
+function fmtMembers(list) {
+  if (!list || list.length === 0) return '--'
+  return list.map((m) => m.name).filter(Boolean).join('，') || '--'
 }
 
-function memberPhone(m) {
-  if (!m) return null
-  return m.phone || m.contact || null
+function fmtPhones(list) {
+  if (!list || list.length === 0) return ''
+  return list.map((m) => m?.phone).filter(Boolean).join('，')
 }
 
 export default function DutyDashboard({ onSwitchTab }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  // 当前值班大屏子视图：DAILY=日常运营 / RESERVE=重保
+  const [rosterType, setRosterType] = useState('DAILY')
   const [now, setNow] = useState(new Date())
   const [fullscreen, setFullscreen] = useState(false)
   const [monthData, setMonthData] = useState({ days: [] })
@@ -52,27 +61,27 @@ export default function DutyDashboard({ onSwitchTab }) {
   })
   const containerRef = useRef(null)
 
-  // 加载大屏数据
+  // 加载大屏数据（按当前值班表类型）
   const loadData = useCallback(async () => {
     try {
-      const res = await dutyApi.dashboard()
+      const res = await dutyApi.dashboard(rosterType)
       setData(res)
     } catch (e) {
       console.error('加载值班大屏数据失败:', e)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [rosterType])
 
-  // 加载月度排班
+  // 加载月度排班（按当前值班表类型）
   const loadMonth = useCallback(async (year, month) => {
     try {
-      const res = await dutyApi.monthSchedule(year, month)
+      const res = await dutyApi.monthSchedule(year, month, rosterType)
       setMonthData(res || { days: [] })
     } catch (e) {
       console.error('加载月度排班失败:', e)
     }
-  }, [])
+  }, [rosterType])
 
   // 初始加载 + 60s 自动刷新
   useEffect(() => {
@@ -148,6 +157,7 @@ export default function DutyDashboard({ onSwitchTab }) {
   const isDark = document.documentElement.classList.contains('dark')
   const shiftTextColor = data?.current_shift === 'DAY' ? (isDark ? '#60A5FA' : '#2563EB') : (isDark ? '#A78BFA' : '#7C3AED')
   const curMember = data?.current_member
+  const curMembers = (data?.current_members?.length ? data.current_members : (curMember ? [curMember] : []))
   const backupMember = data?.backup_member
   const todayRec = data?.today_record
   const upcoming7 = data?.upcoming_7days || []
@@ -186,7 +196,18 @@ export default function DutyDashboard({ onSwitchTab }) {
             <CalendarDays className="h-6 w-6" style={{ color: shiftColor }} />
           </div>
           <div>
-            <h1 className="text-gradient-primary text-3xl font-bold tracking-wide">值班监控大屏</h1>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-gradient-primary text-3xl font-bold tracking-wide">值班监控大屏</h1>
+              <span
+                className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-semibold"
+                style={rosterType === 'RESERVE'
+                  ? { background: 'rgba(239,68,68,0.14)', color: '#EF4444' }
+                  : { background: 'rgba(59,130,246,0.14)', color: '#3B82F6' }}
+              >
+                {rosterType === 'RESERVE' ? <ShieldCheck className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
+                {rosterType === 'RESERVE' ? '重保值班' : '日常运营'}
+              </span>
+            </div>
             <p className="text-sm text-muted-foreground">{dateStr} {weekdayStr}</p>
           </div>
           {/* 大屏切换 */}
@@ -232,6 +253,26 @@ export default function DutyDashboard({ onSwitchTab }) {
         </div>
 
         <div className="flex items-center gap-6">
+          {/* 值班大屏子视图切换：日常 / 重保（位于右侧「值班」按钮与时间之间） */}
+          <div className="flex items-center gap-1 rounded-lg bg-muted p-1" title="切换日常运营/重保值班大屏">
+            {ROSTER_VIEWS.map((v) => {
+              const Icon = v.icon
+              const active = rosterType === v.value
+              return (
+                <button
+                  key={v.value}
+                  type="button"
+                  onClick={() => setRosterType(v.value)}
+                  className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${active ? 'bg-card shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  style={active ? { color: v.color, boxShadow: `inset 0 0 0 1px ${v.color}55` } : undefined}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {v.label}
+                </button>
+              )
+            })}
+          </div>
+
           {/* 实时时钟 */}
           <div className="text-right">
             <div className="text-glow text-3xl font-bold tabular-nums text-foreground" style={{ fontVariantNumeric: 'tabular-nums' }}>{timeStr}</div>
@@ -256,6 +297,10 @@ export default function DutyDashboard({ onSwitchTab }) {
       </header>
 
       {/* ===== 主区域 ===== */}
+      {rosterType === 'RESERVE' ? (
+        /* 重保大屏：仅保留近 7 天排班，采用正式值班安排表样式 */
+        <ReserveDutySheet days={upcoming7} today={data?.today} memberGroups={data?.member_groups} />
+      ) : (
       <div className="flex min-h-0 flex-1 bg-tech-grid">
         {/* 左侧 30%：上 2/3 当前值班卡片 + 下 1/3 异常提醒 */}
         <div className="flex w-[30%] shrink-0 flex-col border-r border-border px-6 py-4">
@@ -285,15 +330,14 @@ export default function DutyDashboard({ onSwitchTab }) {
                   >
                     {(curMember.name || '?').slice(0, 1)}
                   </div>
-                  <div className="text-foreground" style={{ fontSize: 60, fontWeight: 700, lineHeight: 1.1 }}>{curMember.name}</div>
+                  <div className="text-foreground" style={{ fontSize: curMembers.length > 1 ? 36 : 60, fontWeight: 700, lineHeight: 1.2 }}>
+                    {fmtMembers(curMembers)}
+                  </div>
                 </div>
-                {curMember.duty_category === 'PERMANENT_DAY' && (
-                  <div className="mb-3 rounded px-3 py-0.5 text-xs" style={{ background: 'rgba(16,185,129,0.12)', color: C.normal }}>长期白班</div>
-                )}
-                {memberPhone(curMember) && (
-                  <div className="mb-4 flex items-center gap-2 tabular-nums text-foreground" style={{ fontSize: 28, fontWeight: 500 }}>
+                {fmtPhones(curMembers) && (
+                  <div className="mb-4 flex items-center gap-2 tabular-nums text-foreground" style={{ fontSize: curMembers.length > 1 ? 20 : 28, fontWeight: 500 }}>
                     <Phone className="h-5 w-5 text-muted-foreground" />
-                    {memberPhone(curMember)}
+                    {fmtPhones(curMembers)}
                   </div>
                 )}
               </>
@@ -357,7 +401,10 @@ export default function DutyDashboard({ onSwitchTab }) {
               {anomalies.upcoming_handover && (
                 <div className="flex items-center gap-2 text-[11px]">
                   <Clock className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-muted-foreground">交班 {anomalies.upcoming_handover.time} → {anomalies.upcoming_handover.next_shift === 'DAY' ? '白班' : '晚班'}</span>
+                  <span className="text-muted-foreground">
+                    交班 {anomalies.upcoming_handover.time} → {anomalies.upcoming_handover.next_shift === 'DAY' ? '白班' : '晚班'}
+                    {anomalies.upcoming_handover.members?.length ? `（${fmtMembers(anomalies.upcoming_handover.members)}）` : ''}
+                  </span>
                 </div>
               )}
               {/* 无异常 */}
@@ -413,13 +460,13 @@ export default function DutyDashboard({ onSwitchTab }) {
                     {/* 白班 */}
                     <div className="mb-1 flex items-center gap-1.5 rounded px-1.5 py-1" style={{ background: 'rgba(59,130,246,0.10)' }}>
                       <Sun className="h-3 w-3 shrink-0" style={{ color: C.day }} />
-                      <span className="truncate text-xs text-foreground">{fmtMember(d?.day_member)}</span>
+                      <span className="truncate text-xs text-foreground">{fmtMembers(d?.day_members)}</span>
                     </div>
 
                     {/* 晚班 */}
                     <div className="flex items-center gap-1.5 rounded px-1.5 py-1" style={{ background: 'rgba(139,92,246,0.10)' }}>
                       <Moon className="h-3 w-3 shrink-0" style={{ color: C.night }} />
-                      <span className="truncate text-xs text-foreground">{fmtMember(d?.night_member)}</span>
+                      <span className="truncate text-xs text-foreground">{fmtMembers(d?.night_members)}</span>
                     </div>
 
                     {/* 需调整标记 */}
@@ -514,11 +561,11 @@ export default function DutyDashboard({ onSwitchTab }) {
                                 )}
                                 <div className="flex items-center gap-0.5 text-[10px]">
                                   <Sun className="h-2.5 w-2.5 shrink-0" style={{ color: C.day }} />
-                                  <span className="truncate text-muted-foreground">{fmtMember(d.day_member)}</span>
+                                  <span className="truncate text-muted-foreground">{fmtMembers(d.day_members)}</span>
                                 </div>
                                 <div className="flex items-center gap-0.5 text-[10px]">
                                   <Moon className="h-2.5 w-2.5 shrink-0" style={{ color: C.night }} />
-                                  <span className="truncate text-muted-foreground">{fmtMember(d.night_member)}</span>
+                                  <span className="truncate text-muted-foreground">{fmtMembers(d.night_members)}</span>
                                 </div>
                               </div>
                             )}
@@ -544,6 +591,122 @@ export default function DutyDashboard({ onSwitchTab }) {
               </span>
             </div>
           </section>
+        </div>
+      </div>
+      )}
+    </div>
+  )
+}
+
+// 重保值班安排表：近 7 天、按组别分列（沿用深色主题，正式值班表布局）
+function ReserveDutySheet({ days = [], today = '', memberGroups = [] }) {
+  const groups = useMemo(() => {
+    // 优先使用全部启用人员的组别（保证空组别也显示列），再补充排班中出现但未在人员表中的组
+    const set = new Set((memberGroups || []).filter(Boolean))
+    days.forEach((d) => {
+      ;[...(d.day_members || []), ...(d.night_members || [])].forEach((m) => {
+        set.add((m.group_name || '').trim() || '未分组')
+      })
+    })
+    return set.size > 0 ? Array.from(set) : ['值班人员']
+  }, [days, memberGroups])
+  const flatMode = groups.length === 1 && groups[0] === '值班人员'
+  const start = days[0]?.duty_date || today
+  const end = days[days.length - 1]?.duty_date || today
+
+  const membersOf = (members, group) => {
+    const list = members || []
+    return flatMode ? list : list.filter((m) => ((m.group_name || '').trim() || '未分组') === group)
+  }
+  const renderMembers = (members, group) => {
+    const picked = membersOf(members, group)
+    if (picked.length === 0) return <span className="text-muted-foreground/40">—</span>
+    return (
+      <div className="flex flex-wrap items-center justify-center gap-1">
+        {picked.map((m) => (
+          <span key={m.id} className="inline-flex max-w-full items-center rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-foreground">
+            <span className="truncate">{m.name}</span>
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 justify-center overflow-auto bg-tech-grid p-6">
+      <div className="relative w-full max-w-[1500px] overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+        <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-red-500/80 to-transparent" />
+        <div className="bg-gradient-to-r from-red-500/[0.08] via-transparent to-transparent px-6 pb-4 pt-5">
+          <div className="flex items-center justify-center gap-2.5">
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-500 ring-1 ring-inset ring-red-500/25">
+              <ShieldCheck className="h-3 w-3" />重保
+            </span>
+            <h2 className="text-center text-2xl font-bold tracking-wide text-foreground">近7天重保网络安全保障值班安排</h2>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            <span className="tabular-nums">{start} 至 {end}</span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-blue-500" />白班 09:00-21:00</span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-purple-500" />晚班 21:00-09:00</span>
+          </div>
+        </div>
+
+        <div className="max-h-[calc(100vh-250px)] overflow-auto border-t border-border">
+          <table className="w-full table-fixed border-collapse text-center text-sm">
+            <colgroup>
+              <col style={{ width: '120px' }} />
+              <col style={{ width: '170px' }} />
+              {groups.map((g) => <col key={g} />)}
+            </colgroup>
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-muted/95 text-muted-foreground backdrop-blur">
+                <th className="border-b border-r border-border px-2 py-2.5 text-xs font-semibold">日期</th>
+                <th className="border-b border-r border-border px-2 py-2.5 text-xs font-semibold">班次</th>
+                {groups.map((g) => (
+                  <th key={g} className="border-b border-r border-border px-2 py-2.5 text-xs font-semibold last:border-r-0">{g}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((d, idx) => {
+                const rowBg = d.is_today ? 'bg-primary/10' : idx % 2 === 1 ? 'bg-muted/20' : ''
+                return (
+                  <Fragment key={d.duty_date}>
+                    <tr className={`${rowBg} transition-colors hover:bg-accent/30`}>
+                      <td rowSpan={2} className="border-b border-r border-border bg-muted/30 px-2 py-2.5 align-middle">
+                        <div className="text-sm font-semibold tabular-nums text-foreground">{String(d.duty_date || '').replaceAll('-', '/')}</div>
+                        <div className="mt-0.5 text-[11px] font-normal text-muted-foreground">
+                          {d.weekday}{d.is_today ? ' · 今天' : ''}
+                        </div>
+                      </td>
+                      <td className="border-b border-r border-border px-2 py-2.5 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-500 ring-1 ring-inset ring-blue-500/20">
+                          <Sun className="h-3 w-3" />白班
+                        </span>
+                        <div className="mt-0.5 text-[10px] text-muted-foreground">09:00-21:00</div>
+                      </td>
+                      {groups.map((g) => (
+                        <td key={g} className="border-b border-r border-border px-2 py-2.5 last:border-r-0">{renderMembers(d.day_members, g)}</td>
+                      ))}
+                    </tr>
+                    <tr className={`${rowBg} transition-colors hover:bg-accent/30`}>
+                      <td className="border-b border-r border-border px-2 py-2.5 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-500 ring-1 ring-inset ring-purple-500/20">
+                          <Moon className="h-3 w-3" />晚班
+                        </span>
+                        <div className="mt-0.5 text-[10px] text-muted-foreground">21:00-09:00</div>
+                      </td>
+                      {groups.map((g) => (
+                        <td key={g} className="border-b border-r border-border px-2 py-2.5 last:border-r-0">{renderMembers(d.night_members, g)}</td>
+                      ))}
+                    </tr>
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+          {days.length === 0 && (
+            <div className="py-8 text-center text-sm text-muted-foreground">近 7 天暂无排班</div>
+          )}
         </div>
       </div>
     </div>

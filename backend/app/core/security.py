@@ -1192,6 +1192,43 @@ def run_lightweight_migrations(engine) -> None:
             "duty_leave_logs",
             {"approve_reason": "TEXT"},
         )
+        # duty_records 表新增值班表类型列：DAILY=日常运营 / RESERVE=重保值班。
+        # 同一日期两类值班表可并存，旧数据统一归为 DAILY。
+        ensure_columns(
+            engine,
+            "duty_records",
+            {"roster_type": "VARCHAR(20) NOT NULL DEFAULT 'DAILY'"},
+        )
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_duty_records_roster_type "
+                    "ON duty_records (roster_type)"
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("duty_records.roster_type 索引创建失败: %s", exc)
+        # duty_records 支持一个班次多人：新增逗号分隔的人员ID列，并从旧单值列回填
+        ensure_columns(
+            engine,
+            "duty_records",
+            {
+                "day_member_ids": "TEXT",
+                "night_member_ids": "TEXT",
+            },
+        )
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "UPDATE duty_records SET day_member_ids = CAST(day_member_id AS TEXT) "
+                    "WHERE day_member_ids IS NULL AND day_member_id IS NOT NULL"
+                ))
+                conn.execute(text(
+                    "UPDATE duty_records SET night_member_ids = CAST(night_member_id AS TEXT) "
+                    "WHERE night_member_ids IS NULL AND night_member_id IS NOT NULL"
+                ))
+            logger.info("轻量迁移: duty_records 多人员ID列已就绪并完成回填")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("duty_records 多人员ID回填失败: %s", exc)
         # alert_events 表新增处置闭环列（指派人 + 处置时间）
         ensure_columns(
             engine,
