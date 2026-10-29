@@ -209,10 +209,7 @@ function ExecutionList() {
 
   return (
     <PageContainer className="flex flex-col">
-      <PageHeader
-        title="执行追溯"
-        description="查看所有工作流执行历史,支持按工作流和状态筛选"
-      />
+      <PageHeader title="执行追溯" />
 
       {/* 筛选栏 */}
       <FilterBar

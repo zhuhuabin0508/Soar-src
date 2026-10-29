@@ -40,8 +40,19 @@ def record_ban(
         封禁工具返回的 record_id。
 
     Raises:
-        BanCallError: 重试耗尽仍失败。
+        BanCallError: 封禁目标不合法，或重试耗尽仍失败。
     """
+    # 封禁目标硬拦截：单 IP / CIDR / 范围 / 多值（与人工封禁同一套规则），
+    # 避免告警字段脏数据（如 "N/A"、主机名）被下发到封禁工具。
+    from app.core.ip_validation import IPValidationError, validate_ban_target
+
+    ip = str(ip or "").strip()
+    if not ip:
+        raise BanCallError("封禁目标为空")
+    try:
+        ip = validate_ban_target(ip, "封禁目标")
+    except IPValidationError as exc:
+        raise BanCallError(f"封禁目标不合法: {exc}") from exc
     request_body = {
         "ip": ip,
         "ban_level": ban_plan.get("ban_level") or "medium",

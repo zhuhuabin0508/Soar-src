@@ -153,7 +153,7 @@ function RiskChart({ data }) {
     }],
   }
   return (
-    <Card title="风险等级分布" description="今日入库告警按风险等级">
+    <Card title="风险等级分布">
       {(data || []).length === 0 ? (
         <div className="flex h-[260px] items-center justify-center"><EmptyState icon={Inbox} title="今日暂无告警" /></div>
       ) : (
@@ -725,7 +725,6 @@ export default function IngestionMonitor() {
               今日接收 <span className="font-medium tabular-nums text-foreground">{fmtNum(today?.total)}</span> 条
             </span>
           )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">趋势 · 错误队列 · 服务日志与健康状态</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={loadOverview} className="btn-secondary btn-sm" title="刷新监控数据">

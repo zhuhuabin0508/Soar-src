@@ -158,7 +158,7 @@ function CollapsibleSection({ title, children, defaultOpen = false, hint }) {
 function ErrorHandlingSection({ data, update }) {
   const setField = (field) => (value) => update({ [field]: value })
   return (
-    <CollapsibleSection title="错误处理" hint="超时 / 重试 / 失败策略">
+    <CollapsibleSection title="错误处理">
       <div className="grid grid-cols-3 gap-2">
         <NumberInput
           label="超时(秒)"
@@ -191,7 +191,6 @@ function ErrorHandlingSection({ data, update }) {
           { value: 'stop', label: '停止 (stop)' },
           { value: 'branch', label: '走失败分支 (branch)' },
         ]}
-        hint="节点执行失败后的处置策略"
       />
       <CheckRow
         label="失败时是否继续执行下游节点"
@@ -452,7 +451,7 @@ function WebhookTriggerForm({ node, update, workflowId }) {
       </Section>
 
       {/* 请求示例 Payload */}
-      <Section title="请求示例 Payload" hint="用于测试 Webhook 时发送的示例请求体">
+      <Section title="请求示例 Payload">
         <TextArea
           label="示例 Payload"
           value={node.data.sample_payload || ''}
@@ -463,7 +462,7 @@ function WebhookTriggerForm({ node, update, workflowId }) {
       </Section>
 
       {/* 测试 Webhook */}
-      <Section title="测试 Webhook" hint="向上述 URL 发起一个测试请求，查看响应状态与耗时">
+      <Section title="测试 Webhook">
         <button
           type="button"
           onClick={handleTestWebhook}
@@ -496,7 +495,7 @@ function WebhookTriggerForm({ node, update, workflowId }) {
       </Section>
 
       {/* 失败重试配置 */}
-      <Section title="失败重试" hint="Webhook 触发失败时的重试策略">
+      <Section title="失败重试">
         <div className="grid grid-cols-2 gap-2">
           <NumberInput
             label="重试次数"
@@ -1459,7 +1458,6 @@ function renderForm(node, update, toolOptions, toolsList, llmOptions, agentOptio
                 onChange={setField('count')}
                 min={1}
                 max={1000}
-                hint="子流程将重复执行指定次数"
               />
             ) : (
               <>
@@ -1509,7 +1507,6 @@ function renderForm(node, update, toolOptions, toolsList, llmOptions, agentOptio
                 { value: 'ctx', label: '上下文变量 (ctx)' },
                 { value: 'custom', label: '自定义 JSON 数组 (custom)' },
               ]}
-              hint="选择要遍历的数据来源"
             />
             {dataSource === 'ctx' && (
               <TextInput
@@ -1527,7 +1524,6 @@ function renderForm(node, update, toolOptions, toolsList, llmOptions, agentOptio
                 onChange={setField('custom_data')}
                 rows={5}
                 placeholder='["item1", "item2", "item3"]'
-                hint="直接填写要遍历的 JSON 数组"
               />
             )}
           </Section>
@@ -2404,7 +2400,7 @@ function PropertyPanel() {
             {/* 节点名称与描述（统一编辑区，位于表单顶部） */}
             <Section
               title="节点名称与描述"
-              hint="为节点自定义名称与描述，便于识别（双击节点也可快速改名）"
+              hint="双击节点也可快速改名"
             >
               <TextInput
                 label="节点名称"

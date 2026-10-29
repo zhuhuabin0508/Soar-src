@@ -1158,7 +1158,6 @@ function UserManagement() {
               value={form.role_id ? String(form.role_id) : ''}
               onChange={(v) => setField('role_id')(v ? Number(v) : null)}
               options={[{ value: '', label: '不关联（使用旧 role 字段）' }, ...roleOptions]}
-              hint="通过角色 ID 关联角色表进行权限矩阵校验"
             />
           ) : (
             <SelectInput

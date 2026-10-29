@@ -770,6 +770,8 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
     except ImportError:  # pragma: no cover
         logger.debug("kb_retriever 未安装，工具命名空间不注入 search_kb")
     namespace["enabled_kbs"] = list(enabled_kbs or [])
+    # 兼容旧版 DB 工具代码（seed 只在缺失时插入，老环境的 search_assets 代码
+    # 仍引用 enabled_asset_types 传参；该参数现已被 execute_search_assets 忽略）
     namespace["enabled_asset_types"] = []
     try:
         from app.agent.decision import execute_search_assets
@@ -808,6 +810,29 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["DeviceAction"] = DeviceAction
     except ImportError:  # pragma: no cover
         logger.debug("数据库模块未安装，工具命名空间不注入 SessionLocal/BannedIP/BanRecord/KnowledgeBase/Asset")
+    # IP 校验函数注入：沙箱禁止 import，工具代码（add_asset / update_asset 等）
+    # 无法自行 import app.core.ip_validation，必须在此注入后才能做写入前硬拦截。
+    # 与 API 层共用同一套规则（IPv4/IPv6/CIDR/范围/通配/多值，拒绝主机名等文本）。
+    try:
+        from app.core.ip_validation import (
+            IPValidationError,
+            looks_like_ip_key,
+            validate_ban_target,
+            validate_cidr_list,
+            validate_extra_ip_fields,
+            validate_ip_expression,
+            validate_single_ip,
+        )
+
+        namespace["IPValidationError"] = IPValidationError
+        namespace["looks_like_ip_key"] = looks_like_ip_key
+        namespace["validate_ip_expression"] = validate_ip_expression
+        namespace["validate_single_ip"] = validate_single_ip
+        namespace["validate_extra_ip_fields"] = validate_extra_ip_fields
+        namespace["validate_cidr_list"] = validate_cidr_list
+        namespace["validate_ban_target"] = validate_ban_target
+    except ImportError:  # pragma: no cover
+        logger.debug("ip_validation 模块未安装，工具命名空间不注入 IP 校验函数")
     # 当前智能体 ID：供资产工具按 agent_id 作用域过滤（agent_id+identifier 去重）
     namespace["current_agent_id"] = agent_id
     # 当前对话用户 ID：供工具生成文件归属 created_by（双层隔离）

@@ -19,7 +19,6 @@ import {
   workflows as workflowsApi,
   isAgentPublished,
 } from '../api/client'
-import { assetsApi } from '../api/assets'
 import {
   Section,
   TextInput,
@@ -151,7 +150,6 @@ function AgentEditor() {
   const [kbOptions, setKbOptions] = useState([])
   const [skillOptions, setSkillOptions] = useState([])
   const [workflowOptions, setWorkflowOptions] = useState([])
-  const [assetTypeOptions, setAssetTypeOptions] = useState([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -165,7 +163,7 @@ function AgentEditor() {
   const [devMode, setDevMode] = useState(false)
   // 展开的工具配置项
   const [expandedTool, setExpandedTool] = useState(null)
-  // 能力配置 Tab：knowledge / tools / skills / assets
+  // 能力配置 Tab：knowledge / tools / skills
   const [abilityTab, setAbilityTab] = useState('tools')
   // 能力配置全局搜索
   const [abilitySearch, setAbilitySearch] = useState('')
@@ -288,9 +286,8 @@ function AgentEditor() {
     // 工具与知识
     const hasTools = form.enabled_tools.length > 0
     const hasKbs = form.enabled_kbs.length > 0
-    const hasAssets = form.enabled_asset_types.length > 0
     const hasWorkflows = form.enabled_workflows.length > 0
-    s.tools = (hasTools || hasKbs || hasAssets || hasWorkflows) ? 'ok' : 'empty'
+    s.tools = (hasTools || hasKbs || hasWorkflows) ? 'ok' : 'empty'
     // 技能注入
     s.skills = form.enabled_skills.length > 0 ? 'ok' : 'empty'
     // 记忆与高级
@@ -308,13 +305,12 @@ function AgentEditor() {
     const tools = form.enabled_tools.length
     const skills = form.enabled_skills.length
     const workflows = form.enabled_workflows.length
-    const assets = form.enabled_asset_types.length
     const canDebug = !!form.name.trim() && !!form.model_config_id
     const issues = []
     if (!form.name.trim()) issues.push('名称未填')
     if (!form.model_config_id) issues.push('模型未选')
-    if (tools + kbs + assets + skills + workflows === 0) issues.push('未挂载任何能力')
-    return { kbs, tools, skills, assets, workflows, canDebug, issues }
+    if (tools + kbs + skills + workflows === 0) issues.push('未挂载任何能力')
+    return { kbs, tools, skills, workflows, canDebug, issues }
   }, [form])
 
   // JSON 语法高亮（简易版：key/string/number/boolean/null 着色）
@@ -340,7 +336,7 @@ function AgentEditor() {
   // 按分类分组的工具列表（标准模式 + 开发者模式共用）
   const groupedTools = useMemo(() => groupToolsByCategory(toolOptions), [toolOptions])
 
-  // 能力配置全局搜索结果（跨知识库/工具/技能/资产）
+  // 能力配置全局搜索结果（跨知识库/工具/技能/工作流）
   const abilitySearchResults = useMemo(() => {
     if (!abilitySearch.trim()) return null
     const kw = abilitySearch.trim().toLowerCase()
@@ -349,9 +345,8 @@ function AgentEditor() {
       kbs: kbOptions.filter((k) => k.label.toLowerCase().includes(kw) || (k.description || '').toLowerCase().includes(kw)),
       skills: skillOptions.filter((s) => s.label.toLowerCase().includes(kw) || (s.description || '').toLowerCase().includes(kw)),
       workflows: workflowOptions.filter((w) => w.label.toLowerCase().includes(kw) || (w.description || '').toLowerCase().includes(kw)),
-      assets: assetTypeOptions.filter((a) => a.label.toLowerCase().includes(kw)),
     }
-  }, [abilitySearch, toolOptions, kbOptions, skillOptions, workflowOptions, assetTypeOptions])
+  }, [abilitySearch, toolOptions, kbOptions, skillOptions, workflowOptions])
 
   // 工具搜索 + 已选过滤后的分组列表
   const filteredGroupedTools = useMemo(() => {
@@ -470,13 +465,12 @@ function AgentEditor() {
     ;(async () => {
       setLoading(true)
       try {
-        const [llms, tls, kbs, sks, wfs, tpls] = await Promise.all([
+        const [llms, tls, kbs, sks, wfs] = await Promise.all([
           llmApi.list(),
           toolsApi.list(),
           kbApi.list(),
           skillsApi.list({ enabled: true }),
           workflowsApi.list(),
-          assetsApi.listTemplates(),
         ])
         if (!alive) return
         setLlmOptions(Array.isArray(llms) ? llms : [])
@@ -516,9 +510,6 @@ function AgentEditor() {
               status: w.status || 'published',
               category: w.category || '',
             }))
-        )
-        setAssetTypeOptions(
-          (Array.isArray(tpls) ? tpls : []).map((t) => ({ value: t.code, label: t.name }))
         )
         if (!isEdit) {
           const dsl = loadStashedAgentDsl()
@@ -1142,10 +1133,6 @@ function AgentEditor() {
               <span className="flex items-center gap-1 text-muted-foreground">
                 <Zap className="h-3.5 w-3.5" /> 技能 <span className="font-semibold text-foreground">{configSummary.skills}</span>
               </span>
-              <span className="text-muted-foreground">·</span>
-              <span className="flex items-center gap-1 text-muted-foreground">
-                <Package className="h-3.5 w-3.5" /> 资产 <span className="font-semibold text-foreground">{configSummary.assets}</span>
-              </span>
               <span className="ml-auto flex items-center gap-1.5">
                 {configSummary.issues.length > 0 ? (
                   <>
@@ -1249,10 +1236,10 @@ function AgentEditor() {
             {/* 模块一：基础信息与形象 */}
             {wizardShows('基础信息与形象') && (
             <Card title="基础信息与形象" icon={<User className="h-4 w-4" />} status={sectionStatus.basic} open={sectionOpen('基础信息与形象')} onToggle={toggleCard('基础信息与形象')}>
-              <TextInput label="智能体名称" value={form.name} onChange={setField('name')} placeholder="如：告警研判智能体" required maxLength={50} hint="2-50 字符，用于列表和对话标题展示" />
+              <TextInput label="智能体名称" value={form.name} onChange={setField('name')} placeholder="如：告警研判智能体" required maxLength={50} hint="2-50 字符" />
               <TextInput label="头像 URL" value={form.avatar} onChange={setField('avatar')} placeholder="https://example.com/avatar.png（可选）" hint="支持 PNG/JPG/SVG/WEBP，建议尺寸 128×128，留空则使用默认头像" />
-              <TextInput label="简介" value={form.description} onChange={setField('description')} placeholder="对外展示的功能描述" maxLength={500} hint="一句话描述智能体能力，展示在智能体列表中" />
-              <TextArea label="开场白" value={form.greeting} onChange={setField('greeting')} rows={3} maxLength={500} placeholder="用户与 Agent 开启对话时自动发送的第一条消息（支持 Markdown）" hint="用户首次进入对话时自动展示，支持 Markdown 语法" />
+              <TextInput label="简介" value={form.description} onChange={setField('description')} placeholder="对外展示的功能描述" maxLength={500} />
+              <TextArea label="开场白" value={form.greeting} onChange={setField('greeting')} rows={3} maxLength={500} placeholder="用户与 Agent 开启对话时自动发送的第一条消息（支持 Markdown）" />
               {form.greeting && (
                 <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
                   <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-primary/70">
@@ -1351,7 +1338,7 @@ function AgentEditor() {
               <div className="grid grid-cols-3 gap-2">
                 <NumberInput label="温度" value={form.temperature} onChange={setField('temperature')} min={0} max={2} step={0.1} hint="0=确定，2=发散" />
                 <NumberInput label="Max Tokens" value={form.max_tokens} onChange={setField('max_tokens')} min={1} max={8192} />
-                <NumberInput label="上下文轮数" value={form.context_turns} onChange={setField('context_turns')} min={1} max={50} hint="记忆对话轮数" />
+                <NumberInput label="上下文轮数" value={form.context_turns} onChange={setField('context_turns')} min={1} max={50} />
               </div>
             </Card>
             )}
@@ -1362,7 +1349,7 @@ function AgentEditor() {
               title="能力配置"
               icon={<Wrench className="h-4 w-4" />}
               defaultOpen={false}
-              hint="挂载工具、工作流、技能、知识库与资产。工作流勾选后会作为独立工具供智能体调用。"
+              hint="工作流勾选后会作为独立工具供智能体调用。"
               status={sectionStatus.tools}
               open={sectionOpen('能力配置')}
               onToggle={toggleCard('能力配置')}
@@ -1383,7 +1370,7 @@ function AgentEditor() {
               }
             >
               {/* 已选能力 chips（顶部展示，可一键移除） */}
-              {(form.enabled_tools.length > 0 || form.enabled_kbs.length > 0 || form.enabled_skills.length > 0 || form.enabled_workflows.length > 0 || form.enabled_asset_types.length > 0) && (
+              {(form.enabled_tools.length > 0 || form.enabled_kbs.length > 0 || form.enabled_skills.length > 0 || form.enabled_workflows.length > 0) && (
                 <div className="mb-3 rounded-md border border-border bg-muted p-2">
                   <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">已选能力</div>
                   <div className="flex flex-wrap gap-1.5">
@@ -1436,15 +1423,6 @@ function AgentEditor() {
                         </span>
                       )
                     })}
-                    {form.enabled_asset_types.map((av) => (
-                      <span key={`a-${av}`} className="inline-flex items-center gap-1 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-600 dark:text-indigo-400">
-                        <Package className="h-2.5 w-2.5" />
-                        {assetTypeOptions.find((x) => x.value === av)?.label || av}
-                        <button type="button" onClick={() => setField('enabled_asset_types')(form.enabled_asset_types.filter((x) => x !== av))} className="ml-0.5 hover:text-foreground">
-                          <X className="h-2.5 w-2.5" />
-                        </button>
-                      </span>
-                    ))}
                   </div>
                 </div>
               )}
@@ -1455,7 +1433,7 @@ function AgentEditor() {
                 <input
                   value={abilitySearch}
                   onChange={(e) => setAbilitySearch(e.target.value)}
-                  placeholder="搜索工具、工作流、技能、知识库、资产…"
+                  placeholder="搜索工具、工作流、技能、知识库…"
                   className="h-8 w-full rounded-md border border-border bg-secondary pl-8 pr-2 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
                 />
                 {abilitySearch && (
@@ -1468,7 +1446,7 @@ function AgentEditor() {
               {/* 搜索结果模式：跨类型展示 */}
               {abilitySearchResults ? (
                 <div className="flex flex-col gap-3">
-                  {abilitySearchResults.tools.length === 0 && abilitySearchResults.kbs.length === 0 && abilitySearchResults.skills.length === 0 && abilitySearchResults.workflows.length === 0 && abilitySearchResults.assets.length === 0 ? (
+                  {abilitySearchResults.tools.length === 0 && abilitySearchResults.kbs.length === 0 && abilitySearchResults.skills.length === 0 && abilitySearchResults.workflows.length === 0 ? (
                     <p className="py-4 text-center text-[11px] text-muted-foreground">未找到匹配项</p>
                   ) : (
                     <>
@@ -1496,25 +1474,18 @@ function AgentEditor() {
                           <CheckboxGroup value={form.enabled_workflows} onChange={setField('enabled_workflows')} options={abilitySearchResults.workflows} columns={2} />
                         </div>
                       )}
-                      {abilitySearchResults.assets.length > 0 && (
-                        <div>
-                          <div className="mb-1.5 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">资产 ({abilitySearchResults.assets.length})</div>
-                          <CheckboxGroup value={form.enabled_asset_types} onChange={setField('enabled_asset_types')} options={abilitySearchResults.assets} columns={2} />
-                        </div>
-                      )}
                     </>
                   )}
                 </div>
               ) : (
                 <>
-                  {/* Tab 切换：知识库 / 工具 / 技能 / 资产 */}
+                  {/* Tab 切换：知识库 / 工具 / 技能 */}
                   <div className="mb-3 flex items-center gap-1 border-b border-border pb-2">
                     {[
                       { v: 'tools', label: '工具', icon: Wrench, count: form.enabled_tools.length, total: toolOptions.length },
                       { v: 'workflows', label: '工作流', icon: FolderKanban, count: form.enabled_workflows.length, total: workflowOptions.length },
                       { v: 'skills', label: '技能', icon: Zap, count: form.enabled_skills.length, total: skillOptions.length },
                       { v: 'knowledge', label: '知识库', icon: Database, count: form.enabled_kbs.length, total: kbOptions.length },
-                      { v: 'assets', label: '资产', icon: Package, count: form.enabled_asset_types.length, total: assetTypeOptions.length },
                     ].map((t) => {
                       const Icon = t.icon
                       return (
@@ -2128,30 +2099,6 @@ function AgentEditor() {
                             )
                           })}
                         </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* ===== 资产 Tab ===== */}
-                  {abilityTab === 'assets' && (
-                    <div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="text-[11px] text-muted-foreground">
-                          勾选后，智能体可按需检索该类型下的资产（IP/名称/部门等）
-                        </span>
-                        <span className="text-[10px] text-muted-foreground">
-                          已选 {form.enabled_asset_types.length} / {assetTypeOptions.length}
-                        </span>
-                      </div>
-                      {assetTypeOptions.length === 0 ? (
-                        <p className="py-4 text-center text-[11px] text-muted-foreground">暂无资产类型，请先到「资产管理」配置类型模板</p>
-                      ) : (
-                        <CheckboxGroup
-                          value={form.enabled_asset_types}
-                          onChange={setField('enabled_asset_types')}
-                          options={assetTypeOptions}
-                          columns={2}
-                        />
                       )}
                     </div>
                   )}

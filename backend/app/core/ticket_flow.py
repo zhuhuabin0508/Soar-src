@@ -101,11 +101,8 @@ def parse_duration(raw: Any) -> tuple[bool, int]:
         return False, -1
     return False, int(float(m.group(1)) * _DURATION_UNITS[m.group(2)])
 
-# IP 字段宽松校验（IPv4 / IPv6）
-_IP_RE = re.compile(
-    r"^(?:(?:\d{1,3}\.){3}\d{1,3})$"          # IPv4
-    r"|(?:^[0-9a-fA-F:]{2,45}$)"              # IPv6（宽松）
-)
+# IP 字段校验：统一走 app.core.ip_validation（IPv4/IPv6/CIDR/范围/通配/多值）
+# 旧的宽松正则会把 999.999.999.999、:::: 等误判为合法，已废弃。
 
 
 def iter_nodes(nodes_json: Any) -> list[tuple[str, dict]]:
@@ -604,8 +601,12 @@ def validate_field_values(
             except (TypeError, ValueError):
                 errors.append(f"{label} 必须为数字")
         elif ftype == "ip":
-            if not _IP_RE.match(str(v)):
-                errors.append(f"{label} 不是合法的 IP 地址")
+            from app.core.ip_validation import validate_ip_expression
+
+            try:
+                validate_ip_expression(str(v), label)
+            except ValueError as exc:
+                errors.append(str(exc))
         elif ftype == "reference":
             # 引用联动：未开启自定义填写时，值必须在动态选项内
             if f.get("allow_custom") is not True:

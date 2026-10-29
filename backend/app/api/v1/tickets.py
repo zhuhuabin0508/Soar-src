@@ -35,7 +35,11 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.sanitizer import sanitize_text
-from app.core.ticket_enrichment import build_ticket_enrichment, start_agent_analysis_bg
+from app.core.ticket_enrichment import (
+    build_ticket_enrichment,
+    decorate_asset_source_labels,
+    start_agent_analysis_bg,
+)
 from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config
 from app.core.ticket_flow import (
     collect_ref_options,
@@ -635,7 +639,9 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         "flow_snapshot": snapshot,
         "records": [r.to_dict() for r in records],
         # 自动研判结果随详情返回（列表已剔除）：资产匹配 + 威胁情报
-        "enrichment_data": ticket.enrichment_data,
+        # 资产匹配各来源补详细来源标签（资产发现-裸金属资产 /
+        # 资产清单-A会保持在线系统清单），存量工单按当前模板名推导
+        "enrichment_data": decorate_asset_source_labels(db, ticket.enrichment_data),
         "group_names": {str(k): v for k, v in group_names.items()},
         "current_node": current_node,
         "can_handle": can_handle,
@@ -1390,24 +1396,25 @@ def _ip_field_role(field: dict) -> str:
 
 
 def _first_ip(value) -> str | None:
-    """字段值 → 首个有效 IP（支持逗号/分号分隔多值；无效返回 None）。
+    """字段值 → 首个有效 IP（支持多值 / CIDR / 范围 / 通配；无效返回 None）。
 
-    与自动研判的 IP 提取口径一致：多值取首个有效地址参与比对。
+    与自动研判的 IP 提取口径一致：多值取首个有效片段，CIDR/范围/通配取
+    区间起始地址参与比对（IPv4 与 IPv6 均支持）。
     """
     if value is None:
         return None
     s = str(value).strip()
     if not s:
         return None
-    for part in s.replace(";", ",").split(","):
-        part = part.strip()
-        if not part:
-            continue
+    from app.core.ip_validation import parse_ip_token, split_ip_expression
+
+    for part in split_ip_expression(s):
         try:
-            ipaddress.ip_address(part)
-            return part
+            iv = parse_ip_token(part)
         except ValueError:
             continue
+        cls = ipaddress.IPv6Address if iv.version == 6 else ipaddress.IPv4Address
+        return str(cls(iv.start))
     return None
 
 
@@ -1670,6 +1677,17 @@ def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict,
     device = str(values.get(cfg.get("device_field")) or "").strip() if cfg.get("device_field") else ""
     if not ip or duration_raw in (None, ""):
         logger.warning("封禁同步跳过（IP/时长未填）: ticket=%s node=%s", ticket.ticket_no, node.get("key"))
+        return
+    # 封禁目标硬拦截：单 IP / CIDR / 范围 / 多值（与人工封禁同一套规则）
+    from app.core.ip_validation import IPValidationError, validate_ban_target
+
+    try:
+        ip = validate_ban_target(ip, "封禁目标")
+    except IPValidationError as exc:
+        logger.warning(
+            "封禁同步跳过（封禁目标非法: %s）: ticket=%s node=%s",
+            exc, ticket.ticket_no, node.get("key"),
+        )
         return
     permanent, seconds = parse_duration(duration_raw)
     if not permanent and seconds < 0:

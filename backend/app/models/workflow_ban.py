@@ -88,7 +88,8 @@ class ApprovalTicket(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     workflow_instance_id = Column(Integer, nullable=False, index=True)
-    ip = Column(String(45), nullable=False, index=True)
+    # 封禁目标：支持单 IP / CIDR / 范围 / 多值表达式
+    ip = Column(String(2048), nullable=False, index=True)
     alert_summary = Column(Text, nullable=True)
     # 智能体研判结论 JSON（risk_level/action/need_confirm/reasons 等）
     agent_decision = Column(Text, nullable=True)
@@ -114,7 +115,8 @@ class BanRecord(Base):
     __tablename__ = "ban_records"
 
     id = Column(Integer, primary_key=True, index=True)
-    ip = Column(String(45), nullable=False, index=True)
+    # 封禁目标：支持单 IP / CIDR / 范围 / 多值表达式
+    ip = Column(String(2048), nullable=False, index=True)
     ban_level = Column(String(20), nullable=False, default="medium")
     # 秒
     ban_duration = Column(Integer, nullable=False, default=3600)

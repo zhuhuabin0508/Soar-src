@@ -10,13 +10,17 @@
 模板定义了某一类资产的数据模型（字段 schema + 元信息），
 资产管理页面的表单、列表列、导入/导出均按模板动态适配。
 """
+import json
 import logging
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.dependencies import require_role
+from app.core.timezone import beijing_now
+from app.dependencies import get_current_user, require_role
 from app.database import get_db
 from app.models.asset import AssetTypeTemplate
 from app.models.user import User
@@ -24,6 +28,17 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/asset-templates", tags=["asset-templates"])
+
+# 导出文件格式标识：导入时接受该信封、模板数组或单个模板对象
+EXPORT_FORMAT = "soar.asset-type-template"
+EXPORT_VERSION = 1
+
+# 模板字段允许的映射目标（与 Asset 标准列保持一致）
+_STANDARD_COLUMNS = {
+    "name", "asset_type", "department", "owner", "location",
+    "ip", "criticality", "status",
+}
+_FIELD_TYPES = {"text", "number", "date", "select", "textarea", "ip", "cidr"}
 
 
 # ============================================================================
@@ -74,6 +89,19 @@ class TemplateUpdateRequest(BaseModel):
     allow_aggregate: bool | None = None
 
 
+class TemplateImportRequest(BaseModel):
+    """导入类型模板请求体。
+
+    支持单模板 ``template`` 或批量 ``templates``，兼容导出文件的信封结构
+    （导出文件中的 ``templates`` 数组可直接作为请求体）；也兼容直接提交
+    单个模板对象（顶层含 ``code``/``name``/``fields``）。
+    """
+    model_config = ConfigDict(extra="allow")
+
+    template: dict | None = Field(None, description="单个模板定义")
+    templates: list[dict] | None = Field(None, description="模板定义数组")
+
+
 # ============================================================================
 # 辅助函数
 # ============================================================================
@@ -97,6 +125,123 @@ def _template_to_dict(tpl: AssetTypeTemplate) -> dict:
     }
 
 
+def _template_to_export_dict(tpl: AssetTypeTemplate) -> dict:
+    """导出用模板定义：剔除服务端字段，避免导入后沿用 ID/预设标记。"""
+    return {
+        "code": tpl.code,
+        "name": tpl.name,
+        "description": tpl.description or "",
+        "icon": tpl.icon,
+        "color": tpl.color,
+        "identifier_field": tpl.identifier_field,
+        "fields": tpl.fields or [],
+        "allow_aggregate": bool(tpl.allow_aggregate),
+    }
+
+
+def _normalize_import_item(raw: dict, index: int) -> dict:
+    """校验并规整单个导入模板；非法结构抛 422（整批拒绝）。"""
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=422, detail=f"第 {index} 个模板不是 JSON 对象")
+
+    item = dict(raw)
+    # 服务端字段不允许通过导入指定
+    for key in ("id", "is_preset", "sort_order", "created_at", "updated_at",
+                "format", "version", "exported_at"):
+        item.pop(key, None)
+    for key in ("code", "name", "description", "icon", "color", "identifier_field"):
+        if isinstance(item.get(key), str):
+            item[key] = item[key].strip()
+    if item.get("description") is None:
+        item["description"] = ""
+
+    try:
+        payload = TemplateCreateRequest.model_validate(item)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"第 {index} 个模板结构非法: {exc.errors()}",
+        ) from exc
+
+    if not payload.fields:
+        raise HTTPException(status_code=422, detail=f"第 {index} 个模板至少需要一个字段")
+    if len(payload.code.strip()) < 2:
+        raise HTTPException(status_code=422, detail=f"第 {index} 个模板 code 至少 2 个字符")
+    if not payload.name.strip():
+        raise HTTPException(status_code=422, detail=f"第 {index} 个模板名称不能为空")
+
+    field_keys = [f.key.strip() for f in payload.fields]
+    if any(not key for key in field_keys):
+        raise HTTPException(status_code=422, detail=f"第 {index} 个模板存在空字段 key")
+    if len(set(field_keys)) != len(field_keys):
+        raise HTTPException(status_code=422, detail=f"第 {index} 个模板字段 key 重复")
+    if payload.identifier_field not in field_keys:
+        raise HTTPException(
+            status_code=422,
+            detail=f"第 {index} 个模板的标识字段 '{payload.identifier_field}' 不在字段列表中",
+        )
+
+    fields: list[dict] = []
+    for field_index, f in enumerate(payload.fields, 1):
+        key = f.key.strip()
+        ftype = f.type.strip()
+        mapped_to = f.mapped_to.strip()
+        if ftype not in _FIELD_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"第 {index} 个模板字段 {key} 的类型 '{ftype}' 不受支持",
+            )
+        if mapped_to.startswith("standard:"):
+            col = mapped_to.split(":", 1)[1].strip()
+            if col not in _STANDARD_COLUMNS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"第 {index} 个模板字段 {key} 映射到未知标准列 '{col}'",
+                )
+            mapped_to = f"standard:{col}"
+        field_dict = f.model_dump()
+        field_dict.update({
+            "key": key,
+            "label": f.label.strip() or key,
+            "type": ftype,
+            "mapped_to": mapped_to,
+            "sort_order": f.sort_order or field_index,
+            "options": (f.options or []) if ftype == "select" else [],
+        })
+        fields.append(field_dict)
+
+    return {
+        "code": payload.code.strip(),
+        "name": payload.name.strip(),
+        "description": payload.description.strip() if payload.description else "",
+        "icon": payload.icon.strip() or "server",
+        "color": payload.color.strip() or "chart-1",
+        "identifier_field": payload.identifier_field,
+        "fields": fields,
+        "allow_aggregate": bool(payload.allow_aggregate),
+    }
+
+
+def _unique_template_code(
+    db: Session,
+    base_code: str,
+    reserved: set[str],
+) -> tuple[str, int]:
+    """生成不冲突的模板 code。
+
+    与现有模板或同批导入模板冲突时，追加 ``_importN`` 后缀
+    （首个冲突 N=1，依次递增，避免「第一个副本却是 导入2」的观感），
+    返回 ``(最终 code, 后缀序号 N)``；无冲突时 N=1。
+    """
+    candidate = base_code
+    n = 1
+    while candidate in reserved or db.query(AssetTypeTemplate.id).filter_by(code=candidate).first():
+        suffix = f"_import{n}"
+        candidate = f"{base_code[: max(1, 64 - len(suffix))]}{suffix}"
+        n += 1
+    return candidate, max(n - 1, 1)
+
+
 # ============================================================================
 # 端点
 # ============================================================================
@@ -111,6 +256,134 @@ def list_templates(
         AssetTypeTemplate.id.asc(),
     ).all()
     return [_template_to_dict(t) for t in templates]
+
+
+@router.get("/export")
+def export_templates(
+    codes: str = Query("", description="要导出的模板 code，逗号分隔；为空则导出全部"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """导出类型模板为 JSON 文件（支持单个/批量，用于环境迁移与分享）。
+
+    导出内容仅包含模板定义，不含 ID/预设标记等环境相关数据；
+    可直接通过 ``POST /asset-templates/import`` 导入。
+    需登录（导出一次性给出全部模板定义，不应匿名可读）。
+    """
+    code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    query = db.query(AssetTypeTemplate).order_by(
+        AssetTypeTemplate.sort_order.asc(),
+        AssetTypeTemplate.id.asc(),
+    )
+    if code_list:
+        templates = query.filter(AssetTypeTemplate.code.in_(code_list)).all()
+        missing = set(code_list) - {t.code for t in templates}
+        if missing:
+            raise HTTPException(status_code=404, detail=f"模板不存在: {', '.join(sorted(missing))}")
+    else:
+        templates = query.all()
+    if not templates:
+        raise HTTPException(status_code=404, detail="暂无可导出的类型模板")
+
+    logger.info(
+        "导出资产类型模板 %d 个: user=%s, codes=%s",
+        len(templates), user.username, [t.code for t in templates],
+    )
+    payload = {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "exported_at": beijing_now().isoformat(),
+        "templates": [_template_to_export_dict(t) for t in templates],
+    }
+    filename = (
+        f"asset_template_{templates[0].code}.json"
+        if len(templates) == 1
+        else "asset_templates.json"
+    )
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename={filename}; "
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+        },
+    )
+
+
+@router.post("/import", status_code=201)
+def import_templates(
+    body: TemplateImportRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "analyst")),
+) -> dict:
+    """从 JSON 导入类型模板（单模板或批量）。
+
+    - 支持导出文件的信封结构、模板数组或单个模板对象；
+    - 导入前整批校验，任一非法则整批拒绝，避免部分导入；
+    - 与现有模板 code 冲突时自动追加 ``_importN`` 后缀，名称追加 ``(导入N)``；
+    - 导入模板一律作为自定义模板（``is_preset=False``），不会覆盖预设模板。
+    """
+    items = list(body.templates or [])
+    if body.template is not None:
+        items.append(body.template)
+    if not items and body.model_extra:
+        # 直接提交单个模板对象（如 {code, name, fields, ...}）
+        if body.model_extra.get("code") or body.model_extra.get("fields"):
+            items.append(dict(body.model_extra))
+    if not items:
+        raise HTTPException(status_code=422, detail="导入内容为空（template/templates 至少提供一项）")
+
+    normalized = [_normalize_import_item(item, i) for i, item in enumerate(items, 1)]
+
+    max_sort = db.query(func.max(AssetTypeTemplate.sort_order)).scalar() or 0
+    reserved: set[str] = set()
+    results: list[dict] = []
+    try:
+        for offset, item in enumerate(normalized):
+            base_code = item["code"]
+            final_code, conflict_no = _unique_template_code(db, base_code, reserved)
+            reserved.add(final_code)
+            final_name = item["name"]
+            renamed_from = None
+            if final_code != base_code:
+                renamed_from = base_code
+                suffix = f"(导入{conflict_no})"
+                final_name = f"{item['name'][: max(1, 64 - len(suffix))]}{suffix}"
+            tpl = AssetTypeTemplate(
+                code=final_code,
+                name=final_name,
+                description=item["description"],
+                icon=item["icon"],
+                color=item["color"],
+                identifier_field=item["identifier_field"],
+                fields=item["fields"],
+                is_preset=False,
+                allow_aggregate=item["allow_aggregate"],
+                sort_order=max_sort + (offset + 1) * 10,
+            )
+            db.add(tpl)
+            db.flush()
+            results.append({
+                "code": tpl.code,
+                "name": tpl.name,
+                "renamed_from": renamed_from,
+            })
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("导入资产类型模板失败: %s", exc)
+        raise HTTPException(status_code=500, detail="导入失败，已回滚") from exc
+
+    logger.info(
+        "导入资产类型模板 %d 个: user=%s, codes=%s",
+        len(results), user.username, [r["code"] for r in results],
+    )
+    return {"imported": len(results), "items": results}
 
 
 @router.get("/{code}")

@@ -224,6 +224,19 @@ def _validate_payload(body: LogReceiverBase) -> None:
             status_code=422,
             detail="拉取型源（kafka/jdbc/rest_api/file_tail）必须绑定默认归属设备（device_id）",
         )
+    # 监听地址必须是单个合法 IP（IPv4/IPv6），空值等价 0.0.0.0
+    from app.core.ip_validation import validate_listen_bind
+
+    try:
+        if protocol == "syslog":
+            validate_listen_bind(body.syslog_bind, "syslog 监听地址")
+        elif protocol in ("snmp_trap", "netflow"):
+            validate_listen_bind(
+                (body.adapter_config or {}).get("bind"),
+                f"{protocol} 监听地址",
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     if protocol in ("syslog", "kafka"):
         if protocol == "syslog":
             if not body.syslog_port:

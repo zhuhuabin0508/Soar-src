@@ -29,6 +29,7 @@ import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { inputCls, inputBaseCls } from '../components/property/FormControls'
 import { CompactSelect } from './ui'
+import { validateBanTarget } from '../utils/ipValidation'
 
 // 封禁等级中文映射 + 配色
 const LEVEL_META = {
@@ -185,6 +186,9 @@ function BannedIPsPanel() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState({ ip: '', ban_level: 'medium', ban_duration: 3600, region: '', reason: '' })
+  const [createIpTouched, setCreateIpTouched] = useState(false)
+  // 即时校验：封禁目标（单 IP / CIDR / 范围 / 多值，不允许通配）
+  const createIpError = validateBanTarget(createForm.ip, '封禁目标')
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -234,6 +238,8 @@ function BannedIPsPanel() {
 
   const handleCreate = async () => {
     if (!createForm.ip.trim()) { toast.warning('请填写 IP 地址'); return }
+    const ipMsg = validateBanTarget(createForm.ip, '封禁目标')
+    if (ipMsg) { setCreateIpTouched(true); toast.warning(ipMsg); return }
     setCreating(true)
     try {
       await bannedIpsApi.create({
@@ -244,6 +250,7 @@ function BannedIPsPanel() {
         reason: createForm.reason.trim(),
       })
       setCreateOpen(false)
+      setCreateIpTouched(false)
       setCreateForm({ ip: '', ban_level: 'medium', ban_duration: 3600, region: '', reason: '' })
       await loadAll()
     } catch (err) { toast.error(`新增失败：${err.message || err}`) }
@@ -407,7 +414,7 @@ function BannedIPsPanel() {
         </CompactSelect>
         <div className="flex items-center gap-2">
           {canUnban && (
-            <button type="button" onClick={() => setCreateOpen(true)} className="btn-primary btn-sm">
+            <button type="button" onClick={() => { setCreateIpTouched(false); setCreateOpen(true) }} className="btn-primary btn-sm">
               + 新增封禁
             </button>
           )}
@@ -477,7 +484,7 @@ function BannedIPsPanel() {
             <div className="text-sm font-medium">{search || statusFilter ? '没有匹配的封禁记录' : '暂无已封禁 IP 记录'}</div>
             {!search && !statusFilter && canUnban && (
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => setCreateOpen(true)} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+                <button type="button" onClick={() => { setCreateIpTouched(false); setCreateOpen(true) }} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
                   + 手动新增封禁
                 </button>
                 <button type="button" onClick={handleImportClick} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
@@ -659,7 +666,16 @@ function BannedIPsPanel() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">IP 地址 *</label>
-              <input className={inputCls} placeholder="如 1.2.3.4" value={createForm.ip} onChange={(e) => setCreateForm({ ...createForm, ip: e.target.value })} />
+              <input
+                className={`${inputCls}${createIpTouched && createIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
+                placeholder="如 1.2.3.4 / 10.0.0.0/8 / 1.2.3.4-1.2.3.20"
+                value={createForm.ip}
+                onChange={(e) => setCreateForm({ ...createForm, ip: e.target.value })}
+                onBlur={() => setCreateIpTouched(true)}
+              />
+              {createIpTouched && createIpError && (
+                <div className="mt-1 text-[11px] text-destructive">{createIpError}</div>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">封禁等级</label>

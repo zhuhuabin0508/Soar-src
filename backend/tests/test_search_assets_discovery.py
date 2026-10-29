@@ -1,7 +1,6 @@
 """search_assets 资产发现联动测试：IP 查询合并资产发现数据。"""
 import asyncio
 
-from app.agent import tool_builders
 from app.agent.tool_builders import (
     _build_asset_tool,
     _discovery_ip_tokens,
@@ -22,6 +21,9 @@ class _FakeQuery:
     def limit(self, *args, **kwargs):
         return self
 
+    def distinct(self, *args, **kwargs):
+        return self
+
     def all(self):
         return []
 
@@ -34,10 +36,6 @@ class _FakeDB:
 
     def close(self):
         pass
-
-
-def _reset_asset_scan_cache():
-    tool_builders._ASSET_SCAN_CACHE.update({"ts": 0.0, "rows": None, "buckets": None})
 
 
 def test_split_tokens_variants():
@@ -181,7 +179,6 @@ def test_merge_ignores_non_dict_inputs():
 
 def test_asset_tool_coroutine_merges_discovery(monkeypatch):
     """IP 查询：资产清单（空）+ 资产发现命中 → 返回结构含「资产发现」分组。"""
-    _reset_asset_scan_cache()
     monkeypatch.setattr("app.database.SessionLocal", _FakeDB)
 
     async def fake_discovery(keyword="", resource_type="", limit=10):
@@ -200,10 +197,7 @@ def test_asset_tool_coroutine_merges_discovery(monkeypatch):
 
     tool = _build_asset_tool(["host_asset"])
     assert tool is not None
-    try:
-        result = asyncio.run(tool.coroutine(keyword="1.2.3.4"))
-    finally:
-        _reset_asset_scan_cache()
+    result = asyncio.run(tool.coroutine(keyword="1.2.3.4"))
 
     assert result["count"] == 0  # 资产清单无命中
     assert result["资产发现"][0]["ip_address"] == "1.2.3.4"
@@ -211,7 +205,6 @@ def test_asset_tool_coroutine_merges_discovery(monkeypatch):
 
 def test_asset_tool_coroutine_batch_merges_per_ip(monkeypatch):
     """批量 IP 查询：每个 IP 各自合并资产发现命中，matched 含发现命中。"""
-    _reset_asset_scan_cache()
     monkeypatch.setattr("app.database.SessionLocal", _FakeDB)
 
     async def fake_discovery(keyword="", resource_type="", limit=10):
@@ -236,10 +229,7 @@ def test_asset_tool_coroutine_batch_merges_per_ip(monkeypatch):
     )
 
     tool = _build_asset_tool(["host_asset"])
-    try:
-        result = asyncio.run(tool.coroutine(keyword="1.2.3.4,5.6.7.8"))
-    finally:
-        _reset_asset_scan_cache()
+    result = asyncio.run(tool.coroutine(keyword="1.2.3.4,5.6.7.8"))
 
     assert result["batch"] is True
     by_query = {entry["query"]: entry for entry in result["queries"]}
@@ -251,7 +241,6 @@ def test_asset_tool_coroutine_batch_merges_per_ip(monkeypatch):
 
 def test_asset_tool_coroutine_skips_discovery_for_text(monkeypatch):
     """文本查询：不触发资产发现查询。"""
-    _reset_asset_scan_cache()
     monkeypatch.setattr("app.database.SessionLocal", _FakeDB)
 
     async def boom(**kwargs):
@@ -262,17 +251,13 @@ def test_asset_tool_coroutine_skips_discovery_for_text(monkeypatch):
     )
 
     tool = _build_asset_tool(["host_asset"])
-    try:
-        result = asyncio.run(tool.coroutine(keyword="财务服务器"))
-    finally:
-        _reset_asset_scan_cache()
+    result = asyncio.run(tool.coroutine(keyword="财务服务器"))
 
     assert "资产发现" not in result
 
 
 def test_asset_tool_coroutine_survives_discovery_failure(monkeypatch):
     """资产发现查询异常：只记日志，资产清单结果正常返回。"""
-    _reset_asset_scan_cache()
     monkeypatch.setattr("app.database.SessionLocal", _FakeDB)
 
     async def broken_discovery(**kwargs):
@@ -283,10 +268,7 @@ def test_asset_tool_coroutine_survives_discovery_failure(monkeypatch):
     )
 
     tool = _build_asset_tool(["host_asset"])
-    try:
-        result = asyncio.run(tool.coroutine(keyword="1.2.3.4"))
-    finally:
-        _reset_asset_scan_cache()
+    result = asyncio.run(tool.coroutine(keyword="1.2.3.4"))
 
     assert result["count"] == 0
     assert "资产发现" not in result

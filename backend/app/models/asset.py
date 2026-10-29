@@ -13,7 +13,7 @@ list_assets 工具使用，以及前端「资产管理」页面展示。
 - ``tags``：多对多标签分组（AssetTag），支持按标签筛选和批量打标。
 """
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Table, Text
-from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.dialects.postgresql import INT8RANGE, JSON, NUMRANGE
 from sqlalchemy.orm import relationship
 
 from app.core.timezone import beijing_now
@@ -127,6 +127,80 @@ class AssetTag(Base):
         return f"<AssetTag id={self.id} name={self.name!r}>"
 
 
+class AssetIpInterval(Base):
+    """资产 IP 区间索引（search_assets 持久化索引）。
+
+    一条资产的每个 IP 区间（单 IP / 范围 / CIDR / 多值拆分）一行，
+    由 ``app.core.asset_ip_index`` 的 ORM 事件在资产写入时自动同步维护；
+    查询用 GiST 索引做「点在区间内 / 区间重叠」判断（``@>`` / ``&&``），
+    替代旧的全表扫描 + 内存缓存（98k 资产时冷查询 2.2s → 索引查询 ~1ms 级）。
+
+    - ``ip_range``：PostgreSQL int8range，左闭右开 [start, end)。
+      必须用 int8（bigint）而非 int4：IPv4 整数是无符号 32 位
+      （最大 4294967295），超过 int4 上限 2147483647（=127.255.255.255），
+      128.0.0.0 及以上的 IP 会触发 ``integer out of range``。
+    - 资产删除经 FK ON DELETE CASCADE 级联清理，事件里也显式删一次兜底。
+    """
+
+    __tablename__ = "asset_ip_intervals"
+
+    id = Column(Integer, primary_key=True)
+    asset_id = Column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # [start, end) 左闭右开区间；单 IP 即 [ip, ip+1)
+    ip_range = Column(INT8RANGE, nullable=False)
+
+    __table_args__ = (
+        # GiST 支持 @>（点在区间）与 &&（区间重叠）的高效索引查找
+        Index("idx_asset_ip_intervals_gist", "ip_range", postgresql_using="gist"),
+        # 唯一约束：并发写入（ORM 事件与迁移回填交错）不产生重复行，
+        # 配合插入侧 ON CONFLICT DO NOTHING 实现幂等
+        Index("uq_asset_ip_intervals_asset_range", "asset_id", "ip_range", unique=True),
+    )
+
+    def __repr__(self):
+        return f"<AssetIpInterval id={self.id} asset_id={self.asset_id} ip_range={self.ip_range!r}>"
+
+
+class AssetIpv6Interval(Base):
+    """资产 IPv6 区间索引（与 AssetIpInterval 同构，独立表）。
+
+    int8range 只能存 64 位整数，无法容纳 128 位 IPv6 地址，因此 IPv6 区间
+    单独落在本表，使用 PostgreSQL ``numrange``（numeric 无精度上限）+
+    GiST 索引。写入/删除由 ``app.core.asset_ip_index`` 的 ORM 事件在同一
+    事务内同步维护，查询接口见 ``query_asset_ids_by_ipv6`` /
+    ``query_asset_ids_by_netv6``。
+
+    - ``ip_range``：左闭右开 [start, end)，start/end 为 IPv6 地址整数。
+    - 资产删除经 FK ON DELETE CASCADE 级联清理，事件里也显式删一次兜底。
+    """
+
+    __tablename__ = "asset_ipv6_intervals"
+
+    id = Column(Integer, primary_key=True)
+    asset_id = Column(
+        Integer, ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ip_range = Column(NUMRANGE, nullable=False)
+
+    __table_args__ = (
+        Index("idx_asset_ipv6_intervals_gist", "ip_range", postgresql_using="gist"),
+        Index(
+            "uq_asset_ipv6_intervals_asset_range",
+            "asset_id",
+            "ip_range",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self):
+        return (
+            f"<AssetIpv6Interval id={self.id} asset_id={self.asset_id} "
+            f"ip_range={self.ip_range!r}>"
+        )
+
+
 class Asset(Base):
     """资产记录。"""
 
@@ -153,9 +227,11 @@ class Asset(Base):
     department = Column(String(128), default="")
     owner = Column(String(128), default="")
     location = Column(String(128), default="")
-    # IP/网段表达式：支持多值（逗号分隔的多 IP 或多 CIDR 列表），128 不够用
-    # （历史案例：129 字符多 CIDR 列表被截断成 128，末段 /24 变 /2 产生脏数据）
-    ip = Column(String(256), default="")
+    # IP/网段表达式：支持多值（逗号分隔的多 IP 或多 CIDR 列表）
+    # 列宽演进：128（/24 截成 /2 脏数据）→ 256 → 1024 → 2048
+    # （实测单条多 IP 列表可达 800+ 字符，导入"A会保持在线系统资产"时 256 仍不够，
+    #   预留 2048 覆盖更大规模合并列表）
+    ip = Column(String(2048), default="")
     # 重要性：low/medium/high/critical
     criticality = Column(String(16), default="medium")
     # 生命周期状态：in_use(在用)/idle(闲置)/repair(维修)/retired(报废)/lost(丢失)

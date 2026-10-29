@@ -12,7 +12,6 @@ function BannedIPs() {
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-semibold text-foreground">已封禁 IP</h1>
-          <span className="text-xs text-muted-foreground">封禁清单管理</span>
         </div>
       </header>
       <div className="flex-1 overflow-y-auto p-6">

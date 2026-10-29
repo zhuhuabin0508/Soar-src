@@ -463,7 +463,7 @@ export default function GovCloudAssets() {
   if (!canView) {
     return (
       <PageContainer>
-        <PageHeader title="资产发现" description="按发现来源归类展示资产。" />
+        <PageHeader title="资产发现" />
         <EmptyState
           icon={ShieldOff}
           title="没有访问权限"

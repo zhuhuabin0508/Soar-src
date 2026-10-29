@@ -16,8 +16,9 @@ import { devices as devicesApi } from '../../api/client'
 import { strategyApi } from '../../api/strategy'
 import { toast } from '../../store/toastStore'
 import {
-  DEVICE_TYPES, DEVICE_TYPE_LABELS, DEVICE_AUTH_TYPES, normalizeIpAddress,
+  DEVICE_TYPES, DEVICE_TYPE_LABELS, DEVICE_AUTH_TYPES,
 } from './constants'
+import { validateSingleIP, validateListenBind } from '../../utils/ipValidation'
 import { DeviceTypeIcon, Switch } from './Badges'
 
 const logReceivers = devicesApi.logReceivers
@@ -199,17 +200,18 @@ export default function DeviceOnboard() {
       case 'device':
         return !!deviceForm.name.trim()
       case 'log': {
-        if (!logForm.sourceIp.trim() || normalizeIpAddress(logForm.sourceIp) === null) return false
+        if (!validateSingleIP(logForm.sourceIp, '源 IP 地址')) return false
         if (logForm.receiverMode === 'existing' && !logForm.receiverId) return false
         if (logForm.receiverMode === 'new') {
           const p = Number(logForm.port)
           if (!p || p < 1 || p > 65535) return false
+          if (validateListenBind(logForm.bind, '监听地址')) return false
         }
         if (logForm.strategyMode === 'specify' && !logForm.strategyId) return false
         return true
       }
       case 'response': {
-        if (!respForm.deviceIp.trim() || normalizeIpAddress(respForm.deviceIp) === null) return false
+        if (!validateSingleIP(respForm.deviceIp, '设备 IP')) return false
         if (!respForm.apiPath.trim()) return false
         if (needUserPass && (!respForm.username.trim() || !respForm.password)) return false
         if (needApiKey && !respForm.apiKey.trim()) return false
@@ -227,9 +229,9 @@ export default function DeviceOnboard() {
       toast.warning('请填写设备名称'); return false
     }
     if (step.key === 'log') {
-      if (!logForm.sourceIp.trim()) { toast.warning('请填写源 IP 地址'); return false }
-      if (normalizeIpAddress(logForm.sourceIp) === null) {
-        toast.warning(`源 IP 地址格式不正确：${logForm.sourceIp}`); return false
+      const srcIpMsg = validateSingleIP(logForm.sourceIp, '源 IP 地址')
+      if (srcIpMsg) {
+        toast.warning(srcIpMsg); return false
       }
       if (logForm.receiverMode === 'existing' && !logForm.receiverId) {
         toast.warning('请选择现有采集器，或切换为新建采集器'); return false
@@ -237,15 +239,17 @@ export default function DeviceOnboard() {
       if (logForm.receiverMode === 'new') {
         const p = Number(logForm.port)
         if (!p || p < 1 || p > 65535) { toast.warning('监听端口需为 1-65535 的整数'); return false }
+        const bindMsg = validateListenBind(logForm.bind, '监听地址')
+        if (bindMsg) { toast.warning(bindMsg); return false }
       }
       if (logForm.strategyMode === 'specify' && !logForm.strategyId) {
         toast.warning('请选择解析模板，或切换为自动匹配'); return false
       }
     }
     if (step.key === 'response') {
-      if (!respForm.deviceIp.trim()) { toast.warning('请填写设备 IP'); return false }
-      if (normalizeIpAddress(respForm.deviceIp) === null) {
-        toast.warning(`设备 IP 格式不正确：${respForm.deviceIp}`); return false
+      const devIpMsg = validateSingleIP(respForm.deviceIp, '设备 IP')
+      if (devIpMsg) {
+        toast.warning(devIpMsg); return false
       }
       if (!respForm.apiPath.trim()) { toast.warning('请填写 API 地址'); return false }
       if (needUserPass && !respForm.username.trim()) { toast.warning('请填写用户名'); return false }
@@ -292,7 +296,7 @@ export default function DeviceOnboard() {
         vendor: deviceForm.vendor.trim(),
         version: deviceForm.version.trim(),
         description: deviceForm.description.trim(),
-        ip_address: caps.response ? respForm.deviceIp : logForm.sourceIp,
+        ip_address: caps.response ? respForm.deviceIp.trim() : logForm.sourceIp.trim(),
         api_url: caps.response ? buildApiUrl() : '',
         auth_type: caps.response ? respForm.authType : 'none',
         api_key: caps.response && needApiKey ? respForm.apiKey : '',
@@ -319,8 +323,8 @@ export default function DeviceOnboard() {
             adapterConfig.time_correction = { tz_offset_hours: Number(logForm.tzOffset) || 0 }
           }
           // 源 IP 与设备 IP 不一致时，将预期源 IP 记入接收器描述留痕
-          const srcIp = normalizeIpAddress(logForm.sourceIp) || logForm.sourceIp
-          const ipMismatch = caps.response && respForm.deviceIp && srcIp !== respForm.deviceIp
+          const srcIp = logForm.sourceIp.trim()
+          const ipMismatch = caps.response && respForm.deviceIp && srcIp !== respForm.deviceIp.trim()
           await logReceivers.create({
             name: receiverName,
             protocol: 'syslog',
@@ -377,7 +381,6 @@ export default function DeviceOnboard() {
     <PageContainer>
       <PageHeader
         title="设备接入指引"
-        description="按所选能力分步完成设备接入：选择能力 → 选择产品 → 设备信息 → 能力配置 → 完成"
         actions={<Button variant="ghost" onClick={() => navigate('/devices')}>返回设备列表</Button>}
       />
       {/* 步骤条 */}
@@ -599,6 +602,9 @@ function ConfigSection({ icon: Icon, title, children }) {
 
 // ============ Step 4a: 日志采集配置 ============
 function StepLogCollect({ form, onChange, receivers, strategies }) {
+  const [touched, setTouched] = useState({ bind: false, sourceIp: false })
+  const bindError = validateListenBind(form.bind, '监听地址')
+  const sourceIpError = validateSingleIP(form.sourceIp, '源 IP 地址')
   const enabledStrategies = (strategies || []).filter((s) => s.status === 'enabled')
   const sysReceivers = (receivers || []).filter((r) => r.protocol === 'syslog')
   const selectedReceiver = sysReceivers.find((r) => String(r.id) === String(form.receiverId))
@@ -718,8 +724,15 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
               </div>
               <div>
                 <label className={labelCls}>监听地址</label>
-                <input className={inputCls} value={form.bind}
-                  onChange={(e) => onChange({ bind: e.target.value })} placeholder="0.0.0.0" />
+                <input
+                  className={`${inputCls}${touched.bind && bindError ? ' border-destructive ring-1 ring-destructive' : ''}`}
+                  value={form.bind}
+                  onChange={(e) => onChange({ bind: e.target.value })}
+                  onBlur={() => setTouched((t) => ({ ...t, bind: true }))}
+                  placeholder="0.0.0.0" />
+                {touched.bind && bindError && (
+                  <div className="mt-1 text-[11px] text-destructive">{bindError}</div>
+                )}
               </div>
               <div>
                 <label className={labelCls}>编码方式</label>
@@ -768,8 +781,15 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className={labelCls}>源 IP 地址 <span className="text-destructive">*</span></label>
-            <input className={inputCls} value={form.sourceIp}
-              onChange={(e) => onChange({ sourceIp: e.target.value })} placeholder="设备发送日志的 IP，如：192.168.1.10" />
+            <input
+              className={`${inputCls}${touched.sourceIp && sourceIpError ? ' border-destructive ring-1 ring-destructive' : ''}`}
+              value={form.sourceIp}
+              onChange={(e) => onChange({ sourceIp: e.target.value })}
+              onBlur={() => setTouched((t) => ({ ...t, sourceIp: true }))}
+              placeholder="设备发送日志的 IP，如：192.168.1.10" />
+            {touched.sourceIp && sourceIpError && (
+              <div className="mt-1 text-[11px] text-destructive">{sourceIpError}</div>
+            )}
             <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
               日志到达后按来源 IP 自动生成数据源条目，请确保与设备实际发送 IP 一致
             </div>
@@ -848,6 +868,8 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
 
 // ============ Step 4b: 联动处置配置 ============
 function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
+  const [ipTouched, setIpTouched] = useState(false)
+  const deviceIpError = validateSingleIP(form.deviceIp, '设备 IP')
   return (
     <div className="space-y-6">
       {/* 连接配置 */}
@@ -855,8 +877,15 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className={labelCls}>设备 IP <span className="text-destructive">*</span></label>
-            <input className={inputCls} value={form.deviceIp}
-              onChange={(e) => onChange({ deviceIp: e.target.value })} placeholder="如：192.168.1.10" />
+            <input
+              className={`${inputCls}${ipTouched && deviceIpError ? ' border-destructive ring-1 ring-destructive' : ''}`}
+              value={form.deviceIp}
+              onChange={(e) => onChange({ deviceIp: e.target.value })}
+              onBlur={() => setIpTouched(true)}
+              placeholder="如：192.168.1.10" />
+            {ipTouched && deviceIpError && (
+              <div className="mt-1 text-[11px] text-destructive">{deviceIpError}</div>
+            )}
           </div>
           <div>
             <label className={labelCls}>端口</label>

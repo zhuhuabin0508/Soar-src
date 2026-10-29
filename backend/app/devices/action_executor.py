@@ -97,8 +97,10 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
     except Exception:  # noqa: BLE001
         logger.warning("解析动作 headers 失败，忽略: action_id=%s", action.id)
 
-    # 3) 认证
+    # 3) 认证（inherit：动作未单独指定时继承设备级认证方式）
     auth_type = action.auth_type or "api_key"
+    if auth_type == "inherit":
+        auth_type = device.auth_type or "api_key"
     auth = None
     if auth_type in ("api_key", "bearer"):
         key = decrypt_device_secret(device.api_key)
@@ -114,7 +116,37 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
     # 4) 请求体
     if action.body_template:
         body_str = action.body_template
+        # 先用 schema 中声明的默认值填充，再用调用方实际传入的参数覆盖：
+        # 调用方只传必填参数时，可选参数占位符（如 {{duration}}）也能替换成默认值，
+        # 避免残留字面量导致 JSON 解析失败、退化成字符串请求体。
+        # map_values 用于设备语义与平台约定不一致时的取值映射，
+        # 例如平台用 duration=0 表示永久，而安博通要求 -1，则声明 {"0": "-1"}。
+        defaults: dict[str, Any] = {}
+        value_maps: dict[str, dict] = {}
+        try:
+            for _p in json.loads(action.params_schema or "[]"):
+                if not isinstance(_p, dict):
+                    continue
+                _name = _p.get("name")
+                if not _name:
+                    continue
+                if _p.get("default") not in (None, ""):
+                    defaults[_name] = _p["default"]
+                if isinstance(_p.get("map_values"), dict):
+                    value_maps[_name] = _p["map_values"]
+        except Exception:  # noqa: BLE001
+            logger.warning("解析动作 params_schema 默认值失败，忽略: action_id=%s", action.id)
+        merged = dict(defaults)
         for k, v in params.items():
+            # 空值视为「未填写」：有默认值时保留默认值，避免把默认值覆盖成空串；
+            # 无默认值时仍按空串替换，保持原有行为。
+            if k in defaults and (v is None or (isinstance(v, str) and v.strip() == "")):
+                continue
+            merged[k] = v
+        for k, mapping in value_maps.items():
+            if k in merged:
+                merged[k] = mapping.get(str(merged[k]).strip(), merged[k])
+        for k, v in merged.items():
             body_str = body_str.replace(f"{{{{{k}}}}}", str(v))
         try:
             req_body = json.loads(body_str)
@@ -122,6 +154,11 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
             req_body = body_str  # 保持字符串
     else:
         req_body = params
+
+    # 空参数不再拼成 `{}` 请求体：部分设备（如安博通）对带 body 的 GET/DELETE
+    # 直接返回 400，去掉空 body 后请求行为与文档中的 GET/DELETE 一致
+    if isinstance(req_body, dict) and not req_body:
+        req_body = None
 
     method = (action.http_method or "POST").upper()
     return method, url, headers, auth, req_body
@@ -211,6 +248,37 @@ def _qingteng_signheaders(
     return headers, req_body, url
 
 
+def _validate_action_params(action: DeviceAction, params: dict[str, Any]) -> None:
+    """按 params_schema 校验 IP 类参数（type=ip/cidr），非法抛 ValueError。
+
+    允许单 IP / CIDR / 范围 / 多值（封禁目标可能为网段），拒绝通配与文本，
+    避免把 ``待定``/主机名/畸形 CIDR 原样下发给设备。
+    """
+    from app.core.ip_validation import validate_ip_expression
+
+    try:
+        schema = json.loads(action.params_schema or "[]")
+    except (ValueError, TypeError):
+        return
+    if not isinstance(schema, list):
+        return
+    for p in schema:
+        if not isinstance(p, dict):
+            continue
+        if str(p.get("type") or "").lower() not in ("ip", "cidr"):
+            continue
+        name = p.get("name")
+        if not name or name not in params:
+            continue
+        value = params.get(name)
+        label = p.get("label") or name
+        if value is None or str(value).strip() == "":
+            if p.get("required"):
+                raise ValueError(f"参数「{label}」不能为空")
+            continue
+        validate_ip_expression(str(value), label, allow_wildcard=False)
+
+
 def execute_device_action(
     device: Device,
     action: DeviceAction,
@@ -252,6 +320,12 @@ def execute_device_action(
         }
     """
     params = params or {}
+    # 参数格式硬拦截：IP/CIDR 类参数非法时直接失败，不向设备下发
+    try:
+        _validate_action_params(action, params)
+    except ValueError as exc:
+        return {"success": False, "status_code": None, "response_body": None,
+                "error": str(exc), "latency_ms": 0}
     start = _time.perf_counter()
     # 若调用方未显式传超时，则用设备配置，缺省 30
     timeout = timeout if timeout is not None else (device.timeout or 30)

@@ -11,11 +11,11 @@ import {
   DEVICE_TYPES,
   PARAM_TYPES,
   copyText,
-  normalizeIpAddress,
   parseTags,
   safeParseJson,
 } from './constants'
 import { Section, Switch } from './Badges'
+import { validateSingleIP } from '../../utils/ipValidation'
 
 // ============ 设备表单弹窗 ============
 export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTest }) {
@@ -25,7 +25,10 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
   const [tagsInput, setTagsInput] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  const [ipTouched, setIpTouched] = useState(false)
   const bypassGuard = useUnsavedChanges(dirty)
+  // 即时校验设备 IP（单 IPv4/IPv6，允许留空）
+  const ipError = validateSingleIP(form.ip_address, '设备 IP 地址', { allowEmpty: true })
 
   useEffect(() => {
     if (open) {
@@ -33,6 +36,7 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
       setDirty(false)
       setShowApiKey(false)
       setTestResult(null)
+      setIpTouched(false)
       const tags = parseTags(initial?.tags)
       setTagsInput(tags.join(', '))
     }
@@ -75,12 +79,14 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
   const handleSubmit = async () => {
     // 同步 tags 到 form
     const tagsArr = tagsInput.split(',').map((s) => s.trim()).filter(Boolean)
-    // 校验设备 IP 地址格式
-    const normalizedIp = normalizeIpAddress(form.ip_address)
-    if (normalizedIp === null) {
-      toast.warning(`设备 IP 地址格式不正确：${form.ip_address}`)
+    // 校验设备 IP 地址格式（单 IPv4/IPv6，与后端统一规则）
+    const ipMsg = validateSingleIP(form.ip_address, '设备 IP 地址', { allowEmpty: true })
+    if (ipMsg) {
+      setIpTouched(true)
+      toast.warning(ipMsg)
       return
     }
+    const normalizedIp = (form.ip_address || '').trim()
     const finalForm = { ...form, ip_address: normalizedIp, tags: tagsArr }
     const ok = await onSubmit(finalForm)
     if (ok) {
@@ -189,11 +195,15 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
             <label>
               <div className="mb-1 text-xs font-medium text-muted-foreground">设备 IP 地址</div>
               <input
-                className={inputCls}
+                className={`${inputCls}${ipTouched && ipError ? ' border-destructive ring-1 ring-destructive' : ''}`}
                 value={form.ip_address || ''}
                 onChange={(e) => set('ip_address')(e.target.value)}
+                onBlur={() => setIpTouched(true)}
                 placeholder="如：192.168.1.10"
               />
+              {ipTouched && ipError && (
+                <div className="mt-1 text-[11px] text-destructive">{ipError}</div>
+              )}
             </label>
             <label>
               <div className="mb-1 text-xs font-medium text-muted-foreground">设备图标（emoji 或 URL）</div>

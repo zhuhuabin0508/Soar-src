@@ -500,7 +500,7 @@ SAMPLE_WORKFLOW: dict[str, Any] = {
 
 # ============================================================================
 # 资产类型模板种子数据
-# 三种预设类型：网段信息、主机资产、出口地址
+# 预设类型：主机资产、网段信息、出口地址、A会保持在线系统清单
 # ============================================================================
 
 PRESET_ASSET_TEMPLATES = [
@@ -601,11 +601,53 @@ PRESET_ASSET_TEMPLATES = [
              "width": "half", "sort_order": 6, "show_in_list": False, "show_in_detail": True},
         ],
     },
+    {
+        # 字段结构来自《2026年重要会议期间保持在线系统清单(20261028).xlsx》
+        # 表头：序号 / 单位 / 系统名称 / 互联网/内网 / 系统URL / IP /
+        #       重要会议期间是否保持在线 / 备注 / 指挥所
+        # 文档中存在大量同名系统（如“电子政务平台系统”），仅“序号”全局唯一，
+        # 故以序号作为该清单的资产唯一标识。
+        "code": "meeting_online_system",
+        "name": "A会保持在线系统清单",
+        "description": "重要会议期间保持在线系统清单（2026年），字段来自《2026年重要会议期间保持在线系统清单(20261028).xlsx》",
+        "icon": "clipboard-list",
+        "color": "chart-4",
+        "identifier_field": "seq_no",
+        "is_preset": True,
+        "sort_order": 4,
+        "fields": [
+            {"key": "seq_no", "label": "序号", "type": "number", "mapped_to": "extra",
+             "required": True, "unique": True, "placeholder": "清单序号",
+             "width": "half", "sort_order": 1, "show_in_list": True, "show_in_detail": True},
+            {"key": "unit", "label": "单位", "type": "text", "mapped_to": "standard:department",
+             "required": True, "placeholder": "如：前海 / 南山区 / 深圳市交通运输局",
+             "width": "half", "sort_order": 2, "show_in_list": True, "show_in_detail": True},
+            {"key": "system_name", "label": "系统名称", "type": "text", "mapped_to": "standard:name",
+             "required": True, "placeholder": "如：深港+园区综合服务平台",
+             "width": "full", "sort_order": 3, "show_in_list": True, "show_in_detail": True},
+            {"key": "network_type", "label": "互联网/内网", "type": "select", "mapped_to": "extra",
+             "options": ["互联网", "政务网", "局域网", "互联网/政务网", "未提供URL"],
+             "width": "half", "sort_order": 4, "show_in_list": True, "show_in_detail": True},
+            {"key": "system_url", "label": "系统URL", "type": "textarea", "mapped_to": "extra",
+             "placeholder": "https://...", "width": "full", "sort_order": 5,
+             "show_in_list": True, "show_in_detail": True},
+            {"key": "ip", "label": "IP", "type": "ip", "mapped_to": "standard:ip",
+             "placeholder": "如：8.135.22.221", "width": "half", "sort_order": 6,
+             "show_in_list": True, "show_in_detail": True},
+            {"key": "online_status", "label": "重要会议期间是否保持在线", "type": "text", "mapped_to": "extra",
+             "placeholder": "是 / 否（可补充关停日期）", "width": "half", "sort_order": 7,
+             "show_in_list": True, "show_in_detail": True},
+            {"key": "remark", "label": "备注", "type": "textarea", "mapped_to": "extra",
+             "width": "full", "sort_order": 8, "show_in_list": False, "show_in_detail": True},
+            {"key": "command_post", "label": "指挥所", "type": "text", "mapped_to": "extra",
+             "width": "half", "sort_order": 9, "show_in_list": False, "show_in_detail": True},
+        ],
+    },
 ]
 
 
 def ensure_preset_asset_templates() -> None:
-    """幂等种入三个预设资产类型模板。按 code 查重，不存在才插入。
+    """幂等种入预设资产类型模板。按 code 查重，不存在才插入。
 
     已存在的模板不覆盖用户修改；``allow_aggregate`` 默认值的同步由
     ``run_lightweight_migrations`` 在首次升级时一次性处理。

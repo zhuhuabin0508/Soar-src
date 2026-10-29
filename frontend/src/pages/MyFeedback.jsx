@@ -447,7 +447,6 @@ function MyFeedback() {
     <PageContainer className="flex flex-col">
       <PageHeader
         title="我的反馈"
-        description="查看你提交的 BUG 与优化建议处理进度"
         actions={
           <Button variant="primary" size="sm" onClick={() => setSubmitOpen(true)}>
             <MessageSquareWarning className="h-4 w-4" />

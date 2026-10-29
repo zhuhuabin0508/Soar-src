@@ -19,6 +19,7 @@ import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
+import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
   processing: { label: '进行中', cls: 'bg-blue-500/10 text-blue-500' },
@@ -241,12 +242,17 @@ export default function TicketCenter() {
 
   // 必填校验：缺失字段红框高亮（输入后自动清除），提交时滚动定位到第一个缺失项
   const [missingKeys, setMissingKeys] = useState([])
+  // IP 字段格式错误（与后端硬拦截口径一致）
+  const [ipErrors, setIpErrors] = useState({})
   const setFieldValue = (key, v) => {
     setValues((s) => ({ ...s, [key]: v }))
     if (missingKeys.includes(key)) setMissingKeys((ks) => ks.filter((k) => k !== key))
+    if (ipErrors[key]) setIpErrors((e) => ({ ...e, [key]: '' }))
   }
   // inputCls 自带 border-input，红框需 !important 覆盖（Tailwind 同特异性按生成顺序，destructive 会被 input 吃掉）
-  const fieldCls = (f) => (missingKeys.includes(f.key) ? `${inputCls} !border-destructive ring-1 !ring-destructive` : inputCls)
+  const fieldCls = (f) => ((missingKeys.includes(f.key) || ipErrors[f.key])
+    ? `${inputCls} !border-destructive ring-1 !ring-destructive`
+    : inputCls)
 
   const uploadFile = async (fkey, file) => {
     if (!file) return
@@ -285,6 +291,23 @@ export default function TicketCenter() {
       document.querySelector(`[data-fkey="${missing[0].field.key}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
+    // IP 字段格式校验（与后端硬拦截口径一致）
+    const ipErrs = {}
+    for (const { field: f } of renderFields) {
+      if (f.type !== 'ip') continue
+      const v = values[f.key]
+      if (v === undefined || v === null || String(v).trim() === '') continue
+      const msg = validateIPExpression(v, f.label || f.key)
+      if (msg) ipErrs[f.key] = msg
+    }
+    if (Object.keys(ipErrs).length) {
+      setIpErrors(ipErrs)
+      const firstKey = Object.keys(ipErrs)[0]
+      toast.error(Object.values(ipErrs)[0])
+      document.querySelector(`[data-fkey="${firstKey}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+    setIpErrors({})
     // 未命中规则的扩展字段的值不提交
     const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
     if (routeOptions.length > 1 && !routeTo) return toast.error('请选择流转去向')
@@ -780,8 +803,24 @@ export default function TicketCenter() {
                       </div>
                     )}
                     {['text', 'ip', 'url'].includes(f.type) && (
-                      <input className={fieldCls(f)} placeholder={f.placeholder || (f.type === 'ip' ? '如：192.168.1.10' : '')} value={values[f.key] ?? ''}
-                        onChange={(e) => setFieldValue(f.key, e.target.value)} />
+                      <>
+                        <input
+                          className={fieldCls(f)}
+                          placeholder={f.placeholder || (f.type === 'ip' ? '如：192.168.1.10' : '')}
+                          value={values[f.key] ?? ''}
+                          onChange={(e) => setFieldValue(f.key, e.target.value)}
+                          onBlur={() => {
+                            if (f.type !== 'ip') return
+                            const v = values[f.key]
+                            if (v === undefined || v === null || String(v).trim() === '') return
+                            const msg = validateIPExpression(v, f.label || f.key)
+                            setIpErrors((e) => ({ ...e, [f.key]: msg || '' }))
+                          }}
+                        />
+                        {ipErrors[f.key] && (
+                          <div className="mt-1 text-[11px] text-destructive">{ipErrors[f.key]}</div>
+                        )}
+                      </>
                     )}
                     {f.type === 'reference' && (() => {
                       const opts = refOpts[f.key] || []

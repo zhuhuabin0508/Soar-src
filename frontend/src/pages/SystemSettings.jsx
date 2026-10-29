@@ -15,6 +15,7 @@ import {
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { confirm } from '../components/ConfirmDialog'
 import InfoTip from '../components/InfoTip'
+import { validateIPExpression } from '../utils/ipValidation'
 import {
   Eye, Smartphone, Network, Bell, CheckSquare, Link2,
   X, Check, RotateCcw, ShieldCheck, AlertTriangle, Palette, Globe,
@@ -266,7 +267,7 @@ function ColorPicker({ value, onChange }) {
 }
 
 // Tag 输入：逗号分隔字符串 ↔ 标签数组，支持回车添加 / 粘贴拆分 / 单个删除
-function TagInput({ value, onChange, placeholder }) {
+function TagInput({ value, onChange, placeholder, validateTag }) {
   const tags = useMemo(() => {
     if (!value) return []
     return String(value).split(',').map((s) => s.trim()).filter(Boolean)
@@ -279,6 +280,13 @@ function TagInput({ value, onChange, placeholder }) {
   const addTags = (text) => {
     const parts = text.split(',').map((s) => s.trim()).filter(Boolean)
     if (parts.length === 0) return
+    // 可选：提交前逐项校验（如登录 IP 白名单）
+    if (validateTag) {
+      for (const p of parts) {
+        const msg = validateTag(p)
+        if (msg) { toast.error(msg); return }
+      }
+    }
     const merged = [...tags]
     parts.forEach((p) => { if (!merged.includes(p)) merged.push(p) })
     commit(merged)
@@ -452,6 +460,11 @@ function SystemSettings() {
   }
 
   const handleSaveSecurity = async () => {
+    // IP 白名单格式硬拦截（与后端统一规则）
+    const wlMsg = validateIPExpression(
+      security['security.login_ip_whitelist'], '登录 IP 白名单',
+    )
+    if (wlMsg) { toast.error(wlMsg); return }
     const changed = {}
     Object.keys(security).forEach((k) => { if (security[k] !== origSecurity[k]) changed[k] = security[k] })
     if (Object.keys(changed).length === 0) { toast.warning('没有需要保存的变更'); return }
@@ -712,14 +725,14 @@ function SystemSettings() {
                     options={[{ value: 'Asia/Shanghai', label: '亚洲/上海 (UTC+8)' }, { value: 'UTC', label: 'UTC' }, { value: 'America/New_York', label: '美东' }]} />
                   <SelectInput label="日期时间格式" value={configs['system.datetime_format'] || ''} onChange={setField('system.datetime_format')}
                     options={[{ value: 'YYYY-MM-DD HH:mm:ss', label: 'YYYY-MM-DD HH:mm:ss' }, { value: 'YYYY-MM-DD', label: 'YYYY-MM-DD' }, { value: 'DD/MM/YYYY HH:mm', label: 'DD/MM/YYYY HH:mm' }]} />
-                  <NumberWithSuffix label="文件上传大小限制" value={configs['system.max_upload_size_mb'] || ''} onChange={setField('system.max_upload_size_mb')} min={1} suffix="MB" hint="单个文件上传的最大大小" />
+                  <NumberWithSuffix label="文件上传大小限制" value={configs['system.max_upload_size_mb'] || ''} onChange={setField('system.max_upload_size_mb')} min={1} suffix="MB" />
                   <SelectInput label="登录后默认首页" value={configs['system.home_page'] || '/dashboard'} onChange={setField('system.home_page')}
                     options={[{ value: '/dashboard', label: '运营大屏' }, { value: '/bigscreen', label: '盾立方W' }, { value: '/bigscreen2', label: '盾立方指挥大屏' }, { value: '/approvals', label: '工作台' }, { value: '/chat', label: '对话' }]} />
                 </div>
               </SettingsSection>
 
               {/* 解析入库：模板成功率告警 */}
-              <SettingsSection title="解析入库" icon={Database} description="解析模板成功率告警阈值" collapsible defaultCollapsed>
+              <SettingsSection title="解析入库" icon={Database} collapsible defaultCollapsed>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <NumberWithSuffix label="成功率告警阈值" value={configs['parse.success_rate_threshold'] || ''} onChange={setField('parse.success_rate_threshold')} min={1} max={100} suffix="%"
                     hint="模板解析成功率持续 24 小时低于该值时，生成告警并通过通知中心提醒" />
@@ -727,7 +740,7 @@ function SystemSettings() {
               </SettingsSection>
 
               {/* 安全配置（CORS / Webhook） + 测试连接 */}
-              <SettingsSection title="连接与限流" icon={Network} description="CORS 白名单、Webhook 限流" hint="修改后需重启后端生效，支持即时测试" collapsible defaultCollapsed>
+              <SettingsSection title="连接与限流" icon={Network} hint="修改后需重启后端生效，支持即时测试" collapsible defaultCollapsed>
                 {/* CORS 白名单 - Tag 输入 */}
                 <div>
                   <FieldLabel label="CORS 白名单" hint="逗号分隔的源地址列表，修改后需重启后端生效" />
@@ -991,7 +1004,7 @@ function SystemSettings() {
                 </SettingsSection>
 
                 {/* 高级安全功能 */}
-                <SettingsSection title="高级安全功能" icon={ShieldAlert} description="MFA、IP 白名单、审计与 SSO" hint="登录二次验证、IP 白名单、审计日志、敏感操作、单点登录" collapsible defaultCollapsed>
+                <SettingsSection title="高级安全功能" icon={ShieldAlert} hint="登录二次验证、IP 白名单、审计日志、敏感操作、单点登录" collapsible defaultCollapsed>
                   <div className="flex flex-col gap-3">
                     {/* MFA */}
                     <SecurityToggleRow icon={Smartphone} label="登录二次验证（MFA）" desc="管理员强制开启 OTP 验证" checked={security['security.mfa_enabled']} onChange={setSecurityField('security.mfa_enabled')}>
@@ -1014,7 +1027,17 @@ function SystemSettings() {
                         <Network className="h-3.5 w-3.5 text-primary" />
                         <span className="text-xs font-medium text-muted-foreground">登录 IP 白名单</span>
                       </div>
-                      <TagInput value={security['security.login_ip_whitelist'] || ''} onChange={setSecurityField('security.login_ip_whitelist')} placeholder="输入 IP/CIDR 后回车，如 203.0.113.0/24（空表示不限制）" />
+                      <TagInput
+                        value={security['security.login_ip_whitelist'] || ''}
+                        onChange={setSecurityField('security.login_ip_whitelist')}
+                        placeholder="输入 IP/CIDR 后回车，如 203.0.113.0/24（空表示不限制）"
+                        validateTag={(v) => validateIPExpression(v, '登录 IP 白名单')}
+                      />
+                      {validateIPExpression(security['security.login_ip_whitelist'], '登录 IP 白名单') && (
+                        <div className="mt-1 text-[11px] text-destructive">
+                          {validateIPExpression(security['security.login_ip_whitelist'], '登录 IP 白名单')}
+                        </div>
+                      )}
                     </div>
 
                     {/* 登录通知 */}

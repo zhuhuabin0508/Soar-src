@@ -971,7 +971,7 @@ function ToolEditor() {
         )}
 
         {/* 维度一：基础信息与导入方式 */}
-        <Card title="基础信息与导入方式" icon={<ClipboardList className="h-4 w-4" />} hint="工具创建第一步">
+        <Card title="基础信息与导入方式" icon={<ClipboardList className="h-4 w-4" />}>
           {/* 工具类型切换：大卡片选择（含场景说明） */}
           <div>
             <label className={labelCls}>创建方式 / 工具类型</label>
@@ -1039,7 +1039,6 @@ function ToolEditor() {
               onChange={(e) => setField('description')(e.target.value)}
               placeholder={'决定 LLM 在什么情况下会调用此工具。\n示例：当用户询问订单的物流状态、发货情况或查询特定订单号时，调用此工具。'}
             />
-            <p className={hintCls}>建议清晰描述工具用途与调用时机，让 LLM 能准确决策。</p>
             {/* 描述提示模板 */}
             <div className="mt-1.5 flex items-start gap-1 rounded border border-border bg-secondary p-2 text-[11px] text-muted-foreground">
               <Lightbulb className="mt-0.5 h-3 w-3 shrink-0" />
@@ -1142,7 +1141,7 @@ function ToolEditor() {
 
         {/* 维度二：接口定义层（仅 HTTP） */}
         {isHttp && (
-          <Card title="接口定义层" icon={<Globe className="h-4 w-4" />} hint="定义外部 API 的真实请求方式">
+          <Card title="接口定义层" icon={<Globe className="h-4 w-4" />}>
             <div className="flex gap-2">
               <div className="w-32 shrink-0">
                 <label className={labelCls}>Method</label>
@@ -1218,7 +1217,7 @@ function ToolEditor() {
 
         {/* 维度三：鉴权与安全配置（仅 HTTP） */}
         {isHttp && (
-          <Card title="鉴权与安全配置" icon={<Lock className="h-4 w-4" />} hint="工具调用外部系统的身份证明">
+          <Card title="鉴权与安全配置" icon={<Lock className="h-4 w-4" />}>
             <SelectInput
               label="鉴权方式"
               value={form.http_config.auth_type}
@@ -1435,7 +1434,7 @@ function ToolEditor() {
         {/* 维度六：调试与测试面板（framework 工具不可测试） */}
         {!isFramework && (
         <div ref={debugTriggerRef}>
-        <Card title="调试与测试面板" icon={<TestTube className="h-4 w-4" />} hint="配置完先试运行，避免上线翻车" defaultOpen={false}>
+        <Card title="调试与测试面板" icon={<TestTube className="h-4 w-4" />} defaultOpen={false}>
           <DebugPanel
             ref={debugPanelRef}
             toolId={id}

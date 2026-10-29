@@ -319,7 +319,6 @@ export default function AssetOverview() {
               <span className="font-medium tabular-nums text-foreground">{tplCount}</span> 个类型
             </span>
           )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">多维度可视化资产分布，掌握全局资产态势</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新资产总览数据">

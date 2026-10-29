@@ -21,6 +21,7 @@ import { Badge, Button, PageContainer, CompactSelect } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { hasPermission } from '../utils/permissions'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { validateIPExpression, validateCidrList } from '../utils/ipValidation'
 import {
   ACTION_META, ALL_FIELDS, ENUM_FIELDS, FIELD_GROUPS, IP_FIELDS, NO_VALUE_OPS, NUMERIC_FIELDS,
   OPS, RISK_LEVELS, SET_OPS, coerceValue, fieldLabel, fmtCondValue, opLabel,
@@ -223,6 +224,15 @@ function EnumMultiSelect({ options, values, onChange }) {
 // ===== 条件值输入（按字段类型联动）=====
 function ValueInput({ cond, onChange }) {
   const { field, op, value } = cond
+  const [touched, setTouched] = useState(false)
+  const isIPCondition = IP_FIELDS.includes(field)
+  // 即时校验：IP 字段 / in_cidr 网段条件（与后端统一规则）
+  const rawValue = Array.isArray(value) ? value.join(',') : value
+  let ipError = null
+  if (!NO_VALUE_OPS.includes(op) && rawValue?.toString().trim()) {
+    if (op === 'in_cidr') ipError = validateCidrList(rawValue, fieldLabel(field))
+    else if (isIPCondition) ipError = validateIPExpression(rawValue, fieldLabel(field))
+  }
   if (NO_VALUE_OPS.includes(op)) {
     return <input className={`${inputBaseCls} h-8 w-full`} disabled placeholder="无需取值" />
   }
@@ -255,8 +265,16 @@ function ValueInput({ cond, onChange }) {
       ? 'IP 或 CIDR，如 10.0.0.0/8'
       : SET_OPS.includes(op) ? '多个值用逗号分隔' : '比较值'
   return (
-    <input className={`${inputBaseCls} h-8 w-full ${IP_FIELDS.includes(field) || op === 'in_cidr' ? 'font-mono' : ''}`}
-      value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+    <div className="w-full">
+      <input
+        className={`${inputBaseCls} h-8 w-full ${isIPCondition || op === 'in_cidr' ? 'font-mono' : ''}${touched && ipError ? ' border-destructive ring-1 ring-destructive' : ''}`}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setTouched(true)}
+        placeholder={placeholder}
+      />
+      {touched && ipError && <div className="mt-1 text-[11px] text-destructive">{ipError}</div>}
+    </div>
   )
 }
 
@@ -579,6 +597,25 @@ export default function AlertRuleEditPage() {
         return `条件「${fieldLabel(it.field)}」未选字段或缺少比较值`
       }
     }
+    // IP 条件格式校验（与后端硬拦截口径一致）
+    const walkIP = (node) => {
+      if (node.type === 'group') {
+        for (const child of node.items) {
+          const e = walkIP(child)
+          if (e) return e
+        }
+        return ''
+      }
+      const raw = Array.isArray(node.value) ? node.value.join(',') : node.value
+      if (!raw?.toString().trim()) return ''
+      if (node.op === 'in_cidr') return validateCidrList(raw, fieldLabel(node.field)) || ''
+      if (IP_FIELDS.includes(node.field)) return validateIPExpression(raw, fieldLabel(node.field)) || ''
+      return ''
+    }
+    for (const it of form.condTree.items) {
+      const ipErr = walkIP(it)
+      if (ipErr) return ipErr
+    }
     if (form.type === 'stats') {
       const w = Number(form.stats.window.value)
       if (!Number.isFinite(w) || w < 1) return '统计窗口数值必须 ≥ 1'
@@ -595,6 +632,12 @@ export default function AlertRuleEditPage() {
       if (!cfg?.mode) continue
       if (cfg.mode === 'map' && !cfg.value) return `字段「${fieldLabel(target)}」的字段映射未选择来源字段`
       if (cfg.mode === 'static' && (cfg.value === '' || cfg.value == null)) return `字段「${fieldLabel(target)}」的静态值为空`
+      // IP 字段静态值格式校验（含 {变量} 模板插值时跳过）
+      if (cfg.mode === 'static' && IP_FIELDS.includes(target)
+        && String(cfg.value).trim() && !String(cfg.value).includes('{')) {
+        const msg = validateIPExpression(cfg.value, fieldLabel(target))
+        if (msg) return msg
+      }
     }
     return ''
   }

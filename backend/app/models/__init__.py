@@ -10,7 +10,15 @@ from app.models.alert_handle_log import AlertHandleLog
 from app.models.alert_rule import AlertRule
 from app.models.alert_rule_group import AlertRuleGroup
 from app.models.alert_rule_hit import AlertRuleHit
-from app.models.asset import Asset, AssetTypeTemplate, AssetCustomField, AssetChange, AssetTag
+from app.models.asset import (
+    Asset,
+    AssetTypeTemplate,
+    AssetCustomField,
+    AssetChange,
+    AssetTag,
+    AssetIpInterval,
+    AssetIpv6Interval,
+)
 from app.models.audit_log import AuditLog
 from app.models.backup_record import BackupRecord
 from app.models.banned_ip import BannedIP
@@ -57,6 +65,7 @@ from app.models.llm_config import LLMConfig
 from app.models.model_call_log import ModelCallLog
 from app.models.notification import Notification
 from app.models.notification_rule import NotificationRule
+from app.models.user_notification_pref import UserNotificationPref
 from app.models.parse_error import ParseErrorQueue
 from app.models.parse_strategy import ParseStrategy, ParseStrategyVersion
 from app.models.resource_share import ResourceShare
@@ -107,6 +116,7 @@ __all__ = [
     "ChatSession",
     "Notification",
     "NotificationRule",
+    "UserNotificationPref",
     "Feedback",
     "FeedbackHistory",
     "GovCloudImportBatch",

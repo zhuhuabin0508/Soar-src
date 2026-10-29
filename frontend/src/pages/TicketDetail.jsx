@@ -20,6 +20,7 @@ import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
+import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
   processing: { label: '进行中', cls: 'bg-blue-500/10 text-blue-500', Icon: Clock },
@@ -178,18 +179,58 @@ const DISCOVERY_FIELD_LABELS = [
   ['唯一标识', 'source_id'],
 ]
 
+// 数据来源标签配色：浅底深字（80% 透明浅底 + 高对比文字），
+// 资产发现用青绿、资产清单用主色，两来源并列时一眼可辨且不喧宾夺主
+const SOURCE_TONES = {
+  discovery: {
+    box: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600',
+    dot: 'bg-emerald-500',
+    accent: 'border-l-emerald-500/70',
+  },
+  inventory: {
+    box: 'border-primary/30 bg-primary/10 text-primary',
+    dot: 'bg-primary',
+    accent: 'border-l-primary/70',
+  },
+}
+
+// 数据来源标签：着重展示「资产发现-裸金属资产」「资产清单-A会保持在线系统清单」
+// 这类到清单颗粒度的来源，避免处理人只看到笼统的「资产发现 / 资产清单」
+function SourceLabel({ tone = 'inventory', sm = false, children }) {
+  const c = SOURCE_TONES[tone] || SOURCE_TONES.inventory
+  return (
+    <span
+      className={`inline-flex max-w-full items-center gap-1.5 rounded border font-semibold ${
+        sm ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs'
+      } ${c.box}`}
+    >
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.dot}`} />
+      <span className="min-w-0 break-all">{children}</span>
+    </span>
+  )
+}
+
 // 资产发现匹配结果展示：asset 为 discovery 命中结构（matches 多命中逐条展示）
 function DiscoveryMatchFields({ asset, fallbackIp }) {
   const na = <span className="text-muted-foreground">--</span>
   const matches = Array.isArray(asset.matches) && asset.matches.length ? asset.matches : [asset]
+  const multi = matches.length > 1
   return (
     <div className="space-y-2">
       {matches.map((m, idx) => (
-        <div key={m.source_id || m.cmdb_id || idx} className="rounded border border-border/60 bg-background/40 p-2">
-          <div className="mb-1.5 flex flex-wrap items-center gap-2">
-            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">{m.resource_label || m.resource_type || '资产发现'}</span>
-            {matches.length > 1 && <span className="text-[11px] text-muted-foreground">#{idx + 1}</span>}
-          </div>
+        <div
+          key={m.source_id || m.cmdb_id || idx}
+          className={multi ? 'rounded border border-border/60 bg-background/60 p-2' : ''}
+        >
+          {/* 多命中可能跨资源类型：逐条标注各自的详细来源 */}
+          {multi ? (
+            <div className="mb-1.5 flex flex-wrap items-center gap-2">
+              <SourceLabel tone="discovery" sm>
+                {m.source_label || m.resource_label || '资产发现'}
+              </SourceLabel>
+              <span className="text-[11px] text-muted-foreground">#{idx + 1}</span>
+            </div>
+          ) : null}
           <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
             {DISCOVERY_FIELD_LABELS.map(([label, key]) => {
               const raw = m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null)
@@ -217,6 +258,14 @@ function EnrichSourceView({ s, onFill }) {
   const geoText = [geo.country, geo.region, geo.city, geo.isp].filter(Boolean).join(' / ')
   const na = <span className="text-muted-foreground">--</span>
   const fmtTime = (v) => (v ? String(v).replace('T', ' ') : na)
+  // 资产匹配来源：资产发现优先并列展示；旧结构工单（无 discovery/inventory
+  // 键）按 asset.source 判定来源，缺失时按资产清单处理
+  const assetMatch = s.asset || {}
+  const legacyOnly = !assetMatch.discovery && !assetMatch.inventory
+  const legacyTone = legacyOnly && assetMatch.source === 'asset_discovery' ? 'discovery' : 'inventory'
+  const legacyLabel = legacyTone === 'discovery' ? '资产发现' : '资产清单'
+  const inventoryAsset = assetMatch.inventory || (legacyOnly ? assetMatch : null)
+  const inventoryLabel = assetMatch.inventory?.source_label || assetMatch.source_label || legacyLabel
   return (
     <div className="rounded-md border border-border p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -265,25 +314,26 @@ function EnrichSourceView({ s, onFill }) {
             )}
           </div>
           {s.asset?.matched ? (
-            <div className="space-y-3">
-              {/* 资产发现结果（优先）：多命中逐条展示 */}
-              {s.asset.discovery ? (
-                <div>
-                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-emerald-600">
-                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5">资产发现（综合运管平台）</span>
+            <div className="space-y-2.5">
+              {/* 资产发现结果（优先）：头部着重展示详细数据来源 */}
+              {assetMatch.discovery ? (
+                <div className={`min-w-0 rounded-md border border-border/60 border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES.discovery.accent}`}>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <SourceLabel tone="discovery">
+                      {assetMatch.discovery.source_label || '资产发现'}
+                    </SourceLabel>
                   </div>
-                  <DiscoveryMatchFields asset={s.asset.discovery} fallbackIp={s.ip} />
+                  <DiscoveryMatchFields asset={assetMatch.discovery} fallbackIp={s.ip} />
                 </div>
               ) : null}
-              {/* 资产清单结果：命中时展示资产全部字段（旧结构工单无 discovery/inventory 键，退回 asset 本体渲染） */}
-              {s.asset.inventory || !s.asset.discovery ? (
-                <div>
-                  {s.asset.discovery ? (
-                    <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-                      <span className="rounded bg-muted px-1.5 py-0.5">资产清单</span>
-                    </div>
-                  ) : null}
-                  <AssetMatchFields asset={s.asset.inventory || s.asset} fallbackIp={s.ip} />
+              {/* 资产清单结果：命中时展示资产全部字段（旧结构工单无
+                  discovery/inventory 键，退回 asset 本体渲染） */}
+              {inventoryAsset ? (
+                <div className={`min-w-0 rounded-md border border-border/60 border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES[legacyTone].accent}`}>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <SourceLabel tone={legacyTone}>{inventoryLabel}</SourceLabel>
+                  </div>
+                  <AssetMatchFields asset={inventoryAsset} fallbackIp={s.ip} />
                 </div>
               ) : null}
             </div>
@@ -675,12 +725,17 @@ export default function TicketDetail() {
 
   // 必填校验：缺失字段红框高亮（输入后自动清除），提交时滚动定位到第一个缺失项
   const [missingKeys, setMissingKeys] = useState([])
+  // IP 字段格式错误（与后端硬拦截口径一致）
+  const [ipErrors, setIpErrors] = useState({})
   const setFieldValue = (key, v) => {
     setValues((s) => ({ ...s, [key]: v }))
     if (missingKeys.includes(key)) setMissingKeys((ks) => ks.filter((k) => k !== key))
+    if (ipErrors[key]) setIpErrors((e) => ({ ...e, [key]: '' }))
   }
   // inputCls 自带 border-input，红框需 !important 覆盖（Tailwind 同特异性按生成顺序，destructive 会被 input 吃掉）
-  const fieldCls = (f) => (missingKeys.includes(f.key) ? `${inputCls} !border-destructive ring-1 !ring-destructive` : inputCls)
+  const fieldCls = (f) => ((missingKeys.includes(f.key) || ipErrors[f.key])
+    ? `${inputCls} !border-destructive ring-1 !ring-destructive`
+    : inputCls)
 
   const uploadFile = async (fkey, file) => {
     if (!file) return
@@ -712,6 +767,23 @@ export default function TicketDetail() {
       document.querySelector(`[data-fkey="${missing[0].field.key}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
+    // IP 字段格式校验（与后端硬拦截口径一致）
+    const ipErrs = {}
+    for (const { field: f } of renderFields) {
+      if (f.type !== 'ip') continue
+      const v = values[f.key]
+      if (v === undefined || v === null || String(v).trim() === '') continue
+      const msg = validateIPExpression(v, f.label || f.key)
+      if (msg) ipErrs[f.key] = msg
+    }
+    if (Object.keys(ipErrs).length) {
+      setIpErrors(ipErrs)
+      const firstKey = Object.keys(ipErrs)[0]
+      toast.error(Object.values(ipErrs)[0])
+      document.querySelector(`[data-fkey="${firstKey}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+    setIpErrors({})
     // 未命中规则的扩展字段的值不提交
     const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
     if (routeOptions.length > 1 && !routeTo) return toast.error('请选择流转去向')
@@ -1297,8 +1369,24 @@ export default function TicketDetail() {
                       </div>
                     )}
                     {['text', 'ip', 'url'].includes(f.type) && (
-                      <input className={fieldCls(f)} placeholder={f.placeholder || (f.type === 'ip' ? '如：192.168.1.10' : '')} value={values[f.key] ?? ''}
-                        onChange={(e) => setFieldValue(f.key, e.target.value)} />
+                      <>
+                        <input
+                          className={fieldCls(f)}
+                          placeholder={f.placeholder || (f.type === 'ip' ? '如：192.168.1.10' : '')}
+                          value={values[f.key] ?? ''}
+                          onChange={(e) => setFieldValue(f.key, e.target.value)}
+                          onBlur={() => {
+                            if (f.type !== 'ip') return
+                            const v = values[f.key]
+                            if (v === undefined || v === null || String(v).trim() === '') return
+                            const msg = validateIPExpression(v, f.label || f.key)
+                            setIpErrors((e) => ({ ...e, [f.key]: msg || '' }))
+                          }}
+                        />
+                        {ipErrors[f.key] && (
+                          <div className="mt-1 text-[11px] text-destructive">{ipErrors[f.key]}</div>
+                        )}
+                      </>
                     )}
                     {f.type === 'reference' && (() => {
                       const opts = refOpts[f.key] || []

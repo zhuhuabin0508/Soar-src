@@ -16,7 +16,9 @@ class BannedIP(Base):
     __tablename__ = "banned_ips"
 
     id = Column(Integer, primary_key=True, index=True)
-    ip = Column(String(45), unique=True, index=True, nullable=False)
+    # 支持单 IP / CIDR / 范围 / 多值表达式（如 10.0.0.0/24 或 A-B,C），
+    # 45 字符仅够单个 IPv6，表达多值时需 2048
+    ip = Column(String(2048), unique=True, index=True, nullable=False)
     ban_level = Column(String(20), nullable=False, default="medium")
     ban_duration = Column(Integer, nullable=False, default=3600)
     expired_at = Column(DateTime, nullable=False)

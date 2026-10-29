@@ -521,7 +521,6 @@ function OperationsDashboard({ onRefresh, refreshing, autoRefresh, onToggleAutoR
               icon={Radio}
               iconColor="text-chart-1"
               onClick={() => openDrawer('today_alerts')}
-              hint="点击查看今日执行记录"
             />
             <KpiCard
               label="全自动化封禁成功率"
@@ -530,7 +529,6 @@ function OperationsDashboard({ onRefresh, refreshing, autoRefresh, onToggleAutoR
               icon={ShieldCheck}
               iconColor="text-chart-2"
               onClick={() => openDrawer('recent_executions', { title: '自动化封禁执行详情' })}
-              hint="点击查看执行记录"
             />
             <KpiCard
               label="系统平均响应时间"
@@ -540,7 +538,6 @@ function OperationsDashboard({ onRefresh, refreshing, autoRefresh, onToggleAutoR
               icon={Timer}
               iconColor="text-chart-5"
               onClick={() => openDrawer('recent_executions', { title: '系统响应时间详情' })}
-              hint="点击查看执行记录"
             />
             <KpiCard
               label="待人工处理工单数"
@@ -549,7 +546,6 @@ function OperationsDashboard({ onRefresh, refreshing, autoRefresh, onToggleAutoR
               icon={ClipboardList}
               iconColor="text-chart-4"
               onClick={() => openDrawer('pending_approvals')}
-              hint="点击查看待处理工单"
             />
           </>
         )}
@@ -1107,7 +1103,6 @@ function MaterialsDashboard({ refreshing, autoRefresh }) {
           icon={FolderOpen}
           iconColor="text-primary"
           onClick={goDeliverables}
-          hint="点击进入材料管理"
         />
         <KpiCard
           label="材料总数"
@@ -1116,7 +1111,6 @@ function MaterialsDashboard({ refreshing, autoRefresh }) {
           icon={FileText}
           iconColor="text-chart-2"
           onClick={goDeliverables}
-          hint="点击进入材料管理"
         />
         <KpiCard
           label="今日新增"

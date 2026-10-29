@@ -7,7 +7,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.v1.govcloud import RESOURCE_TYPES
-from app.core.govcloud_schema import EXTRA_IP_KEYS, EXTRA_NAME_KEYS
+from app.core.govcloud_schema import EXTRA_IP_KEYS, EXTRA_NAME_KEYS, FIELD_LABELS
 from app.models.govcloud_asset import RESOURCE_MODELS
 
 logger = logging.getLogger(__name__)
@@ -39,45 +39,19 @@ _TEXT_COLUMNS = {
     "elastic_ip": ("instance_name", "inst_name", "user_department", "applicant_department"),
     "qingteng_host": ("hostname", "biz_group", "charge_name", "remark", "qingteng_device_name", "host_location"),
 }
-_KEEP = (
+
+# 内部簿记字段：不透出给 Agent（原始 JSON 列 extra/extra_excel 在 _merge_type_fields 展开）
+_INTERNAL_KEYS = {
     "id",
-    "source_id",
-    "cmdb_id",
-    "instance_id",
-    "instance_name",
-    "inst_name",
-    "name",
-    "ip_address",
-    "floatip_address",
-    "cidr",
-    "user_department",
-    "applicant_department",
-    "host_status",
-    "operating_system",
-    "biz_region_name",
-    "bandwidth",
-    "bind_instance",
-)
-# 青藤主机输出保留字段（与 Excel 表字段体系不同，display_ip/hostname 会对齐到通用展示字段）
-_QT_KEEP = (
-    "id",
-    "source_id",
-    "agent_id",
-    "hostname",
-    "display_ip",
-    "connection_ip",
-    "external_ip",
-    "internal_ip",
-    "os_type",
-    "platform",
-    "agent_status_label",
-    "biz_group",
-    "charge_name",
-    "serial_number",
-    "last_online_time",
-    "qingteng_device_id",
-    "qingteng_device_name",
-)
+    "batch_id",
+    "created_at",
+    "updated_at",
+    "extra",
+    "extra_excel",
+    "resource_type",
+}
+# 输出字段白名单已废弃：改为全字段透出（_merge_type_fields），
+# 不同资源类型按各自 Excel 模板列 + extra 扩展字段返回
 
 
 def split_keywords(keyword: str) -> list[str]:
@@ -168,23 +142,57 @@ def _fill_display_fields(data: dict, extra: dict) -> None:
                 break
 
 
+def _merge_type_fields(data: dict, mapping: dict, extra: dict) -> None:
+    """全字段透出：不同资源类型字段集不同（云主机有 vcpu/内存/磁盘、网络资源有
+    网关/VLAN/VPC、弹性IP有带宽/绑定实例、青藤主机有 CPU/内存/磁盘水位等），
+    按记录实际拥有的字段返回，Agent 侧据实展示，不再用固定白名单裁剪。
+
+    - 通用展示字段（ip_address / instance_name 等）由调用方在合并后统一归一，
+      此处用 setdefault 避免覆盖。
+    - 内部簿记字段（id / batch_id / 时间戳）与原始 JSON 列不透出。
+    """
+    for key, value in mapping.items():
+        if key in _INTERNAL_KEYS:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        data.setdefault(key, value)
+    for key, value in (extra or {}).items():
+        if key in _INTERNAL_KEYS:
+            continue
+        if value in (None, "", [], {}):
+            continue
+        data.setdefault(key, value)
+
+
 def _compact(resource_type: str, mapping) -> dict:
     meta = RESOURCE_TYPES[resource_type]
     if resource_type == "qingteng_host":
+        extra = mapping.get("extra") or {}
+        if not isinstance(extra, dict):
+            extra = {}
         data = {
             "source": "asset_discovery",
             "resource_type": "qingteng_host",
             "resource_label": meta.get("excel_name") or meta.get("label") or resource_type,
         }
-        for key in _QT_KEEP:
-            value = mapping.get(key)
-            if value not in (None, ""):
-                data[key] = value
+        # 全字段透出：青藤主机专有字段（CPU/内存/磁盘水位、标签、位置、负责人等）
+        _merge_type_fields(data, mapping, extra)
         # 对齐 Excel 资产的通用展示字段：LLM 与合并逻辑统一按 ip_address / instance_name 理解
         if not data.get("ip_address") and mapping.get("display_ip"):
             data["ip_address"] = mapping["display_ip"]
         if not data.get("instance_name") and mapping.get("hostname"):
             data["instance_name"] = mapping["hostname"]
+        if isinstance(extra, dict):
+            business_system = extra.get("system_name") or extra.get("business_system")
+            if business_system:
+                data["business_system"] = business_system
+            if extra.get("applicant_name"):
+                data["owner"] = extra["applicant_name"]
+        if not data.get("department"):
+            data["department"] = data.get("biz_group") or data.get("charge_name")
+        if not data.get("owner") and data.get("charge_name"):
+            data["owner"] = data["charge_name"]
         return data
     extra = mapping.get("extra_excel") or {}
     if not isinstance(extra, dict):
@@ -194,15 +202,26 @@ def _compact(resource_type: str, mapping) -> dict:
         "resource_type": resource_type,
         "resource_label": meta.get("excel_name") or meta.get("label") or resource_type,
     }
-    for key in _KEEP:
-        value = mapping.get(key)
-        if value not in (None, ""):
-            data[key] = value
+    # 全字段透出：各资源类型专有字段（云主机 vcpu/内存/磁盘、网络资源 网关/VLAN/VPC、
+    # 弹性IP 带宽/绑定实例 等）+ extra_excel 扩展字段（业务系统/环境/托管期限等）
+    _merge_type_fields(data, mapping, extra)
     _fill_display_fields(data, extra)
     if "instance_name" not in data:
         fallback = data.get("inst_name") or data.get("name")
         if fallback:
             data["instance_name"] = fallback
+    # 统一业务系统/责任人/部门字段，便于 Agent 直接按中文列名映射展示；
+    # 数据缺失时保持不写入，由 Agent 展示为「—」，禁止跨来源补全。
+    business_system = (
+        extra.get("system_name") or extra.get("business_system") or extra.get("业务系统")
+    )
+    if business_system:
+        data["business_system"] = business_system
+    owner = extra.get("applicant_name") or extra.get("owner") or extra.get("负责人")
+    if owner:
+        data["owner"] = owner
+    if not data.get("department"):
+        data["department"] = data.get("user_department") or data.get("applicant_department")
     return data
 
 
@@ -225,10 +244,11 @@ def _query_table(db, resource_type: str, mode: str, token: str, limit: int) -> t
         clauses.extend(_extra_text(model, key).ilike(like) for key in EXTRA_NAME_KEYS)
     if not clauses:
         return [], False
-    if resource_type == "qingteng_host":
-        selected = _columns(model, (*_QT_KEEP, "extra"))
-    else:
-        selected = _columns(model, (*_KEEP, "extra_excel"))
+    # 全字段返回：各资源类型字段集不同（云主机有 vcpu/内存/磁盘，网络资源有
+    # 网关/VLAN/VPC，弹性IP有带宽/绑定实例，青藤主机有 CPU/内存/磁盘水位），
+    # 按 Excel 模板列全量取回，由 _compact 按记录实际字段透出，
+    # Agent 侧据实展示（不再用固定白名单裁剪）
+    selected = list(model.__table__.columns)
     stmt = db.query(*selected).filter(or_(*clauses)).limit(limit)
     rows = stmt.all()
     names = [column.key for column in selected]
@@ -310,6 +330,8 @@ def _run_sync(keyword: str, resource_type: str, limit: int) -> dict:
             "count": one["count"],
             "truncated": one["truncated"],
             "assets": one["assets"],
+            # 字段中文名对照（英文键 → 中文列名），供 Agent 按类型实际字段展示
+            "field_labels": FIELD_LABELS,
         }
         if one.get("error"):
             payload["error"] = one["error"]
@@ -320,6 +342,8 @@ def _run_sync(keyword: str, resource_type: str, limit: int) -> dict:
         "count": sum(item["count"] for item in results),
         "truncated": any(item["truncated"] for item in results),
         "queries": results,
+        # 字段中文名对照（英文键 → 中文列名），供 Agent 按类型实际字段展示
+        "field_labels": FIELD_LABELS,
     }
 
 

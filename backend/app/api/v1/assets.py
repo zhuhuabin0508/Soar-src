@@ -10,7 +10,6 @@ import csv
 import io
 import ipaddress
 import logging
-import re
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -19,6 +18,11 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import get_client_ip
+from app.core.ip_validation import (
+    looks_like_ip_key,
+    validate_extra_ip_fields,
+    validate_ip_expression,
+)
 from app.core.log_receiver_manager.pipeline.enricher_stage import invalidate_asset_index
 from app.core.timezone import beijing_now
 from app.database import get_db
@@ -192,10 +196,12 @@ def _apply_template_to_asset(
     extra_fields: dict = {}
 
     if template is None:
-        # 无模板：全部字段塞 extra，无法派生标识
+        # 无模板：全部字段塞 extra，无法派生标识；IP 类字段仍做严格校验
         for k, v in (raw_fields or {}).items():
             if v is None or str(v).strip() == "":
                 continue
+            if isinstance(v, str) and looks_like_ip_key(k):
+                v = validate_ip_expression(v, k)
             extra_fields[k] = v
         return standard_fields, extra_fields, "", "custom"
 
@@ -216,14 +222,19 @@ def _apply_template_to_asset(
 
         field_def = field_map.get(key)
         if field_def is None:
-            # 模板未定义的字段 → 归入 extra（兼容自定义扩展）
+            # 模板未定义的字段 → 归入 extra（兼容自定义扩展）；IP 类 key 仍严格校验
+            if isinstance(val, str) and looks_like_ip_key(key):
+                val = validate_ip_expression(val, key)
             extra_fields[key] = val
             continue
 
-        # 入库前校验 ip/cidr 类型字段：拦截倒置范围/巨型网段/残缺 IP 等脏数据
-        # （只拦截形似 IP 数据的错误值，主机名/文本不受影响）
-        if field_def.get("type") in ("ip", "cidr") and isinstance(val, str) and val:
-            _validate_ip_expression(val, field_def.get("label") or key)
+        # 入库前校验 IP 类字段：type=ip/cidr，或映射到标准 ip 列（即使 type 写成 text）
+        # 统一支持 IPv4/IPv6/CIDR/范围/通配/多值，拒绝主机名/待定/N/A 等文本
+        is_ip_field = field_def.get("type") in ("ip", "cidr") or (
+            str(field_def.get("mapped_to") or "") == "standard:ip"
+        )
+        if is_ip_field and isinstance(val, str) and val:
+            val = validate_ip_expression(val, field_def.get("label") or key)
 
         mapped_to = field_def.get("mapped_to", "extra")
 
@@ -372,24 +383,24 @@ class AssetUpdateRequest(BaseModel):
 
 
 def _parse_search_ip(keyword: str):
-    """尝试将搜索关键词解析为 IPv4Address / IPv4Network。
+    """尝试将搜索关键词解析为 IP 地址 / IP 网段（IPv4 或 IPv6）。
 
     返回 (ip_obj, network_obj) 或 (None, None)：
-    - ip_obj: 当 keyword 是合法单 IP 时返回 IPv4Address
-    - network_obj: 当 keyword 是 CIDR 时返回 IPv4Network
+    - ip_obj: 合法单 IP 时返回 IPv4Address / IPv6Address
+    - network_obj: 合法 CIDR 时返回 IPv4Network / IPv6Network
     """
     s = (keyword or "").strip()
     if not s:
         return None, None
-    # CIDR 格式 (219.133.105.0/24)
+    # CIDR 格式 (219.133.105.0/24 / 240e::/96)
     if "/" in s:
         try:
-            return None, ipaddress.IPv4Network(s, strict=False)
+            return None, ipaddress.ip_network(s, strict=False)
         except (ipaddress.NetmaskValueError, ipaddress.AddressValueError, ValueError):
             return None, None
-    # 单 IP 格式 (219.133.105.155)
+    # 单 IP 格式（IPv4/IPv6）
     try:
-        return ipaddress.IPv4Address(s), None
+        return ipaddress.ip_address(s), None
     except (ipaddress.AddressValueError, ValueError):
         return None, None
 
@@ -397,23 +408,25 @@ def _parse_search_ip(keyword: str):
 def _ip_matches_stored(search_ip, search_net, stored: str) -> bool:
     """判断搜索 IP/CIDR 是否命中资产 ip 字段中的存储值。
 
-    支持逗号分隔多值、CIDR、IP 范围、单 IP 等格式。
+    支持逗号分隔多值、CIDR、IP 范围、通配、单 IP（IPv4/IPv6）。
     内部基于缓存的数值区间做包含/重叠判断（10 万级资产全量扫描也可控）。
     """
     intervals = _cached_intervals(stored)
     if not intervals:
         return False
     if search_ip is not None:
+        version = search_ip.version
         ip_int = int(search_ip)
-        for start, end in intervals:
-            if start <= ip_int <= end:
+        for ver, start, end in intervals:
+            if ver == version and start <= ip_int <= end:
                 return True
         return False
     if search_net is not None:
+        version = search_net.version
         net_start = int(search_net.network_address)
         net_end = int(search_net.broadcast_address)
-        for start, end in intervals:
-            if start <= net_end and net_start <= end:
+        for ver, start, end in intervals:
+            if ver == version and start <= net_end and net_start <= end:
                 return True
     return False
 
@@ -436,49 +449,21 @@ def _ip2int(s: str):
     return value
 
 
-def _int_to_ip(value: int) -> str:
+def _int_to_ip(value: int, version: int = 4) -> str:
+    if version == 6:
+        return str(ipaddress.IPv6Address(value))
     return ".".join(str((value >> s) & 255) for s in (24, 16, 8, 0))
 
 
 def _parse_stored_intervals(stored) -> list:
-    """把资产 ip 字段存储值解析为数值区间列表 [(start, end), ...]。
+    """把资产 ip 字段存储值解析为 ``[(version, start, end), ...]``。
 
-    支持逗号分隔多值、CIDR、IP 范围（含末段简写 192-254）、单 IP；
-    与 _ip_matches_stored 语义一致，但用整数比较替代 ipaddress 对象解析。
+    与写入侧索引共用 ``app.core.asset_ip_index`` 的宽容解析（支持多值、
+    CIDR、范围、末段简写、通配、单 IP，IPv4/IPv6 通用）。
     """
-    out = []
-    for part in (stored or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "/" in part:
-            addr, _, mask_s = part.partition("/")
-            base = _ip2int(addr)
-            if base is None or not mask_s.strip().isdigit():
-                continue
-            mask = int(mask_s)
-            if mask > 32:
-                continue
-            network_mask = (0xFFFFFFFF << (32 - mask)) & 0xFFFFFFFF if mask else 0
-            start = base & network_mask
-            end = start | (((1 << (32 - mask)) - 1) if mask < 32 else 0)
-            out.append((start, end))
-        elif "-" in part:
-            a, _, b = part.partition("-")
-            start_ip = _ip2int(a)
-            end_ip = _ip2int(b)
-            # 末段简写：end 为纯数字时替换 start 的最后一段（192.168.1.192-254）
-            if end_ip is None and b.strip().isdigit():
-                last = int(b.strip())
-                if start_ip is not None and last <= 255:
-                    end_ip = (start_ip & 0xFFFFFF00) | last
-            if start_ip is not None and end_ip is not None and start_ip <= end_ip:
-                out.append((start_ip, end_ip))
-        else:
-            v = _ip2int(part)
-            if v is not None:
-                out.append((v, v))
-    return out
+    from app.core.asset_ip_index import parse_stored_intervals
+
+    return parse_stored_intervals(stored)
 
 
 # 模块级解析缓存：资产 ip 存储值 → 区间列表（重复搜索直接命中缓存）
@@ -667,7 +652,9 @@ def _nearest_ip_suggestions(all_rows, search_ip, limit: int = 5) -> list[dict]:
 
     每个资产取其各区间到搜索 IP 的最近端点作为代表 IP，按距离升序返回；
     用于"精准匹配未命中"时给用户最接近的 5 个 IP 线索（可点击二次检索）。
+    IPv4/IPv6 分开比较（不同版本地址整数不可比）。
     """
+    version = search_ip.version
     ip_int = int(search_ip)
     best = []
     for row in all_rows:
@@ -676,7 +663,9 @@ def _nearest_ip_suggestions(all_rows, search_ip, limit: int = 5) -> list[dict]:
             continue
         best_dist = None
         best_ip_int = None
-        for start, end in intervals:
+        for ver, start, end in intervals:
+            if ver != version:
+                continue
             if start <= ip_int <= end:
                 best_dist, best_ip_int = 0, ip_int
                 break
@@ -689,7 +678,7 @@ def _nearest_ip_suggestions(all_rows, search_ip, limit: int = 5) -> list[dict]:
     best.sort(key=lambda x: (x[0], x[1]))
     return [
         {
-            "ip": _int_to_ip(item[2]),
+            "ip": _int_to_ip(item[2], version),
             "asset_id": item[1],
             "asset_name": item[4],
             "stored_ip": item[3],
@@ -1068,8 +1057,9 @@ _ASSET_FIELD_MAXLEN = {
     "department": 128,
     "owner": 128,
     "location": 128,
-    # ip 支持 256：多 IP/多 CIDR 逗号列表（128 截断曾把 /24 截成 /2 产生脏数据）
-    "ip": 256,
+    # ip 支持 2048：多 IP/网段逗号列表（128 截断曾把 /24 截成 /2 产生脏数据；
+    # 实测导入单条多 IP 列表可达 800+ 字符，如"A会保持在线系统资产"，预留 2048）
+    "ip": 2048,
     "criticality": 16,
     "status": 32,
     "identifier_type": 32,
@@ -1108,108 +1098,9 @@ def _truncate_field(name: str, value, maxlen: int = None) -> str:
 # - 176.16.173.1-176.13.173.254 同上
 # - 143.146.79.0/24 列宽截断成 143.146.79.0/2 → 覆盖 128.0.0.0/2 约 10 亿地址
 
-# IPv4 CIDR 最小前缀长度：/8（如 10.0.0.0/8）为合法大网段下限，/2~/7 视为笔误
-_IP_CIDR_MIN_PREFIX = 8
-# IP 范围最大跨度：一个 /8（16777216 地址），超过视为录入错误
-_IP_RANGE_MAX_ADDRS = 2 ** 24
-# "形似 IPv4 数据"：数字开头且带点组（10.1 / 172.46.9.1-... / 143.146.79.0/...），
-# 或"数字+斜杠/横线"（1-100、24/7 这类）→ 必须通过严格校验；
-# 纯数字或数字开头的文本（"2024"、"123办公室"）与主机名/纯文本放行
-_IPISH_RE = re.compile(r"^(?:\d{1,3}(?:\.\d{1,3})+|\d+[/-])")
-# "形似 IPv6 数据"（纯十六进制/冒号，可带掩码）
-_IPV6ISH_RE = re.compile(r"^[0-9A-Fa-f:]+(/\d+)?$")
-
-
-def _validate_ip_expression(value, field_label: str = "") -> None:
-    """入库前校验 IP/CIDR/范围表达式，拦截倒置范围、巨型网段、残缺 IP 等脏数据。
-
-    只拦截"看起来是 IP 数据但格式错误"的值；主机名、纯文本（含数字开头
-    的文本如 ``123办公室``）不受影响（与检索层 ``_value_to_intervals``
-    的尽力解析语义保持兼容）。
-
-    校验规则：
-    - 多值（逗号/分号/顿号/空白分隔，与检索层 ``_split_tokens`` 一致）
-      逐段校验，任一段非法即整体报错
-    - IPv4 CIDR：必须是合法网段，且前缀长度不得小于 /8
-    - IPv4 范围 start-end：两端必须是完整 IPv4（末段支持 192.0.2.1-100
-      短格式）；起始不得大于结束（倒置范围几乎必为丢字笔误）；
-      跨度不得超过一个 /8
-    - IPv4 单值：必须是完整合法 IPv4（残缺如 ``10.1`` 报错）
-    - IPv6：地址/网段须可解析
-
-    Raises:
-        ValueError: 校验失败，消息可直接展示给用户
-    """
-    s = str(value or "").strip()
-    if not s:
-        return
-    label = f"字段'{field_label}'" if field_label else "IP 字段"
-    for i, part in enumerate(re.split(r"[,;，；、\s]+", s)):
-        elem = part.strip()
-        if not elem:
-            continue
-        where = f"{label}第{i + 1}段 '{elem}'"
-        # 非形似 IP 数据（主机名/文本）：放行
-        if not _IPISH_RE.match(elem):
-            if ":" in elem and _IPV6ISH_RE.match(elem):
-                # 形似 IPv6：地址/网段须可解析
-                try:
-                    if "/" in elem:
-                        ipaddress.ip_network(elem, strict=False)
-                    else:
-                        ipaddress.ip_address(elem)
-                except ValueError:
-                    raise ValueError(f"{where} 不是合法的 IPv6 地址/网段")
-            continue
-        # ===== 形似 IPv4 数据：严格校验 =====
-        # CIDR：合法网段 + 前缀下限
-        if "/" in elem:
-            try:
-                net = ipaddress.ip_network(elem, strict=False)
-            except ValueError:
-                raise ValueError(f"{where} 不是合法的网段（CIDR）格式")
-            if net.version == 4 and net.prefixlen < _IP_CIDR_MIN_PREFIX:
-                raise ValueError(
-                    f"{where} 掩码 /{net.prefixlen} 过小（覆盖 {net.num_addresses:,} 个地址），"
-                    f"疑似笔误；IPv4 网段前缀不得小于 /{_IP_CIDR_MIN_PREFIX}"
-                )
-            continue
-        # 范围：start-end
-        if "-" in elem:
-            start_str, _, end_str = elem.partition("-")
-            start_str, end_str = start_str.strip(), end_str.strip()
-            try:
-                start_ip = ipaddress.IPv4Address(start_str)
-            except ValueError:
-                raise ValueError(f"{where} 范围起始地址无效：'{start_str}'（需完整 IPv4）")
-            if end_str.isdigit():
-                # 短格式：同前缀末段（192.0.2.1-100）
-                prefix = start_str.rsplit(".", 1)[0]
-                try:
-                    end_ip = ipaddress.IPv4Address(f"{prefix}.{end_str}")
-                except ValueError:
-                    raise ValueError(f"{where} 范围结束地址无效：'{end_str}'")
-            else:
-                try:
-                    end_ip = ipaddress.IPv4Address(end_str)
-                except ValueError:
-                    raise ValueError(f"{where} 范围结束地址无效：'{end_str}'（需完整 IPv4）")
-            if start_ip > end_ip:
-                raise ValueError(
-                    f"{where} 起始 IP 大于结束 IP（倒置范围，疑似丢字/笔误），"
-                    f"请修正为 {end_ip}-{start_ip}"
-                )
-            span = int(end_ip) - int(start_ip) + 1
-            if span > _IP_RANGE_MAX_ADDRS:
-                raise ValueError(
-                    f"{where} 范围跨度过大（{span:,} 个地址，超过一个 /8），疑似笔误"
-                )
-            continue
-        # 单值：必须完整合法
-        try:
-            ipaddress.IPv4Address(elem)
-        except ValueError:
-            raise ValueError(f"{where} 不是合法的完整 IPv4 地址（残缺 IP 请补全四段）")
+# 统一校验实现见 app.core.ip_validation（资产/告警/工单/封禁/设备动作/接收器
+# 共用同一套规则）；本模块直接调用 ``looks_like_ip_key`` / ``validate_ip_expression``
+# / ``validate_extra_ip_fields``，不再保留同名薄封装。
 
 
 def _check_asset_field_len(identifier: str, ip_value: str) -> None:
@@ -1218,8 +1109,8 @@ def _check_asset_field_len(identifier: str, ip_value: str) -> None:
     截断会破坏 IP 表达式语义——历史案例：ip 列还是 varchar(128) 时，
     129 字符的多 CIDR 列表被截断，末段 ``143.146.79.0/24`` 变成
     ``143.146.79.0/2``，导致任意 128.x-191.x IP 误命中。
-    ip 列现已扩为 varchar(256)，此检查保留作为列宽防线（超长值报错
-    而非截断，用户可拆分导入）。
+    ip 列现已扩为 varchar(2048)（实测多 IP 列表可达 800+ 字符，预留余量），
+    此检查保留作为列宽防线（超长值报错而非截断，用户可拆分导入）。
     """
     if identifier and len(identifier) > _ASSET_FIELD_MAXLEN["identifier"]:
         raise ValueError(
@@ -1420,57 +1311,40 @@ def _expand_ip_expression(ip_expr: str, max_count: int = 65536) -> list[str]:
     Raises:
         ValueError: 格式无效或展开数量超过 max_count
     """
-    ip_expr = ip_expr.strip()
+    ip_expr = (ip_expr or "").strip()
     if not ip_expr:
         return []
 
-    # CIDR 格式：含 /
-    if '/' in ip_expr:
-        net = ipaddress.ip_network(ip_expr, strict=False)
-        # /31 和 /32 的 hosts() 可能为空，直接遍历 network
-        hosts = [str(ip) for ip in net.hosts()] or [str(ip) for ip in net]
-        if len(hosts) > max_count:
-            raise ValueError(
-                f"CIDR 范围过大：{ip_expr} 包含 {len(hosts)} 个地址，"
-                f"超过单行上限 {max_count}，请缩小范围"
-            )
-        return hosts
+    from app.core.ip_validation import parse_ip_expression
 
-    # 范围格式：含 -
-    if '-' in ip_expr:
-        parts = ip_expr.split('-', 1)
-        start_str = parts[0].strip()
-        end_str = parts[1].strip()
-
-        try:
-            start_ip = ipaddress.ip_address(start_str)
-        except ValueError:
-            raise ValueError(f"IP 范围起始地址无效：{start_str}")
-
-        # 判断 end_str 是完整 IP 还是短格式（纯数字）
-        if end_str.isdigit():
-            # 短格式：192.0.2.1-100 → 起始 IP 的前三段 + 末段数字
-            prefix = start_str.rsplit('.', 1)[0]
-            end_ip = ipaddress.ip_address(f"{prefix}.{end_str}")
+    intervals = parse_ip_expression(ip_expr, field_label="ip", allow_wildcard=True)
+    out: list[str] = []
+    for iv in intervals:
+        cls = ipaddress.IPv6Address if iv.version == 6 else ipaddress.IPv4Address
+        if iv.kind == "cidr":
+            net = ipaddress.ip_network(iv.text, strict=False)
+            # 先判断规模再展开，避免巨型网段触发内存分配
+            if net.num_addresses > max_count:
+                raise ValueError(
+                    f"CIDR 范围过大：{iv.text} 包含 {net.num_addresses} 个地址，"
+                    f"超过单行上限 {max_count}，请缩小范围"
+                )
+            # /31 和 /32 的 hosts() 可能为空，直接遍历 network
+            addrs = [str(ip) for ip in net.hosts()] or [str(ip) for ip in net]
+            out.extend(addrs)
         else:
-            try:
-                end_ip = ipaddress.ip_address(end_str)
-            except ValueError:
-                raise ValueError(f"IP 范围结束地址无效：{end_str}")
-
-        if start_ip > end_ip:
-            start_ip, end_ip = end_ip, start_ip
-
-        ips = [str(ipaddress.ip_address(i)) for i in range(int(start_ip), int(end_ip) + 1)]
-        if len(ips) > max_count:
-            raise ValueError(
-                f"IP 范围过大：{ip_expr} 包含 {len(ips)} 个地址，"
-                f"超过单行上限 {max_count}，请缩小范围"
-            )
-        return ips
-
-    # 单个 IP（不做严格校验，允许主机名等作为 identifier 的回退）
-    return [ip_expr]
+            count = iv.end - iv.start + 1
+            if count > max_count:
+                raise ValueError(
+                    f"IP 范围过大：{iv.text} 包含 {count} 个地址，"
+                    f"超过单行上限 {max_count}，请缩小范围"
+                )
+            out.extend(str(cls(i)) for i in range(iv.start, iv.end + 1))
+    if len(out) > max_count:
+        raise ValueError(
+            f"IP 表达式展开后共 {len(out)} 个地址，超过单行上限 {max_count}，请缩小范围"
+        )
+    return out
 
 
 def _decode_import_text(raw: bytes) -> str:
@@ -1766,7 +1640,7 @@ async def import_assets(
 
         # 入库前校验 + 列宽预检（防倒置范围/巨型网段等脏数据；超长不截断）
         try:
-            _validate_ip_expression(ip_expr, "ip")
+            validate_ip_expression(ip_expr, "ip")
             _check_asset_field_len(identifier, ip_value)
         except ValueError as exc:
             errors.append({"row": idx, "msg": str(exc)})
@@ -1789,6 +1663,14 @@ async def import_assets(
                 actual_key = label_to_key_cf.get(col, col)
                 extra[actual_key] = val
         if extra:
+            # 兼容模式无字段定义：按 key 识别 IP 类字段（src_ip/eip/cidr 等）严格校验，
+            # 避免主机名/待定/N/A 等文本随导入写进扩展字段
+            try:
+                extra = validate_extra_ip_fields(extra)
+            except ValueError as exc:
+                errors.append({"row": idx, "msg": str(exc)})
+                skipped += 1
+                continue
             fields["extra_fields"] = extra
 
         asset_name = fields.get("name", "")
@@ -2260,8 +2142,24 @@ def merge_asset(
     if target.id == source.id:
         raise HTTPException(status_code=422, detail="不能合并到自身")
 
-    before = _asset_snapshot(target)
+    # 合并前校验：从 source 覆盖/并入的 IP 类值必须是合法 IP；非法直接 422，
+    # 避免把源资产的脏 IP（主机名/待定/N/A）复制进目标资产。
     strategy = body.field_strategy or {}
+    merged_extra: dict | None = None
+    try:
+        if strategy.get("ip") == "source":
+            validate_ip_expression(source.ip or "", "ip")
+        if (
+            strategy.get("identifier") == "source"
+            and (source.identifier_type or "") in ("ip", "cidr")
+        ):
+            validate_ip_expression(source.identifier or "", "identifier")
+        if body.merge_extra_fields:
+            merged_extra = validate_extra_ip_fields(dict(source.extra_fields or {}))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    before = _asset_snapshot(target)
 
     # 按策略覆盖字段
     _mergeable_fields = _TRACKABLE_FIELDS
@@ -2269,10 +2167,10 @@ def merge_asset(
         if strategy.get(field) == "source":
             setattr(target, field, getattr(source, field))
 
-    # 合并 extra_fields
+    # 合并 extra_fields（source 优先；值已在上方校验并归一化）
     if body.merge_extra_fields:
         cur = dict(target.extra_fields or {})
-        cur.update(source.extra_fields or {})
+        cur.update(merged_extra or {})
         target.extra_fields = cur
 
     # 合并标签（去重）
@@ -2410,9 +2308,11 @@ def create_asset(
         raise HTTPException(status_code=422, detail="IP 地址不能为空（作为资产唯一标识）")
 
     # 入库前校验 + 列宽预检（防倒置范围/巨型网段等脏数据；超长不截断）
+    extra_fields = body.extra_fields or {}
     try:
-        _validate_ip_expression(body.ip, "ip")
-        _validate_ip_expression(body.identifier, "identifier")
+        validate_ip_expression(body.ip, "ip")
+        validate_ip_expression(body.identifier, "identifier")
+        extra_fields = validate_extra_ip_fields(extra_fields)
         _check_asset_field_len(identifier, body.ip or identifier)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -2443,7 +2343,7 @@ def create_asset(
         kb_id=body.kb_id,
         kb_name=body.kb_name,
         source="manual",
-        extra_fields=body.extra_fields or {},
+        extra_fields=extra_fields,
     )
     db.add(record)
     db.flush()
@@ -2576,11 +2476,17 @@ def update_asset(
 
     # ===== 兼容模式：直接更新标准字段 =====
     # 入库前校验 + 列宽预检（防倒置范围/巨型网段等脏数据；超长不截断）
+    # identifier 仅在标识类型为 ip/cidr 时按 IP 校验：历史/模板资产可能是主机名标识
+    # （identifier_type=custom），不能一律当 IP 拒绝
+    id_type = str(body.identifier_type or record.identifier_type or "ip").strip().lower()
+    extra_patch = body.extra_fields
     try:
-        if body.identifier is not None:
-            _validate_ip_expression(body.identifier, "identifier")
+        if body.identifier is not None and id_type in ("ip", "cidr"):
+            validate_ip_expression(body.identifier, "identifier")
         if body.ip is not None:
-            _validate_ip_expression(body.ip, "ip")
+            validate_ip_expression(body.ip, "ip")
+        if extra_patch is not None:
+            extra_patch = validate_extra_ip_fields(extra_patch)
         _check_asset_field_len(
             body.identifier if body.identifier is not None else record.identifier,
             body.ip if body.ip is not None else record.ip,
@@ -2598,10 +2504,10 @@ def update_asset(
             setattr(record, field, v)
     if body.kb_id is not None:
         record.kb_id = body.kb_id
-    # extra_fields 合并
-    if body.extra_fields is not None:
+    # extra_fields 合并（值已在上方校验并归一化）
+    if extra_patch is not None:
         cur = dict(record.extra_fields or {})
-        cur.update(body.extra_fields)
+        cur.update(extra_patch)
         record.extra_fields = cur
     # 标签替换（tag_ids 非 None 时替换该资产的全部标签）
     if body.tag_ids is not None:

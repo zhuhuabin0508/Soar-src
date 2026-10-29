@@ -297,7 +297,6 @@ function BackupManagement() {
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-5">
         <div className="min-w-0">
           <h1 className="text-[22px] font-bold tracking-tight">数据备份与恢复</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">备份 · 策略 · 恢复 · 校验 · 上传</p>
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setUploadOpen(true)} className="btn-secondary btn-sm">

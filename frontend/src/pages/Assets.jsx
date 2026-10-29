@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { ClipboardList, BookOpen, Bot, CircleAlert } from 'lucide-react'
 import { assetsApi } from '../api/assets'
 import { useAuthStore } from '../store/authStore'
@@ -7,6 +7,7 @@ import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { inputCls, inputBaseCls } from '../components/property/FormControls'
 import { CompactSelect } from '../components/ui'
+import { validateIPExpression, looksLikeIPKey } from '../utils/ipValidation'
 
 // 重要性配色
 const CRITICALITY_META = {
@@ -140,6 +141,35 @@ function DetailModal({ open, record, onClose, onEdit, onDelete, canManage, canDe
 // ============ 新增/编辑弹窗 ============
 function AssetFormModal({ open, form, setForm, onSubmit, onClose, submitting, isEdit }) {
   const set = (key, val) => setForm((f) => ({ ...f, [key]: val }))
+  const [touched, setTouched] = useState({ ip: false, extra: false })
+
+  useEffect(() => {
+    if (open) setTouched({ ip: false, extra: false })
+  }, [open])
+
+  // 即时校验：IP 地址（与后端统一规则：IPv4/IPv6、CIDR、范围、通配、多值）
+  const ipError = validateIPExpression(form.ip, 'IP 地址')
+
+  // 即时校验：灵活字段 JSON 中 key 形如 ip/cidr 的文本值
+  const extraErrors = useMemo(() => {
+    const text = (form.extra_fields_text || '').trim()
+    if (!text) return []
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return [] // JSON 语法错误由提交时统一提示
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    const out = []
+    for (const [key, val] of Object.entries(parsed)) {
+      if (typeof val === 'string' && val.trim() && looksLikeIPKey(key)) {
+        const msg = validateIPExpression(val, key)
+        if (msg) out.push(msg)
+      }
+    }
+    return out
+  }, [form.extra_fields_text])
 
   return (
     <Modal
@@ -160,11 +190,15 @@ function AssetFormModal({ open, form, setForm, onSubmit, onClose, submitting, is
         <div className="flex flex-col">
           <label className="mb-1 text-xs text-muted-foreground">IP 地址 * <span className="text-muted-foreground">（作为唯一标识）</span></label>
           <input
-            className={inputCls}
+            className={`${inputCls}${touched.ip && ipError ? ' border-destructive ring-1 ring-destructive' : ''}`}
             value={form.ip || ''}
             onChange={(e) => set('ip', e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, ip: true }))}
             placeholder="192.0.2.10"
           />
+          {touched.ip && ipError && (
+            <div className="mt-1 text-[11px] text-destructive">{ipError}</div>
+          )}
         </div>
         <div className="flex flex-col">
           <label className="mb-1 text-xs text-muted-foreground">资产名称</label>
@@ -204,11 +238,17 @@ function AssetFormModal({ open, form, setForm, onSubmit, onClose, submitting, is
         <div className="col-span-2 flex flex-col">
           <label className="mb-1 text-xs text-muted-foreground">灵活字段（JSON，可选）</label>
           <textarea
-            className={`${inputCls} h-20 font-mono`}
+            className={`${inputCls} h-20 font-mono${touched.extra && extraErrors.length ? ' border-destructive ring-1 ring-destructive' : ''}`}
             value={form.extra_fields_text || ''}
             onChange={(e) => set('extra_fields_text', e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, extra: true }))}
             placeholder='{"序列号": "SN001", "购入日期": "2024-01-01"}'
           />
+          {touched.extra && extraErrors.length > 0 && (
+            <div className="mt-1 text-[11px] text-destructive">
+              {extraErrors.map((msg) => <div key={msg}>{msg}</div>)}
+            </div>
+          )}
         </div>
       </div>
     </Modal>
@@ -345,6 +385,12 @@ function Assets() {
       toast.warning('请填写 IP 地址（作为资产唯一标识）')
       return
     }
+    // IP 格式硬拦截（与后端统一规则）
+    const ipMsg = validateIPExpression(form.ip.trim(), 'IP 地址')
+    if (ipMsg) {
+      toast.error(ipMsg)
+      return
+    }
     let extraFields = null
     if (form.extra_fields_text?.trim()) {
       try {
@@ -352,6 +398,20 @@ function Assets() {
       } catch {
         toast.error('灵活字段不是有效的 JSON 格式')
         return
+      }
+      if (!extraFields || typeof extraFields !== 'object' || Array.isArray(extraFields)) {
+        toast.error('灵活字段必须是 JSON 对象')
+        return
+      }
+      // 灵活字段中 key 形如 ip/cidr 的文本值同样拦截
+      for (const [key, val] of Object.entries(extraFields)) {
+        if (typeof val === 'string' && val.trim() && looksLikeIPKey(key)) {
+          const msg = validateIPExpression(val, key)
+          if (msg) {
+            toast.error(msg)
+            return
+          }
+        }
       }
     }
     setSubmitting(true)

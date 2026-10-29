@@ -653,7 +653,7 @@ function AiUsagePanel() {
           emptyText="暂无调用记录"
           emptyDesc="当前时间范围内未产生智能体调用"
           updatedAt={lastUpdate}
-          description="展示近期内智能体被调用的次数趋势，峰值点会自动标注。"
+          description="峰值点自动标注"
         >
           <ReactECharts option={agentTrendOption} style={{ height: 300, width: '100%' }} />
         </ChartCard>
@@ -682,7 +682,7 @@ function AiUsagePanel() {
           emptyText="暂无供应商数据"
           emptyDesc="模型调用后将自动统计分布"
           updatedAt={lastUpdate}
-          description="按模型供应商统计调用次数占比，中心显示总调用次数。"
+          description="中心显示总调用次数"
         >
           <ReactECharts option={providerOption} style={{ height: 300, width: '100%' }} />
         </ChartCard>

@@ -63,3 +63,53 @@ def test_garbage_returns_empty():
     assert _value_to_intervals("") == []
     assert _value_to_intervals("not-an-ip") == []
     assert _value_to_intervals("abc-def") == []
+
+
+def test_newline_separated_values_parse():
+    # Excel 单元格内换行的多 IP（导入"A会保持在线系统清单"实际案例：
+    # "202.104.131.26\n120.234.15.170\n10.44.8.82" 入库后曾查不到）
+    assert _value_to_intervals("202.104.131.26\n120.234.15.170\n10.44.8.82") == [
+        (_ip("202.104.131.26"), _ip("202.104.131.26")),
+        (_ip("120.234.15.170"), _ip("120.234.15.170")),
+        (_ip("10.44.8.82"), _ip("10.44.8.82")),
+    ]
+    # CRLF / 制表符 / 空白分隔
+    assert _value_to_intervals("1.2.3.4\r\n5.6.7.8") == [
+        (_ip("1.2.3.4"), _ip("1.2.3.4")),
+        (_ip("5.6.7.8"), _ip("5.6.7.8")),
+    ]
+    assert _value_to_intervals("1.2.3.4\t5.6.7.8") == [
+        (_ip("1.2.3.4"), _ip("1.2.3.4")),
+        (_ip("5.6.7.8"), _ip("5.6.7.8")),
+    ]
+    # 换行分隔的 段落+范围 混合
+    assert _value_to_intervals("10.0.0.1\n10.0.0.10-10.0.0.20") == [
+        (_ip("10.0.0.1"), _ip("10.0.0.1")),
+        (_ip("10.0.0.10"), _ip("10.0.0.20")),
+    ]
+
+
+def test_spaced_range_still_parses_as_range():
+    # "start - end" 带空格的范围必须仍走范围分支（不被空白兜底拆散成两个单 IP）
+    assert _value_to_intervals("113.108.60.224 - 113.108.60.254") == [
+        (_ip("113.108.60.224"), _ip("113.108.60.254"))
+    ]
+
+
+def test_extra_field_key_filter_excludes_free_text_fields():
+    """扩展字段按词元识别 IP 字段：description/shipping 等自由文本不建索引。"""
+    from app.core.asset_ip_index import _is_ip_extra_key, _versioned_intervals_from_fields
+
+    for key in ("description", "shipping", "recipient", "note", "person"):
+        assert not _is_ip_extra_key(key), key
+    for key in ("ip", "src_ip", "ip_pool", "wan_ip", "ip_address", "cidr", "eip"):
+        assert _is_ip_extra_key(key), key
+
+    intervals = _versioned_intervals_from_fields(
+        "10.0.0.1", "", {"description": "备用地址 10.0.0.9", "src_ip": "10.0.0.5"}
+    )
+    # 只有 src_ip 进索引；description 里的 10.0.0.9 不应产生区间（否则检索误命中）
+    assert intervals == [
+        (4, _ip("10.0.0.1"), _ip("10.0.0.1")),
+        (4, _ip("10.0.0.5"), _ip("10.0.0.5")),
+    ]
