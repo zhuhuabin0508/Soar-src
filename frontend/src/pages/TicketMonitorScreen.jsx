@@ -56,7 +56,7 @@ function axisStyle(extra = {}) {
   return {
     axisLine: { lineStyle: { color: C.axis } },
     axisTick: { show: false },
-    axisLabel: { color: C.subText, fontSize: 11, ...extra },
+    axisLabel: { color: C.subText, fontSize: 12, ...extra },
   }
 }
 
@@ -79,7 +79,7 @@ function Panel({ title, subtitle, icon: Icon, right, children, className = '', b
       <div className="flex items-center gap-2 border-b px-4 py-2.5"
         style={{ borderColor: 'rgba(96,138,188,0.22)' }}>
         <span className="h-3.5 w-[3px] rounded" style={{ background: C.accent, boxShadow: `0 0 6px ${C.accent}80` }} />
-        <span className="text-[15px] font-bold tracking-wide" style={{ color: C.text }}>{title}</span>
+        <span className="text-[16px] font-bold tracking-wide" style={{ color: C.text }}>{title}</span>
         {subtitle && (
           <span className="truncate text-[10px] uppercase tracking-[2px]" style={{ color: C.subText, opacity: 0.75 }}>{subtitle}</span>
         )}
@@ -108,7 +108,7 @@ function HeaderBar({ demo }) {
         style={{ background: 'linear-gradient(180deg, rgba(69,184,205,0.20) 0%, rgba(11,19,28,0) 100%)' }} />
       {/* 演示模式标记（全屏演示数据时显示；后端聚合接口接入后自动消失） */}
       {demo && (
-        <span className="absolute left-6 top-2 z-10 flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px]"
+        <span className="absolute left-6 top-2 z-10 flex items-center gap-1 rounded border px-1.5 py-0.5 text-[12px]"
           style={{ background: 'rgba(229,120,50,0.13)', color: C.accent, borderColor: 'rgba(229,120,50,0.45)' }}
           title="大屏当前以内置演示数据预览（各分区数字与下钻弹窗列表条数一致）；后端聚合接口接入「提交团队」统计与下钻工单集后自动切换真实数据">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full"
@@ -135,7 +135,7 @@ function HeaderBar({ demo }) {
         <div className="font-mono text-[20px] font-bold tabular-nums" style={{ color: C.text }}>
           {pad(now.getHours())}:{pad(now.getMinutes())}:{pad(now.getSeconds())}
         </div>
-        <div className="text-[12px]" style={{ color: C.subText }}>
+        <div className="text-[13px]" style={{ color: C.subText }}>
           {now.getFullYear()}-{pad(now.getMonth() + 1)}-{pad(now.getDate())}&nbsp;&nbsp;{WEEKDAYS[now.getDay()]}
         </div>
       </div>
@@ -192,22 +192,22 @@ function KpiCard({ label, value, unit = '件', tone = 'blue', delta, deltaLabel 
         borderStyle: zeroState ? 'dashed' : 'solid',
         boxShadow: groupBorder ? '0 0 10px rgba(255,77,79,0.16)' : '0 0 10px rgba(80,130,190,0.10)',
       }}>
-      <div className="text-[13px]" style={{ color: C.subText }}>{label}</div>
+      <div className="text-[14px]" style={{ color: C.subText }}>{label}</div>
       <div className="flex items-baseline gap-2">
-        <span className="font-mono text-[30px] font-bold leading-[1.15] tabular-nums"
+        <span className="font-mono text-[32px] font-bold leading-[1.15] tabular-nums"
           style={{ color: zeroState ? 'rgba(147,166,184,0.85)' : toneColor, textShadow: `0 0 10px ${toneColor}40` }}>
           {animated ?? '--'}
         </span>
-        <span className="text-[11px]" style={{ color: C.subText }}>{unit}</span>
+        <span className="text-[12px]" style={{ color: C.subText }}>{unit}</span>
         {delta !== undefined && delta !== null && !zeroState && (
-          <span className="ml-auto flex items-center gap-0.5 font-mono text-[11px] tabular-nums"
+          <span className="ml-auto flex items-center gap-0.5 font-mono text-[12px] tabular-nums"
             style={{ color: delta > 0 ? C.green : delta < 0 ? C.orange : C.subText }}>
             {delta > 0 ? '▲' : delta < 0 ? '▼' : '—'}{Math.abs(delta)}
             <span style={{ color: C.subText }}>&nbsp;{deltaLabel}</span>
           </span>
         )}
       </div>
-      {bottomNote && <div className="mt-0.5 truncate text-[11px]" style={{ color: C.subText }}>{bottomNote}</div>}
+      {bottomNote && <div className="mt-0.5 truncate text-[12px]" style={{ color: C.subText }}>{bottomNote}</div>}
       <div className="absolute bottom-0 left-0 h-[2px] w-full rounded-b-md opacity-70"
         style={{ background: `linear-gradient(90deg, transparent, ${zeroState ? 'rgba(147,166,184,0.6)' : toneColor}, transparent)` }} />
     </div>
@@ -228,11 +228,11 @@ function TrendChart({ trend, onDrill }) {
     grid: { left: 42, right: 16, top: 34, bottom: 26 },
     legend: {
       data: ['新增工单', '关闭工单'], right: 8, top: 2, itemWidth: 14, itemHeight: 8,
-      textStyle: { color: C.subText, fontSize: 11 },
+      textStyle: { color: C.subText, fontSize: 12 },
     },
-    tooltip: { trigger: 'axis', backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 12 } },
+    tooltip: { trigger: 'axis', backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 13 } },
     xAxis: { type: 'category', data: rows.map((r) => r.label), boundaryGap: false, ...axisStyle({ interval: range === 'hours24' ? 3 : 'auto' }) },
-    yAxis: { type: 'value', minInterval: 1, name: '件', nameTextStyle: { color: C.subText, fontSize: 11 }, splitLine: { lineStyle: { color: C.split } }, ...axisStyle() },
+    yAxis: { type: 'value', minInterval: 1, name: '件', nameTextStyle: { color: C.subText, fontSize: 12 }, splitLine: { lineStyle: { color: C.split } }, ...axisStyle() },
     series: [
       {
         name: '新增工单', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5,
@@ -285,7 +285,7 @@ function TrendChart({ trend, onDrill }) {
     <Panel
       title="工单趋势分析" subtitle="TREND ANALYSIS" icon={Activity} className="h-[400px]"
       right={tabs.map(([key, label]) => (
-        <button key={key} onClick={() => setRange(key)} className="rounded px-2 py-0.5 text-[11px] transition"
+        <button key={key} onClick={() => setRange(key)} className="rounded px-2 py-0.5 text-[12px] transition"
           style={range === key
             ? { background: 'rgba(78,138,212,0.35)', color: C.text, border: `1px solid ${C.techBlue}66` }
             : { color: C.subText, border: '1px solid rgba(96,138,188,0.25)' }}>
@@ -308,22 +308,22 @@ function pieOption(rows) {
     color: BLUE_PALETTE,
     tooltip: {
       trigger: 'item', backgroundColor: C.tooltipBg, borderColor: C.panelBorder,
-      textStyle: { color: C.text, fontSize: 12 }, formatter: '{b}：{c} 件（{d}%）',
+      textStyle: { color: C.text, fontSize: 13 }, formatter: '{b}：{c} 件（{d}%）',
     },
     // 环形中心显示总量
     title: total > 0 ? {
       text: String(total), subtext: '总件数',
       left: 'center', top: '36%',
       textStyle: { color: C.text, fontSize: 32, fontWeight: 'bold', fontFamily: 'monospace' },
-      subtextStyle: { color: C.subText, fontSize: 12 },
+      subtextStyle: { color: C.subText, fontSize: 13 },
     } : undefined,
     graphic: total === 0 ? [{
       type: 'text', left: 'center', top: 'middle',
-      style: { text: '暂无数据', fill: C.subText, fontSize: 13 },
+      style: { text: '暂无数据', fill: C.subText, fontSize: 14 },
     }] : undefined,
     series: [{
       type: 'pie', radius: ['48%', '70%'], center: ['50%', '46%'],
-      label: { color: C.text, fontSize: 12, width: 100, overflow: 'break', formatter: '{b}\n{c}件 · {d}%' },
+      label: { color: C.text, fontSize: 13, width: 100, overflow: 'break', formatter: '{b}\n{c}件 · {d}%' },
       labelLine: { length: 14, length2: 10, lineStyle: { color: C.axis } },
       itemStyle: { borderColor: '#0A1220', borderWidth: 1 },
       data,
@@ -342,17 +342,17 @@ function typeBarOption(rows) {
     grid: { left: 8, right: 80, top: 10, bottom: 10, containLabel: true },
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: C.tooltipBg, borderColor: C.panelBorder,
-      textStyle: { color: C.text, fontSize: 12 },
+      textStyle: { color: C.text, fontSize: 13 },
       formatter: (ps) => {
         const p = ps?.[0]
         return p ? `${p.name}：${p.value} 件（${pct(p.value)}%）` : ''
       },
     },
-    xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: C.split } }, ...axisStyle({ fontSize: 10 }) },
+    xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: C.split } }, ...axisStyle({ fontSize: 11 }) },
     yAxis: {
       type: 'category', inverse: true, data: data.map((d) => d.name),
       axisLine: { lineStyle: { color: C.axis } }, axisTick: { show: false },
-      axisLabel: { color: C.text, fontSize: 12, interval: 0, margin: 10 },
+      axisLabel: { color: C.text, fontSize: 13, interval: 0, margin: 10 },
     },
     series: [{
       type: 'bar', barWidth: 14,
@@ -361,7 +361,7 @@ function typeBarOption(rows) {
         itemStyle: { color: BLUE_PALETTE[i % BLUE_PALETTE.length], borderRadius: [0, 2, 2, 0] },
       })),
       label: {
-        show: true, position: 'right', color: C.text, fontSize: 12, fontFamily: 'monospace',
+        show: true, position: 'right', color: C.text, fontSize: 13, fontFamily: 'monospace',
         formatter: (p) => `${p.value} 件 · ${pct(p.value)}%`,
       },
     }],
@@ -370,7 +370,7 @@ function typeBarOption(rows) {
 
 // 严重度堆叠条形图：段内白字数值（仅非 0 段显示）
 const SEG_LABEL = {
-  show: true, position: 'inside', color: '#FFFFFF', fontSize: 11,
+  show: true, position: 'inside', color: '#FFFFFF', fontSize: 12,
   fontFamily: 'monospace', formatter: (p) => (p.value > 0 ? p.value : ''),
 }
 
@@ -417,10 +417,10 @@ function DistPanel({ dist, severityStatus, onDrill }) {
     grid: { left: 78, right: 46, top: 32, bottom: 20 },
     legend: {
       data: ['进行中', '已完成', '已取消'], top: 0, itemWidth: 12, itemHeight: 8,
-      textStyle: { color: C.subText, fontSize: 11 },
+      textStyle: { color: C.subText, fontSize: 12 },
     },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 12 } },
-    xAxis: { type: 'value', minInterval: 1, name: '件', nameTextStyle: { color: C.subText, fontSize: 11 }, splitLine: { lineStyle: { color: C.split } }, ...axisStyle() },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 13 } },
+    xAxis: { type: 'value', minInterval: 1, name: '件', nameTextStyle: { color: C.subText, fontSize: 12 }, splitLine: { lineStyle: { color: C.split } }, ...axisStyle() },
     yAxis: {
       type: 'category', inverse: true,
       data: sev.map((s) => s.name),
@@ -434,8 +434,8 @@ function DistPanel({ dist, severityStatus, onDrill }) {
           return total > 0 ? `{n|${name}}\n{t|合计 ${total} 件}` : name
         },
         rich: {
-          n: { color: C.text, fontSize: 12, lineHeight: 16, align: 'right' },
-          t: { color: C.subText, fontSize: 10, lineHeight: 13, align: 'right' },
+          n: { color: C.text, fontSize: 13, lineHeight: 17, align: 'right' },
+          t: { color: C.subText, fontSize: 11, lineHeight: 14, align: 'right' },
         },
       },
     },
@@ -453,7 +453,7 @@ function DistPanel({ dist, severityStatus, onDrill }) {
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       right={DIST_TABS.map(([key, label]) => (
-        <button key={key} onClick={() => setTab(key)} className="rounded px-2 py-0.5 text-[11px] transition"
+        <button key={key} onClick={() => setTab(key)} className="rounded px-2 py-0.5 text-[12px] transition"
           style={tab === key
             ? { background: 'rgba(78,138,212,0.35)', color: C.text, border: `1px solid ${C.techBlue}66` }
             : { color: C.subText, border: '1px solid rgba(96,138,188,0.25)' }}>
@@ -489,11 +489,11 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
       bodyClassName="flex flex-col px-5 py-2.5"
       right={(
         <label className="flex cursor-pointer items-center gap-1.5" title="切换展示的流程模板；模板修改重新发布后大屏自动更新">
-          <span className="text-[10px] uppercase tracking-[2px]" style={{ color: C.subText }}>FLOW</span>
+          <span className="text-[11px] uppercase tracking-[2px]" style={{ color: C.subText }}>FLOW</span>
           <select
             value={selectValue}
             onChange={(e) => onSelect(e.target.value)}
-            className="max-w-[240px] cursor-pointer truncate rounded border px-2 py-1 text-[12px] outline-none transition focus:ring-1"
+            className="max-w-[240px] cursor-pointer truncate rounded border px-2 py-1 text-[13px] outline-none transition focus:ring-1"
             style={{ borderColor: 'rgba(96,138,188,0.45)', color: C.text, background: 'rgba(16,34,52,0.9)' }}
           >
             <option value="">自动（工单最多的流程）</option>
@@ -507,7 +507,7 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
       )}
     >
       {/* 当前生效流程名（自动模式下展示后端实际选取的流程） */}
-      <div className="mb-2 flex shrink-0 items-center gap-1.5 text-[11px]" style={{ color: C.subText }}>
+      <div className="mb-2 flex shrink-0 items-center gap-1.5 text-[12px]" style={{ color: C.subText }}>
         <span className="h-1.5 w-1.5 rounded-full"
           style={{ background: activeFlow?.auto ? C.cyan : C.accent, boxShadow: `0 0 6px ${activeFlow?.auto ? C.cyan : C.accent}` }} />
         当前展示：{activeFlow?.name ? `${activeFlow.name}${activeFlow.auto ? '（自动选取）' : ''}` : '暂无流程模板，请先在工单配置中创建'}
@@ -549,8 +549,8 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
                             : 'rgba(14,26,38,0.55)',
                       }}
                     >
-                      <div className="w-full truncate text-center text-[13px] font-medium" style={{ color: C.text }}>{n.name}</div>
-                      {n.group && <div className="w-full truncate text-center text-[10px]" style={{ color: C.subText }}>{n.group}</div>}
+                      <div className="w-full truncate text-center text-[14px] font-medium" style={{ color: C.text }}>{n.name}</div>
+                      {n.group && <div className="w-full truncate text-center text-[11px]" style={{ color: C.subText }}>{n.group}</div>}
                     </div>
                   </div>
                   {i < nodes.length - 1 && (
@@ -574,11 +574,11 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
                 <div key={n.key} className="flex min-w-0 flex-1">
                   <div className="flex min-w-0 flex-1 items-baseline justify-center gap-1" style={{ maxWidth: 150 }}>
                     <span key={`${n.key}-${n.current}`}
-                      className="count-bounce inline-block font-mono text-[24px] font-bold leading-none tabular-nums"
+                      className="count-bounce inline-block font-mono text-[26px] font-bold leading-none tabular-nums"
                       style={{ color, textShadow: active ? `0 0 10px ${C.cyan}55` : 'none' }}>
                       {n.current}
                     </span>
-                    <span className="shrink-0 text-[10px]" style={{ color: C.subText }}>{finished ? '✓ 已关闭' : '当前停留'}</span>
+                    <span className="shrink-0 text-[11px]" style={{ color: C.subText }}>{finished ? '✓ 已关闭' : '当前停留'}</span>
                   </div>
                   {i < nodes.length - 1 && <div className="mx-2.5 min-w-[28px] flex-1" />}
                 </div>
@@ -639,12 +639,12 @@ function TeamRankPanel({ rows, onDrill }) {
       className="h-[128px]" bodyClassName="px-3 py-2"
       right={(
         <>
-          <span className="text-[11px]" style={{ color: C.subText }}>{list.length} 队 · 共 {total} 件</span>
+          <span className="text-[12px]" style={{ color: C.subText }}>{list.length} 队 · 共 {total} 件</span>
           {onDrill && (
             <button
               onClick={() => onDrill({ kind: 'teams', title: '提交团队 · 全部团队数据', subtitle: '全部团队工单排名' })}
               title="弹窗查看全部团队的排名明细（点击团队行可继续下钻其工单列表）"
-              className="rounded px-2 py-0.5 text-[11px] transition hover:brightness-125"
+              className="rounded px-2 py-0.5 text-[12px] transition hover:brightness-125"
               style={{ color: C.cyan, border: '1px solid rgba(69,184,205,0.4)', background: 'rgba(69,184,205,0.08)' }}>
               查看全部
             </button>
@@ -680,24 +680,24 @@ function TeamRankPanel({ rows, onDrill }) {
                 }}>
                 <div className="flex min-w-0 items-center gap-1.5">
                   {meta ? (
-                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-bold"
+                    <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-bold"
                       style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}>
                       {i + 1}
                     </span>
                   ) : (
-                    <span className="shrink-0 font-mono text-[11px] tabular-nums" style={{ color: C.subText }}>{i + 1}</span>
+                    <span className="shrink-0 font-mono text-[12px] tabular-nums" style={{ color: C.subText }}>{i + 1}</span>
                   )}
-                  <span className="max-w-full truncate text-[12px]" style={{ color: C.text }}>{d.name}</span>
+                  <span className="max-w-full truncate text-[13px]" style={{ color: C.text }}>{d.name}</span>
                 </div>
                 <div className="flex items-baseline gap-1">
-                  <span className="font-mono text-[17px] font-bold leading-none tabular-nums"
+                  <span className="font-mono text-[19px] font-bold leading-none tabular-nums"
                     style={{
                       color: champion ? '#F5C84F' : C.lightBlue,
                       textShadow: champion ? '0 0 8px rgba(245,200,79,0.35)' : 'none',
                     }}>
                     {d.value}
                   </span>
-                  <span className="text-[10px] tabular-nums" style={{ color: C.subText }}>{pct(d.value)}%</span>
+                  <span className="text-[11px] tabular-nums" style={{ color: C.subText }}>{pct(d.value)}%</span>
                 </div>
                 {/* 相对条长：以榜首为基准；榜首金色渐变，其余蓝青渐变 */}
                 <div className="h-[3px] w-full overflow-hidden rounded" style={{ background: 'rgba(96,138,188,0.16)' }}>
@@ -718,8 +718,8 @@ function TeamRankPanel({ rows, onDrill }) {
               onClick={onDrill ? () => onDrill({ kind: 'teams', title: '提交团队 · 全部团队数据', subtitle: '全部团队工单排名' }) : undefined}
               className="flex w-[76px] shrink-0 cursor-pointer flex-col items-center justify-center gap-0.5 rounded border border-dashed px-1 transition hover:brightness-125"
               style={{ borderColor: 'rgba(147,166,184,0.4)', background: 'rgba(18,34,52,0.3)' }}>
-              <span className="text-[11px]" style={{ color: C.subText }}>其余 {rest.length} 队</span>
-              <span className="font-mono text-[14px] font-bold tabular-nums" style={{ color: C.subText }}>{restTotal} 件</span>
+              <span className="text-[12px]" style={{ color: C.subText }}>其余 {rest.length} 队</span>
+              <span className="font-mono text-[15px] font-bold tabular-nums" style={{ color: C.subText }}>{restTotal} 件</span>
             </div>
           )}
         </div>
@@ -757,15 +757,15 @@ function LiveList({ latest, onDrill }) {
     <Panel
       title="最新工单实时监控" subtitle="REALTIME LIST" icon={Activity} className="h-[396px]"
       alert={(latest || []).some((r) => r.timeout)}
-      right={<span className="flex items-center gap-1 text-[11px]" style={{ color: C.subText }}>
+      right={<span className="flex items-center gap-1 text-[12px]" style={{ color: C.subText }}>
         <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: C.green, boxShadow: `0 0 6px ${C.green}` }} />实时更新
       </span>}
       bodyClassName="px-3 py-2"
     >
-      {/* 表头（字号 +2px） */}
-      <div className="flex items-center px-2 pb-1.5 text-[13px]" style={{ color: C.subText }}>
+      {/* 表头（字号 +3px，远距可读） */}
+      <div className="flex items-center px-2 pb-1.5 text-[14px]" style={{ color: C.subText }}>
         <span className="w-[72px] shrink-0">时间</span>
-        <span className="w-[128px] shrink-0">工单编号</span>
+        <span className="w-[150px] shrink-0">工单编号</span>
         <span className="min-w-0 flex-1 truncate">工单标题</span>
         <span className="w-[56px] shrink-0 text-center">等级</span>
         <span className="w-[64px] shrink-0 text-center">状态</span>
@@ -794,9 +794,9 @@ function LiveList({ latest, onDrill }) {
               {/* 新工单插入：2 秒青色渐隐高亮（覆盖层不与行背景冲突） */}
               {isNew && <span className="row-flash pointer-events-none absolute inset-0 rounded" />}
               <span className="w-[72px] shrink-0 font-mono tabular-nums" style={{ color: C.subText }}>{time}</span>
-              <span className="w-[128px] shrink-0 font-mono" style={{ color: C.lightBlue }}>{r.ticket_no}</span>
+              <span className="w-[150px] shrink-0 font-mono" style={{ color: C.lightBlue }}>{r.ticket_no}</span>
               <span className="min-w-0 flex-1 truncate" style={{ color: C.text }} title={r.title}>
-                {r.timeout && <span className="mr-1 inline-flex items-center gap-0.5 rounded px-1 py-px text-[11px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>
+                {r.timeout && <span className="mr-1 inline-flex items-center gap-0.5 rounded px-1 py-px text-[12px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>
                   <AlertTriangle className="h-3 w-3" />超时
                 </span>}
                 {r.title}
@@ -855,9 +855,9 @@ function SlaMetric({ icon: Icon, name, value, color }) {
       style={{ borderColor: 'rgba(96,138,188,0.28)', background: 'rgba(18,34,52,0.45)' }}>
       <div className="flex items-center gap-1.5">
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
-        <span className="truncate text-[11px]" style={{ color: C.subText }}>{name}</span>
+        <span className="truncate text-[12px]" style={{ color: C.subText }}>{name}</span>
       </div>
-      <div className="mt-1 truncate font-mono text-[17px] font-bold tabular-nums" style={{ color }}>{value}</div>
+      <div className="mt-1 truncate font-mono text-[18px] font-bold tabular-nums" style={{ color }}>{value}</div>
     </div>
   )
 }
@@ -876,7 +876,7 @@ function SlaPanel({ sla, onDrill }) {
       axisLine: { lineStyle: { width: 13, color: [[1, 'rgba(96,138,188,0.16)']] } },
       axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
       pointer: { show: false }, anchor: { show: false },
-      title: { show: true, offsetCenter: [0, '42%'], color: C.subText, fontSize: 12 },
+      title: { show: true, offsetCenter: [0, '42%'], color: C.subText, fontSize: 13 },
       detail: {
         valueAnimation: true, offsetCenter: [0, '-6%'], formatter: '{value}%',
         color: ringColor, fontSize: 34, fontWeight: 'bold', fontFamily: 'monospace',
@@ -894,15 +894,15 @@ function SlaPanel({ sla, onDrill }) {
             onEvents={onDrill ? { click: () => onDrill({ kind: 'tickets', title: 'SLA 超时工单列表', subtitle: '超时率下钻 · 含已完结超时', filters: { slaTimeout: true } }) } : undefined} />
         </div>
         <div className="flex flex-1 flex-col justify-center gap-1.5 px-2">
-          <div className="text-[11px]" style={{ color: C.subText }}>
+          <div className="text-[12px]" style={{ color: C.subText }}>
             响应超时 {sla?.response_overdue_count ?? 0} 件 · 解决超时 {sla?.resolve_overdue_count ?? 0} 件
           </div>
           <div className="my-1 h-px" style={{ background: 'rgba(96,138,188,0.22)' }} />
-          <div className="text-[11px] font-medium" style={{ color: C.cyan }}>SLA 目标（响应 / 解决）</div>
+          <div className="text-[12px] font-medium" style={{ color: C.cyan }}>SLA 目标（响应 / 解决）</div>
           {SLA_PRIORITY_ROWS.map(([key, label]) => {
             const t = targets[key] || {}
             return (
-              <div key={key} className="flex items-center gap-2 text-[11px] leading-[15px]">
+              <div key={key} className="flex items-center gap-2 text-[12px] leading-[16px]">
                 <span className="w-[30px] shrink-0" style={{ color: C.text }}>{label}</span>
                 <span className="min-w-0 flex-1 truncate font-mono" style={{ color: C.subText }}>
                   {fmtDur(t.response)} / {fmtDur(t.resolve)}
@@ -954,7 +954,7 @@ function platformBarOption(rows) {
   ]
   // 柱端总量标注挂在堆叠末段（取整行 total），消除视线在坐标轴与柱体之间的往返
   series[series.length - 1].label = {
-    show: true, position: 'right', color: C.text, fontSize: 12,
+    show: true, position: 'right', color: C.text, fontSize: 13,
     fontFamily: 'monospace', fontWeight: 'bold',
     formatter: (p) => `${fmtInt(totals[p.dataIndex])} 件`,
   }
@@ -963,11 +963,11 @@ function platformBarOption(rows) {
     grid: { left: 8, right: 60, top: 30, bottom: 6, containLabel: true },
     legend: {
       data: series.map((s) => s.name), top: 0, right: 8, itemWidth: 12, itemHeight: 8,
-      textStyle: { color: C.subText, fontSize: 11 },
+      textStyle: { color: C.subText, fontSize: 12 },
     },
     tooltip: {
       trigger: 'axis', axisPointer: { type: 'shadow' },
-      backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 12 },
+      backgroundColor: C.tooltipBg, borderColor: C.panelBorder, textStyle: { color: C.text, fontSize: 13 },
       formatter: (ps) => {
         const r = list[ps?.[0]?.dataIndex]
         if (!r) return ''
@@ -976,11 +976,11 @@ function platformBarOption(rows) {
         return `<div style="font-weight:600;margin-bottom:4px;">${r.name}</div>${lines.join('<br/>')}`
       },
     },
-    xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: C.split } }, ...axisStyle({ fontSize: 10 }) },
+    xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: C.split } }, ...axisStyle({ fontSize: 11 }) },
     yAxis: {
       type: 'category', inverse: true, data: names,
       axisLine: { lineStyle: { color: C.axis } }, axisTick: { show: false },
-      axisLabel: { color: C.text, fontSize: 12, interval: 0, margin: 10 },
+      axisLabel: { color: C.text, fontSize: 13, interval: 0, margin: 10 },
     },
     series,
   }
@@ -1040,18 +1040,18 @@ function MarqueeBar({ latest }) {
   return (
     <div className="flex h-14 items-center gap-4 overflow-hidden rounded-md border px-5"
       style={{ background: C.panelBg, borderColor: 'rgba(255,77,79,0.35)', boxShadow: '0 0 14px rgba(255,77,79,0.10)' }}>
-      <span className="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5 text-[12px] font-medium"
+      <span className="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5 text-[13px] font-medium"
         style={{ background: 'rgba(255,77,79,0.16)', color: C.red, border: `1px solid ${C.red}66` }}>
         <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: C.red, boxShadow: `0 0 6px ${C.red}` }} />! 告警播报
       </span>
-      <div key={r.id} className="marquee-enter flex min-w-0 flex-1 items-center gap-4 text-[14px]">
+      <div key={r.id} className="marquee-enter flex min-w-0 flex-1 items-center gap-4 text-[15px]">
         <span className="shrink-0 font-mono tabular-nums" style={{ color: C.subText }}>
           {r.created_at ? r.created_at.slice(0, 19).replace('T', ' ') : '--'}
         </span>
         <span className="shrink-0 font-mono" style={{ color: C.lightBlue }}>{r.ticket_no}</span>
         <span className="min-w-0 flex-1 truncate font-medium" style={{ color: C.text }}>{r.title}</span>
         {r.timeout && (
-          <span className="shrink-0 rounded px-1.5 py-0.5 text-[11px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>
+          <span className="shrink-0 rounded px-1.5 py-0.5 text-[12px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>
             ! 超时预警
           </span>
         )}
@@ -1061,7 +1061,7 @@ function MarqueeBar({ latest }) {
         <span className="shrink-0" style={{ color: r.status === 'completed' ? C.green : C.lightBlue }}>
           状态：{r.status === 'completed' ? '✓ ' : ''}{r.status_label}
         </span>
-        <span className="shrink-0 text-[12px]" style={{ color: C.subText }}>当前节点：{r.current_node_name || '--'}</span>
+        <span className="shrink-0 text-[13px]" style={{ color: C.subText }}>当前节点：{r.current_node_name || '--'}</span>
       </div>
     </div>
   )
@@ -1117,7 +1117,7 @@ function Pager({ total, page, size, unit = '件', onChange }) {
     cursor: disabled ? 'not-allowed' : 'pointer',
   })
   return (
-    <div className="flex shrink-0 items-center justify-between border-t px-4 py-2 text-[12px]"
+    <div className="flex shrink-0 items-center justify-between border-t px-4 py-2 text-[13px]"
       style={{ borderColor: 'rgba(96,138,188,0.22)', color: C.subText }}>
       <span>共 <b className="font-mono tabular-nums" style={{ color: C.text }}>{total}</b> {unit}{pages > 1 ? ` · ${size} ${unit}/页` : ''}</span>
       {pages > 1 && (
@@ -1140,13 +1140,13 @@ function TicketTable({ rows, onRowClick }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 列头 */}
-      <div className="flex shrink-0 items-center px-3 pb-1.5 text-[12px]" style={{ color: C.subText }}>
+      <div className="flex shrink-0 items-center px-3 pb-1.5 text-[13px]" style={{ color: C.subText }}>
         <span className="w-[128px] shrink-0">创建时间</span>
         <span className="w-[150px] shrink-0">工单编号</span>
         <span className="min-w-0 flex-1 truncate">工单标题</span>
         <span className="w-[96px] shrink-0 text-center">提交团队</span>
         <span className="w-[118px] shrink-0 truncate">来源平台</span>
-        <span className="w-[60px] shrink-0 text-center">等级</span>
+        <span className="w-[64px] shrink-0 text-center">等级</span>
         <span className="w-[68px] shrink-0 text-center">状态</span>
         <span className="w-[100px] shrink-0 truncate text-right">当前节点</span>
       </div>
@@ -1159,7 +1159,7 @@ function TicketTable({ rows, onRowClick }) {
           return (
             <div key={r.id} onClick={onRowClick ? () => onRowClick(r) : undefined}
               title={onRowClick ? '点击查看工单详情' : undefined}
-              className="flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[13px] transition hover:brightness-125"
+              className="flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[14px] transition hover:brightness-125"
               style={{
                 borderColor: r.timeout ? 'rgba(255,77,79,0.5)' : 'rgba(96,138,188,0.18)',
                 background: r.timeout ? 'rgba(255,77,79,0.08)' : 'rgba(18,34,52,0.45)',
@@ -1170,14 +1170,14 @@ function TicketTable({ rows, onRowClick }) {
               <span className="w-[150px] shrink-0 font-mono" style={{ color: C.lightBlue }}>{r.ticket_no}</span>
               <span className="min-w-0 flex-1 truncate" style={{ color: C.text }}>
                 {r.timeout && (
-                  <span className="mr-1 rounded px-1 py-px text-[11px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>超时</span>
+                  <span className="mr-1 rounded px-1 py-px text-[12px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>超时</span>
                 )}
                 {r.title}
               </span>
               <span className="w-[96px] shrink-0 truncate text-center" style={{ color: C.paleBlue }}>{r.team || '--'}</span>
               <span className="w-[118px] shrink-0 truncate" style={{ color: C.subText }}>{r.platform || '--'}</span>
-              <span className="w-[60px] shrink-0 text-center">
-                <span className="inline-flex items-center rounded-full border px-1.5 py-px text-[11px]"
+              <span className="w-[64px] shrink-0 text-center">
+                <span className="inline-flex items-center rounded-full border px-1.5 py-px text-[12px]"
                   style={{ background: pill.bg, color: pill.color, borderColor: pill.border }}>
                   {r.priority === 'critical' ? '! ' : ''}{r.priority_label || '--'}
                 </span>
@@ -1208,7 +1208,7 @@ function TeamTable({ teams, onTeamClick }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 列头 */}
-      <div className="flex shrink-0 items-center px-3 pb-1.5 text-[12px]" style={{ color: C.subText }}>
+      <div className="flex shrink-0 items-center px-3 pb-1.5 text-[13px]" style={{ color: C.subText }}>
         <span className="w-[64px] shrink-0 text-center">排名</span>
         <span className="min-w-0 flex-1">团队名称</span>
         <span className="w-[96px] shrink-0 text-right">提交工单量</span>
@@ -1226,21 +1226,21 @@ function TeamTable({ teams, onTeamClick }) {
           return (
             <div key={d.name} onClick={onTeamClick ? () => onTeamClick(d) : undefined}
               title={onTeamClick ? `点击查看「${d.name}」提交的工单列表` : undefined}
-              className="flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[13px] transition hover:brightness-125"
+              className="flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[14px] transition hover:brightness-125"
               style={{
                 borderColor: champion ? 'rgba(245,200,79,0.45)' : 'rgba(96,138,188,0.18)',
                 background: champion ? 'rgba(245,200,79,0.06)' : 'rgba(18,34,52,0.45)',
               }}>
               <span className="w-[64px] shrink-0 text-center">
                 {meta ? (
-                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border font-mono text-[11px] font-bold"
+                  <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border font-mono text-[12px] font-bold"
                     style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}>{rank}</span>
                 ) : (
-                  <span className="font-mono text-[12px] tabular-nums" style={{ color: C.subText }}>{rank}</span>
+                  <span className="font-mono text-[13px] tabular-nums" style={{ color: C.subText }}>{rank}</span>
                 )}
               </span>
               <span className="min-w-0 flex-1 truncate" style={{ color: C.text }}>{d.name}</span>
-              <span className="w-[96px] shrink-0 text-right font-mono text-[15px] font-bold tabular-nums"
+              <span className="w-[96px] shrink-0 text-right font-mono text-[16px] font-bold tabular-nums"
                 style={{ color: champion ? '#F5C84F' : C.lightBlue }}>{d.value}</span>
               <span className="w-[70px] shrink-0 text-right font-mono tabular-nums" style={{ color: C.subText }}>{pct(d.value)}%</span>
               <span className="flex w-[220px] shrink-0 items-center justify-end">
@@ -1260,7 +1260,7 @@ function TeamTable({ teams, onTeamClick }) {
         })}
       </div>
       {/* 合计行 + 分页 */}
-      <div className="flex shrink-0 items-center justify-between border-t px-4 py-2 text-[12px]"
+      <div className="flex shrink-0 items-center justify-between border-t px-4 py-2 text-[13px]"
         style={{ borderColor: 'rgba(96,138,188,0.22)', color: C.subText }}>
         <span>合计 <b className="font-mono tabular-nums" style={{ color: C.text }}>{teams.length}</b> 队 ·
           提交 <b className="font-mono tabular-nums" style={{ color: C.text }}>{total}</b> 件 · 占比 100%</span>
@@ -1297,17 +1297,17 @@ function TicketDetail({ t }) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="min-w-0 text-[16px] font-bold" style={{ color: C.text }}>{t.title || '工单详情'}</span>
-        <span className="inline-flex items-center rounded-full border px-2 py-px text-[12px]"
+        <span className="min-w-0 text-[17px] font-bold" style={{ color: C.text }}>{t.title || '工单详情'}</span>
+        <span className="inline-flex items-center rounded-full border px-2 py-px text-[13px]"
           style={{ background: pill.bg, color: pill.color, borderColor: pill.border }}>
           {t.priority === 'critical' ? '! ' : ''}{t.priority_label || '--'}
         </span>
-        <span className="rounded px-2 py-px text-[12px]"
+        <span className="rounded px-2 py-px text-[13px]"
           style={{ background: 'rgba(96,138,188,0.14)', color: STATUS_COLOR[t.status] || C.subText, border: '1px solid rgba(96,138,188,0.3)' }}>
           {t.status_label || '--'}
         </span>
         {t.timeout && (
-          <span className="rounded px-2 py-px text-[12px]" style={{ background: 'rgba(255,77,79,0.16)', color: C.red, border: '1px solid rgba(255,77,79,0.45)' }}>
+          <span className="rounded px-2 py-px text-[13px]" style={{ background: 'rgba(255,77,79,0.16)', color: C.red, border: '1px solid rgba(255,77,79,0.45)' }}>
             超时预警
           </span>
         )}
@@ -1316,8 +1316,8 @@ function TicketDetail({ t }) {
         {items.map(([k, v]) => (
           <div key={k} className="flex items-baseline justify-between gap-3 border-b pb-1.5"
             style={{ borderColor: 'rgba(96,138,188,0.15)' }}>
-            <span className="shrink-0 text-[12px]" style={{ color: C.subText }}>{k}</span>
-            <span className="min-w-0 truncate text-right text-[13px] font-medium" style={{ color: C.text }}>{v}</span>
+            <span className="shrink-0 text-[13px]" style={{ color: C.subText }}>{k}</span>
+            <span className="min-w-0 truncate text-right text-[14px] font-medium" style={{ color: C.text }}>{v}</span>
           </div>
         ))}
       </div>
@@ -1360,10 +1360,10 @@ function DrillModal({ level, view, stack, tickets, truncated = false, onJump, on
         {/* 头部：层级标记 + 面包屑导航 + 副标题 + 关闭 */}
         <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5" style={{ borderColor: 'rgba(96,138,188,0.22)' }}>
           <span className="h-3.5 w-[3px] shrink-0 rounded" style={{ background: C.accent, boxShadow: `0 0 6px ${C.accent}80` }} />
-          <span className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]"
+          <span className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px]"
             style={{ color: C.subText, border: '1px solid rgba(96,138,188,0.3)' }} title="下钻层级">L{level + 1}</span>
           {crumbs.map((t, i) => (
-            <span key={i} className="flex min-w-0 items-center gap-2 text-[14px]">
+            <span key={i} className="flex min-w-0 items-center gap-2 text-[15px]">
               {i > 0 && <span className="shrink-0" style={{ color: C.subText }}>›</span>}
               <span className={i === level ? 'min-w-0 truncate font-bold' : 'min-w-0 shrink-0 cursor-pointer truncate transition hover:underline'}
                 style={{ color: i === level ? C.text : C.subText }}
@@ -1373,14 +1373,14 @@ function DrillModal({ level, view, stack, tickets, truncated = false, onJump, on
               </span>
             </span>
           ))}
-          {view.subtitle && <span className="hidden shrink-0 text-[11px] lg:inline" style={{ color: C.subText }}>{view.subtitle}</span>}
+          {view.subtitle && <span className="hidden shrink-0 text-[12px] lg:inline" style={{ color: C.subText }}>{view.subtitle}</span>}
           <button onClick={close} title="关闭（ESC）"
             className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded border text-[13px] transition hover:brightness-150"
             style={{ borderColor: 'rgba(96,138,188,0.4)', color: C.subText }}>✕</button>
         </div>
         {/* 主体（截断时团队/工单视图均提示：团队数据由下钻工单集聚合，同为截断口径） */}
         {truncated && view.kind !== 'detail' && (
-          <div className="shrink-0 px-4 pt-2 text-[11px]" style={{ color: C.orange }}>
+          <div className="shrink-0 px-4 pt-2 text-[12px]" style={{ color: C.orange }}>
             工单量较大，弹窗仅基于最近 2000 件展示（面板统计数字为全量口径）
           </div>
         )}
