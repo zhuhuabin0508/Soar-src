@@ -2,7 +2,7 @@
  * 对话顶部工具栏（对标 new-api Playground 工具栏）
  *
  * 左侧：会话标题（大字号）+ 引擎药丸标签
- * 右侧：[⚙ N] [📝 System Prompt] [🗑 清空]（模型切换已迁至底部输入卡片）
+ * 右侧：[⚙ N] [📝 System Prompt] [🗑 清空历史]（模型切换已迁至底部输入卡片）
  *
  * Props:
  * - agent: 当前选中智能体对象
@@ -10,11 +10,11 @@
  * - overrides: 当前 override 配置
  * - updateOverrides: (updater) => void
  * - llmConfigs: LLM 配置列表
- * - onClear: () => void  清空对话回调
+ * - onClearHistory: () => void  清空该智能体全部历史会话回调（与「新建会话」严格区分）
  * - onToggleSystemPrompt: () => void
  * - showSystemPrompt: SystemPromptEditor 是否展开
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Eraser, FileText, SlidersHorizontal } from 'lucide-react'
 import ParamPanel from './ParamPanel'
 import {
@@ -29,11 +29,22 @@ export default function ChatToolbar({
   overrides,
   updateOverrides,
   llmConfigs = [],
-  onClear,
+  onClearHistory,
   onToggleSystemPrompt,
   showSystemPrompt = false,
 }) {
   const [confirmClear, setConfirmClear] = useState(false)
+  // 二次确认超时定时器：组件卸载或重复点击时清理，避免定时器叠加/卸载后 setState
+  const confirmTimerRef = useRef(null)
+
+  const clearConfirmTimer = () => {
+    if (confirmTimerRef.current) {
+      clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = null
+    }
+  }
+
+  useEffect(() => clearConfirmTimer, [])
 
   if (!agent) return null
 
@@ -56,15 +67,20 @@ export default function ChatToolbar({
     updateOverrides((prev) => ({ ...prev, params: nextParams }))
   }
 
-  // 清空对话：二次确认
+  // 清空全部历史对话：二次确认（与「新建会话」区分，此操作不可恢复）
   const handleClear = () => {
     if (!confirmClear) {
+      clearConfirmTimer()
       setConfirmClear(true)
-      setTimeout(() => setConfirmClear(false), 3000)
+      confirmTimerRef.current = setTimeout(() => {
+        confirmTimerRef.current = null
+        setConfirmClear(false)
+      }, 3000)
       return
     }
+    clearConfirmTimer()
     setConfirmClear(false)
-    onClear?.()
+    onClearHistory?.()
   }
 
   return (
@@ -130,7 +146,7 @@ export default function ChatToolbar({
           )}
         </button>
 
-        {/* 清空对话（二次确认）：灰色次要按钮，不抢视觉 */}
+        {/* 清空全部历史对话（二次确认）：灰色次要按钮，不抢视觉 */}
         <button
           type="button"
           onClick={handleClear}
@@ -140,10 +156,10 @@ export default function ChatToolbar({
               ? 'border-destructive/50 bg-destructive/10 text-destructive'
               : 'border-transparent bg-transparent text-muted-foreground hover:bg-muted hover:text-muted-foreground'
           }`}
-          title={confirmClear ? '再点一次确认清空' : '清空当前对话（参数保留）'}
+          title={confirmClear ? '再点一次确认清空全部历史对话' : '清空该智能体的全部历史对话（不可恢复，参数保留）'}
         >
           <Eraser className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{confirmClear ? '确认清空' : '清空'}</span>
+          <span className="hidden sm:inline">{confirmClear ? '确认清空历史' : '清空历史'}</span>
         </button>
       </div>
     </div>

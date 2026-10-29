@@ -834,6 +834,110 @@ def run_lightweight_migrations(engine) -> None:
             "chat_messages",
             {"user_id": "INTEGER"},
         )
+        # chat_sessions 新增软删除墓碑：删除会话时保留记录，防止其它浏览器在途的
+        # 流式请求落库时把已删除会话重新复活（列表只返回 deleted_at IS NULL 的会话）
+        ensure_columns(
+            engine,
+            "chat_sessions",
+            {"deleted_at": "TIMESTAMP"},
+        )
+        # chat_sessions 索引补建：create_all 只在建表时创建索引，不会给已存在的
+        # 老表补建，需在此显式补齐（列表分页排序 + ON CONFLICT 依赖的唯一索引）
+        try:
+            with engine.begin() as conn:
+                # 会话列表固定按 (agent_id, user_id) 过滤后 updated_at 倒序
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_chat_sessions_agent_user_updated "
+                    "ON chat_sessions (agent_id, user_id, updated_at)"
+                ))
+                # upsert / 删除回填的 ON CONFLICT (agent_id, user_id, session_id)
+                # 依赖该唯一索引；若历史数据已有重复行则创建失败，仅告警不阻断启动
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_session_owner "
+                    "ON chat_sessions (agent_id, user_id, session_id)"
+                ))
+                logger.info("轻量迁移: chat_sessions 索引已确认存在 (agent_user_updated / uq_chat_session_owner)")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("chat_sessions 索引补建失败: %s", exc)
+        # chat_messages 历史归属回填：user_id 列引入前的旧消息没有归属，
+        # 服务端所有查询按 user_id 过滤后这些消息对任何账号都不可见，
+        # 造成「有本地缓存的浏览器显示、新浏览器缺失」的跨端历史不一致。
+        # 回填顺序：
+        # 1) 会话元数据（chat_sessions）已有归属的，按 (agent_id, session_id) 对齐；
+        # 2) 其余无主消息归属到 system_configs.chat_legacy_owner_id 指定的
+        #    接管账号（部署方显式配置的一次性决策；未配置则告警并保留 NULL）。
+        try:
+            insp_cm = inspect(engine)
+            if insp_cm.has_table("chat_messages"):
+                with engine.begin() as conn:
+                    attributed = conn.execute(text(
+                        "UPDATE chat_messages m SET user_id = s.user_id "
+                        "FROM chat_sessions s "
+                        "WHERE m.user_id IS NULL "
+                        "AND s.agent_id = m.agent_id AND s.session_id = m.session_id"
+                    )).rowcount
+                    if attributed:
+                        logger.info(
+                            "轻量迁移: 按会话元数据回填 chat_messages.user_id %s 行", attributed
+                        )
+                    legacy_uid = 0
+                    if insp_cm.has_table("system_configs"):
+                        legacy_row = conn.execute(text(
+                            "SELECT value FROM system_configs WHERE key = 'chat_legacy_owner_id'"
+                        )).first()
+                        if legacy_row and legacy_row[0]:
+                            try:
+                                legacy_uid = int(str(legacy_row[0]).strip())
+                            except (TypeError, ValueError):
+                                logger.warning(
+                                    "轻量迁移: chat_legacy_owner_id 配置非法: %r", legacy_row[0]
+                                )
+                    orphan = conn.execute(text(
+                        "SELECT count(*) FROM chat_messages WHERE user_id IS NULL"
+                    )).scalar() or 0
+                    if legacy_uid > 0 and orphan:
+                        owner_exists = conn.execute(
+                            text("SELECT id FROM users WHERE id = :uid"), {"uid": legacy_uid}
+                        ).first() if insp_cm.has_table("users") else None
+                        if owner_exists:
+                            taken = conn.execute(text(
+                                "UPDATE chat_messages SET user_id = :uid WHERE user_id IS NULL"
+                            ), {"uid": legacy_uid}).rowcount
+                            logger.info(
+                                "轻量迁移: %s 行无主消息已归属到接管账号 uid=%s", taken, legacy_uid
+                            )
+                            orphan = 0
+                        else:
+                            logger.warning(
+                                "轻量迁移: chat_legacy_owner_id=%s 对应用户不存在，跳过无主消息回填",
+                                legacy_uid,
+                            )
+                    if orphan:
+                        # 一致性校验：无主消息对所有账号不可见，提示部署方处理
+                        logger.warning(
+                            "轻量迁移: chat_messages 存在 %s 行无归属(user_id IS NULL)消息，"
+                            "对所有账号不可见；请在 system_configs 配置 chat_legacy_owner_id 后重启回填",
+                            orphan,
+                        )
+                    else:
+                        # 无主消息清零后收紧约束：后续写入必须携带归属
+                        # （所有插入路径 persist_new_messages 均显式带 user_id）。
+                        # 先检查当前列定义，已是 NOT NULL 时跳过——该 ALTER 语句
+                        # 会加 ACCESS EXCLUSIVE 锁并重新校验全表，不应每次启动重复执行。
+                        col_def = next(
+                            (
+                                c for c in insp_cm.get_columns("chat_messages")
+                                if c["name"] == "user_id"
+                            ),
+                            None,
+                        )
+                        if col_def and col_def.get("nullable", True):
+                            conn.execute(text(
+                                'ALTER TABLE chat_messages ALTER COLUMN "user_id" SET NOT NULL'
+                            ))
+                            logger.info("轻量迁移: chat_messages.user_id 已收紧为 NOT NULL")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("chat_messages 归属回填失败: %s", exc)
         _backfill_agent_output_mode(engine)
         # tools 表新增声明式 HTTP 工具支持：tool_type + http_config + category + is_preset + tags
         ensure_columns(

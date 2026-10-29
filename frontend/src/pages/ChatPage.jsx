@@ -4,14 +4,18 @@
  * 左侧（~280px）：智能体导航区（搜索 / 分组 / 选中高亮 / 置顶）
  * 右侧（flex-1）：对话功能区（欢迎态 / 消息气泡 / 流式打字机 / 自适应输入）
  *
- * 会话历史使用 localStorage 持久化（按 agentId 隔离），切换智能体不串对话。
+ * 会话历史的权威来源是服务端（chat_sessions + chat_messages，按用户隔离）：
+ * 登录后自动拉取当前账号在该智能体下的全部会话与消息，因此换浏览器/换设备/
+ * 无痕模式都能看到完整历史。localStorage 只做展示层缓存（key 按用户+智能体隔离），
+ * 用于秒开与离线兜底。切换智能体 / 切换会话都不串上下文，「新建会话」只追加
+ * 空白会话，「清空历史」才删除该智能体的全部会话记录。
  * 流式输出复用 AgentEditor 的 SSE 解析逻辑（Hermes 引擎）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   MessageSquare, Sparkles, Settings, Pin, MapPin, Brain, ScrollText, Paperclip, Check,
   X, Loader2, AlertTriangle, Sheet, FileText, File, Flag, Wrench, Download,
-  ChevronDown, ChevronRight, HelpCircle, ArrowUp,
+  ChevronDown, ChevronRight, HelpCircle, ArrowUp, Trash2,
 } from 'lucide-react'
 import { agents as agentsApi, agentFiles as agentFilesApi, llmConfigs as llmConfigsApi } from '../api/client'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -21,6 +25,14 @@ import {
   defaultOverride, loadOverrides, saveOverrides, buildOverride,
   countEnabledParams, isSystemPromptModified, isModelOverridden,
 } from '../hooks/useChatOverrides'
+import {
+  MAX_MESSAGES_PER_CONVERSATION,
+  clearAllConversations, createConversation, findConversation, fillConversationMessages,
+  normalizeConversations, startNewConversation, updateConversationMessages,
+} from '../utils/chatConversations'
+import { loadActiveSid, loadConversations, saveActiveSid, saveConversations } from '../utils/chatStorage'
+import { mergeServerSessions, toDisplayMessages } from '../utils/chatSync'
+import { useAuthStore } from '../store/authStore'
 import ChatToolbar from '../components/chat/ChatToolbar'
 import ModelSwitcher from '../components/chat/ModelSwitcher'
 import SystemPromptEditor from '../components/chat/SystemPromptEditor'
@@ -34,58 +46,107 @@ import ToolTimeline from '../components/chat/ToolTimeline'
 const SIDEBAR_WIDTH = 280
 const SIDEBAR_MIN = 240
 const INPUT_MAX_HEIGHT = 200
+// localStorage 持久化防抖：流式 token 期间只累积内存状态，停止更新 400ms 后再落盘，
+// 避免每个 token（60ms 一次）都 JSON.stringify 全量会话导致卡顿与配额超限。
+const PERSIST_DEBOUNCE_MS = 400
+// 服务端会话列表分页大小（后端上限 500）；消息分页大小（后端上限 2000）
+const SESSION_PAGE_SIZE = 500
+const MESSAGE_PAGE_SIZE = 500
 
-// localStorage 键
-const LS_HISTORY_PREFIX = 'soar_chat_history_'
 const LS_PINNED = 'soar_chat_pinned_agents'
 const LS_SELECTED = 'soar_chat_selected_agent'
 
 // 生成唯一消息 ID
 const genId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-// 读取智能体会话历史
-function loadHistory(agentId) {
+// 读取某智能体的本地会话列表缓存（按用户隔离；脏数据自动修正）
+function readLocalConversations(userScope, agentId) {
   try {
-    const raw = localStorage.getItem(`${LS_HISTORY_PREFIX}${agentId}`)
-    return raw ? JSON.parse(raw) : []
+    return normalizeConversations(loadConversations(localStorage, userScope, agentId))
   } catch {
     return []
   }
 }
 
-// 保存智能体会话历史
-function saveHistory(agentId, messages) {
+/** 写入本地会话缓存；返回是否成功（无痕/配额超限时由调用方决定是否提示降级） */
+function persistLocalConversations(userScope, agentId, list) {
   try {
-    // 限制存储条数，避免 localStorage 溢出
-    const trimmed = messages.slice(-200)
-    localStorage.setItem(`${LS_HISTORY_PREFIX}${agentId}`, JSON.stringify(trimmed))
+    return saveConversations(localStorage, userScope, agentId, list)
   } catch {
-    // localStorage 满了静默失败
+    // 无痕/禁用存储：静默失败，页面仍可用
+    return false
   }
 }
 
-// 会话 ID（Hermes 引擎按 (agentId, sessionId) 持久化多轮对话上下文）
-const LS_SESSION_PREFIX = 'soar_chat_session_'
-const genSessionId = () =>
-  typeof crypto !== 'undefined' && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
-
-function loadSessionId(agentId) {
-  try {
-    return localStorage.getItem(`${LS_SESSION_PREFIX}${agentId}`) || ''
-  } catch {
-    return ''
+/**
+ * 按游标分页拉取某会话的全部历史消息（新→旧逐页取，最终拼成正序）。
+ *
+ * 后端每页最多 limit 条，返回 has_more / next_before_id；这里循环到取完或
+ * 达到前端保留上限（MAX_MESSAGES_PER_CONVERSATION），避免一次请求过大。
+ */
+async function fetchDisplayMessages(agentId, sid) {
+  const collected = []
+  let beforeId = null
+  for (let page = 0; page < 10; page += 1) {
+    const data = await agentsApi.getChatSessionMessages(agentId, sid, {
+      limit: MESSAGE_PAGE_SIZE,
+      beforeId,
+    })
+    const msgs = toDisplayMessages(data?.messages)
+    // 越早的页越先展示：新页拼到已有内容前面
+    if (msgs.length > 0) collected.unshift(...msgs)
+    if (collected.length >= MAX_MESSAGES_PER_CONVERSATION) break
+    if (!data?.has_more || !data?.next_before_id) break
+    beforeId = data.next_before_id
   }
+  const trimmed =
+    collected.length > MAX_MESSAGES_PER_CONVERSATION
+      ? collected.slice(-MAX_MESSAGES_PER_CONVERSATION)
+      : collected
+  // 分页边界可能从一轮对话中间开始：丢弃缺少用户问题的那段 AI 回复，避免孤立气泡
+  const firstUser = trimmed.findIndex((m) => m.role === 'user')
+  return firstUser > 0 ? trimmed.slice(firstUser) : trimmed
 }
 
-function saveSessionId(agentId, sid) {
-  try {
-    localStorage.setItem(`${LS_SESSION_PREFIX}${agentId}`, sid)
-  } catch {
-    // ignore
+/** 分页拉取当前用户在该智能体下的全部会话元数据（返回完整快照标记） */
+async function fetchAllServerSessions(agentId) {
+  const sessions = []
+  let offset = 0
+  let complete = true
+  for (let page = 0; page < 10; page += 1) {
+    let data
+    try {
+      data = await agentsApi.listChatSessions(agentId, { limit: SESSION_PAGE_SIZE, offset })
+    } catch (err) {
+      complete = false
+      if (page === 0) throw err
+      break
+    }
+    const batch = Array.isArray(data?.sessions) ? data.sessions : []
+    sessions.push(...batch)
+    if (!data?.has_more || batch.length === 0) break
+    offset += batch.length
+    if (page === 9) complete = false
   }
+  return { sessions, complete }
 }
+
+// 会话条目的时间展示：今天显示 HH:MM，其它显示 M/D
+function formatConvTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  if (sameDay) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
 
 // 读取置顶列表
 function loadPinned() {
@@ -128,13 +189,109 @@ export default function ChatPage() {
   // ----- 置顶 -----
   const [pinnedIds, setPinnedIds] = useState(() => loadPinned())
 
-  // ----- 会话历史（按 agentId） -----
-  const [histories, setHistories] = useState({})
-  // 当前选中智能体的消息列表
-  const currentMessages = selectedAgentId ? histories[selectedAgentId] || [] : []
+  // ----- 会话列表（按 agentId 隔离）：每个会话对应独立的 session_id 与消息 -----
+  const [conversations, setConversations] = useState({})
+  // 当前活动会话 ID（按 agentId 隔离）
+  const [activeSids, setActiveSids] = useState({})
 
-  // 会话 ID（按 agentId 隔离）：Hermes 引擎多轮对话上下文持久化键
-  const [sessionIds, setSessionIds] = useState({})
+  // 当前登录用户 ID：本地缓存按「用户 + 智能体」隔离，切换账号不会串对话
+  const userId = useAuthStore((s) => s.user?.id)
+  const userScope = userId ?? ''
+  // 异步拉取服务端数据时读取最新会话状态，避免闭包陈旧
+  const conversationsRef = useRef(conversations)
+  useEffect(() => { conversationsRef.current = conversations }, [conversations])
+  // 本次页面会话内已删除的会话（key: `${agentId}:${sid}`）：
+  // 防止删除瞬间仍在途的服务端列表请求把已删会话合并回来
+  const deletedSidsRef = useRef(new Set())
+  // 活动会话的最新值（异步删除/同步回调中避免读到过期闭包）
+  const activeSidsRef = useRef(activeSids)
+  useEffect(() => { activeSidsRef.current = activeSids }, [activeSids])
+
+  // ----- 本地缓存持久化：防抖 + 脏标记，避免流式期间每个 token 都全量写 localStorage -----
+  const dirtyAgentsRef = useRef(new Set())
+  const persistTimerRef = useRef(null)
+  const storageWarnedRef = useRef(false)
+
+  const flushPersistence = useCallback(() => {
+    const ids = [...dirtyAgentsRef.current]
+    dirtyAgentsRef.current.clear()
+    for (const agentId of ids) {
+      const list = conversationsRef.current[agentId]
+      if (!Array.isArray(list)) continue
+      const ok = persistLocalConversations(userScope, agentId, list)
+      // 只在首次失败时提示，避免配额超限时刷屏；服务端仍是权威数据源
+      if (!ok && !storageWarnedRef.current) {
+        storageWarnedRef.current = true
+        toast.warning('本地缓存写入失败（可能空间不足或处于无痕模式），对话仍会保存在服务端')
+      }
+    }
+  }, [userScope])
+
+  /** 标记某智能体的会话已变更，防抖写入本地缓存（流式 token 期间不会真正落盘） */
+  const schedulePersist = useCallback((agentId) => {
+    if (agentId) dirtyAgentsRef.current.add(String(agentId))
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = null
+      flushPersistence()
+    }, PERSIST_DEBOUNCE_MS)
+  }, [flushPersistence])
+
+  // 页面隐藏/卸载前立即落盘，避免防抖窗口内的最新消息丢失
+  useEffect(() => {
+    const handleFlush = () => {
+      if (persistTimerRef.current) {
+        clearTimeout(persistTimerRef.current)
+        persistTimerRef.current = null
+      }
+      flushPersistence()
+    }
+    window.addEventListener('pagehide', handleFlush)
+    return () => {
+      window.removeEventListener('pagehide', handleFlush)
+      handleFlush()
+    }
+  }, [flushPersistence])
+
+  // 正在拉取消息的会话（key: `${agentId}:${sid}`）：防止重复点击/并发请求
+  const loadingMessagesRef = useRef(new Set())
+
+  /** 按需拉取某个会话的历史消息并填充到本地空会话（不改变 updatedAt） */
+  const loadConversationMessages = useCallback(async (agentId, sid) => {
+    if (!agentId || !sid) return
+    const key = `${agentId}:${sid}`
+    if (loadingMessagesRef.current.has(key)) return
+    loadingMessagesRef.current.add(key)
+    try {
+      const msgs = await fetchDisplayMessages(agentId, sid)
+      if (msgs.length === 0) return
+      setConversations((prev) => {
+        const list = prev[agentId] || []
+        const next = fillConversationMessages(list, sid, msgs)
+        if (next === list) return prev
+        return { ...prev, [agentId]: next }
+      })
+      schedulePersist(agentId)
+    } catch {
+      // 拉取失败：保留本地已有内容，用户可再次点击重试
+    } finally {
+      loadingMessagesRef.current.delete(key)
+    }
+  }, [schedulePersist])
+
+  // 删除请求并发保护：避免重复点击造成同一会话被删除多次 / 与流式落库竞争
+  const [deleting, setDeleting] = useState(false)
+  const deletingRef = useRef(false)
+
+  // 当前选中智能体的会话列表 / 活动会话 / 消息
+  const currentConversations = selectedAgentId ? conversations[selectedAgentId] || [] : []
+  const activeSid = selectedAgentId ? activeSids[selectedAgentId] || '' : ''
+  const currentMessages = useMemo(() => {
+    const conv =
+      findConversation(currentConversations, activeSid) || currentConversations[0]
+    return conv?.messages || []
+  }, [currentConversations, activeSid])
+
 
   // ----- 流式状态 -----
   const [streaming, setStreaming] = useState(false)
@@ -180,32 +337,146 @@ export default function ChatPage() {
     return () => { alive = false }
   }, [])
 
-  // ----- 选中智能体变化时加载历史 -----
+  // ----- 账号切换：丢弃上一账号的内存会话，按新账号重新从服务端加载 -----
+  useEffect(() => {
+    // 同步清空 ref，避免旧账号的会话被合并进新账号（异步请求返回时的读取源）
+    conversationsRef.current = {}
+    deletedSidsRef.current = new Set()
+    setConversations({})
+    setActiveSids({})
+  }, [userScope])
+
+  // ----- 选中智能体 / 账号变化时加载会话：本地缓存秒开 + 服务端完整同步 -----
   useEffect(() => {
     if (!selectedAgentId) return
+    const agentId = selectedAgentId
     try {
-      localStorage.setItem(LS_SELECTED, selectedAgentId)
+      localStorage.setItem(LS_SELECTED, agentId)
     } catch {
       // ignore
     }
-    // 从 localStorage 加载历史到内存
-    if (!histories[selectedAgentId]) {
-      const msgs = loadHistory(selectedAgentId)
-      setHistories((prev) => ({ ...prev, [selectedAgentId]: msgs }))
-    }
-    // 确保该智能体有会话 ID（无则生成并持久化）
-    if (!sessionIds[selectedAgentId]) {
-      const sid = loadSessionId(selectedAgentId) || genSessionId()
-      saveSessionId(selectedAgentId, sid)
-      setSessionIds((prev) => ({ ...prev, [selectedAgentId]: sid }))
-    }
+
+    let alive = true
+
+    // 1) 先用「用户 + 智能体」隔离的本地缓存秒开；无缓存时补一条空白会话
+    const cached = readLocalConversations(userScope, agentId)
+    const hadCache = cached.length > 0
+    const baseList = hadCache ? cached : [createConversation()]
+    schedulePersist(agentId)
+    setConversations((prev) => ({ ...prev, [agentId]: baseList }))
+    // 活动会话：沿用上次选中的会话（必须存在于列表），否则用列表首条
+    const savedSid = loadActiveSid(localStorage, userScope, agentId)
+    const sid = findConversation(baseList, savedSid) ? savedSid : baseList[0].sid
+    saveActiveSid(localStorage, userScope, agentId, sid)
+    setActiveSids((prev) => ({ ...prev, [agentId]: sid }))
+
+    // 2) 再从服务端分页拉取该账号的全部会话元数据并合并（跨浏览器/无痕恢复的关键）
+    ;(async () => {
+      let serverSessions = []
+      let complete = false
+      try {
+        const snapshot = await fetchAllServerSessions(agentId)
+        serverSessions = snapshot.sessions
+        // 只有拿到完整快照，才能把「服务端没有」判定为其它端的删除
+        complete = snapshot.complete
+      } catch {
+        // 网络异常/离线：保留本地缓存继续可用，不把不完整结果当成删除依据
+        return
+      }
+      if (!alive) return
+
+      // 过滤本次已删除的会话，避免在途响应把已删记录带回来
+      serverSessions = serverSessions.filter((s) => {
+        const remoteSid = s && typeof s.session_id === 'string' ? s.session_id : ''
+        return remoteSid && !deletedSidsRef.current.has(`${agentId}:${remoteSid}`)
+      })
+      const serverSids = new Set(
+        serverSessions.map((s) => (s && typeof s.session_id === 'string' ? s.session_id : '')).filter(Boolean)
+      )
+      const localNow = conversationsRef.current[agentId] || baseList
+      let merged = mergeServerSessions(localNow, serverSessions, {
+        allowRemoteDeletion: complete,
+      }).list
+      // 新浏览器首次登录：本地补建的空白占位会话不是真实历史，服务端有会话时直接丢弃
+      if (!hadCache && serverSids.size > 0) {
+        merged = merged.filter(
+          (conv) => conv.synced === true || (Array.isArray(conv.messages) && conv.messages.length > 0)
+        )
+      }
+      // 所有会话都被删/服务端为空时，保留一条空白会话供继续对话
+      if (merged.length === 0) merged = [createConversation()]
+      setConversations((prev) => ({ ...prev, [agentId]: merged }))
+      schedulePersist(agentId)
+
+      let nextActive = sid
+      if (!findConversation(merged, nextActive)) {
+        // 当前会话已在其它端删除：回退到列表首条，保证界面始终有有效上下文
+        nextActive = merged[0].sid
+        saveActiveSid(localStorage, userScope, agentId, nextActive)
+        setActiveSids((prev) => ({ ...prev, [agentId]: nextActive }))
+      } else if (!hadCache && !serverSids.has(sid)) {
+        // 新浏览器/无痕模式（本地无缓存）首次登录：默认打开最近一次服务端会话，
+        // 而不是停留在刚补建的空白草稿上，避免用户误以为历史记录缺失。
+        const newestServer = merged.find((c) => serverSids.has(c.sid))
+        if (newestServer) {
+          nextActive = newestServer.sid
+          saveActiveSid(localStorage, userScope, agentId, nextActive)
+          setActiveSids((prev) => ({ ...prev, [agentId]: nextActive }))
+        }
+      }
+
+      // 3) 只加载当前活动会话的消息；其它会话在用户点击切换时按需拉取，
+      //    避免新浏览器一次性对上百个会话发起请求。
+      const activeConv = findConversation(merged, nextActive)
+      if (
+        activeConv &&
+        serverSids.has(activeConv.sid) &&
+        !(Array.isArray(activeConv.messages) && activeConv.messages.length > 0)
+      ) {
+        void loadConversationMessages(agentId, activeConv.sid)
+      }
+    })()
+
     // 从 localStorage 加载 overrides（参数覆盖配置），无则用默认
     if (!overrides[selectedAgentId]) {
       const saved = loadOverrides(selectedAgentId)
       setOverrides((prev) => ({ ...prev, [selectedAgentId]: saved || defaultOverride() }))
     }
+
+    return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAgentId])
+  }, [selectedAgentId, userScope])
+
+  // ----- 登录后后台预取其它智能体的服务端会话列表（仅元数据，用于侧栏排序/完整性） -----
+  useEffect(() => {
+    if (!agentList.length) return
+    let alive = true
+    ;(async () => {
+      for (const agent of agentList) {
+        const agentId = String(agent.id || '')
+        if (!agentId || conversationsRef.current[agentId]) continue
+        try {
+          const data = await agentsApi.listChatSessions(agentId, { limit: SESSION_PAGE_SIZE })
+          if (!alive) return
+          const sessions = (Array.isArray(data?.sessions) ? data.sessions : []).filter(
+            (s) => !deletedSidsRef.current.has(`${agentId}:${s?.session_id}`)
+          )
+          if (!sessions.length) continue
+          // 这里只取第一页做侧栏排序，不是完整快照：不能据此删除本地会话
+          setConversations((prev) => {
+            if (prev[agentId]) return prev
+            const local = readLocalConversations(userScope, agentId)
+            const { list } = mergeServerSessions(local, sessions, { allowRemoteDeletion: false })
+            return { ...prev, [agentId]: list }
+          })
+          schedulePersist(agentId)
+        } catch {
+          // 单个智能体失败不影响其它
+        }
+      }
+    })()
+    return () => { alive = false }
+  }, [agentList, userScope])
 
   // ----- 中止当前流式 -----
   const abortStream = useCallback(() => {
@@ -239,39 +510,165 @@ export default function ChatPage() {
     })
   }, [])
 
-  // ----- 新建会话 / 清空对话（删除旧会话服务端记忆 + 清空本地历史 + 生成新会话 ID） -----
+  // ----- 新建会话：只追加一条空白会话并切换上下文，绝不删除已有会话 -----
+  // 注意：这里**不调用**后端 clearChatSession —— 旧会话的消息与服务端记忆都必须保留，
+  // 用户仍可在左侧「对话历史」中切回查看。
   const newConversation = useCallback(() => {
     if (!selectedAgentId) return
     if (streaming) abortStream()
-    // 旧会话的服务端记忆一并删除（真的清空，而非只清聊天框）；
-    // 删除失败不阻断——新 session_id 本身也不会加载旧历史
-    const oldSid = sessionIds[selectedAgentId]
-    if (oldSid) {
-      agentsApi
-        .clearChatSession(selectedAgentId, oldSid)
-        .catch(() => {})
+    const list = conversationsRef.current[selectedAgentId] || []
+    const { list: nextList, sid, created } = startNewConversation(list, activeSid)
+    if (!created) {
+      toast.info('当前已是空白会话，直接开始输入即可')
+      return
     }
-    // 生成新 session_id，使后端加载空历史（与新对话匹配）
-    const sid = genSessionId()
-    saveSessionId(selectedAgentId, sid)
-    setSessionIds((prev) => ({ ...prev, [selectedAgentId]: sid }))
-    setHistories((prev) => ({ ...prev, [selectedAgentId]: [] }))
-    saveHistory(selectedAgentId, [])
-    toast.success('已清空对话记忆，下次发送为全新会话')
-  }, [selectedAgentId, streaming, abortStream, sessionIds])
+    setConversations((prev) => ({ ...prev, [selectedAgentId]: nextList }))
+    schedulePersist(selectedAgentId)
+    saveActiveSid(localStorage, userScope, selectedAgentId, sid)
+    setActiveSids((prev) => ({ ...prev, [selectedAgentId]: sid }))
+    toast.success('已新建会话，历史对话已保留')
+  }, [selectedAgentId, streaming, abortStream, activeSid, userScope, schedulePersist])
 
-  // ----- 更新当前消息列表 -----
+  // ----- 切换会话（仅切换上下文，不删除任何记录） -----
+  // 若目标会话本地没有消息（如跨浏览器恢复后的会话），按需从服务端拉取。
+  const selectConversation = useCallback(
+    async (sid) => {
+      if (!selectedAgentId || !sid) return
+      const conv = findConversation(conversationsRef.current[selectedAgentId] || [], sid)
+      const hasMessages = !!conv && Array.isArray(conv.messages) && conv.messages.length > 0
+      // 已选中且本地有消息时无需重复拉取
+      if (sid === activeSid && hasMessages) return
+      if (sid !== activeSid) {
+        // 切换会话时中止当前流式，避免新会话被写入旧会话的流式结果
+        if (streaming) abortStream()
+        saveActiveSid(localStorage, userScope, selectedAgentId, sid)
+        setActiveSids((prev) => ({ ...prev, [selectedAgentId]: sid }))
+      }
+      // 本地已有消息直接展示；否则（含删除后回退到的空会话）按需分页拉取。
+      // 只填充消息、不修改 updatedAt：仅查看历史不应把旧会话顶到列表最前面。
+      if (hasMessages) return
+      await loadConversationMessages(selectedAgentId, sid)
+    },
+    [selectedAgentId, activeSid, streaming, abortStream, userScope, loadConversationMessages]
+  )
+
+  // ----- 清空全部历史（显式操作，需用户在工具栏二次确认）-----
+  // 同时清理服务端该智能体下当前用户的全部会话记忆与本地会话列表。
+  const clearAllHistory = useCallback(async () => {
+    if (!selectedAgentId || deletingRef.current) return
+    const agentId = selectedAgentId
+    // 中止流式即可：服务端删除会写墓碑，流式收尾落库时检测到墓碑会跳过，无需等待固定时长
+    if (streaming) abortStream()
+
+    deletingRef.current = true
+    setDeleting(true)
+    try {
+      await agentsApi.clearChatSessions(agentId)
+    } catch (err) {
+      // 服务端清理失败时保持本地历史不动，避免刷新后“删掉的历史又回来”
+      toast.error(`清空历史失败：${err.message || err}`)
+      return
+    } finally {
+      deletingRef.current = false
+      setDeleting(false)
+    }
+
+    const previous = conversationsRef.current[agentId] || []
+    // 记录墓碑，防止在途的服务端列表请求把已清空会话合并回来
+    for (const conv of previous) {
+      if (conv?.sid) deletedSidsRef.current.add(`${agentId}:${conv.sid}`)
+    }
+    const fresh = clearAllConversations()
+    setConversations((prev) => ({ ...prev, [agentId]: fresh }))
+    schedulePersist(agentId)
+    saveActiveSid(localStorage, userScope, agentId, fresh[0].sid)
+    setActiveSids((prev) => ({ ...prev, [agentId]: fresh[0].sid }))
+    toast.success(`已清空 ${previous.length} 个历史会话`)
+  }, [selectedAgentId, streaming, abortStream, userScope, schedulePersist])
+
+  // ----- 删除选中的历史会话（单条 / 多条） -----
+  // 与「清空历史」完全独立：只删除传入的 sid，服务端与本地缓存同步删除。
+  const deleteConversations = useCallback(async (sids) => {
+    if (!selectedAgentId || !Array.isArray(sids)) return
+    // 并发保护：同一时间只允许一次删除，避免重复点击造成同一会话被重复删除
+    if (deletingRef.current) return
+    const agentId = selectedAgentId
+    const targets = [...new Set(sids.filter((sid) => typeof sid === 'string' && sid))]
+    if (targets.length === 0) return
+    // 删除的是当前正在流式输出的会话时先中止；服务端墓碑保证流式收尾不会复活会话
+    if (streaming && targets.includes(activeSidsRef.current[agentId] || '')) {
+      abortStream()
+    }
+
+    deletingRef.current = true
+    setDeleting(true)
+    const failed = []
+    try {
+      // 每批 4 个请求，多选很多时避免瞬时打满后端
+      for (let i = 0; i < targets.length; i += 4) {
+        await Promise.all(
+          targets.slice(i, i + 4).map(async (sid) => {
+            try {
+              await agentsApi.clearChatSession(agentId, sid)
+            } catch {
+              failed.push(sid)
+            }
+          })
+        )
+      }
+    } finally {
+      deletingRef.current = false
+      setDeleting(false)
+    }
+    const deleted = new Set(targets.filter((sid) => !failed.includes(sid)))
+    if (deleted.size === 0) {
+      toast.error('删除失败，请稍后重试')
+      // 不清理选择状态，用户可直接重试
+      return
+    }
+    // 记录墓碑：过滤在途列表响应，避免刚删的会话被重新合并
+    deleted.forEach((sid) => deletedSidsRef.current.add(`${agentId}:${sid}`))
+
+    // 请求返回后重新读取最新列表/活动会话，避免使用发起时的过期状态
+    const currentList = conversationsRef.current[agentId] || []
+    const latestActive = activeSidsRef.current[agentId] || ''
+    let nextList = currentList.filter((conv) => !deleted.has(conv?.sid))
+    let nextActive = latestActive
+    if (!findConversation(nextList, nextActive)) {
+      // 删掉的是当前会话：回退到剩余首条；全部删完则补一条空白会话
+      nextList = nextList.length > 0 ? nextList : [createConversation()]
+      nextActive = nextList[0].sid
+    }
+    setConversations((prev) => ({ ...prev, [agentId]: nextList }))
+    schedulePersist(agentId)
+    if (nextActive !== latestActive) {
+      saveActiveSid(localStorage, userScope, agentId, nextActive)
+      setActiveSids((prev) => ({ ...prev, [agentId]: nextActive }))
+    }
+
+    if (failed.length > 0) {
+      toast.warning(`已删除 ${deleted.size} 个对话，${failed.length} 个删除失败`)
+    } else {
+      toast.success(`已删除 ${deleted.size} 个对话`)
+    }
+  }, [selectedAgentId, streaming, abortStream, userScope, schedulePersist])
+
+  // ----- 更新当前活动会话的消息列表（其它会话不受影响） -----
   const updateMessages = useCallback(
     (updater) => {
-      if (!selectedAgentId) return
-      setHistories((prev) => {
-        const cur = prev[selectedAgentId] || []
-        const next = typeof updater === 'function' ? updater(cur) : updater
-        saveHistory(selectedAgentId, next)
+      if (!selectedAgentId || !activeSid) return
+      setConversations((prev) => {
+        const list = prev[selectedAgentId] || []
+        const next = updateConversationMessages(list, activeSid, updater)
+        // 会话已不存在时返回原引用，不做无谓写入
+        if (next === list) return prev
         return { ...prev, [selectedAgentId]: next }
       })
+      // 不在 setState updater 内写 localStorage（流式时每个 token 都会全量序列化）；
+      // 这里只标记脏数据，由防抖定时器在流式停止后统一落盘。
+      schedulePersist(selectedAgentId)
     },
-    [selectedAgentId]
+    [selectedAgentId, activeSid, schedulePersist]
   )
 
   // ----- 更新当前智能体的 overrides（参数覆盖配置）-----
@@ -460,13 +857,25 @@ export default function ChatPage() {
         selectedAgentId,
         messageText,
         controller.signal,
-        sessionIds[selectedAgentId] || 'default',
+        activeSid || 'default',
         overridePayload,
       )
 
       if (!resp.ok) {
         const errText = await resp.text().catch(() => '')
-        throw new Error(errText || `HTTP ${resp.status}`)
+        // 后端对已删除会话返回 409（软删除墓碑）：提示用户新建会话，
+        // 不再把消息写回被删除的会话（服务端同样会拒绝落库）。
+        let detail = errText
+        try {
+          const parsed = JSON.parse(errText)
+          detail = parsed?.detail || parsed?.message || errText
+        } catch {
+          // 非 JSON 响应体：沿用原文
+        }
+        if (resp.status === 409) {
+          toast.error(detail || '该对话已被删除，请新建会话后重试')
+        }
+        throw new Error(detail || `HTTP ${resp.status}`)
       }
 
       const reader = resp.body.getReader()
@@ -761,10 +1170,10 @@ export default function ChatPage() {
       // 刷新文件列表：智能体可能通过工具生成了输出文件（如 expand_risk_detail 的展开表）
       loadUploadedFiles()
     }
-    // 注意：sessionIds 必须在依赖里——点「清空」会生成新 session_id，
+    // 注意：activeSid 必须在依赖里——新建/切换会话会改变 session_id，
     // 缺失该依赖会让 sendText 闭包住旧值，下一句话仍带旧会话 ID 发出，
-    // 后端按旧会话加载历史，表现为"清空了聊天框但记忆还在"。
-  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, loadUploadedFiles, sessionIds])
+    // 后端按旧会话加载历史，表现为"切换了会话但上下文还串着"。
+  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, loadUploadedFiles, activeSid])
 
   // ----- 发送消息（输入框入口，读取 inputText）-----
   const sendMessage = useCallback(() => {
@@ -797,7 +1206,7 @@ export default function ChatPage() {
   const regenerateFromMsg = useCallback(
     (msgId) => {
       if (!selectedAgentId || streaming) return
-      const msgs = histories[selectedAgentId] || []
+      const msgs = currentMessages
       const aiIdx = msgs.findIndex((m) => m.id === msgId && m.role === 'assistant')
       if (aiIdx < 0) return
       // 找前面的用户消息
@@ -821,7 +1230,7 @@ export default function ChatPage() {
       // 直接调用 sendText，避免依赖 inputText state 时序
       sendText(pureText)
     },
-    [selectedAgentId, streaming, histories, updateMessages, sendText]
+    [selectedAgentId, streaming, currentMessages, updateMessages, sendText]
   )
 
   // ----- 删除单条消息 -----
@@ -838,7 +1247,7 @@ export default function ChatPage() {
   const handleEditResend = useCallback(
     (msgId, newText) => {
       if (!selectedAgentId || streaming) return
-      const msgs = histories[selectedAgentId] || []
+      const msgs = currentMessages
       const userIdx = msgs.findIndex((m) => m.id === msgId && m.role === 'user')
       if (userIdx < 0) return
       // 删除该用户消息及之后所有消息
@@ -846,7 +1255,7 @@ export default function ChatPage() {
       // 直接用新文本发送（不依赖 inputText state）
       sendText(newText)
     },
-    [selectedAgentId, streaming, histories, updateMessages, sendText]
+    [selectedAgentId, streaming, currentMessages, updateMessages, sendText]
   )
 
   // ----- 切换 delegate 分组展开 -----
@@ -885,20 +1294,17 @@ export default function ChatPage() {
   const pinnedAgents = filteredAgents
     .filter((a) => pinnedIds.includes(String(a.id)))
     .map((a) => ({ ...a, _pinned: true }))
-  // 各智能体最近一次对话时间（优先用内存中的历史，未加载的从 localStorage 读取）
+  // 各智能体最近一次对话时间（取会话列表中最新的 updatedAt；未加载的读当前用户缓存）
   const lastActiveMap = useMemo(() => {
     const map = {}
     for (const a of agentList) {
       const key = String(a.id)
-      const inMem = histories[key]
-      const msgs = Array.isArray(inMem) ? inMem : loadHistory(key)
-      const last = msgs[msgs.length - 1]
-      map[key] = last?.timestamp
-        ? new Date(last.timestamp).getTime()
-        : (last?.id ? parseInt(String(last.id).split('-')[0]) || 0 : 0)
+      const inMem = conversations[key]
+      const list = Array.isArray(inMem) ? inMem : readLocalConversations(userScope, key)
+      map[key] = list.reduce((acc, c) => Math.max(acc, c?.updatedAt || 0), 0)
     }
     return map
-  }, [agentList, histories])
+  }, [agentList, conversations, userScope])
   // 全部智能体：按最近对话时间倒序（最新对话的智能体放最上面，无对话的保持原顺序）
   const otherAgents = filteredAgents
     .filter((a) => !pinnedIds.includes(String(a.id)))
@@ -931,6 +1337,12 @@ export default function ChatPage() {
         onSearch={setSearchQuery}
         onTogglePin={togglePin}
         onNewConversation={newConversation}
+        conversations={currentConversations}
+        activeSid={activeSid}
+        onSelectConversation={selectConversation}
+        onDeleteConversations={deleteConversations}
+        deleting={deleting}
+        userScope={userScope}
       />
 
       {/* ===== 右侧主区域 ===== */}
@@ -957,7 +1369,8 @@ export default function ChatPage() {
         overrides={currentOverride}
         updateOverrides={updateOverrides}
         llmConfigs={llmConfigs}
-        onClear={newConversation}
+        onClearHistory={clearAllHistory}
+        conversationKey={activeSid}
       />
     </div>
   )
@@ -980,7 +1393,100 @@ function ChatSidebar({
   onSearch,
   onTogglePin,
   onNewConversation,
+  conversations = [],
+  activeSid = '',
+  onSelectConversation,
+  onDeleteConversations,
+  deleting = false,
+  userScope = '',
 }) {
+  // ----- 历史会话删除：选择模式 + 二次确认 -----
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedSids, setSelectedSids] = useState(() => new Set())
+  // 二次确认对象：`one:<sid>` 或 `batch`；超时自动撤销，避免误触
+  const [confirmKey, setConfirmKey] = useState('')
+  const confirmTimerRef = useRef(null)
+
+  const clearConfirm = useCallback(() => {
+    if (confirmTimerRef.current) {
+      clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = null
+    }
+    setConfirmKey('')
+  }, [])
+
+  const armConfirm = useCallback((key) => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+    setConfirmKey(key)
+    confirmTimerRef.current = setTimeout(() => {
+      confirmTimerRef.current = null
+      setConfirmKey('')
+    }, 4000)
+  }, [])
+
+  useEffect(() => () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+  }, [])
+
+  // 切换智能体 / 切换账号：退出选择模式，避免误删其它智能体或其它账号的会话
+  useEffect(() => {
+    setSelectMode(false)
+    setSelectedSids(new Set())
+    clearConfirm()
+  }, [selectedAgentId, userScope, clearConfirm])
+
+  // 列表刷新后剔除已不存在的选中项（删除/跨端同步都会触发）
+  useEffect(() => {
+    setSelectedSids((prev) => {
+      if (prev.size === 0) return prev
+      const valid = new Set(
+        [...prev].filter((sid) => conversations.some((conv) => conv?.sid === sid))
+      )
+      return valid.size === prev.size ? prev : valid
+    })
+  }, [conversations])
+
+  const toggleSelect = (sid) => {
+    setSelectedSids((prev) => {
+      const next = new Set(prev)
+      if (next.has(sid)) next.delete(sid)
+      else next.add(sid)
+      return next
+    })
+  }
+
+  const handleItemClick = (sid) => {
+    if (selectMode) {
+      toggleSelect(sid)
+      return
+    }
+    onSelectConversation?.(sid)
+  }
+
+  // 单条删除：第一次点击进入确认态，4 秒内再次点击才真正删除
+  const requestDeleteOne = (sid) => {
+    if (deleting) return
+    if (confirmKey !== `one:${sid}`) {
+      armConfirm(`one:${sid}`)
+      return
+    }
+    clearConfirm()
+    onDeleteConversations?.([sid])
+  }
+
+  // 批量删除：同样二次确认。成功后由列表刷新剔除选中项；
+  // 失败时保留选择状态，用户可直接重试（不提前清空选择）。
+  const requestDeleteSelected = () => {
+    const sids = [...selectedSids]
+    if (sids.length === 0 || deleting) return
+    if (confirmKey !== 'batch') {
+      armConfirm('batch')
+      return
+    }
+    clearConfirm()
+    onDeleteConversations?.(sids)
+  }
+
   return (
     <aside
       className="flex shrink-0 flex-col border-r border-border bg-background"
@@ -1049,6 +1555,137 @@ function ChatSidebar({
           />
         )}
       </div>
+
+      {/* 当前智能体的对话历史：每条对应一个独立会话，点击可切回查看。
+          「新建会话」只追加条目；删除支持单条删除与多选批量删除（均需二次确认），
+          与工具栏的「清空历史」是两个独立操作。 */}
+      {selectedAgentId && (
+        <div className="shrink-0 border-t border-border p-2">
+          <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <span>对话历史</span>
+            <span className="ml-auto whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 text-[10px] tabular-nums">
+              {conversations.length}
+            </span>
+            {conversations.length > 0 && (
+              <div className="flex items-center gap-1 normal-case tracking-normal">
+                {selectMode ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={requestDeleteSelected}
+                      disabled={selectedSids.size === 0 || deleting}
+                      title={confirmKey === 'batch' ? '再次点击确认删除' : '删除所选对话'}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition ${
+                        selectedSids.size === 0 || deleting
+                          ? 'cursor-not-allowed text-muted-foreground/40'
+                          : confirmKey === 'batch'
+                            ? 'bg-red-500/15 text-red-500'
+                            : 'text-red-500 hover:bg-red-500/10'
+                      }`}
+                    >
+                      {deleting
+                        ? '删除中…'
+                        : confirmKey === 'batch'
+                          ? `确认删除 ${selectedSids.size} 条`
+                          : `删除所选${selectedSids.size ? ` (${selectedSids.size})` : ''}`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectMode(false)
+                        setSelectedSids(new Set())
+                        clearConfirm()
+                      }}
+                      className="rounded px-1 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted"
+                    >
+                      取消
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectMode(true)
+                      clearConfirm()
+                    }}
+                    title="选择要删除的历史对话"
+                    className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                  >
+                    选择
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+            {conversations.length === 0 && (
+              <div className="px-2 py-1.5 text-xs text-muted-foreground">暂无历史对话</div>
+            )}
+            {conversations.map((conv) => {
+              const active = conv.sid === activeSid
+              const selected = selectedSids.has(conv.sid)
+              const confirming = confirmKey === `one:${conv.sid}`
+              return (
+                <div
+                  key={conv.sid}
+                  className={`group flex w-full items-center rounded-md text-xs transition ${
+                    active
+                      ? 'bg-primary/10 font-medium text-primary ring-1 ring-inset ring-primary/25'
+                      : 'text-foreground hover:bg-muted'
+                  }`}
+                >
+                  {selectMode && (
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={selected}
+                      aria-label={selected ? '取消选择该对话' : '选择该对话'}
+                      onClick={() => toggleSelect(conv.sid)}
+                      className={`ml-2 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border transition ${
+                        selected
+                          ? 'border-red-500 bg-red-500 text-white'
+                          : 'border-border bg-card hover:border-red-400'
+                      }`}
+                    >
+                      {selected && <Check className="h-2.5 w-2.5" />}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleItemClick(conv.sid)}
+                    title={conv.title || '新对话'}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+                  >
+                    <MessageSquare
+                      className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-primary' : 'text-muted-foreground'}`}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{conv.title || '新对话'}</span>
+                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                      {formatConvTime(conv.updatedAt)}
+                    </span>
+                  </button>
+                  {!selectMode && (
+                    <button
+                      type="button"
+                      onClick={() => requestDeleteOne(conv.sid)}
+                      disabled={deleting}
+                      title={confirming ? '再次点击确认删除' : '删除该对话'}
+                      aria-label="删除该对话"
+                      className={`mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                        confirming
+                          ? 'bg-red-500/15 text-red-500 opacity-100'
+                          : 'text-muted-foreground opacity-0 hover:bg-red-500/10 hover:text-red-500 focus-visible:opacity-100 group-hover:opacity-100'
+                      }`}
+                    >
+                      {confirming ? <Check className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* 底部入口 */}
       <div className="shrink-0 border-t border-border p-2">
@@ -1205,7 +1842,8 @@ function ChatMain({
   overrides,
   updateOverrides,
   llmConfigs,
-  onClear,
+  onClearHistory,
+  conversationKey = '',
 }) {
   const messagesEndRef = useRef(null)
   const scrollContainerRef = useRef(null)
@@ -1213,6 +1851,7 @@ function ChatMain({
   // 新消息到达用平滑滚动。解决"从其他页面进入对话停在顶部要手动下拉"的问题。
   const instantScrollRef = useRef(true)
   const prevAgentIdRef = useRef(agent?.id)
+  const prevConversationKeyRef = useRef(conversationKey)
   const prevMsgLenRef = useRef(0)
   // 记录"用户是否在底部附近"——用户上滑阅读历史时,新消息到达不强制拉回,
   // 仅在用户已在底部附近时自动跟随。底部阈值 80px,容许小波动不算"离开底部"。
@@ -1262,9 +1901,18 @@ function ChatMain({
     }
   }, [agent?.id, scrollToBottom])
 
+  // 同一智能体内切换会话：重置为跟随态并瞬时定位到该会话最新消息
+  useEffect(() => {
+    if (!conversationKey || conversationKey === prevConversationKeyRef.current) return
+    prevConversationKeyRef.current = conversationKey
+    instantScrollRef.current = true
+    isNearBottomRef.current = true
+    requestAnimationFrame(() => requestAnimationFrame(() => scrollToBottom(true)))
+  }, [conversationKey, scrollToBottom])
+
   // 组件挂载时：标记需要瞬时滚动
-  // 解决"从其他页面切回对话页"场景：ChatPage 重新挂载时 histories 为空，
-  // 历史消息异步从 localStorage 加载，messages 从 [] 变为非空时需要强制滚动到底部
+  // 解决"从其他页面切回对话页"场景：ChatPage 重新挂载时会话列表从 localStorage 异步加载，
+  // messages 从 [] 变为非空时需要强制滚动到底部
   useEffect(() => {
     instantScrollRef.current = true
   }, [])
@@ -1353,7 +2001,7 @@ function ChatMain({
         overrides={overrides}
         updateOverrides={updateOverrides}
         llmConfigs={llmConfigs}
-        onClear={onClear}
+        onClearHistory={onClearHistory}
         onToggleSystemPrompt={() => setShowSystemPrompt((v) => !v)}
         showSystemPrompt={showSystemPrompt}
       />

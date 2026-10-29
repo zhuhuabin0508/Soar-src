@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from app.core.timezone import beijing_now
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -201,11 +202,92 @@ def _normalize_output_mode(raw: str | None, *, default: str) -> str:
     return "chat"
 
 
+# 会话 ID 仅允许常见安全字符：前端 crypto.randomUUID 生成，外部调用方也可能自定义
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+
+
 def _normalize_session_id(session_id: str | None) -> str:
     sid = (session_id or "default").strip() or "default"
-    if len(sid) > 64:
-        raise HTTPException(status_code=400, detail="session_id 超过 64 字符")
+    if not _SESSION_ID_RE.fullmatch(sid):
+        raise HTTPException(
+            status_code=400,
+            detail="session_id 仅允许 1-64 位字母、数字、点、下划线、冒号或短横线",
+        )
     return sid
+
+
+def _mark_chat_sessions_deleted(
+    db,
+    agent_id: int,
+    user_id: int,
+    session_id: str | None = None,
+    now=None,
+) -> None:
+    """给会话写软删除墓碑（不物理删除 chat_sessions），供后续请求识别“已删除”。
+
+    两条 SQL：
+    1. 已有会话元数据置 ``deleted_at``；
+    2. 仅有消息、尚无元数据的旧会话用 ``INSERT ... SELECT ... ON CONFLICT`` 补墓碑
+       （并发下已存在则直接更新为删除态）。
+
+    墓碑用于阻止另一浏览器在途的流式请求在删除之后把会话重新写入/复活。
+    """
+    from sqlalchemy import func, literal, select as sa_select, update as sa_update
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from app.models.chat_message import ChatMessage
+    from app.models.chat_session import ChatSession
+
+    moment = now or beijing_now()
+    session_filters = [
+        ChatSession.agent_id == agent_id,
+        ChatSession.user_id == user_id,
+    ]
+    message_filters = [
+        ChatMessage.agent_id == agent_id,
+        ChatMessage.user_id == user_id,
+    ]
+    if session_id is not None:
+        session_filters.append(ChatSession.session_id == session_id)
+        message_filters.append(ChatMessage.session_id == session_id)
+
+    db.execute(
+        sa_update(ChatSession)
+        .where(*session_filters, ChatSession.deleted_at.is_(None))
+        .values(deleted_at=moment)
+    )
+    source = (
+        sa_select(
+            ChatMessage.agent_id,
+            ChatMessage.user_id,
+            ChatMessage.session_id,
+            literal("").label("title"),
+            func.min(ChatMessage.created_at).label("created_at"),
+            func.max(ChatMessage.created_at).label("updated_at"),
+            literal(moment).label("deleted_at"),
+        )
+        .where(*message_filters)
+        .group_by(ChatMessage.agent_id, ChatMessage.user_id, ChatMessage.session_id)
+    )
+    db.execute(
+        pg_insert(ChatSession)
+        .from_select(
+            [
+                "agent_id",
+                "user_id",
+                "session_id",
+                "title",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+            ],
+            source,
+        )
+        .on_conflict_do_update(
+            index_elements=["agent_id", "user_id", "session_id"],
+            set_={"deleted_at": moment},
+        )
+    )
 
 
 def _incoming_publish_status(body: AgentBase, *, default: str) -> str:
@@ -830,6 +912,15 @@ async def chat_agent(
     from app.platform.agent_runtime import sanitize_override
 
     session_id = _normalize_session_id(body.session_id)
+    # 已被删除（软删除墓碑）的会话不允许继续发送：否则另一浏览器在删除后
+    # 仍能写入消息/会话元数据，导致已删除的对话“复活”。前端收到 409 后提示新建会话。
+    from app.platform.chat_history import is_chat_session_deleted
+
+    if is_chat_session_deleted(db, agent_id, int(current_user.id), session_id):
+        raise HTTPException(
+            status_code=409,
+            detail="该对话已被删除，请新建会话后重试",
+        )
     run = AgentRun(
         db=db,
         agent=agent,
@@ -848,6 +939,82 @@ async def chat_agent(
     )
 
 
+@router.get("/{agent_id}/chat/sessions")
+async def list_chat_sessions(
+    agent_id: int,
+    limit: int = Query(500, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("agent", "execute")),
+):
+    """分页列出当前用户在该智能体下未删除的会话（新→旧）。
+
+    会话元数据随每轮对话落库（chat_sessions），因此同一账号在任意浏览器
+    登录后都能拿到完整列表；早期只有消息没有元数据的会话会被自动补建。
+
+    返回 ``has_more`` 告知调用方是否还有下一页（按 offset 继续拉取），
+    调用方只有拿到完整快照后，才能把「服务端不存在」判定为其它端的删除。
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    from app.platform.chat_history import list_chat_sessions as _list_sessions, serialize_session
+
+    # helper 内部多取一条用于 has_more 判断
+    rows = _list_sessions(db, agent_id, int(current_user.id), limit=limit, offset=offset)
+    has_more = len(rows) > limit
+    sessions = [serialize_session(r) for r in rows[:limit]]
+    return {"sessions": sessions, "has_more": has_more}
+
+
+@router.get("/{agent_id}/chat/sessions/{session_id}/messages")
+async def get_chat_session_messages(
+    agent_id: int,
+    session_id: str,
+    limit: int = Query(500, ge=1, le=2000),
+    before_id: int | None = Query(None, ge=1, description="只取 id 小于该值的历史消息"),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("agent", "execute")),
+):
+    """分页拉取指定会话的历史消息（用于跨浏览器恢复正常对话内容）。
+
+    返回按时间正序的消息列表，assistant 的工具调用与后续 tool 结果会合并成
+    前端可直接渲染的工具时间线。
+
+    分页契约：``has_more`` 表示还有更早的消息；需要继续翻页时，把
+    ``next_before_id`` 作为 ``before_id`` 再次请求（按 id 倒序取更早一页）。
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    sid = _normalize_session_id(session_id)
+
+    from app.models.chat_message import ChatMessage
+    from app.platform.chat_history import to_display_messages
+
+    query = db.query(ChatMessage).filter(
+        ChatMessage.agent_id == agent_id,
+        ChatMessage.session_id == sid,
+        ChatMessage.user_id == current_user.id,
+    )
+    if before_id:
+        query = query.filter(ChatMessage.id < before_id)
+    # 多取一条判断是否还有更早的消息
+    rows = query.order_by(ChatMessage.id.desc()).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+    rows.reverse()
+    next_before_id = rows[0].id if has_more and rows else None
+    return {
+        "session_id": sid,
+        "messages": to_display_messages(rows),
+        "has_more": has_more,
+        "next_before_id": next_before_id,
+    }
+
+
 @router.delete("/{agent_id}/chat/session")
 async def clear_chat_session(
     agent_id: int,
@@ -857,8 +1024,8 @@ async def clear_chat_session(
 ):
     """清空指定会话的服务端记忆（删除该会话持久化的全部消息记录）。
 
-    前端「清空对话」时携带旧 session_id 调用：旧消息从库中删除，
-    随后前端换新 session_id 开启全新会话（load_chat_history 为空）。
+    用于「删除单个会话」场景。注意：「新建会话」只换新的 session_id，
+    不会调用本接口；「清空历史」使用 DELETE /{agent_id}/chat/sessions。
     """
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if agent is None:
@@ -868,6 +1035,9 @@ async def clear_chat_session(
     from sqlalchemy import delete as sa_delete
     from app.models.chat_message import ChatMessage
 
+    # 先写软删除墓碑（保留会话元数据但标记 deleted_at），再删消息：
+    # 墓碑阻止其它浏览器仍在途的流式请求在删除后把该会话写回来。
+    _mark_chat_sessions_deleted(db, agent_id, int(current_user.id), session_id=sid)
     deleted = db.execute(
         sa_delete(ChatMessage).where(
             ChatMessage.agent_id == agent_id,
@@ -889,6 +1059,48 @@ async def clear_chat_session(
     )
 
     return {"deleted": deleted, "session_id": sid}
+
+
+@router.delete("/{agent_id}/chat/sessions")
+async def clear_all_chat_sessions(
+    agent_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("agent", "execute")),
+):
+    """清空该智能体下当前用户的全部会话记忆（所有 session_id）。
+
+    仅供前端「清空历史」显式调用；「新建会话」只生成新的 session_id，
+    不会调用本接口，因此不会删除任何已存在的历史会话。
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    from sqlalchemy import delete as sa_delete
+    from app.models.chat_message import ChatMessage
+
+    # 为全部会话写软删除墓碑（含只有消息、尚无元数据的旧会话），再删消息
+    _mark_chat_sessions_deleted(db, agent_id, int(current_user.id))
+    deleted = db.execute(
+        sa_delete(ChatMessage).where(
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.user_id == current_user.id,
+        )
+    ).rowcount
+    db.commit()
+
+    from app.core.audit import log_audit
+    log_audit(
+        db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="agent.chat_sessions.clear_all",
+        resource_type="agent",
+        resource_id=str(agent_id),
+        detail=f"清空全部会话记忆: 删除 {deleted} 条消息",
+    )
+
+    return {"deleted": deleted}
 
 
 async def _resume_workflow_run(agent_id: int, run_id: str, body: ResumeRequest, db: Session, current_user):

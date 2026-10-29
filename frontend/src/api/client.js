@@ -11,6 +11,7 @@
 //   feedbackApi       系统反馈：提交/附件/我的反馈/详情/回复/状态/批量
 
 import { toast } from '../store/toastStore'
+import { purgeChatCaches } from '../utils/chatStorage'
 
 const BASE_URL = '/api/v1'
 
@@ -116,6 +117,9 @@ export async function request(path, options = {}) {
         window.__SOAR_AUTH_EXPIRED__ = true
         localStorage.removeItem('soar_token')
         localStorage.removeItem('soar_user')
+        // 对话缓存含登录用户的私有对话内容：凭证失效时一并清除，
+        // 防止跳转登录页前后残留对话记录被后续使用者看到
+        purgeChatCaches(localStorage)
         setTimeout(() => {
           // 用 toast 替代 window.alert，避免阻塞 + 统一视觉
           toast.warning('登录已过期或认证失效，请重新登录')
@@ -272,11 +276,28 @@ export const agents = {
     })
     return resp
   },
-  // 清空会话的服务端记忆（删除该会话持久化的全部消息记录，随后换新 session_id 开始全新会话）
+  // 清空单个会话的服务端记忆（「删除当前会话」场景；「新建会话」不使用此接口）
   clearChatSession: (id, sessionId) =>
     request(`/agents/${id}/chat/session?session_id=${encodeURIComponent(sessionId || 'default')}`, {
       method: 'DELETE',
     }),
+  // 清空该智能体下当前用户的全部会话记忆（仅「清空历史」入口调用）
+  clearChatSessions: (id) =>
+    request(`/agents/${id}/chat/sessions`, { method: 'DELETE' }),
+  // 列出该智能体下当前账号的服务端会话（跨浏览器/跨设备恢复会话列表）。
+  // 分页契约：{ sessions, has_more }；调用方需按 offset 继续拉取直到 has_more=false。
+  listChatSessions: (id, { limit = 500, offset = 0 } = {}) =>
+    request(`/agents/${id}/chat/sessions?limit=${limit}&offset=${offset}`),
+  // 拉取指定会话的服务端历史消息（跨浏览器恢复完整对话内容）。
+  // 分页契约：{ session_id, messages, has_more, next_before_id }；
+  // 需要更早消息时把 next_before_id 作为 beforeId 再次请求。
+  getChatSessionMessages: (id, sessionId, { limit = 500, beforeId = null } = {}) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (beforeId) params.set('before_id', String(beforeId))
+    return request(
+      `/agents/${id}/chat/sessions/${encodeURIComponent(sessionId || 'default')}/messages?${params.toString()}`
+    )
+  },
   executions: (id, limit = 50) =>
     request(`/agents/${id}/executions?limit=${limit}`),
   monitor: (id) => request(`/agents/${id}/monitor`),

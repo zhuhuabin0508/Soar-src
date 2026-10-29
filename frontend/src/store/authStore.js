@@ -2,6 +2,7 @@
 // 含令牌刷新定时器（在 token 过期前自动刷新，避免用户频繁重新登录）
 import { create } from 'zustand'
 import { authApi } from '../api/auth'
+import { purgeChatCaches } from '../utils/chatStorage'
 
 const TOKEN_KEY = 'soar_token'
 const USER_KEY = 'soar_user'
@@ -105,6 +106,10 @@ export const useAuthStore = create((set, get) => ({
     try {
       localStorage.removeItem(TOKEN_KEY)
       localStorage.removeItem(USER_KEY)
+      // 对话缓存包含登录用户的私有对话内容：凭证清除时一并清空，
+      // 防止同一浏览器上的后续使用者（访客）看到残留的对话记录。
+      // 缓存仅是展示层加速，下次登录后由服务端完整重建。
+      purgeChatCaches(localStorage)
     } catch {
       // ignore
     }

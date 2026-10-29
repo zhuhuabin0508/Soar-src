@@ -15,6 +15,7 @@ from app.models.audit_log import AuditLog
 from app.models.backup_record import BackupRecord
 from app.models.banned_ip import BannedIP
 from app.models.chat_message import ChatMessage
+from app.models.chat_session import ChatSession
 from app.models.deliverable import ServiceCategory, Deliverable
 from app.models.device import Device, DeviceAction
 from app.models.duty import (
@@ -103,6 +104,7 @@ __all__ = [
     "AuditLog",
     "BannedIP",
     "ChatMessage",
+    "ChatSession",
     "Notification",
     "NotificationRule",
     "Feedback",

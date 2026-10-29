@@ -221,11 +221,48 @@ class AgentRun:
             if self.persist_history:
                 try:
                     new_msgs = executor.get_new_messages() if executor is not None else []
-                    has_assistant = any(m.get("role") == "assistant" for m in new_msgs)
-                    if has_assistant and new_msgs:
+                    # 只要本轮产生了 user/assistant 消息就落库（即使模型中途失败），
+                    # 保证跨浏览器能看到该次对话，而不是凭空丢失。
+                    has_content = any(
+                        m.get("role") in ("user", "assistant") for m in new_msgs
+                    )
+                    if has_content and new_msgs:
                         with SessionLocal() as s:
-                            persist_new_messages(
-                                s, self.agent.id, self.session_id, self.user_id, new_msgs
+                            from app.platform.chat_history import (
+                                is_chat_session_deleted,
+                                upsert_chat_session,
                             )
+
+                            # 用户在其它端已删除该会话：本轮消息不再落库，
+                            # 否则会把已删除会话连同消息一起“复活”。
+                            if is_chat_session_deleted(
+                                s, self.agent.id, self.user_id, self.session_id
+                            ):
+                                logger.info(
+                                    "会话已删除，跳过本轮落库: agent=%s, session=%s",
+                                    self.agent.id,
+                                    self.session_id,
+                                )
+                            else:
+                                persist_new_messages(
+                                    s, self.agent.id, self.session_id, self.user_id, new_msgs
+                                )
+                                # 工作室预览对话（channel=test）消息仍落库以维持
+                                # 多轮上下文，但不写会话元数据，避免 preview-* 会话
+                                # 混入跨端正式历史列表
+                                if self.channel != "test":
+                                    # 同步会话列表元数据（标题/更新时间），供任意浏览器拉取
+                                    try:
+                                        upsert_chat_session(
+                                            s,
+                                            self.agent.id,
+                                            self.user_id,
+                                            self.session_id,
+                                            self.user_input,
+                                        )
+                                    except Exception:
+                                        logger.exception(
+                                            "更新会话元数据失败: session=%s", self.session_id
+                                        )
                 except Exception:
                     logger.exception("持久化对话消息失败")
