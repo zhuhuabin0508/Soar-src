@@ -32,6 +32,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.sanitizer import sanitize_text
@@ -166,16 +167,40 @@ def _group_name_map(db: Session, group_ids: set[int]) -> dict[int, str]:
 
 
 def _gen_ticket_no(db: Session) -> str:
-    """生成工单编号：TK-YYYYMMDD-XXXX（当日序号，4 位补零）。"""
+    """生成工单编号：TK-YYYYMMDD-XXXX（当日序号，4 位补零）。
+
+    取当日已用最大序号 + 1（而非当日数量 + 1）：工单可被物理删除产生断号，
+    按数量计数会追上已存在编号，触发 ticket_no 唯一约束冲突导致发起 500；
+    按最大序号续号可容忍任意断号。
+    """
     today = beijing_now().strftime("%Y%m%d")
     prefix = f"TK-{today}-"
-    count = (
-        db.query(func.count(Ticket.id))
+    max_no = (
+        db.query(func.max(Ticket.ticket_no))
         .filter(Ticket.ticket_no.like(prefix + "%"))
         .scalar()
-        or 0
     )
-    return f"{prefix}{count + 1:04d}"
+    seq = int(max_no[len(prefix):]) + 1 if max_no else 1
+    return f"{prefix}{seq:04d}"
+
+
+# 并发取号保护：多人同时发起时 max+1 可能读到相同值撞号，冲突回滚重取的次数上限
+TICKET_NO_MAX_ATTEMPTS = 5
+
+
+def _is_ticket_no_conflict(exc: IntegrityError) -> bool:
+    """判断 IntegrityError 是否为 ticket_no 唯一约束冲突（并发取号撞号）。
+
+    psycopg2：diag.constraint_name 精确给出约束名；
+    SQLite（单测）：报错文本形如 "UNIQUE constraint failed: tickets.ticket_no"。
+    其余唯一约束冲突不应误判（重试无意义，须原样抛出）。
+    """
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    constraint = getattr(diag, "constraint_name", None)
+    if constraint:
+        return constraint == "ix_tickets_ticket_no"
+    text = str(exc)
+    return "ix_tickets_ticket_no" in text or "UNIQUE constraint failed: tickets.ticket_no" in text
 
 
 def _resolve_route(
@@ -812,31 +837,54 @@ def create_ticket(
     except Exception as exc:  # noqa: BLE001
         logger.warning("工单自动研判失败（忽略，不阻塞发起）: %s", exc)
         enrichment = None
-    ticket = Ticket(
-        ticket_no=_gen_ticket_no(db),
-        title=sanitize_text(body.title).strip(),
-        flow_id=flow.id,
-        flow_name=flow.name,
-        flow_snapshot=snapshot,
-        status="completed" if end else "processing",
-        current_node_key=route_to,
-        current_node_name=target.get("name") or route_to,
-        created_by_id=current_user.id,
-        created_by_name=current_user.display_name or current_user.username,
-        priority=body.priority,
-        related_alert_id=body.related_alert_id,
-        related_alert_uuid=body.related_alert_uuid,
-        closed_at=beijing_now() if end else None,
-        # 节点停留计时起点（超时提醒按 arrived_at 计算停留时长）
-        arrived_at=None if end else beijing_now(),
-        # 发起时自动研判结果（资产匹配 + 威胁情报），随工单流转只读展示
-        enrichment_data=enrichment,
-    )
-    # 到达目标节点：初始化待处理分组（并行会签=全部会签组）
-    if not end:
-        _set_current_groups(ticket, target)
-    db.add(ticket)
-    db.flush()
+    # 并发取号保护：max+1 非原子操作，多人同时发起可能读到相同最大序号而撞号；
+    # 撞号时整体回滚（此前仅只读查询，无副作用）重新取号，最多重试 5 次
+    ticket: Ticket | None = None
+    for attempt in range(1, TICKET_NO_MAX_ATTEMPTS + 1):
+        ticket = Ticket(
+            ticket_no=_gen_ticket_no(db),
+            title=sanitize_text(body.title).strip(),
+            flow_id=flow.id,
+            flow_name=flow.name,
+            flow_snapshot=snapshot,
+            status="completed" if end else "processing",
+            current_node_key=route_to,
+            current_node_name=target.get("name") or route_to,
+            created_by_id=current_user.id,
+            created_by_name=current_user.display_name or current_user.username,
+            priority=body.priority,
+            related_alert_id=body.related_alert_id,
+            related_alert_uuid=body.related_alert_uuid,
+            closed_at=beijing_now() if end else None,
+            # 节点停留计时起点（超时提醒按 arrived_at 计算停留时长）
+            arrived_at=None if end else beijing_now(),
+            # 发起时自动研判结果（资产匹配 + 威胁情报），随工单流转只读展示
+            enrichment_data=enrichment,
+        )
+        # 到达目标节点：初始化待处理分组（并行会签=全部会签组）
+        if not end:
+            _set_current_groups(ticket, target)
+        db.add(ticket)
+        try:
+            db.flush()
+            break
+        except IntegrityError as exc:
+            db.rollback()
+            if not _is_ticket_no_conflict(exc):
+                raise
+            if attempt >= TICKET_NO_MAX_ATTEMPTS:
+                logger.error(
+                    "工单号取号连续 %s 次冲突，放弃: flow=%s operator=%s",
+                    TICKET_NO_MAX_ATTEMPTS, flow.id, current_user.username,
+                )
+                raise HTTPException(
+                    status_code=503, detail="工单号生成冲突，请稍后重试"
+                ) from exc
+            logger.warning(
+                "工单号取号冲突，回滚重取(%s/%s): flow=%s operator=%s",
+                attempt, TICKET_NO_MAX_ATTEMPTS, flow.id, current_user.username,
+            )
+    assert ticket is not None  # 循环至少执行一次
     db.add(TicketNodeRecord(
         ticket_id=ticket.id,
         node_key=start_node.get("key") or "",
