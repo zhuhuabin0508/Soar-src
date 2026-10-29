@@ -986,10 +986,15 @@ def ticket_monitor_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_monitor", "view")),
 ):
-    """工单监控大屏聚合数据（KPI / 趋势 / 分布 / 来源平台统计 / SLA / 流转节点 / 最新工单）。
+    """工单监控大屏聚合数据（KPI / 趋势 / 分布 / 团队排名 / 来源平台 / SLA / 流转节点 / 最新工单）。
 
-    数据均来自真实工单（排除归档），按大屏七个分区一次返回，前端 60s 轮询。
+    数据均来自真实工单（排除归档），按大屏七个分区一次返回，前端 15s 轮询。
     需要独立权限 ticket_monitor:view（叠加 router 级 ticket:view）。
+    提交团队排名 ``team_stats``：按各流程模板首节点「提交团队」字段聚合（按 label 定位，
+    跨模板字段 key 兼容），全流程口径，降序 ``[{name, value}]``。
+    下钻工单集 ``tickets``：大屏各分区点击弹窗逐级下钻的数据源，字段口径与各分区统计
+    严格一致（team/platform/alert_type/active_today/timeout 等）；极端存量下仅返回最近
+    2000 件并以 ``tickets_truncated`` 标记。
     处置状态流转：``flow_id`` 可指定展示的流程模板；节点序列始终读取模板**当前定义**，
     修改并重新发布模板后大屏在下次轮询自动更新。响应附 ``flows``（可选流程列表）与
     ``flow``（当前生效流程及是否自动选取）。
@@ -1077,17 +1082,52 @@ def ticket_monitor_stats(
                 m[k] = m.get(k, 0) + 1
         return [{"name": k, "value": v} for k, v in sorted(m.items(), key=lambda x: -x[1])]
 
-    def _field_of(t, key):
+    # —— 首节点语义字段定位（按 label 匹配，跨模板 key 兼容）——
+    # 不同模板同一语义字段的 key 可能不同（告警名称 alert_type/alert_name、提交团队 f10），
+    # 按 label 在模板首节点定义中定位字段 key；旧工单发起时的模板若无该字段则取不到值（口径自然正确）。
+    # all_flows 在此提前查询，下方流转统计段复用，避免重复查库。
+    all_flows = db.query(TicketFlow).order_by(TicketFlow.id).all()
+    flow_by_id = {f.id: f for f in all_flows}
+
+    def _start_field_key(flow, labels=(), key_aliases=()):
+        node = get_start_node(flow.nodes or {}) if flow else None
+        for fld in (node or {}).get("fields") or []:
+            if isinstance(fld, dict) and fld.get("key") and (
+                str(fld.get("label") or "") in labels or fld["key"] in key_aliases
+            ):
+                return fld["key"]
+        return None
+
+    # 语义名 → 各流程首节点字段 key（提交团队 / 告警平台 / 告警名称 / 源 IP）
+    flow_start_keys: dict[int, dict] = {
+        f.id: {
+            "team": _start_field_key(f, labels=("提交团队",)),
+            "platform": _start_field_key(f, labels=("告警平台", "来源平台"), key_aliases=("alert_platform",)),
+            "alert_type": _start_field_key(
+                f, labels=("告警名称", "告警类型", "事件类型"), key_aliases=("alert_type", "alert_name")
+            ),
+            "src_ip": _start_field_key(
+                f, labels=("源IP地址", "源 IP 地址", "主机IP地址"), key_aliases=("src_ip", "host_ip")
+            ),
+        }
+        for f in all_flows
+    }
+
+    def _start_value(t, name):
+        """读工单发起（create）记录的首节点字段值；语义字段 key 按流程模板 label 定位。"""
         rec = first_record.get(t.id)
-        return (rec.field_values or {}).get(key) if rec else None
+        if not rec:
+            return None
+        key = flow_start_keys.get(t.flow_id, {}).get(name)
+        return (rec.field_values or {}).get(key) if key else None
 
     priority_dist = _count_by(tickets, lambda t: t.priority)
-    type_dist = _count_by(tickets, lambda t: _field_of(t, "alert_type"))
+    type_dist = _count_by(tickets, lambda t: _start_value(t, "alert_type"))
 
     # —— 来源平台统计：工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决（口径与顶部 KPI 一致）——
     platform_rows: dict[str, dict] = {}
     for t in tickets:
-        platform = _field_of(t, "alert_platform")
+        platform = _start_value(t, "platform")
         if not platform:
             continue
         row = platform_rows.setdefault(platform, {
@@ -1108,6 +1148,8 @@ def ticket_monitor_stats(
         elif t.status == "completed":
             row["completed"] += 1
     platform_stats = sorted(platform_rows.values(), key=lambda r: -r["total"])
+    # —— 提交团队排名（大屏团队排名条）：按各流程首节点「提交团队」字段聚合，全流程口径 ——
+    team_stats = _count_by(tickets, lambda t: _start_value(t, "team"))
     severity_status = []
     for p in ("critical", "high", "medium", "low"):
         row = {"name": PRIORITY_LABELS.get(p, p), "processing": 0, "completed": 0, "cancelled": 0}
@@ -1148,11 +1190,10 @@ def ticket_monitor_stats(
 
     # —— 处置状态流转：可指定流程（?flow_id=）或自动选取（进行中工单最多 / 最新）——
     # 节点序列始终读取流程模板当前定义（而非工单发起时的旧快照），模板修改重新发布后自动生效
+    # （all_flows / flow_by_id 已在首节点字段定位段查询，此处复用）
     flow_count: dict[int, int] = {}
     for t in processing:
         flow_count[t.flow_id] = flow_count.get(t.flow_id, 0) + 1
-    all_flows = db.query(TicketFlow).order_by(TicketFlow.id).all()
-    flow_by_id = {f.id: f for f in all_flows}
     auto_flow_id = (
         max(flow_count, key=flow_count.get)
         if flow_count
@@ -1202,12 +1243,54 @@ def ticket_monitor_stats(
             "remind_count": t.remind_count or 0,
         })
 
+    # —— 下钻工单集（大屏各分区弹窗逐级下钻的数据源）——
+    # 字段口径与各分区统计严格一致：team/platform/alert_type 与团队排名、来源平台、
+    # 类型分布同源（首节点语义字段）；active_today 与 KPI「处理中（今日活跃）」一致；
+    # timeout 与 SLA 超时预警一致；nodeKey/closedAll 与流转节点停留/已完结计数一致
+    # （前端按 flow_id + current_node_key 过滤）。上限保护：极端存量下仅返回最近创建的工单。
+    drill_limit = 2000
+    drill_source = sorted(tickets, key=lambda x: x.created_at or now, reverse=True)
+    drill_truncated = len(drill_source) > drill_limit
+    drill_tickets = []
+    for t in drill_source[:drill_limit]:
+        ev = sla_eval[t.id]
+        drill_tickets.append({
+            "id": t.id,
+            "ticket_no": t.ticket_no,
+            "title": t.title,
+            "flow_id": t.flow_id,
+            "priority": t.priority,
+            "priority_label": PRIORITY_LABELS.get(t.priority, t.priority),
+            "status": t.status,
+            "status_label": STATUS_LABELS.get(t.status, t.status),
+            "team": _start_value(t, "team"),
+            "platform": _start_value(t, "platform"),
+            "alert_type": _start_value(t, "alert_type"),
+            "src_ip": _start_value(t, "src_ip"),
+            "current_node_key": t.current_node_key,
+            "current_node_name": t.current_node_name,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+            # SLA 超时预警（进行中工单超目标）
+            "timeout": ev["timeout"],
+            # 今日活跃（进行中且今日有提交流转），与 KPI processing_active 口径一致
+            "active_today": t.status == "processing" and t.id in today_submit_ids,
+            "response_minutes": ev["response_minutes"],
+            "resolve_minutes": ev["resolve_minutes"],
+        })
+
     return {
         "kpi": kpi,
         "trend": trend,
         "dist": {"priority": priority_dist, "type": type_dist},
         # 来源平台统计表：各平台 工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决
         "platform_stats": platform_stats,
+        # 提交团队排名：各流程首节点「提交团队」字段聚合（降序 [{name, value}]）
+        "team_stats": team_stats,
+        # 下钻工单集：各分区点击弹窗逐级下钻的数据源（最新在前；
+        # tickets_truncated=True 时仅含最近 2000 件，前端弹窗内提示）
+        "tickets": drill_tickets,
+        "tickets_truncated": drill_truncated,
         "severity_status": severity_status,
         "sla": sla,
         # 大屏流程切换器数据：全部流程模板（含草稿/停用标记）
