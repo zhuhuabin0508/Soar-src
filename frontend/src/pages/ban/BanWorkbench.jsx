@@ -1,9 +1,11 @@
-// 封禁工作台（已封禁 IP 模块）：状态筛选 + 来源标识（自动/审批/手动）+ 手动封禁 + 解封 + 删除（admin）
+// 封禁工作台（已封禁 IP 模块）：状态筛选 + 来源标识（自动/审批/手动）+ 手动封禁（时长按天自定义）
+// + 解封 + 删除（admin）+ CSV 导入导出
 // 详情含封禁方案、智能体研判结论、审批记录、关联告警（点击跳转告警列表按 IP 过滤）
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ShieldBan, Search, Inbox, LockOpen, Loader2, RotateCw, ExternalLink, Plus, Trash2,
+  Upload, Download, Info, CheckCircle2, AlertTriangle, SkipForward,
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
@@ -24,10 +26,8 @@ const STATUS_VARIANT = {
 const LEVEL_LABELS = { critical: '严重', high: '高', medium: '中', low: '低' }
 // 封禁来源徽章：自动（工作流直接封禁）/ 审批（人工确认后封禁）/ 手动（工作台发起）/ 聊天（智能体聊天发起）/ 工单（工单流转同步）
 const SOURCE_VARIANT = { auto: 'danger', approval: 'warning', manual: 'info', chat: 'secondary', ticket: 'primary' }
-const DURATION_OPTIONS = [
-  { v: 1800, label: '30 分钟' }, { v: 3600, label: '1 小时' }, { v: 21600, label: '6 小时' },
-  { v: 43200, label: '12 小时' }, { v: 86400, label: '1 天' }, { v: 604800, label: '7 天' },
-]
+// 封禁时长快捷天数（天；也支持小数自定义输入，如 0.5 = 12 小时）
+const DURATION_PRESETS = [1, 7, 30, 90, 365]
 
 const fmtTime = (t) => (t ? String(t).replace('T', ' ').slice(0, 19) : '--')
 const fmtRemaining = (ms) => {
@@ -74,12 +74,19 @@ export default function BanWorkbench({ embedded = false }) {
   // 手动封禁弹窗
   const [manualOpen, setManualOpen] = useState(false)
   const [manualForm, setManualForm] = useState({
-    ip: '', ban_level: 'medium', ban_duration: 3600, is_permanent: false, reason: '', region: '',
+    ip: '', ban_level: 'medium', ban_duration_days: '1', is_permanent: false, reason: '', region: '',
   })
   const [manualSubmitting, setManualSubmitting] = useState(false)
   const [manualIpTouched, setManualIpTouched] = useState(false)
   // 即时校验：封禁目标（单 IP / CIDR / 范围 / 多值，不允许通配）
   const manualIpError = validateBanTarget(manualForm.ip, '封禁目标')
+
+  // CSV 导入导出
+  const [exporting, setExporting] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState(null)
+  const importFileRef = useRef(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -124,11 +131,17 @@ export default function BanWorkbench({ embedded = false }) {
     const ipMsg = validateBanTarget(manualForm.ip, '封禁目标')
     if (ipMsg) { setManualIpTouched(true); toast.error(ipMsg); return }
     if (!manualForm.reason.trim()) { toast.error('请填写封禁原因'); return }
+    // Ban duration in days (decimals allowed, e.g. 0.5 = 12h); permanent bans skip duration
+    const days = Number(manualForm.ban_duration_days)
+    if (!manualForm.is_permanent && (!Number.isFinite(days) || days <= 0)) {
+      toast.error('请填写有效的封禁时长（天）')
+      return
+    }
     setManualSubmitting(true)
     banWorkflowApi.createManualBan({
       ip: manualForm.ip.trim(),
       ban_level: manualForm.ban_level,
-      ban_duration: Number(manualForm.ban_duration) || 3600,
+      ban_duration: manualForm.is_permanent ? 3600 : Math.max(1, Math.round(days * 86400)),
       is_permanent: manualForm.is_permanent,
       reason: manualForm.reason.trim(),
       region: manualForm.region.trim(),
@@ -137,7 +150,7 @@ export default function BanWorkbench({ embedded = false }) {
         toast.success(`IP ${rec.ip} 已下发封禁（手动封禁）`)
         setManualOpen(false)
         setManualIpTouched(false)
-        setManualForm({ ip: '', ban_level: 'medium', ban_duration: 3600, is_permanent: false, reason: '', region: '' })
+        setManualForm({ ip: '', ban_level: 'medium', ban_duration_days: '1', is_permanent: false, reason: '', region: '' })
         load()
       })
       .catch((e) => toast.error(e.message || '手动封禁失败'))
@@ -159,6 +172,45 @@ export default function BanWorkbench({ embedded = false }) {
       if (detail && detail.id === r.id) setDetail(null)
     } catch (e) {
       toast.error(e.message || '删除失败')
+    }
+  }
+
+  // 导出 CSV（admin）
+  const doExport = async () => {
+    setExporting(true)
+    try {
+      await banWorkflowApi.exportBannedIpsCsv()
+      toast.success('封禁记录已导出')
+    } catch (e) {
+      toast.error(e.message || '导出失败')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  // 导入 CSV：选择文件后逐行下发封禁
+  const doImportFile = async (e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setImporting(true)
+    try {
+      const result = await banWorkflowApi.importBannedIpsCsv(file)
+      setImportResult(result)
+      setImportOpen(false)
+      load()
+    } catch (err) {
+      toast.error(err.message || '导入失败')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const doDownloadTemplate = async () => {
+    try {
+      await banWorkflowApi.downloadBannedIpTemplate()
+    } catch (e) {
+      toast.error(e.message || '下载模板失败')
     }
   }
 
@@ -241,6 +293,16 @@ export default function BanWorkbench({ embedded = false }) {
           {canEdit && (
             <Button size="sm" variant="primary" onClick={() => { setManualIpTouched(false); setManualOpen(true) }}>
               <Plus className="h-3.5 w-3.5" /> 手动封禁
+            </Button>
+          )}
+          {canEdit && (
+            <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)}>
+              <Upload className="h-3.5 w-3.5" /> 导入 CSV
+            </Button>
+          )}
+          {admin && (
+            <Button size="sm" variant="ghost" onClick={doExport} loading={exporting}>
+              <Download className="h-3.5 w-3.5" /> 导出 CSV
             </Button>
           )}
           {embedded && (
@@ -422,18 +484,35 @@ export default function BanWorkbench({ embedded = false }) {
               </CompactSelect>
             </div>
             <div>
-              <label className="mb-1 block text-xs text-muted-foreground">封禁时长</label>
-              <CompactSelect
-                block
-                size="lg"
-                value={manualForm.ban_duration}
+              <label className="mb-1 block text-xs text-muted-foreground">封禁时长（天）</label>
+              <input
+                type="number"
+                min="0.0001"
+                step="0.5"
+                className={`${inputBaseCls} h-[38px] w-full ${manualForm.is_permanent ? 'opacity-50' : ''}`}
                 disabled={manualForm.is_permanent}
-                onChange={(e) => setManualForm((f) => ({ ...f, ban_duration: Number(e.target.value) }))}
-              >
-                {DURATION_OPTIONS.map((o) => (
-                  <option key={o.v} value={o.v}>{o.label}</option>
+                value={manualForm.ban_duration_days}
+                onChange={(e) => setManualForm((f) => ({ ...f, ban_duration_days: e.target.value }))}
+              />
+              {/* 快捷天数（点击填入，仍可手动输入任意天数/小数） */}
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {DURATION_PRESETS.map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    disabled={manualForm.is_permanent}
+                    onClick={() => setManualForm((f) => ({ ...f, ban_duration_days: String(d) }))}
+                    className={`rounded border px-1.5 py-0.5 text-[11px] transition disabled:opacity-50 ${
+                      Number(manualForm.ban_duration_days) === d
+                        ? 'border-primary/50 bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {d}天
+                  </button>
                 ))}
-              </CompactSelect>
+              </div>
+              <div className="mt-1 text-[11px] text-muted-foreground">支持小数：0.5 天 = 12 小时</div>
             </div>
           </div>
           <label className="flex cursor-pointer items-center gap-2 text-sm">
@@ -467,6 +546,67 @@ export default function BanWorkbench({ embedded = false }) {
             下发后将调用封禁工具执行，记录标记为「手动封禁」，到期由定时任务自动解封。
           </div>
         </div>
+      </Modal>
+      {/* CSV 导入弹窗：格式说明 + 选择文件 */}
+      <Modal
+        open={importOpen}
+        title="导入 CSV 封禁记录"
+        maxWidth="max-w-md"
+        onClose={() => setImportOpen(false)}
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setImportOpen(false)}>取消</Button>
+            <Button variant="primary" loading={importing} onClick={() => importFileRef.current?.click()}>
+              <Upload className="h-4 w-4" /> 选择文件并导入
+            </Button>
+          </>
+        )}
+      >
+        <div className="space-y-3 text-sm">
+          <div className="flex items-start gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5 text-xs text-primary">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <div>
+              <div>格式与导出一致：IP地址, 封禁等级, 封禁时长(天), 是否永久, 封禁原因, 归属地区。</div>
+              <div>时长按天填写（支持小数，如 0.5 = 12 小时）；已在封禁中的 IP 自动跳过。</div>
+              <div>每条都会调用封禁工具实际下发，建议单次不超过 50 行。</div>
+              <button type="button" onClick={doDownloadTemplate} className="mt-1 underline hover:no-underline">下载 CSV 模板查看格式</button>
+            </div>
+          </div>
+          <input ref={importFileRef} type="file" accept=".csv" className="hidden" onChange={doImportFile} />
+        </div>
+      </Modal>
+
+      {/* CSV 导入结果弹窗 */}
+      <Modal
+        open={!!importResult}
+        title="CSV 导入结果"
+        maxWidth="max-w-md"
+        onClose={() => setImportResult(null)}
+        footer={<Button variant="primary" onClick={() => setImportResult(null)}>确定</Button>}
+      >
+        {importResult && (
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 px-3 py-2.5 text-success">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>导入成功 {importResult.imported || 0} 条</span>
+            </div>
+            {importResult.skipped > 0 && (
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <SkipForward className="h-3.5 w-3.5" /> 跳过已在封禁中的 {importResult.skipped} 条
+              </div>
+            )}
+            {importResult.errors?.length > 0 && (
+              <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5">
+                <div className="mb-1 flex items-center gap-1.5 text-warning">
+                  <AlertTriangle className="h-3.5 w-3.5" /> 错误 {importResult.errors.length} 条：
+                </div>
+                <ul className="max-h-32 space-y-0.5 overflow-y-auto text-xs text-muted-foreground">
+                  {importResult.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   )

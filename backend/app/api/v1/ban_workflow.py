@@ -5,15 +5,20 @@
 - ``GET/POST/PUT/DELETE /ban-workflow/rules``：触发规则 CRUD（修改实时生效）
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
+- ``GET /ban-workflow/banned-ips/export/csv`` / ``GET .../import/template`` /
+  ``POST .../import/csv``：封禁工作台 CSV 导入导出（封禁时长按天）
 - ``GET /ban-workflow/circuit-breaker`` / ``POST .../reset``：熔断状态查询与人工恢复
 - ``GET /ban-workflow/stats``：监控页工作流统计卡片数据
 """
+import csv
+import io
 import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -52,6 +57,36 @@ _BAN_SOURCE_LABELS = {
 }
 # 工单智能体研判建议动作中文（工单同步封禁详情的研判结论展示用）
 _TICKET_AGENT_ACTION_LABELS = {"ban": "建议封禁", "monitor": "观察监控", "ignore": "忽略（暂不处置）"}
+
+# 封禁等级（工作台口径：critical 为最高级）中文映射，CSV 导入导出用
+_LEVEL_LABELS = {"low": "低", "medium": "中", "high": "高", "critical": "严重"}
+_LEVEL_REVERSE = {v: k for k, v in _LEVEL_LABELS.items()}
+
+
+def _duration_days_label(seconds: int, is_permanent: bool) -> str:
+    """封禁时长秒数 → 天数字符串（CSV 导出用）。
+
+    保留至多 6 位小数并去掉尾零（如 43200s → ``0.5``、604800s → ``7``）；
+    6 位小数对应亚秒级精度，保证「导出 → 改行 → 重新导入」往返不产生时长漂移；
+    永久封禁返回空串（由「是否永久」列表达）。
+    """
+    if is_permanent or not seconds:
+        return ""
+    days = seconds / 86400
+    if days == int(days):
+        return str(int(days))
+    return f"{days:.6f}".rstrip("0").rstrip(".")
+
+
+def _parse_days(value: str) -> int:
+    """解析「封禁时长(天)」列 → 秒数。
+
+    支持小数（如 ``0.5`` 天 = 12 小时）；无效值抛 ``ValueError``（调用方记入行错误）。
+    """
+    days = float(value)
+    if days <= 0 or days > 36500:
+        raise ValueError(f"封禁时长天数无效: {value}")
+    return max(1, round(days * 86400))
 
 
 def _jload(raw, default=None):
@@ -777,33 +812,43 @@ class ManualBanBody(BaseModel):
     region: str = Field("", max_length=64, description="归属地区")
 
 
-@router.post("/banned-ips", status_code=201, dependencies=[Depends(require_permission("ban_workflow", "edit"))])
-def create_manual_ban(
-    body: ManualBanBody, request: Request,
-    db: Session = Depends(get_db), user: User = Depends(get_current_user),
-) -> dict:
-    """手动发起封禁：调用封禁工具下发 → 写 ban_records（ban_source=manual）→ 同步 legacy 工作台。"""
-    # 封禁目标校验：支持单 IP / CIDR / 范围 / 多值（拒绝主机名/文本/通配）
+def _issue_manual_ban(
+    db: Session, *, user: User, ip: str, ban_level: str, ban_duration: int,
+    is_permanent: bool, reason: str, region: str, client_ip: str,
+) -> BanRecord:
+    """下发一条手动封禁（校验 → 去重 → 调封禁工具 → 写 ban_records → 同步 legacy 工作台）。
+
+    单条手动封禁（``POST /banned-ips``）与 CSV 导入（``POST /banned-ips/import/csv``）
+    共用本函数；校验或下发失败抛 ``HTTPException``，由调用方决定提示或记入行错误。
+    """
     from app.core.ip_validation import validate_ban_target
 
+    # 封禁目标校验：支持单 IP / CIDR / 范围 / 多值（拒绝主机名/文本/通配）
     try:
-        ip = validate_ban_target(body.ip, "封禁目标")
+        ip = validate_ban_target(ip, "封禁目标")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     if not ip:
         # 纯空白输入经归一化后为空串：不能带着空目标去下发封禁
         raise HTTPException(status_code=422, detail="封禁目标不能为空")
+    if ban_level not in _LEVEL_LABELS:
+        raise HTTPException(status_code=400, detail="封禁等级必须为 low/medium/high/critical")
+    if not is_permanent and ban_duration <= 0:
+        raise HTTPException(status_code=400, detail="封禁时长必须大于 0")
+    if not reason:
+        raise HTTPException(status_code=400, detail="封禁原因不能为空")
+
     # 已生效的封禁不重复下发
     existing = db.query(BanRecord).filter(BanRecord.ip == ip, BanRecord.status == "active").first()
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"IP {ip} 已在封禁中（{_BAN_SOURCE_LABELS.get(existing.ban_source, '')}），请先解封再重新封禁")
 
     ban_plan = {
-        "ban_level": body.ban_level,
-        "ban_duration": body.ban_duration,
-        "is_permanent": body.is_permanent,
-        "reason": body.reason.strip(),
-        "region": body.region.strip(),
+        "ban_level": ban_level,
+        "ban_duration": ban_duration,
+        "is_permanent": is_permanent,
+        "reason": reason,
+        "region": region,
     }
     # 调封禁工具下发（失败重试 3 次由 ban_client 内实现）
     from app.workflow import ban_client
@@ -814,15 +859,15 @@ def create_manual_ban(
         raise HTTPException(status_code=502, detail="封禁工具调用失败，请稍后重试或联系管理员")
 
     now = beijing_now()
-    expire_time = None if body.is_permanent else now + timedelta(seconds=body.ban_duration)
+    expire_time = None if is_permanent else now + timedelta(seconds=ban_duration)
     record = BanRecord(
         ip=ip,
-        ban_level=body.ban_level,
-        ban_duration=body.ban_duration,
-        is_permanent=body.is_permanent,
+        ban_level=ban_level,
+        ban_duration=ban_duration,
+        is_permanent=is_permanent,
         expire_time=expire_time,
-        reason=body.reason.strip(),
-        region=body.region.strip(),
+        reason=reason,
+        region=region,
         ban_source="manual",
         record_id=record_id,
         status="active",
@@ -833,11 +878,11 @@ def create_manual_ban(
     if legacy is None:
         legacy = BannedIP(ip=ip)
         db.add(legacy)
-    legacy.ban_level = body.ban_level
-    legacy.ban_duration = body.ban_duration
+    legacy.ban_level = ban_level
+    legacy.ban_duration = ban_duration
     legacy.expired_at = expire_time or (now + timedelta(days=36500))
-    legacy.region = body.region.strip()
-    legacy.reason = body.reason.strip()
+    legacy.region = region
+    legacy.reason = reason
     legacy.status = "active"
     legacy.source = "manual"
     db.commit()
@@ -845,10 +890,194 @@ def create_manual_ban(
     write_audit(
         db, action="manual_ban", resource_type="ban_record", resource_id=record.id,
         detail={"ip": ip, "ban_plan": ban_plan, "record_id": record_id},
-        operator=user.username, ip_address=request.client.host if request.client else "",
-        user_id=user.id,
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+    )
+    return record
+
+
+@router.post("/banned-ips", status_code=201, dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def create_manual_ban(
+    body: ManualBanBody, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> dict:
+    """手动发起封禁：调用封禁工具下发 → 写 ban_records（ban_source=manual）→ 同步 legacy 工作台。"""
+    record = _issue_manual_ban(
+        db,
+        user=user,
+        ip=body.ip,
+        ban_level=body.ban_level,
+        ban_duration=body.ban_duration,
+        is_permanent=body.is_permanent,
+        reason=body.reason.strip(),
+        region=body.region.strip(),
+        client_ip=request.client.host if request.client else "",
     )
     return _record_item(db, record)
+
+
+# ----------------------------------------------------------------------
+# CSV 导入导出（封禁时长按天；导出含只读列，导入只取前 6 列）
+# ----------------------------------------------------------------------
+# 导入解析的列（与导出/模板前 6 列一致；导出额外的封禁方式/状态/时间列仅展示用）
+_WB_CSV_COLUMNS = ["IP地址", "封禁等级", "封禁时长(天)", "是否永久", "封禁原因", "归属地区"]
+
+
+def _wb_csv_response(content: str, filename: str) -> StreamingResponse:
+    """构造 UTF-8 BOM CSV 下载响应（Excel 可直接打开）。"""
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/banned-ips/export/csv", dependencies=[Depends(require_role("admin"))])
+def export_banned_ips_csv(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    request: Request = None,
+) -> StreamingResponse:
+    """导出封禁工作台全部封禁记录为 CSV（仅管理员）。
+
+    列：IP地址 / 封禁等级 / 封禁时长(天) / 是否永久 / 封禁原因 / 归属地区 /
+    封禁方式 / 当前状态 / 开始封禁时间 / 解封时间。前 6 列与导入模板一致，
+    修改后可直接重新导入（时长支持小数天，如 0.5 = 12 小时）。
+    """
+    from app.core.audit import get_client_ip, log_audit
+
+    records = db.query(BanRecord).order_by(BanRecord.id.desc()).all()
+    buf = io.StringIO()
+    buf.write("\ufeff")  # BOM，确保 Excel 正确识别 UTF-8
+    writer = csv.writer(buf)
+    writer.writerow(_WB_CSV_COLUMNS + ["封禁方式", "当前状态", "开始封禁时间", "解封时间"])
+    for r in records:
+        writer.writerow([
+            r.ip,
+            _LEVEL_LABELS.get(r.ban_level, r.ban_level),
+            _duration_days_label(r.ban_duration, r.is_permanent),
+            "是" if r.is_permanent else "否",
+            r.reason or "",
+            r.region or "",
+            _BAN_SOURCE_LABELS.get(r.ban_source, r.ban_source or ""),
+            _RECORD_STATUS_LABELS.get(r.status, r.status),
+            r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "",
+            r.expire_time.strftime("%Y-%m-%d %H:%M:%S") if r.expire_time else "",
+        ])
+    content = buf.getvalue()
+    buf.close()
+
+    # 审计：导出操作（GET 请求不被中间件捕获，需手动记录）
+    log_audit(
+        db, user_id=user.id, username=user.username, action="export",
+        resource_type="ban_record", ip_address=get_client_ip(request) if request else "unknown",
+        result="success", detail={"count": len(records)},
+    )
+    db.commit()
+    filename = f"ban_workbench_banned_ips_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return _wb_csv_response(content, filename)
+
+
+@router.get("/banned-ips/import/template", dependencies=[Depends(require_role("admin"))])
+def download_banned_ips_template() -> StreamingResponse:
+    """下载封禁工作台 CSV 导入模板（仅含表头与两行示例）（仅管理员）。"""
+    buf = io.StringIO()
+    buf.write("\ufeff")
+    writer = csv.writer(buf)
+    writer.writerow(_WB_CSV_COLUMNS)
+    # 示例：7 天封禁 / 0.5 天（12 小时）封禁；时长支持小数天
+    writer.writerow(["203.0.113.50", "高", "7", "否", "威胁情报确认恶意IP", "美国"])
+    writer.writerow(["198.51.100.23", "中", "0.5", "否", "短时异常扫描行为", ""])
+    content = buf.getvalue()
+    buf.close()
+    return _wb_csv_response(content, "ban_workbench_import_template.csv")
+
+
+@router.post("/banned-ips/import/csv", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+async def import_banned_ips_csv(
+    file: UploadFile = File(...),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """CSV 批量导入封禁（逐行下发，来源标记 manual）。
+
+    格式与导出/模板一致：``IP地址, 封禁等级, 封禁时长(天), 是否永久, 封禁原因, 归属地区``
+    （首行表头跳过，多余列忽略）。要点：
+
+    - 封禁时长按**天**填写，支持小数（``0.5`` = 12 小时）；「是否永久」为 是/否；
+    - 封禁等级支持中文（低/中/高/严重）或英文 key，无法识别时按「中」处理；
+    - 每行都会调用封禁工具实际下发；已在封禁中的 IP 跳过（不覆盖），下发失败的
+      行记入 errors 且不影响其他行；
+    - 封禁原因为空时默认「CSV 导入封禁」；
+    - 逐行下发较慢（含失败重试），建议单次导入不超过 50 行。
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="请上传 CSV 文件")
+
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = content.decode("gbk")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="文件编码不支持，请使用 UTF-8 编码")
+
+    rows = list(csv.reader(io.StringIO(text)))
+    if len(rows) < 2:
+        raise HTTPException(status_code=400, detail="CSV 文件为空或只有表头")
+
+    client_ip = request.client.host if request and request.client else ""
+    imported = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for idx, row in enumerate(rows[1:], start=2):  # 从第 2 行开始（跳过表头）
+        if not row or not row[0].strip():
+            continue
+        raw_ip = row[0].strip()
+        try:
+            # 封禁等级：中文 → key；英文 key 原样；其他按 medium
+            level_raw = row[1].strip() if len(row) > 1 else ""
+            ban_level = _LEVEL_REVERSE.get(level_raw, level_raw if level_raw in _LEVEL_LABELS else "medium")
+            # 封禁时长（天）→ 秒：永久封禁忽略时长（占位 3600）；空默认 1 天
+            days_raw = row[2].strip() if len(row) > 2 else ""
+            is_permanent = (row[3].strip() if len(row) > 3 else "") in ("是", "永久", "true", "True", "yes", "1")
+            if is_permanent:
+                ban_duration = 3600
+            elif days_raw:
+                ban_duration = _parse_days(days_raw)
+            else:
+                ban_duration = 86400
+            reason = row[4].strip() if len(row) > 4 else ""
+            region = row[5].strip() if len(row) > 5 else ""
+
+            _issue_manual_ban(
+                db, user=user, ip=raw_ip, ban_level=ban_level,
+                ban_duration=ban_duration, is_permanent=is_permanent,
+                reason=reason or "CSV 导入封禁", region=region, client_ip=client_ip,
+            )
+            imported += 1
+        except HTTPException as exc:
+            db.rollback()
+            if exc.status_code == 409:
+                skipped += 1
+            else:
+                errors.append(f"第 {idx} 行 [{raw_ip}]: {exc.detail}")
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            errors.append(f"第 {idx} 行 [{raw_ip}]: {exc}")
+
+    write_audit(
+        db, action="import", resource_type="ban_record", resource_id="",
+        detail={"imported": imported, "skipped": skipped, "errors": errors[:20],
+                "source": "ban_workbench_csv"},
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+    )
+    db.commit()
+    logger.info("封禁工作台 CSV 导入完成: 导入 %d 条, 跳过 %d 条, 错误 %d 条",
+                imported, skipped, len(errors))
+    return {"ok": True, "imported": imported, "skipped": skipped, "errors": errors}
 
 
 # ----------------------------------------------------------------------
