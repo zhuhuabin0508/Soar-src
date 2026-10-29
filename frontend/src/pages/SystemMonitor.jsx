@@ -817,7 +817,6 @@ function SystemMonitor() {
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
         <div className="flex items-center gap-4">
           <h1 className="text-[22px] font-bold tracking-tight text-foreground">系统监控</h1>
-          <span className="text-xs text-muted-foreground">监控概览 · 服务健康 · 性能指标 · 服务日志 · 审计日志</span>
         </div>
       </header>
 

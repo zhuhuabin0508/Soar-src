@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import threading
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, create_model
@@ -215,205 +214,29 @@ def _asset_type_labels() -> dict[str, str]:
 
 
 # ============================================================================
-# 资产全表扫描缓存（进程内共享）
+# IP 字段解析与持久化区间索引
 #
-# 背景：资产表可达 10 万行级，逐行把 ip/identifier/extra_fields 解析为 IP 整数
-# 区间约需数秒；资产数据变化频率低（月级导入），用短 TTL 缓存把后续查询
-# 降为内存整数比较（毫秒级）。缓存条目：(id, type_code, department, intervals)。
-# 另按 IP 首八位组（/8）建分桶索引，把单次查询的扫描量从全表降到单桶，
-# 支撑百级 IP 的批量研判不超时。
+# 解析函数从 app.core.asset_ip_index 导入（单一实现，写入侧/查询侧/导入
+# 校验共享同一语义）；该模块把资产 IP 区间落到 asset_ip_intervals 表
+# （int4range + GiST 索引），search_assets 的 IP 查询走索引查找而非全表扫描
+# （98k 资产冷查询 2.2s → ~1ms 级），且写入侧由 ORM 事件实时同步、无缓存
+# 一致性问题。
+#
+# 此处按原名 re-export，兼容 tests（test_asset_ip_intervals 等）与
+# enricher_stage 的既有引用。
 # ============================================================================
-_ASSET_SCAN_CACHE: dict = {"ts": 0.0, "rows": None, "buckets": None}
-_ASSET_SCAN_CACHE_TTL = 60.0  # 秒；资产写入后最长延迟 60 秒可见
-_asset_scan_lock = threading.Lock()
-_EMPTY_INTERVALS: list[tuple[int, int]] = []  # 无 IP 字段行的共享空区间（省内存）
-
-
-def _parse_single_ip(s: str):
-    """尝试解析为单个 IPv4 地址，失败返回 None。"""
-    import ipaddress
-
-    s = (s or "").strip()
-    if not s:
-        return None
-    try:
-        return ipaddress.IPv4Address(s)
-    except (ipaddress.AddressValueError, ValueError):
-        return None
-
-
-def _complete_ip(s: str):
-    """对不完整 IP 字符串补 .0 后解析（如 ``198.51.100`` → ``198.51.100.0``）。
-
-    资产数据存在质量问题（如 ``198.51.100-198.51.100.254`` 起始 IP 缺最后一段），
-    这里做防御性补全。
-    """
-    s = (s or "").strip()
-    if not s:
-        return None
-    octets = s.split(".")
-    while len(octets) < 4:
-        octets.append("0")
-    if len(octets) > 4:
-        return None
-    return _parse_single_ip(".".join(octets))
-
-
-def _value_to_intervals(stored: str) -> list[tuple[int, int]]:
-    """把存储值解析为 IP 整数区间列表（一次解析，多个查询目标共用）。
-
-    支持的格式：
-    - 逗号分隔多值: ``203.0.113.1,203.0.113.2``（逐段解析合并）
-    - CIDR: ``198.51.100.0/24`` → [网络号, 广播地址]
-    - 完整范围: ``113.108.60.224-113.108.60.254``
-    - 末段简写: ``61.144.224.185-187``（仅最后一位变化，等价 185-187）
-    - 不完整 IP（数据质量）: ``198.51.100-198.51.100.254``（起始缺段自动补 .0）
-    - 单 IP: ``58.250.157.1`` → [ip, ip]
-
-    解析失败的部分返回空区间（不影响其余部分）。
-    倒置范围（start > end）仅当两端同 /24 时交换匹配；跨网段倒置（如
-    ``172.46.9.1-17.46.9.62``）视为脏数据丢弃，避免生成误命中全网的巨型区间。
-    """
-    import ipaddress
-
-    stored = (stored or "").strip()
-    if not stored:
-        return []
-
-    if "," in stored:
-        out: list[tuple[int, int]] = []
-        for part in stored.split(","):
-            out.extend(_value_to_intervals(part))
-        return out
-
-    # 1. CIDR 格式 (198.51.100.0/24)
-    if "/" in stored:
-        try:
-            net = ipaddress.IPv4Network(stored, strict=False)
-            return [(int(net.network_address), int(net.broadcast_address))]
-        except (ipaddress.NetmaskValueError, ipaddress.AddressValueError, ValueError):
-            return []
-
-    # 2. IP 范围格式 (start-end)
-    if "-" in stored:
-        parts = stored.split("-", 1)
-        if len(parts) == 2:
-            start_str = parts[0].strip()
-            end_str = parts[1].strip()
-            start_ip = _parse_single_ip(start_str) or _complete_ip(start_str)
-            if start_ip is None:
-                return []
-            # 末段简写：end_str 无点且为纯数字（如 "187"）时，替换 start 的最后一段
-            # 例：61.144.224.185-187 → end = 61.144.224.187
-            # 必须先于 _complete_ip 判断，否则 "187" 会被补成 187.0.0.0 产生超大范围
-            if "." not in end_str and end_str.isdigit():
-                octets = str(start_ip).split(".")
-                last = int(end_str)
-                if 0 <= last <= 255:
-                    octets[3] = str(last)
-                    end_ip = _parse_single_ip(".".join(octets))
-                else:
-                    end_ip = _complete_ip(end_str)
-            else:
-                end_ip = _parse_single_ip(end_str) or _complete_ip(end_str)
-            if end_ip is not None:
-                s, e = int(start_ip), int(end_ip)
-                if s <= e:
-                    return [(s, e)]
-                # 倒置范围（start > end）：两端同 /24 视为笔误，交换后继续匹配
-                # （如 61.144.227.220-61.144.227.226）；跨网段倒置几乎必为脏数据
-                # （如 172.46.9.1-17.46.9.62，交换后会生成覆盖 17.x-172.x 的
-                # 巨型区间，导致任意 IP 误命中），直接丢弃。
-                if (s >> 8) == (e >> 8):
-                    return [(e, s)]
-                return []
-        return []
-
-    # 3. 单 IP 精确匹配 (58.250.157.1)
-    single = _parse_single_ip(stored)
-    if single is not None:
-        return [(int(single), int(single))]
-
-    return []
-
-
-def _intervals_from_fields(ip, identifier, extra_fields) -> list[tuple[int, int]]:
-    """一行资产的所有 IP 字段（ip/identifier/extra 中的 IP/EIP/CIDR）解析为区间并集。"""
-    values = [ip or "", identifier or ""]
-    extra = extra_fields if isinstance(extra_fields, dict) else {}
-    for key, val in extra.items():
-        if not val:
-            continue
-        lk = str(key).lower()
-        if lk in ("eip", "ip", "cidr", "public_ip", "wan_ip", "nat_ip") or "ip" in lk or "cidr" in lk:
-            values.append(str(val))
-    out: list[tuple[int, int]] = []
-    for v in values:
-        if v:
-            out.extend(_value_to_intervals(v))
-    return out or _EMPTY_INTERVALS
-
-
-def _get_asset_scan_rows(db):
-    """全表扫描缓存：返回 [(id, type_code, department, intervals)]，TTL 内直接复用。
-
-    全量扫描（不截断——旧实现 ``limit(50000)`` 会漏掉第 5 万行之后的资产）。
-    重扫在锁外进行，并发时最多重复扫一次（幂等），不会长时间持锁。
-    同时维护首八位组分桶索引（见 ``_ASSET_SCAN_CACHE``）。
-    """
-    import time
-
-    with _asset_scan_lock:
-        if (
-            _ASSET_SCAN_CACHE["rows"] is not None
-            and time.monotonic() - _ASSET_SCAN_CACHE["ts"] < _ASSET_SCAN_CACHE_TTL
-        ):
-            return _ASSET_SCAN_CACHE["rows"]
-
-    from app.models.asset import Asset
-
-    cols = (Asset.id, Asset.type_code, Asset.department, Asset.ip, Asset.identifier, Asset.extra_fields)
-    rows = db.query(*cols).all()
-    parsed = [
-        (r.id, r.type_code, r.department, _intervals_from_fields(r.ip, r.identifier, r.extra_fields))
-        for r in rows
-    ]
-    # 分桶索引：首八位组 → [(start, end, row_idx)]；区间注册到其覆盖的每个桶
-    buckets: dict[int, list[tuple[int, int, int]]] = {}
-    for idx, (_rid, _tc, _dep, intervals) in enumerate(parsed):
-        for s, e in intervals:
-            for b in range(s >> 24, (e >> 24) + 1):
-                buckets.setdefault(b, []).append((s, e, idx))
-    with _asset_scan_lock:
-        _ASSET_SCAN_CACHE["ts"] = time.monotonic()
-        _ASSET_SCAN_CACHE["rows"] = parsed
-        _ASSET_SCAN_CACHE["buckets"] = buckets
-    return parsed
-
-
-def _bucket_match_ip(ti: int) -> list[int]:
-    """桶索引查单 IP：返回命中区间的行下标（已去重）。"""
-    buckets = _ASSET_SCAN_CACHE["buckets"] or {}
-    out: list[int] = []
-    seen: set[int] = set()
-    for s, e, idx in buckets.get(ti >> 24, ()):
-        if s <= ti <= e and idx not in seen:
-            seen.add(idx)
-            out.append(idx)
-    return out
-
-
-def _bucket_match_net(ns: int, ne: int) -> list[int]:
-    """桶索引查网段重叠：返回与 [ns, ne] 有交集的行下标（已去重）。"""
-    buckets = _ASSET_SCAN_CACHE["buckets"] or {}
-    out: list[int] = []
-    seen: set[int] = set()
-    for b in range(ns >> 24, (ne >> 24) + 1):
-        for s, e, idx in buckets.get(b, ()):
-            if s <= ne and ns <= e and idx not in seen:
-                seen.add(idx)
-                out.append(idx)
-    return out
+from app.core.asset_ip_index import (  # noqa: F401
+    _complete_ip,
+    _intervals_from_fields,
+    _parse_any_ip,
+    _parse_single_ip,
+    _split_fallback,
+    _value_to_intervals,
+    query_asset_ids_by_ip,
+    query_asset_ids_by_ipv6,
+    query_asset_ids_by_net,
+    query_asset_ids_by_netv6,
+)
 
 
 def _split_tokens(keyword: str) -> list[str]:
@@ -449,6 +272,8 @@ def _discovery_ip_tokens(keyword: str) -> list[str]:
 
 # 资产发现命中在 search_assets 返回结构中的分组键（与资产类型中文分组的顶层 key 并列）
 _DISCOVERY_GROUP_KEY = "资产发现"
+# 资产发现字段中文名对照在返回结构中的顶层键
+_DISCOVERY_LABELS_KEY = "资产发现_字段说明"
 
 
 def _merge_discovery_results(payload: dict, discovery: dict) -> dict:
@@ -462,6 +287,10 @@ def _merge_discovery_results(payload: dict, discovery: dict) -> dict:
     """
     if not isinstance(payload, dict) or not isinstance(discovery, dict):
         return payload
+
+    # 字段中文名对照（英文键 → 中文列名）一次性透出，供 Agent 按类型实际字段展示
+    if isinstance(discovery.get("field_labels"), dict):
+        payload[_DISCOVERY_LABELS_KEY] = discovery["field_labels"]
 
     def _attach(entry: dict, item: dict) -> None:
         entry[_DISCOVERY_GROUP_KEY] = list(item.get("assets") or [])
@@ -496,14 +325,6 @@ def _merge_discovery_results(payload: dict, discovery: dict) -> dict:
     return payload
 
 
-def _should_attach_search_assets(
-    enabled_tools: list[str] | None,
-    enabled_asset_types: list[str] | None,
-) -> bool:
-    """未勾选任何资产类型时不注册 search_assets。"""
-    return bool(enabled_asset_types)
-
-
 async def execute_search_assets(
     keyword: str = "",
     department: str = "",
@@ -516,15 +337,12 @@ async def execute_search_assets(
     行为与运行时 ``search_assets`` 一致：keyword 含 IPv4/CIDR 时，
     除资产清单外同时检索资产发现数据并合并返回（见 ``_build_asset_tool``）。
     """
-    codes = list(type_codes or [])
-    if not codes:
-        # 无 agent 上下文（工具管理页测试 / 工作流 tool 节点直调）：
-        # 回退全部资产类型，行为与「智能体勾选全部类型」一致（不按类型过滤），
-        # 与 get_asset_info 无上下文回退全库查询的先例保持一致。
-        codes = _all_asset_type_codes()
-    tool = _build_asset_tool(codes)
+    # type_codes 参数已废弃：search_assets 始终检索全部资产类型 + 资产发现，
+    # 不再按智能体勾选的资产类型过滤（工具注册与否见 tool_engine._register_asset_tools）
+    _ = type_codes  # 兼容旧调用方签名
+    tool = _build_asset_tool()
     if tool is None:
-        return {"error": "未勾选资产类型，search_assets 不可用", "count": 0}
+        return {"error": "资产检索工具不可用", "count": 0}
     result = await tool.coroutine(
         keyword=keyword or "",
         department=department or "",
@@ -534,13 +352,12 @@ async def execute_search_assets(
     return result if isinstance(result, dict) else {"count": len(result or []), "assets": result or []}
 
 
-def _build_asset_tool(enabled_asset_types: list[str]):
-    """构造资产检索工具（在关联的资产类型范围内检索）。
+def _build_asset_tool(enabled_asset_types: list[str] | None = None):
+    """构造资产检索工具（检索全部资产类型 + 资产发现，不按类型勾选过滤）。
 
-    检索范围由智能体勾选的 ``enabled_asset_types`` 决定：
-    - 未勾选：不注册本工具
-    - 勾选部分类型：只查这些 ``type_code``
-    - 勾选全部类型：不按类型过滤（同一 IP 在主机/网段/出口等多类下都会返回）
+    ``enabled_asset_types`` 参数已废弃（保留仅为兼容旧调用方/测试）：
+    工具注册后始终检索**全部**资产清单类型（含未分类记录），
+    同一 IP 在主机/网段/出口/自定义类型等多类下的命中都会返回。
 
     IP 匹配策略（ip 列可能存储单 IP / IP 范围 / CIDR 三种格式）：
     - keyword 为单个 IPv4 时：做 **IP 包含判断**（查询 IP 是否落在存储值的
@@ -557,9 +374,6 @@ def _build_asset_tool(enabled_asset_types: list[str]):
       查询失败只记日志，不影响资产清单结果。
     - 文本关键词（名称/部门等）仅检索资产清单。
     """
-    type_codes_in = list(dict.fromkeys(enabled_asset_types or []))
-    if not type_codes_in:
-        return None
     import ipaddress
     from langchain_core.tools import StructuredTool
     from sqlalchemy import or_
@@ -576,33 +390,40 @@ def _build_asset_tool(enabled_asset_types: list[str]):
         department: str = Field("", description="按使用单位/部门精确筛选")
         type_code: Optional[str] = Field(
             None,
-            description="忽略。检索范围由智能体勾选的资产类型决定，同一 IP 会返回所有类型下的命中。",
+            description="忽略。检索覆盖全部资产类型，同一 IP 会返回所有类型下的命中。",
         )
         limit: int = Field(20, description="非 IP 查询的条数上限，默认20。按 IP 查询会跨类型返回全部命中。")
 
-    type_codes = list(type_codes_in)
-    all_template_codes = set(_all_asset_type_codes())
-    # 全选（勾选覆盖当前全部模板）时不按 type_code 过滤，避免漏掉未分类或同 IP 多类型记录
-    filter_by_types = None if (all_template_codes and set(type_codes) >= all_template_codes) else type_codes
+    # 不按类型过滤：覆盖全部资产类型（含未分类记录），新增类型模板无需改智能体配置
+    filter_by_types = None
 
     type_labels = _asset_type_labels()
 
     def _serialize(r) -> dict:
         extra = r.extra_fields if isinstance(r.extra_fields, dict) else {}
         code = r.type_code or "(uncategorized)"
+        # 标签用于 IP 资产查询结果展示（Agent 技能要求资产清单结果必须带标签列）
+        tags = [t.name for t in (getattr(r, "tags", None) or []) if getattr(t, "name", "")]
         return {
             "id": r.id, "name": r.name, "ip": r.ip, "identifier": r.identifier,
             "department": r.department, "owner": r.owner,
+            "asset_type": r.asset_type, "location": r.location,
             "type_code": code,
             "type_name": type_labels.get(code, code),
             "status": r.status, "criticality": r.criticality,
             "eip": extra.get("eip") or extra.get("EIP"),
+            # 业务系统在知识库梳理时通常落在 extra_fields.system_name
+            "business_system": (
+                extra.get("system_name") or extra.get("business_system") or extra.get("业务系统")
+            ),
+            "tags": tags,
             "extra_fields": extra or None,
         }
 
     def _pack(rows) -> dict:
         """按资产类型分组返回，顶层 key 为类型中文名（如 出口地址 / 主机资产）。"""
-        bucket_codes = list(type_labels.keys()) if filter_by_types is None else list(type_codes)
+        # filter_by_types 恒为 None：按当前全部类型模板分组
+        bucket_codes = list(type_labels.keys())
         if not bucket_codes:
             bucket_codes = list(dict.fromkeys(
                 [(r.type_code or "(uncategorized)") for r in rows]
@@ -638,13 +459,13 @@ def _build_asset_tool(enabled_asset_types: list[str]):
             net_toks: list = []
             text_toks: list[str] = []
             for t in tokens:
-                ip = _parse_single_ip(t)
+                ip = _parse_any_ip(t)
                 if ip is not None:
                     ip_toks.append(ip)
                     continue
                 if "/" in t:
                     try:
-                        net_toks.append(ipaddress.IPv4Network(t.strip(), strict=False))
+                        net_toks.append(ipaddress.ip_network(t.strip(), strict=False))
                         continue
                     except (ipaddress.NetmaskValueError, ipaddress.AddressValueError, ValueError):
                         pass
@@ -668,41 +489,32 @@ def _build_asset_tool(enabled_asset_types: list[str]):
 
             per_token: list[tuple[str, list]] = []  # (token 展示值, 命中行)
             if ip_toks or net_toks:
-                # 全表扫描缓存：[(id, type_code, department, intervals)]，TTL 内跨调用复用；
-                # 类型/部门过滤在内存完成（缓存行已带 type_code/department）；
-                # 命中下标经首八位组分桶索引查找，支撑百级 IP 批量不超时
-                scan_rows = _get_asset_scan_rows(db)
-
-                def _hit_rows(idx_list: list[int]) -> list[int]:
-                    """桶命中下标 → 通过类型/部门过滤的资产 id（截断至 ip_hit_cap）。"""
-                    out = []
-                    for idx in idx_list:
-                        _rid, rc, rdep, _ivs = scan_rows[idx]
-                        if filter_by_types is not None and rc not in filter_by_types:
-                            continue
-                        if department and (rdep or "") != department:
-                            continue
-                        out.append(_rid)
-                        if len(out) >= ip_hit_cap:
-                            break
-                    return out
+                # 持久化区间索引（asset_ip_intervals，GiST）：点查 @> / 网段重叠 &&，
+                # 替代旧的全表扫描 + 内存缓存（冷查询 2.2s → 索引查找 ~1ms 级）。
+                # 索引行由 ORM 事件在资产写入时同步，查询结果始终实时。
+                def _load_rows(hit_ids: list[int]) -> list:
+                    """命中资产 id → 资产行（应用 department 过滤，截断至 ip_hit_cap）。"""
+                    if not hit_ids:
+                        return []
+                    q2 = db.query(Asset).filter(Asset.id.in_(hit_ids))
+                    if department:
+                        q2 = q2.filter(Asset.department == department)
+                    return q2.order_by(Asset.id.desc()).all()
 
                 for ip in ip_toks:
-                    hit_ids = _hit_rows(_bucket_match_ip(int(ip)))
-                    rows = (
-                        db.query(Asset).filter(Asset.id.in_(hit_ids)).order_by(Asset.id.desc()).all()
-                        if hit_ids else []
-                    )
-                    per_token.append((str(ip), rows))
+                    if ip.version == 6:
+                        hit_ids = query_asset_ids_by_ipv6(db, int(ip), limit=ip_hit_cap)
+                    else:
+                        hit_ids = query_asset_ids_by_ip(db, int(ip), limit=ip_hit_cap)
+                    per_token.append((str(ip), _load_rows(hit_ids)))
                 for net in net_toks:
                     ns = int(net.network_address)
                     ne = int(net.broadcast_address)
-                    hit_ids = _hit_rows(_bucket_match_net(ns, ne))
-                    rows = (
-                        db.query(Asset).filter(Asset.id.in_(hit_ids)).order_by(Asset.id.desc()).all()
-                        if hit_ids else []
-                    )
-                    per_token.append((str(net), rows))
+                    if net.version == 6:
+                        hit_ids = query_asset_ids_by_netv6(db, ns, ne, limit=ip_hit_cap)
+                    else:
+                        hit_ids = query_asset_ids_by_net(db, ns, ne, limit=ip_hit_cap)
+                    per_token.append((str(net), _load_rows(hit_ids)))
             for t in text_toks:
                 per_token.append((t, _text_query(t)))
 
@@ -730,8 +542,9 @@ def _build_asset_tool(enabled_asset_types: list[str]):
     async def _coroutine(keyword="", department="", type_code=None, limit=20):
         import asyncio
 
-        # 同步 DB 查询 + CPU 逐行过滤放线程池执行：全表扫描曾直接跑在事件循环里，
-        # 批量研判时多次调用会累积阻塞，导致 SSE 的 tool_end 推送发不出、前端转圈。
+        # 同步 DB 查询放线程池执行，避免 DB IO 阻塞事件循环（历史上全表扫描
+        # 直接跑在事件循环里，批量研判多次调用累积阻塞，SSE 的 tool_end
+        # 推送发不出、前端转圈；现 IP 查询已走 GiST 索引，仍保持线程池调度）。
         inventory_task = asyncio.to_thread(
             _run_query_sync, keyword or "", department or "", int(limit or 20)
         )
@@ -759,21 +572,22 @@ def _build_asset_tool(enabled_asset_types: list[str]):
             _merge_discovery_results(inventory, discovery)
         return inventory
 
-    scope_desc = (
-        "已勾选全部资产类型，不按类型过滤；同一 IP 在主机资产/网段/出口地址等类型下的记录都会返回。"
-        if filter_by_types is None
-        else f"仅检索已勾选类型 {type_codes}；同一 IP 在这些类型下的记录都会返回。"
-    )
     return StructuredTool.from_function(
         name="search_assets",
         description=(
-            f"检索资产清单与资产发现数据。{scope_desc}"
+            "检索资产清单与资产发现数据。检索覆盖全部资产类型，不按类型过滤；"
+            "同一 IP 在主机资产/网段/出口地址等类型下的记录都会返回。"
             "支持逗号/分号/空白分隔的批量查询（如 '1.2.3.4,5.6.7.8'），"
             "一次调用返回每个查询目标各自的命中——批量研判多个 IP 时必须合并为一次调用，不要逐个查询。"
             "传入单个 IP 会匹配包含该 IP 的网段/CIDR/范围/EIP，并同时在资产发现"
             "（云主机/裸金属/网络资源/弹性IP/青藤主机）中精确检索该 IP，命中以「资产发现」分组返回；"
+            "返回结构中「资产发现」是资产发现数据，其余按资产类型分组的是资产清单数据，二者应分开展示。"
             "传入 CIDR 会匹配重叠网段。"
             "按名称/部门等文本查询时仅检索资产清单。"
+            "不同资产类型的字段集不同：资产清单记录的 extra_fields 携带该类型模板的自定义字段，"
+            "资产发现记录按资源类型全量返回自身字段（顶层「资产发现_字段说明」为英文字段名→中文列名对照）；"
+            "展示时以重点字段（IP/主机名/资产类型/业务系统/责任人/部门等）为前列，"
+            "再按记录实际拥有的字段补充类型特有字段，不要硬套固定一套字段。"
         ),
         args_schema=SearchAssetsArgs,
         coroutine=_coroutine,

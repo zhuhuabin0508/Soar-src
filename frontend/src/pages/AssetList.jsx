@@ -17,6 +17,7 @@ import {
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
+import { validateIPExpression, isIPFieldDef } from '../utils/ipValidation'
 
 // ===== 常量映射 =====
 const STATUS_LABELS = { in_use: '在用', idle: '闲置', repair: '维修', retired: '报废', lost: '丢失' }
@@ -39,13 +40,14 @@ function getFieldValue(rec, fdef) {
 }
 
 // 动态表单字段渲染
-function FieldInput({ fdef, value, onChange, fieldOptions }) {
+function FieldInput({ fdef, value, onChange, fieldOptions, invalid, onBlur }) {
   const ftype = fdef.type || 'text'
   const placeholder = fdef.placeholder || ''
   const common = {
-    className: inputCls,
+    className: `${inputCls}${invalid ? ' border-destructive ring-1 ring-destructive' : ''}`,
     value: value ?? '',
     onChange: (e) => onChange(e.target.value),
+    onBlur,
     placeholder,
   }
   if (ftype === 'select') {
@@ -78,6 +80,7 @@ function AssetFormModal({ open, template, templates, initial, onClose, onSubmit,
   const [tags, setTags] = useState([])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
 
   // 「全部」Tab 下 activeTemplate 为 null，编辑时按记录自身 type_code 匹配模板
   const effTemplate = useMemo(() => {
@@ -97,6 +100,7 @@ function AssetFormModal({ open, template, templates, initial, onClose, onSubmit,
     setFields(init)
     setTagIds(initial?.tags?.map((t) => t.id) || [])
     setErr('')
+    setFieldErrors({})
     // 加载标签列表
     assetsApi.listTags().then(setTags).catch(() => {})
   }, [open, effTemplate, initial])
@@ -110,12 +114,23 @@ function AssetFormModal({ open, template, templates, initial, onClose, onSubmit,
     setSaving(true)
     setErr('')
     try {
-      // 校验必填
+      // 校验必填 + IP/CIDR 格式（与后端统一口径，前端即时拦截）
+      const ipErrors = {}
       for (const f of fieldDefs) {
-        if (f.required && !(fields[f.key]?.toString().trim())) {
+        const val = fields[f.key]
+        if (f.required && !(val?.toString().trim())) {
           throw new Error(`"${f.label}" 为必填项`)
         }
+        if (isIPFieldDef(f) && val?.toString().trim()) {
+          const msg = validateIPExpression(val, f.label || f.key)
+          if (msg) ipErrors[f.key] = msg
+        }
       }
+      if (Object.keys(ipErrors).length) {
+        setFieldErrors(ipErrors)
+        throw new Error(Object.values(ipErrors)[0])
+      }
+      setFieldErrors({})
       await onSubmit({ fields, tag_ids: tagIds })
       onClose()
     } catch (e) {
@@ -143,7 +158,7 @@ function AssetFormModal({ open, template, templates, initial, onClose, onSubmit,
       }
     >
       {err && (
-        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-danger">
+        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">
           {err}
         </div>
       )}
@@ -152,15 +167,29 @@ function AssetFormModal({ open, template, templates, initial, onClose, onSubmit,
           <div key={f.key} className={f.width === 'full' ? 'col-span-2' : ''}>
             <label className={labelCls}>
               {f.label}
-              {f.required && <span className="ml-0.5 text-danger">*</span>}
+              {f.required && <span className="ml-0.5 text-destructive">*</span>}
               {f.unique && <span className="ml-1 text-[10px] text-muted-foreground">(标识)</span>}
             </label>
             <FieldInput
               fdef={f}
               value={fields[f.key]}
-              onChange={(v) => setFields((p) => ({ ...p, [f.key]: v }))}
+              invalid={!!fieldErrors[f.key]}
+              onChange={(v) => {
+                setFields((p) => ({ ...p, [f.key]: v }))
+                if (fieldErrors[f.key]) {
+                  setFieldErrors((p) => ({ ...p, [f.key]: '' }))
+                }
+              }}
+              onBlur={() => {
+                if (!isIPFieldDef(f) || !fields[f.key]?.toString().trim()) return
+                const msg = validateIPExpression(fields[f.key], f.label || f.key)
+                setFieldErrors((p) => ({ ...p, [f.key]: msg || '' }))
+              }}
               fieldOptions={fieldOptions}
             />
+            {fieldErrors[f.key] && (
+              <div className="mt-1 text-[11px] text-destructive">{fieldErrors[f.key]}</div>
+            )}
           </div>
         ))}
       </div>
@@ -433,7 +462,7 @@ function ImportProgressBar({ progress, fileName }) {
     label = '导入完成'
     percentText = '100%'
   } else {
-    icon = <XCircle className="h-4 w-4 text-danger" />
+    icon = <XCircle className="h-4 w-4 text-destructive" />
     label = '导入失败'
     percentText = ''
   }
@@ -443,7 +472,7 @@ function ImportProgressBar({ progress, fileName }) {
     : phase === 'error' ? '100%'
     : '100%' // processing: 满宽 + 动画
   const barColor = phase === 'done' ? 'bg-success'
-    : phase === 'error' ? 'bg-danger'
+    : phase === 'error' ? 'bg-destructive'
     : 'bg-primary'
   const isProcessing = phase === 'processing'
   return (
@@ -519,7 +548,7 @@ function ImportModal({ open, template, onClose, onDone }) {
         </>
       }
     >
-      {err && <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-danger">{err}</div>}
+      {err && <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive">{err}</div>}
       <div className="space-y-3">
         <div>
           <label className={labelCls}>选择文件（CSV / Excel）</label>
@@ -557,7 +586,7 @@ function ImportModal({ open, template, onClose, onDone }) {
               <span className="text-warning">跳过：{result.skipped}</span>
             </div>
             {result.errors?.length > 0 && (
-              <div className="mt-2 max-h-32 overflow-y-auto border-t border-border pt-2 text-danger">
+              <div className="mt-2 max-h-32 overflow-y-auto border-t border-border pt-2 text-destructive">
                 {result.errors.slice(0, 20).map((e, i) => (
                   <div key={i}>第{e.row}行：{e.msg}</div>
                 ))}
@@ -1149,7 +1178,6 @@ export default function AssetList() {
             共 {total.toLocaleString()} 个资产
           </span>
         )}
-        <span className="hidden text-xs text-muted-foreground xl:inline">按类型多维度筛选、查询与管理资产</span>
         <div className="ml-auto flex items-center gap-2">
           {/* 数据操作下拉：导入 / 导出（ref + document 监听点击外部关闭，不用全屏遮罩） */}
           <div className="relative" ref={dataMenuRef}>
@@ -1655,7 +1683,7 @@ function BatchTagModal({ open, tags, onClose, onConfirm }) {
             {tags.map((t) => (
               <button key={t.id} type="button"
                 onClick={() => setRemoveTags((p) => p.includes(t.id) ? p.filter((x) => x !== t.id) : [...p, t.id])}
-                className={`rounded-full border px-3 py-1 text-xs ${removeTags.includes(t.id) ? 'border-destructive bg-destructive/15 text-danger' : 'border-border text-muted-foreground'}`}
+                className={`rounded-full border px-3 py-1 text-xs ${removeTags.includes(t.id) ? 'border-destructive bg-destructive/15 text-destructive' : 'border-border text-muted-foreground'}`}
               >{t.name}</button>
             ))}
           </div>

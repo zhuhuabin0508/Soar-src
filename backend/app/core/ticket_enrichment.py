@@ -164,9 +164,13 @@ def _match_discovery_asset(db, ip: str) -> Optional[dict]:
     if not matches:
         return None
     primary = matches[0]
+    for m in matches:
+        # 每条命中记录都带详细来源（多次命中可能跨资源类型）
+        m.setdefault("source_label", _discovery_source_label(m))
     return {
         "resource_type": primary.get("resource_type") or "",
         "resource_label": primary.get("resource_label") or "",
+        "source_label": _discovery_source_label(primary),
         "asset_name": (
             primary.get("instance_name")
             or primary.get("inst_name")
@@ -214,6 +218,8 @@ def _match_inventory_asset(db, ip: str) -> Optional[dict]:
             for t in (record.tags or [])
         ]
         result["fields"] = d
+        # 详细来源标签：资产清单-{知识库名或资产类型模板名}
+        result["source_label"] = _inventory_source_label(d, _template_name_map(db))
     return result
 
 
@@ -224,7 +230,9 @@ def _match_asset(db, ip: str) -> dict:
     ``"asset_discovery"``，否则清单命中 ``"asset_inventory"``），头部
     链接与资产名按主来源展示；``discovery`` / ``inventory`` 键各自携带
     完整命中结果（可同时存在，也可为 None），前端按发现优先顺序并列
-    展示。两来源均未命中返回 ``{"matched": False}``。
+    展示。各块带 ``source_label``（详细数据来源，如
+    ``资产发现-裸金属资产`` / ``资产清单-A会保持在线系统清单``）。
+    两来源均未命中返回 ``{"matched": False}``。
     """
     inventory = _match_inventory_asset(db, ip)
     discovery = _match_discovery_asset(db, ip)
@@ -236,6 +244,7 @@ def _match_asset(db, ip: str) -> dict:
             "asset_name": discovery.get("asset_name") or "",
             "asset_ip": ip,
             "resource_type": discovery.get("resource_type") or "",
+            "source_label": discovery.get("source_label") or _DISCOVERY_SOURCE_PREFIX,
         }
     else:
         primary = {
@@ -243,6 +252,7 @@ def _match_asset(db, ip: str) -> dict:
             "asset_name": inventory.get("asset_name") or "",
             "asset_ip": ip,
             "asset_id": inventory.get("asset_id"),
+            "source_label": inventory.get("source_label") or _INVENTORY_SOURCE_PREFIX,
         }
     return {
         "matched": True,
@@ -250,6 +260,107 @@ def _match_asset(db, ip: str) -> dict:
         "discovery": discovery,
         "inventory": inventory,
     }
+
+
+# ---------------------------------------------------------------------------
+# 数据来源标签（工单安全上下文「资产匹配」着重展示的详细来源）
+#
+# 命名与资产查询智能体技能的口径一致：``资产发现-{资源类型}`` /
+# ``资产清单-{知识库名或资产类型模板名}``，让处理人一眼看清这条资产
+# 来自哪个数据源、哪类清单，而不是只看到笼统的「资产发现 / 资产清单」。
+# ---------------------------------------------------------------------------
+
+_DISCOVERY_SOURCE_PREFIX = "资产发现"
+_INVENTORY_SOURCE_PREFIX = "资产清单"
+
+
+def _discovery_source_label(match: dict) -> str:
+    """资产发现命中的来源标签：``资产发现-裸金属资产``。"""
+    label = str((match or {}).get("resource_label") or "").strip()
+    return f"{_DISCOVERY_SOURCE_PREFIX}-{label}" if label else _DISCOVERY_SOURCE_PREFIX
+
+
+def _template_name_map(db) -> dict[str, str]:
+    """资产类型模板 code → 名称（如 meeting_online_system → A会保持在线系统清单）。"""
+    from app.models.asset import AssetTypeTemplate
+
+    try:
+        return {
+            str(code): str(name or "")
+            for code, name in db.query(
+                AssetTypeTemplate.code, AssetTypeTemplate.name
+            ).all()
+            if code
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("资产类型模板读取失败（来源标签降级）: %s", exc)
+        return {}
+
+
+def _inventory_source_label(fields: dict | None, type_names: dict[str, str]) -> str:
+    """资产清单命中的来源标签：``资产清单-A会保持在线系统清单``。
+
+    优先知识库名称（KB 梳理入库的资产带 ``kb_name``），其次资产类型模板名
+    （页面/接口导入的资产按 ``type_code`` 归类），两者都没有时只显示
+    ``资产清单``（对应窄需求：仍明确是清单来源，不编造明细）。
+    """
+    f = fields or {}
+    base = str(f.get("kb_name") or "").strip()
+    if not base:
+        base = str(type_names.get(str(f.get("type_code") or ""), "")).strip()
+    return f"{_INVENTORY_SOURCE_PREFIX}-{base}" if base else _INVENTORY_SOURCE_PREFIX
+
+
+def decorate_asset_source_labels(db, enrichment: dict | None) -> dict | None:
+    """补齐 enrichment 中资产匹配的 ``source_label``（幂等，只补缺失键）。
+
+    工单详情展示前调用：存量工单保存的 enrichment 没有来源标签，资产类型
+    模板也可能被改名，按当前数据推导即可满足展示需要。返回深拷贝，避免
+    ORM JSON 列被就地修改后误落库。
+    """
+    if not isinstance(enrichment, dict):
+        return enrichment
+    sources = enrichment.get("sources")
+    if not isinstance(sources, list):
+        return enrichment
+
+    data = copy.deepcopy(enrichment)
+    type_names: dict[str, str] | None = None
+    for source in data.get("sources") or []:
+        asset = (source or {}).get("asset") or {}
+        if not isinstance(asset, dict) or not asset.get("matched"):
+            continue
+        discovery = asset.get("discovery")
+        if isinstance(discovery, dict):
+            if not discovery.get("source_label"):
+                discovery["source_label"] = _discovery_source_label(discovery)
+            for match in discovery.get("matches") or []:
+                if isinstance(match, dict) and not match.get("source_label"):
+                    match["source_label"] = _discovery_source_label(match)
+        inventory = asset.get("inventory")
+        if isinstance(inventory, dict) and not inventory.get("source_label"):
+            if type_names is None:
+                type_names = _template_name_map(db)
+            inventory["source_label"] = _inventory_source_label(
+                inventory.get("fields"), type_names
+            )
+        if not asset.get("source_label"):
+            if isinstance(discovery, dict):
+                asset["source_label"] = discovery.get("source_label")
+            elif isinstance(inventory, dict):
+                asset["source_label"] = inventory.get("source_label")
+            elif asset.get("source") == "asset_inventory" and isinstance(
+                asset.get("fields"), dict
+            ):
+                # 旧结构工单：清单命中字段直接挂在 asset 本体上
+                if type_names is None:
+                    type_names = _template_name_map(db)
+                asset["source_label"] = _inventory_source_label(
+                    asset["fields"], type_names
+                )
+            elif asset.get("source") == "asset_discovery":
+                asset["source_label"] = _DISCOVERY_SOURCE_PREFIX
+    return data
 
 
 def _query_threat_intel_batch(ips: list[str]) -> list[dict]:

@@ -12,6 +12,7 @@ import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission, isAdmin, guardNavPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
+import { validateBanTarget } from '../../utils/ipValidation'
 
 const STATUS_OPTIONS = [
   { v: 'active', label: '生效中' }, { v: 'pending_approval', label: '待审批' },
@@ -76,6 +77,9 @@ export default function BanWorkbench({ embedded = false }) {
     ip: '', ban_level: 'medium', ban_duration: 3600, is_permanent: false, reason: '', region: '',
   })
   const [manualSubmitting, setManualSubmitting] = useState(false)
+  const [manualIpTouched, setManualIpTouched] = useState(false)
+  // 即时校验：封禁目标（单 IP / CIDR / 范围 / 多值，不允许通配）
+  const manualIpError = validateBanTarget(manualForm.ip, '封禁目标')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -117,6 +121,8 @@ export default function BanWorkbench({ embedded = false }) {
   // 手动发起封禁
   const doManualBan = () => {
     if (!manualForm.ip.trim()) { toast.error('请填写目标 IP'); return }
+    const ipMsg = validateBanTarget(manualForm.ip, '封禁目标')
+    if (ipMsg) { setManualIpTouched(true); toast.error(ipMsg); return }
     if (!manualForm.reason.trim()) { toast.error('请填写封禁原因'); return }
     setManualSubmitting(true)
     banWorkflowApi.createManualBan({
@@ -130,6 +136,7 @@ export default function BanWorkbench({ embedded = false }) {
       .then((rec) => {
         toast.success(`IP ${rec.ip} 已下发封禁（手动封禁）`)
         setManualOpen(false)
+        setManualIpTouched(false)
         setManualForm({ ip: '', ban_level: 'medium', ban_duration: 3600, is_permanent: false, reason: '', region: '' })
         load()
       })
@@ -232,7 +239,7 @@ export default function BanWorkbench({ embedded = false }) {
             onKeyDown={(e) => { if (e.key === 'Enter') load() }}
           />
           {canEdit && (
-            <Button size="sm" variant="primary" onClick={() => setManualOpen(true)}>
+            <Button size="sm" variant="primary" onClick={() => { setManualIpTouched(false); setManualOpen(true) }}>
               <Plus className="h-3.5 w-3.5" /> 手动封禁
             </Button>
           )}
@@ -388,13 +395,17 @@ export default function BanWorkbench({ embedded = false }) {
       >
         <div className="space-y-3 text-sm">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">目标 IP（IPv4/IPv6，必填）</label>
+            <label className="mb-1 block text-xs text-muted-foreground">目标 IP / CIDR / 范围（必填，可多值）</label>
             <input
-              className={`${inputBaseCls} h-[38px] w-full font-mono`}
-              placeholder="如 203.0.113.50"
+              className={`${inputBaseCls} h-[38px] w-full font-mono${manualIpTouched && manualIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
+              placeholder="如 203.0.113.50 / 10.0.0.0/8 / 1.2.3.4-1.2.3.20"
               value={manualForm.ip}
               onChange={(e) => setManualForm((f) => ({ ...f, ip: e.target.value }))}
+              onBlur={() => setManualIpTouched(true)}
             />
+            {manualIpTouched && manualIpError && (
+              <div className="mt-1 text-[11px] text-destructive">{manualIpError}</div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

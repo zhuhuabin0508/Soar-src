@@ -9,7 +9,6 @@ v2 扩展：
 - 动作分类/风险等级/版本管理/调用统计
 - DeviceCallLog 调用日志列表、详情、统计
 """
-import ipaddress
 import json
 import logging
 import time
@@ -44,15 +43,13 @@ router = APIRouter(
 # ============ Pydantic 请求体 ============
 
 def _validate_ip_address(v: str) -> str:
-    """校验设备 IP 地址：允许空串，或合法的 IPv4 / IPv6 地址，否则抛错。"""
-    if not v or not v.strip():
-        return ""
-    value = v.strip()
-    try:
-        ipaddress.ip_address(value)
-    except (ipaddress.AddressValueError, ValueError) as exc:
-        raise ValueError(f"无效的 IP 地址: {value}") from exc
-    return value
+    """校验设备 IP 地址：允许空串，或合法的单 IPv4 / IPv6 地址（统一规则）。
+
+    规则见 ``app.core.ip_validation``：拒绝主机名/CIDR/范围/通配/多值文本。
+    """
+    from app.core.ip_validation import validate_single_ip
+
+    return validate_single_ip(v, "设备 IP 地址", allow_empty=True)
 
 
 class DeviceBase(BaseModel):
@@ -642,11 +639,13 @@ def import_devices(
             if dev_data.get("api_url"):
                 validate_outbound_url(dev_data["api_url"], field="设备 api_url")
             actions_data = dev_data.get("actions", []) or []
+            # 导入数据同样硬拦截设备 IP（与表单创建同一套规则）
+            ip_address = _validate_ip_address(dev_data.get("ip_address", "") or "")
             device = Device(
                 name=dev_data.get("name", "") or "未命名设备",
                 type=dev_data.get("type", "firewall"),
                 vendor=dev_data.get("vendor", ""),
-                ip_address=dev_data.get("ip_address", ""),
+                ip_address=ip_address,
                 api_url=dev_data.get("api_url", ""),
                 api_key=encrypt_device_secret(dev_data.get("api_key", "")),
                 username=encrypt_device_secret(dev_data.get("username", "")),

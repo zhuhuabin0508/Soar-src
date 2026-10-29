@@ -178,7 +178,7 @@ function ConfirmLeaveDialog({ onStay, onLeave }) {
             type: 'button',
             onClick: onLeave,
             className:
-              'rounded-md bg-danger-600 px-3 py-1.5 text-sm font-medium text-foreground transition hover:bg-danger-500',
+              'rounded-md bg-destructive px-3 py-1.5 text-sm font-medium text-destructive-foreground transition hover:opacity-90',
           },
           '放弃修改并离开'
         )

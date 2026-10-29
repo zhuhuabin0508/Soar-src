@@ -19,9 +19,11 @@ import {
   LISTEN_PROTOCOLS, SOURCE_TYPE_META, PROTOCOL_TAG_CLS, RECEIVER_STATUS_META,
   parseAdapterConfig, getCfg, setCfgValue, receiverAccessInfo, receiverEndpoint, receiverToBody,
 } from './receiverMeta'
+import { validateListenBind } from '../../utils/ipValidation'
 
 // ============ 适配器参数动态表单段（SOURCE_TYPE_META.fields 驱动） ============
 function AdapterConfigSection({ meta, cfg, onChange }) {
+  const [touched, setTouched] = useState({})
   const fields = (meta.fields || []).filter((f) => !f.showIf || f.showIf(cfg))
   const setCfg = (key, value) => onChange(setCfgValue(cfg, key, value))
   return (
@@ -30,6 +32,7 @@ function AdapterConfigSection({ meta, cfg, onChange }) {
         {fields.map((f) => {
           const raw = getCfg(cfg, f.key)
           const display = f.type === 'json' && raw != null && typeof raw === 'object' ? JSON.stringify(raw) : raw ?? ''
+          const ipError = f.type === 'ip' ? validateListenBind(display, f.label) : null
           return (
             <label key={f.key} className={f.full ? 'col-span-2' : ''}>
               <div className="mb-1 text-xs font-medium text-muted-foreground">{f.label}{f.required ? ' *' : ''}</div>
@@ -57,10 +60,14 @@ function AdapterConfigSection({ meta, cfg, onChange }) {
                 />
               ) : (
                 <input
-                  type={f.type === 'number' ? 'number' : 'text'} className={inputCls} value={display} placeholder={f.placeholder}
+                  type={f.type === 'number' ? 'number' : 'text'}
+                  className={`${inputCls}${touched[f.key] && ipError ? ' border-destructive ring-1 ring-destructive' : ''}`}
+                  value={display} placeholder={f.placeholder}
                   onChange={(e) => setCfg(f.key, f.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value)}
+                  onBlur={() => { if (f.type === 'ip') setTouched((p) => ({ ...p, [f.key]: true })) }}
                 />
               )}
+              {touched[f.key] && ipError && <div className="mt-1 text-[11px] text-destructive">{ipError}</div>}
               {f.hint && f.type !== 'bool' && <div className="mt-1 text-[10px] leading-tight text-muted-foreground">{f.hint}</div>}
             </label>
           )
@@ -78,6 +85,7 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
   const [saving, setSaving] = useState(false)
   // 未保存修改提醒：抽屉打开期间跟踪表单改动；关闭/保存后复位
   const [dirty, setDirty] = useState(false)
+  const [bindTouched, setBindTouched] = useState(false)
   const bypassGuard = useUnsavedChanges(open && dirty, { onSave: () => handleSubmit() })
 
   const buildForm = (src) => ({
@@ -101,13 +109,15 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
   })
 
   useEffect(() => {
-    if (open) { setForm(buildForm(initial)); setDirty(false) }
+    if (open) { setForm(buildForm(initial)); setDirty(false); setBindTouched(false) }
   }, [open, initial]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k, v) => { setForm((p) => ({ ...p, [k]: v })); setDirty(true) }
   const meta = SOURCE_TYPE_META[form?.protocol] || {}
   const isFlat = !!meta.flat
   const isListen = LISTEN_PROTOCOLS.has(form?.protocol)
+  // 即时校验：Syslog 监听地址（单 IPv4/IPv6 或空）
+  const syslogBindError = validateListenBind(form?.syslog_bind, '监听地址')
 
   // 同一监听地址+端口禁止重复创建（与后端 _check_port_conflict 一致：仅比对启用中的接收器）
   const checkEndpointDup = () => {
@@ -130,6 +140,10 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
   const handleSubmit = async () => {
     if (!form.name.trim()) { toast.warning('请填写接收器名称'); return }
     if (form.protocol === 'syslog' && !form.syslog_port) { toast.warning('Syslog 需配置监听端口'); return }
+    if (form.protocol === 'syslog') {
+      const bindMsg = validateListenBind(form.syslog_bind, '监听地址')
+      if (bindMsg) { setBindTouched(true); toast.warning(bindMsg); return }
+    }
     if (form.protocol === 'kafka' && (!form.kafka_bootstrap || !form.kafka_topic)) {
       toast.warning('Kafka 需配置 bootstrap 与 topic'); return
     }
@@ -138,6 +152,10 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
         if (f.required && !String(getCfg(form.adapter_config, f.key) ?? '').trim()) {
           toast.warning(`请填写${f.label}`); return
         }
+      }
+      for (const f of (meta.fields || []).filter((x) => x.type === 'ip')) {
+        const msg = validateListenBind(getCfg(form.adapter_config, f.key), f.label)
+        if (msg) { toast.warning(msg); return }
       }
       for (const f of (meta.fields || []).filter((x) => x.type === 'json')) {
         const v = getCfg(form.adapter_config, f.key)
@@ -279,7 +297,15 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
                     </label>
                     <label>
                       <div className="mb-1 text-xs font-medium text-muted-foreground">监听地址</div>
-                      <input className={inputCls} value={form.syslog_bind} onChange={(e) => set('syslog_bind', e.target.value)} placeholder="0.0.0.0" />
+                      <input
+                        className={`${inputCls}${bindTouched && syslogBindError ? ' border-destructive ring-1 ring-destructive' : ''}`}
+                        value={form.syslog_bind}
+                        onChange={(e) => set('syslog_bind', e.target.value)}
+                        onBlur={() => setBindTouched(true)}
+                        placeholder="0.0.0.0" />
+                      {bindTouched && syslogBindError && (
+                        <div className="mt-1 text-[11px] text-destructive">{syslogBindError}</div>
+                      )}
                       <div className="mt-1 text-[10px] leading-tight text-muted-foreground">0.0.0.0 监听所有接口；填本机不存在的地址会启动失败</div>
                     </label>
                   </div>

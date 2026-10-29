@@ -1,16 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, Megaphone, AlertTriangle, XCircle, ExternalLink } from 'lucide-react'
+import {
+  Bell, Megaphone, AlertTriangle, XCircle, ExternalLink, Ticket,
+  Clock, ShieldAlert, Activity, RefreshCw, MessageSquare,
+} from 'lucide-react'
 import { notificationsApi } from '../api/notifications'
 import { toast } from '../store/toastStore'
 import { fmtAbs } from '../utils/absTime'
 import { guardNavPermission } from '../utils/permissions'
 
-// 类型图标映射（带语义色容器：公告 info / 系统告警 warning / 执行失败 destructive）
+// 类型图标映射（带语义色容器：公告 info / 系统告警 warning / 执行失败 destructive / 工单 primary）
 const TYPE_ICON = {
   announcement: <Megaphone className="h-3.5 w-3.5" />,
   system_alert: <AlertTriangle className="h-3.5 w-3.5" />,
   execution_failed: <XCircle className="h-3.5 w-3.5" />,
+  alert_high_risk: <ShieldAlert className="h-3.5 w-3.5" />,
+  approval_pending: <Clock className="h-3.5 w-3.5" />,
+  workflow: <Activity className="h-3.5 w-3.5" />,
+  system_update: <RefreshCw className="h-3.5 w-3.5" />,
+  feedback: <MessageSquare className="h-3.5 w-3.5" />,
+  ticket: <Ticket className="h-3.5 w-3.5" />,
 }
 
 // 类型 → 图标底色容器（浅色圆角底 + 语义色图标）
@@ -18,6 +27,29 @@ const TYPE_ICON_CLS = {
   announcement: 'bg-info/15 text-info',
   system_alert: 'bg-warning/15 text-warning',
   execution_failed: 'bg-destructive/15 text-destructive',
+  alert_high_risk: 'bg-destructive/15 text-destructive',
+  approval_pending: 'bg-info/15 text-info',
+  workflow: 'bg-primary/15 text-primary',
+  system_update: 'bg-info/15 text-info',
+  feedback: 'bg-info/15 text-info',
+  ticket: 'bg-primary/15 text-primary',
+}
+
+// 类型 → 中文名（滑出提醒卡片标题、合并提示文案用）
+const TYPE_LABEL = {
+  announcement: '公告',
+  system_update: '系统更新',
+  system_alert: '系统资源告警',
+  alert_high_risk: '高危告警命中',
+  receiver_alert: '日志接收异常',
+  parse_alert: '解析成功率异常',
+  execution_failed: '工作流执行失败',
+  approval_pending: '待审批提醒',
+  workflow_alert: '封禁工作流告警',
+  workflow: '工作流运营通知',
+  model_alert: '模型健康异常',
+  feedback: '反馈',
+  ticket: '工单处置提醒',
 }
 
 function getTypeIcon(type) {
@@ -28,7 +60,12 @@ function getTypeIconCls(type) {
   return TYPE_ICON_CLS[type] || 'bg-primary/15 text-primary'
 }
 
-// 根据通知关联资源生成跳转链接
+function getTypeLabel(type) {
+  return TYPE_LABEL[type] || '新通知'
+}
+
+// 根据通知关联资源生成跳转链接（与通知中心 buildNotificationLink 保持一致）
+// related_id 直达详情页（如工单 /tickets/:id），列表类页面用 focus 参数定位高亮
 function buildNotificationLink(n) {
   if (!n) return null
   if (n.related_type && n.related_id) {
@@ -37,15 +74,30 @@ function buildNotificationLink(n) {
       execution: `/executions?focus=${n.related_id}`,
       agent: `/agents/${n.related_id}/monitor`,
       tool: `/tools?focus=${n.related_id}`,
-      knowledge_base: `/knowledge-bases?focus=${n.related_id}`,
+      knowledge_base: `/knowledge-base?focus=${n.related_id}`,
       user: `/users?focus=${n.related_id}`,
+      ticket: `/tickets/${n.related_id}`,
+      feedback: `/feedbacks/mine?focus=${n.related_id}`,
+      llm_config: `/llm-configs?focus=${n.related_id}`,
+      parse_template: `/strategies?focus=${n.related_id}`,
+      alert_rule: `/alerts?focus=${n.related_id}`,
+      log_receiver: `/receivers?focus=${n.related_id}`,
     }
     if (map[n.related_type]) return map[n.related_type]
   }
+  // 按通知类型 fallback
   const typeMap = {
     announcement: null,
-    system_alert: '/system/monitor',
+    system_alert: '/system-monitor',
     execution_failed: '/executions',
+    approval_pending: '/approvals',
+    workflow_alert: '/approvals?tab=all',
+    model_alert: '/llm-configs',
+    parse_alert: '/strategies',
+    receiver_alert: '/receivers',
+    alert_high_risk: '/alerts',
+    feedback: '/feedbacks/mine',
+    ticket: '/tickets',
   }
   return typeMap[n.type] || null
 }
@@ -72,8 +124,16 @@ function fmtRelative(t) {
   return `${days}天前`
 }
 
+// ===== 个人提醒偏好 =====
+// 偏好缓存 key（localStorage，进入页面即时可用；服务端为准，登录后刷新）
+const PREFS_CACHE_KEY = 'soar_notif_prefs'
+// 同类型合并窗口：首条立即滑出提醒，窗口内（30s）后续同类型静默合并（用户确认 30s）
+const MERGE_WINDOW_MS = 30000
+// 提醒卡片停留时长（比普通 toast 长，留足点击时间）
+const TOAST_DURATION = 8000
+
 // 通知铃铛：固定在右上角，展示未读数量徽章 + 下拉面板（最近 5 条）
-// 轮询期间检测到新通知时，通过全局 Toast 弹窗提醒（可点击跳转）。
+// 新通知按个人偏好分流：右侧滑出提醒（可点击跳转关联详情）/ 仅铃铛计数。
 function NotificationBell() {
   const navigate = useNavigate()
   const [unread, setUnread] = useState(0)
@@ -88,8 +148,104 @@ function NotificationBell() {
   const prevUnreadRef = useRef(0)
   // 是否完成首次拉取（首次不弹窗，仅记录基线）
   const firstLoadRef = useRef(true)
+  // 个人提醒偏好：type → 'toast' | 'silent'（与后端默认策略镜像：工单滑出、其余静默）
+  const prefsRef = useRef({})
+  // 同类型合并抑制窗口：type → 窗口截止时间戳（首条已弹，窗口内后续静默合并）
+  const suppressRef = useRef(new Map())
 
-  // 检测新通知并弹窗提醒
+  // 查某类型的提醒方式：显式配置优先，否则按默认策略（工单滑出、其余静默）
+  const getPopupMode = useCallback((type) => {
+    const p = prefsRef.current[type]
+    if (p === 'toast' || p === 'silent') return p
+    return type === 'ticket' ? 'toast' : 'silent'
+  }, [])
+
+  // 拉取个人提醒偏好（服务端为准），并写 localStorage 缓存
+  const loadPrefs = useCallback(async () => {
+    try {
+      const res = await notificationsApi.getPrefs()
+      const map = {}
+      ;(res?.prefs || []).forEach((p) => {
+        if (p.popup_mode === 'toast' || p.popup_mode === 'silent') map[p.event_type] = p.popup_mode
+      })
+      prefsRef.current = map
+      try {
+        localStorage.setItem(PREFS_CACHE_KEY, JSON.stringify(map))
+      } catch { /* 存储不可用时忽略 */ }
+    } catch {
+      // 拉取失败：用 localStorage 缓存兜底（无缓存则走默认策略）
+      try {
+        const cached = JSON.parse(localStorage.getItem(PREFS_CACHE_KEY) || '{}')
+        if (cached && typeof cached === 'object') prefsRef.current = cached
+      } catch { /* 忽略 */ }
+    }
+  }, [])
+
+  // 初始化：先读缓存（即时生效），再异步刷新服务端；监听偏好变更事件（设置页保存后同步）
+  useEffect(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem(PREFS_CACHE_KEY) || '{}')
+      if (cached && typeof cached === 'object') prefsRef.current = cached
+    } catch { /* 忽略 */ }
+    loadPrefs()
+    const onPrefsChanged = () => loadPrefs()
+    window.addEventListener('soar:notification-prefs-changed', onPrefsChanged)
+    return () => {
+      window.removeEventListener('soar:notification-prefs-changed', onPrefsChanged)
+      suppressRef.current.clear()
+    }
+  }, [loadPrefs])
+
+  // 弹一条滑出提醒卡片（点击跳转关联资源 / 通知中心）
+  const showToastReminder = useCallback(
+    (title, message, n) => {
+      const link = buildNotificationLink(n)
+      toast.warning(message, {
+        title,
+        duration: TOAST_DURATION,
+        actionLabel: '查看详情',
+        onClick: () => {
+          // 点击提醒：静默标记已读 + 跳转
+          if (n && !n.is_read) {
+            notificationsApi.markRead(n.id).catch(() => {})
+            setUnread((u) => Math.max(0, u - 1))
+          }
+          if (link) {
+            navigate(link)
+          } else {
+            if (!guardNavPermission('notification', 'view', '通知中心')) return
+            navigate('/notifications')
+          }
+        },
+      })
+    },
+    [navigate],
+  )
+
+  // 收到一条新通知：按偏好分流。
+  // toast 类型：首条立即滑出提醒（保证时效），30s 抑制窗口内后续同类型静默合并
+  // （避免批量流转刷屏，合并信息在铃铛下拉与徽章计数可见）。
+  const enqueueReminder = useCallback(
+    (n) => {
+      const mode = getPopupMode(n.type)
+      if (mode !== 'toast') {
+        console.info('[notif] 静默(仅铃铛):', n.id, n.type, 'mode =', mode)
+        return
+      }
+      const now = Date.now()
+      const until = suppressRef.current.get(n.type) || 0
+      if (now < until) {
+        console.info('[notif] 合并抑制:', n.id, n.type, '窗口剩余', Math.ceil((until - now) / 1000) + 's')
+        return
+      }
+      suppressRef.current.set(n.type, now + MERGE_WINDOW_MS)
+      console.info('[notif] 弹出提醒:', n.id, n.type, '->', n.title)
+      showToastReminder(`${getTypeLabel(n.type)}提醒`, n.title || '收到新通知', n)
+    },
+    [getPopupMode, showToastReminder],
+  )
+
+  // 检测新通知并按偏好提醒
   const checkNewAndToast = useCallback(
     async (newUnread) => {
       // 未读数没有增长，跳过拉取最近通知
@@ -103,29 +259,22 @@ function NotificationBell() {
         if (firstLoadRef.current) {
           list.forEach((n) => seenIdsRef.current.add(n.id))
           firstLoadRef.current = false
+          console.info('[notif] 基线记录完成:', list.map((n) => n.id).join(','))
           return
         }
-        // 后续轮询：对未见过的未读通知弹窗
+        // 后续轮询：对未见过的未读通知，按个人偏好分流（滑出/仅铃铛）
         for (const n of list) {
           if (seenIdsRef.current.has(n.id)) continue
           seenIdsRef.current.add(n.id)
           if (n.is_read) continue
-          // 弹窗提醒：点击跳转到关联资源或通知中心
-          const link = buildNotificationLink(n)
-          toast.warning(n.title || '收到新通知', {
-            title: '新通知',
-            duration: 6000,
-            actionLabel: link ? '查看' : '查看通知',
-            onClick: () => {
-              navigate(link || '/notifications')
-            },
-          })
+          console.info('[notif] 新通知:', n.id, n.type, 'title:', n.title)
+          enqueueReminder(n)
         }
-      } catch {
-        // 静默失败
+      } catch (e) {
+        console.warn('[notif] 拉取最近通知失败:', e?.message || e)
       }
     },
-    [navigate],
+    [enqueueReminder],
   )
 
   // 获取未读计数
@@ -134,23 +283,123 @@ function NotificationBell() {
       const res = await notificationsApi.unreadCount()
       // 后端返回 { unread_count: N }，兼容旧版 { count: N } 与裸数字
       const count = res?.unread_count ?? res?.count ?? (typeof res === 'number' ? res : 0)
+      console.info('[notif] 轮询 unread:', count, '上次:', prevUnreadRef.current)
       setUnread(count || 0)
-      // 未读数增长时，拉取最近通知并弹窗提醒
+      // 未读数增长时，拉取最近通知并按偏好提醒
       if (count > prevUnreadRef.current) {
         await checkNewAndToast(count)
       }
       prevUnreadRef.current = count || 0
-    } catch {
-      // 静默失败：铃铛不应因轮询错误打断用户
+    } catch (e) {
+      console.warn('[notif] 轮询失败:', e?.message || e)
     }
   }, [checkNewAndToast])
 
-  // 初始化 + 每 30 秒自动刷新未读计数
+  // 初始化 + 轮询刷新未读计数（可见 10s / 后台标签页跳过省请求，回到前台立即补查）
   useEffect(() => {
     loadUnread()
-    const timer = setInterval(loadUnread, 30000)
-    return () => clearInterval(timer)
+    const timer = setInterval(() => {
+      // 后台标签页不请求（浏览器本身也会节流定时器），回到前台由 visibilitychange 立即补查
+      if (document.hidden) return
+      loadUnread()
+    }, 10000)
+    const onVisible = () => {
+      if (!document.hidden) loadUnread()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [loadUnread])
+
+  // ===== WebSocket 实时推送 =====
+  // 连接 /api/v1/ws/notifications（浏览器 WS 无法带 Authorization 头，token 经子协议传递鉴权）。
+  // 服务端通知 commit 后毫秒级推送信号 → 立即 loadUnread() 刷新铃铛并按偏好分流提醒；
+  // WS 只是加速信号，上方轮询保留兜底（断网/Redis 故障时提醒退化为轮询节奏）。
+  // 断线指数退避重连（1s/2s/5s/10s 封顶 + 随机抖动，防集体惊群）；
+  // 4401 鉴权失败不重连；4429 超单用户连接上限继续退避重连（关闭其他标签页后自动恢复）。
+  useEffect(() => {
+    let ws = null
+    let closed = false
+    let reconnectTimer = null
+    let heartbeatTimer = null
+    const BACKOFFS = [1000, 2000, 5000, 10000]
+    let attempt = 0
+
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer)
+        heartbeatTimer = null
+      }
+    }
+
+    const connect = () => {
+      const token = localStorage.getItem('soar_token')
+      if (!token) return
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      try {
+        // token 经子协议传递（不落访问日志；query 串会被 uvicorn/nginx 完整记录）
+        ws = new WebSocket(
+          `${proto}://${window.location.host}/api/v1/ws/notifications`,
+          ['bearer', token],
+        )
+      } catch {
+        return
+      }
+      ws.onopen = () => {
+        attempt = 0
+        // 30s 应用层心跳：服务端 90s 收不到任何消息即断开，30s 一跳留足余量
+        heartbeatTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }))
+          }
+        }, 30000)
+      }
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data)
+          if (msg.kind === 'notification') {
+            console.info('[notif] WS 实时推送:', msg.id, msg.type, '->', msg.title)
+            // 推送自带通知全量字段：直接按偏好分流弹提醒，与铃铛同速到达。
+            // 不再绕道「未读数对比 → 拉列表」（两次 API 往返慢且有竞态）。
+            if (msg.id != null && !seenIdsRef.current.has(msg.id)) {
+              seenIdsRef.current.add(msg.id) // 先登记去重，防止后续轮询对同一条重复弹
+              enqueueReminder({ ...msg, is_read: false })
+            }
+            // 同步刷新徽章计数（该 id 已进 seenIds，loadUnread 内不会重复弹）
+            loadUnread()
+          }
+        } catch { /* 忽略非 JSON 帧（pong 等） */ }
+      }
+      ws.onclose = (ev) => {
+        stopHeartbeat()
+        if (closed) return
+        if (ev.code === 4401) {
+          console.warn('[notif] WS 鉴权失败（token 过期/已登出），停止重连，轮询兜底')
+          return
+        }
+        // 4429（超单用户连接上限）不特殊处理：按退避继续重连，
+        // 关闭其他标签页释放名额后自动恢复实时推送；期间轮询兜底不丢通知。
+        const delay = BACKOFFS[Math.min(attempt, BACKOFFS.length - 1)]
+        attempt += 1
+        reconnectTimer = setTimeout(connect, delay + Math.random() * 0.3 * delay)
+      }
+    }
+
+    connect()
+    return () => {
+      closed = true
+      stopHeartbeat()
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (ws) {
+        try { ws.close() } catch { /* 忽略 */ }
+      }
+    }
+    // loadUnread / enqueueReminder 均为稳定 useCallback 引用（依赖链到 navigate 为止），
+    // 不会因重渲染导致 WS 断开重连
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadUnread, enqueueReminder])
 
   // 下拉面板外点击关闭
   useEffect(() => {
@@ -199,7 +448,7 @@ function NotificationBell() {
     }
   }
 
-  // 点击通知项：标记已读 + 跳转到关联资源或通知中心
+  // 点击通知项：标记已读 + 跳转到关联资源（如工单详情）或通知中心
   const handleClickNotification = async (n) => {
     if (!n.is_read) {
       // 静默标记已读
@@ -326,17 +575,31 @@ function NotificationBell() {
 
           {/* 底部操作 */}
           <div className="flex items-center justify-between border-t border-border px-3 py-2">
-            <button
-              type="button"
-              onClick={() => {
-                if (!guardNavPermission('notification', 'view', '通知中心')) return
-                setOpen(false)
-                navigate('/notifications')
-              }}
-              className="rounded px-1 text-xs font-medium text-primary transition-colors hover:text-primary/80"
-            >
-              查看全部
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!guardNavPermission('notification', 'view', '通知中心')) return
+                  setOpen(false)
+                  navigate('/notifications')
+                }}
+                className="rounded px-1 text-xs font-medium text-primary transition-colors hover:text-primary/80"
+              >
+                查看全部
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!guardNavPermission('notification', 'view', '通知中心')) return
+                  setOpen(false)
+                  navigate('/notifications?tab=prefs')
+                }}
+                className="rounded px-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                title="配置各类型通知的提醒方式"
+              >
+                提醒设置
+              </button>
+            </div>
             <button
               type="button"
               onClick={handleMarkAllRead}

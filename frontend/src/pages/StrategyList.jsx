@@ -388,7 +388,6 @@ export default function StrategyList() {
               共 <span className="font-medium tabular-nums text-foreground">{filteredList.length}</span> 个模板
             </span>
           )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">路由匹配 · 字段映射 · 枚举翻译 · 校验规则</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新模板列表">

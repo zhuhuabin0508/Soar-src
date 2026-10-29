@@ -170,7 +170,6 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
             onChange={(v) => onChange(updateTSConfig(value, { search_default_limit: v }))}
             min={1}
             max={cfg.max_search_limit}
-            hint="tool_search 默认返回的工具数"
           />
           <NumberInput
             label="最大返回数"
@@ -178,7 +177,6 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
             onChange={(v) => onChange(updateTSConfig(value, { max_search_limit: v }))}
             min={1}
             max={50}
-            hint="tool_search 单次最多返回数"
           />
         </div>
 

@@ -81,6 +81,36 @@ export const assetsApi = {
   // 删除模板（预设模板不可删除）
   deleteTemplate: (code) =>
     request(`/asset-templates/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  // 导出类型模板为 JSON（codes 为空导出全部）
+  exportTemplates: async (codes = []) => {
+    const qs = new URLSearchParams()
+    if (Array.isArray(codes) && codes.length > 0) qs.set('codes', codes.join(','))
+    const query = qs.toString()
+    const url = `/api/v1/asset-templates/export${query ? `?${query}` : ''}`
+    const resp = await fetch(url, { headers: { ...authHeader() } })
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try {
+        const data = await resp.json()
+        detail = data.detail || detail
+      } catch { /* 非 JSON 错误响应 */ }
+      throw new Error(`导出失败：${detail}`)
+    }
+    const blob = await resp.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = codes.length === 1
+      ? `asset_template_${codes[0]}.json`
+      : `asset_templates_${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(blobUrl)
+  },
+  // 导入类型模板：payload 为 { template } 或 { templates: [...] }
+  importTemplates: (payload) =>
+    request('/asset-templates/import', { method: 'POST', body: payload }),
 
   // ===== 资产自定义字段（全局共享）=====
   listCustomFields: () => request('/assets/custom-fields'),

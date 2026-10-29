@@ -14,7 +14,7 @@ export const SOURCE_TYPE_META = {
     hint: '接收交换机/防火墙等设备主动上报的 SNMP Trap 事件（UDP）',
     fields: [
       { key: 'port', label: '监听端口', type: 'number', placeholder: '1162', hint: '默认 1162，避开特权端口 162；需与发送端目标端口一致' },
-      { key: 'bind', label: '监听地址', placeholder: '0.0.0.0', hint: '0.0.0.0 监听所有接口' },
+      { key: 'bind', label: '监听地址', type: 'ip', placeholder: '0.0.0.0', hint: '0.0.0.0 监听所有接口' },
       { key: 'entry_discovery', label: '条目自动发现', type: 'bool', defaultTrue: true, full: true, hint: '按来源 IP 自动生成数据源条目，未配置的条目跟随接收器默认模板（日志零丢失）' },
       { key: 'entry_max_count', label: '条目数量上限', type: 'number', placeholder: '1000', hint: '超过上限后新来源不再建条目，走接收器默认配置' },
     ],
@@ -24,7 +24,7 @@ export const SOURCE_TYPE_META = {
     hint: '接收路由器/交换机的 NetFlow v5/v9 与 IPFIX 流量记录（UDP）',
     fields: [
       { key: 'port', label: '监听端口', type: 'number', placeholder: '2055', hint: 'NetFlow 常用 2055，IPFIX 为 4739；需与发送端一致' },
-      { key: 'bind', label: '监听地址', placeholder: '0.0.0.0' },
+      { key: 'bind', label: '监听地址', type: 'ip', placeholder: '0.0.0.0' },
       { key: 'versions', label: '启用版本', placeholder: 'v5,v9,ipfix', hint: '逗号分隔，默认全部启用' },
       { key: 'entry_discovery', label: '条目自动发现', type: 'bool', defaultTrue: true, full: true, hint: '按 Exporter 来源 IP 自动生成数据源条目，未配置的条目跟随接收器默认模板' },
       { key: 'entry_max_count', label: '条目数量上限', type: 'number', placeholder: '1000', hint: '超过上限后新来源不再建条目，走接收器默认配置' },

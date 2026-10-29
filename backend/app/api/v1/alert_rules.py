@@ -147,6 +147,41 @@ class ImportBody(BaseModel):
 
 
 # ===== 校验 =====
+# 标准告警模型中的 IP 字段：条件值必须可解析为 IP/CIDR（in_cidr 只允许 IP/CIDR）
+_IP_CONDITION_FIELDS = ("src_ip", "dst_ip", "host_ip")
+
+
+def _validate_ip_condition_value(field: str, op: str, value: Any) -> None:
+    """校验 IP 字段的条件值；非法直接抛 422（与保存/导入共用）。"""
+    from app.core.ip_validation import validate_cidr_list, validate_ip_expression
+
+    if field not in _IP_CONDITION_FIELDS or op in NO_VALUE_OPS or value is None:
+        return
+    items = value if isinstance(value, list) else [value]
+    for item in items:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        try:
+            if op == "in_cidr":
+                validate_cidr_list(item, field)
+            else:
+                validate_ip_expression(item, field)
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc))
+
+
+def _validate_ip_conditions(node: Any) -> None:
+    """递归校验条件树中的 IP 字段值（草稿测试接口复用）。"""
+    if isinstance(node, dict) and node.get("type") == "group":
+        for it in node.get("items") or []:
+            _validate_ip_conditions(it)
+        return
+    if isinstance(node, dict) and node.get("field"):
+        _validate_ip_condition_value(
+            str(node.get("field")), node.get("op"), node.get("value")
+        )
+
+
 def _validate_condition_tree(node: Any, depth: int = 0) -> Any:
     """条件树校验 + 轻度归一（叶：必填字段/合法操作符；组：最多两层）。"""
     if isinstance(node, dict) and node.get("type") == "group":
@@ -168,6 +203,9 @@ def _validate_condition_tree(node: Any, depth: int = 0) -> Any:
         raise HTTPException(422, detail=f"不支持的操作符：{node.get('op')!r}")
     if node.get("op") not in NO_VALUE_OPS and node.get("value") is None:
         raise HTTPException(422, detail=f"条件 {node['field']!r} 需要比较值")
+    _validate_ip_condition_value(
+        str(node["field"]), node.get("op"), node.get("value")
+    )
     return {"field": str(node["field"])[:64], "op": node["op"], "value": node.get("value")}
 
 
@@ -564,6 +602,15 @@ def test_rules(
     if len(payload.samples) > 10:
         raise HTTPException(422, detail="测试样例最多 10 条")
     draft = payload.draft_rule
+    # 草稿规则：先校验 IP 条件值（测试接口不走保存路径，需独立拦截）
+    if draft is not None:
+        raw_conditions = draft.conditions
+        if isinstance(raw_conditions, dict):
+            for it in raw_conditions.get("items") or []:
+                _validate_ip_conditions(it)
+        elif isinstance(raw_conditions, list):
+            for it in raw_conditions:
+                _validate_ip_conditions(it)
     # 草稿规则按引擎 dict 同构化（优先级参与排序；未传草稿时仅测线上启用规则）
     draft_dict = None
     if draft is not None:

@@ -766,7 +766,10 @@ def unban_ip(
 # 手动封禁（admin/有编辑权限即可发起；来源标记 manual）
 # ----------------------------------------------------------------------
 class ManualBanBody(BaseModel):
-    ip: str = Field(..., min_length=3, max_length=45, description="目标 IP（IPv4/IPv6）")
+    ip: str = Field(
+        ..., min_length=1, max_length=2048,
+        description="封禁目标：单 IP / CIDR / 范围 / 多值（IPv4/IPv6）",
+    )
     ban_level: str = Field("medium", description="封禁等级 low/medium/high/critical")
     ban_duration: int = Field(3600, gt=0, description="封禁时长（秒），is_permanent 时忽略")
     is_permanent: bool = Field(False, description="是否永久封禁")
@@ -780,13 +783,16 @@ def create_manual_ban(
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> dict:
     """手动发起封禁：调用封禁工具下发 → 写 ban_records（ban_source=manual）→ 同步 legacy 工作台。"""
-    ip = body.ip.strip()
-    # IP 合法性校验
-    import ipaddress
+    # 封禁目标校验：支持单 IP / CIDR / 范围 / 多值（拒绝主机名/文本/通配）
+    from app.core.ip_validation import validate_ban_target
+
     try:
-        ipaddress.ip_address(ip)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="IP 格式不合法，请输入有效的 IPv4/IPv6 地址")
+        ip = validate_ban_target(body.ip, "封禁目标")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not ip:
+        # 纯空白输入经归一化后为空串：不能带着空目标去下发封禁
+        raise HTTPException(status_code=422, detail="封禁目标不能为空")
     # 已生效的封禁不重复下发
     existing = db.query(BanRecord).filter(BanRecord.ip == ip, BanRecord.status == "active").first()
     if existing is not None:

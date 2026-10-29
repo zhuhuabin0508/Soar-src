@@ -177,7 +177,7 @@ class HermesToolEngine:
         self._register_db_tools()
         # 2. 知识库工具
         self._register_kb_tools()
-        # 3. 资产检索工具（勾选资产类型 或 工具列表启用 search_assets）
+        # 3. 资产检索工具（启用 search_assets 即注册；检索全部类型，见 _register_asset_tools）
         self._register_asset_tools()
         self._register_workflow_tools()
         # 注意：内置安全工具（check_whitelist 等）已迁移为 DB code 类型工具，
@@ -282,18 +282,21 @@ class HermesToolEngine:
             )
 
     def _register_asset_tools(self) -> None:
-        """注册资产检索工具（在关联的资产类型范围内检索）。
+        """注册资产检索工具（检索全部资产清单类型 + 资产发现，不按类型勾选过滤）。
 
+        注册条件：工具列表启用 ``search_assets``，或历史配置勾选过资产类型
+        （``enabled_asset_types`` 已废弃，仅作为老智能体的兼容开关）。
         复用 ``app.agent.tool_builders._build_asset_tool`` 构造工具，抽取
         (name, description, args_schema, coroutine) 注册为 ToolEntry。
         source="asset" 为核心来源（永不延迟，见 tool_search.py）。
         """
-        enabled_asset_types = self.agent.enabled_asset_types or []
-        if not enabled_asset_types:
+        enabled_tools = self.agent.enabled_tools or []
+        legacy_asset_types = self.agent.enabled_asset_types or []
+        if "search_assets" not in enabled_tools and not legacy_asset_types:
             return
         from app.agent.tool_builders import _build_asset_tool
 
-        asset_tool = _build_asset_tool(enabled_asset_types)
+        asset_tool = _build_asset_tool()
         if asset_tool is not None:
             self._registry["search_assets"] = ToolEntry(
                 name="search_assets",

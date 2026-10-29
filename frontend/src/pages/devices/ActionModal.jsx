@@ -9,6 +9,7 @@ import { useUnsavedChanges } from '../../hooks/useUnsavedChanges'
 import useLockBackgroundScroll from '../../hooks/useLockBackgroundScroll'
 import { CompactSelect } from '../../components/ui'
 import { devices as devicesApi } from '../../api/client'
+import { validateIPExpression, validateCidrList, validateSingleIP } from '../../utils/ipValidation'
 import {
   ACTION_AUTH_TYPES,
   ACTION_CATEGORIES,
@@ -18,7 +19,6 @@ import {
   RISK_OPTIONS,
   fmtRelative,
   fmtTime,
-  normalizeIpAddress,
   safeParseJson,
   truncate,
 } from './constants'
@@ -390,6 +390,8 @@ export function TemplateModal({ open, templates, onClose, onSelect }) {
 // ============ 从模板创建设备弹窗 ============
 export function TemplateCreateModal({ open, template, onClose, onSubmit, saving }) {
   const [form, setForm] = useState({ name: '', api_url: '', api_key: '', vendor: '', ip_address: '' })
+  const [ipTouched, setIpTouched] = useState(false)
+  const ipError = validateSingleIP(form.ip_address, '设备 IP 地址', { allowEmpty: true })
 
   useEffect(() => {
     if (open && template) {
@@ -400,18 +402,20 @@ export function TemplateCreateModal({ open, template, onClose, onSubmit, saving 
         vendor: template.vendor || '',
         ip_address: '',
       })
+      setIpTouched(false)
     }
   }, [open, template])
 
   if (!open || !template) return null
 
   const handleCreate = () => {
-    const normalizedIp = normalizeIpAddress(form.ip_address)
-    if (normalizedIp === null) {
-      toast.warning(`设备 IP 地址格式不正确：${form.ip_address}`)
+    const ipMsg = validateSingleIP(form.ip_address, '设备 IP 地址', { allowEmpty: true })
+    if (ipMsg) {
+      setIpTouched(true)
+      toast.warning(ipMsg)
       return
     }
-    onSubmit({ ...form, ip_address: normalizedIp })
+    onSubmit({ ...form, ip_address: (form.ip_address || '').trim() })
   }
 
   return (
@@ -484,11 +488,15 @@ export function TemplateCreateModal({ open, template, onClose, onSubmit, saving 
         <label>
           <div className="mb-1 text-xs font-medium text-muted-foreground">设备 IP 地址</div>
           <input
-            className={inputCls}
+            className={`${inputCls}${ipTouched && ipError ? ' border-destructive ring-1 ring-destructive' : ''}`}
             value={form.ip_address}
             onChange={(e) => setForm((p) => ({ ...p, ip_address: e.target.value }))}
+            onBlur={() => setIpTouched(true)}
             placeholder="如：192.168.1.10"
           />
+          {ipTouched && ipError && (
+            <div className="mt-1 text-[11px] text-destructive">{ipError}</div>
+          )}
         </label>
         <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-[11px] text-primary/80">
           将自动创建设备和预置的 {template.action_count ?? template.actions?.length ?? 0} 个动作。
@@ -501,6 +509,7 @@ export function TemplateCreateModal({ open, template, onClose, onSubmit, saving 
 // ============ 动作测试抽屉 ============
 export function ActionTestDrawer({ open, action, onClose, onRun, running, result }) {
   const [params, setParams] = useState({})
+  const [paramTouched, setParamTouched] = useState({})
   useLockBackgroundScroll(open)
 
   useEffect(() => {
@@ -511,12 +520,29 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
         init[p.name] = p.default !== undefined ? p.default : ''
       })
       setParams(init)
+      setParamTouched({})
     }
   }, [open, action])
 
   if (!open || !action) return null
 
   const schema = safeParseJson(action.params_schema, [])
+
+  // 即时校验：type=ip/cidr 的参数（与后端硬拦截口径一致，不允许通配）
+  const paramErrors = {}
+  schema.forEach((p) => {
+    if (!['ip', 'cidr'].includes(p.type)) return
+    const raw = params[p.name]
+    if (!raw?.toString().trim()) {
+      if (p.required) paramErrors[p.name] = `参数「${p.name}」为必填项`
+      return
+    }
+    const msg = p.type === 'cidr'
+      ? validateCidrList(raw, p.name)
+      : validateIPExpression(raw, p.name, { allowWildcard: false })
+    if (msg) paramErrors[p.name] = msg
+  })
+  const hasParamErrors = Object.keys(paramErrors).length > 0
 
   const renderParamInput = (p) => {
     const val = params[p.name] ?? ''
@@ -541,14 +567,20 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
         </CompactSelect>
       )
     }
+    const touched = !!paramTouched[p.name]
+    const err = paramErrors[p.name]
     return (
-      <input
-        className={inputCls}
-        type={p.type === 'number' ? 'number' : 'text'}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        placeholder={p.description || `请输入 ${p.name}`}
-      />
+      <div className="w-full">
+        <input
+          className={`${inputCls}${touched && err ? ' border-destructive ring-1 ring-destructive' : ''}`}
+          type={p.type === 'number' ? 'number' : 'text'}
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onBlur={() => setParamTouched((prev) => ({ ...prev, [p.name]: true }))}
+          placeholder={p.description || `请输入 ${p.name}`}
+        />
+        {touched && err && <div className="mt-1 text-[11px] text-destructive">{err}</div>}
+      </div>
     )
   }
 
@@ -683,7 +715,14 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
           </button>
           <button
             type="button"
-            onClick={() => onRun(params)}
+            onClick={() => {
+              if (hasParamErrors) {
+                setParamTouched(Object.fromEntries(Object.keys(paramErrors).map((k) => [k, true])))
+                toast.warning(Object.values(paramErrors)[0])
+                return
+              }
+              onRun(params)
+            }}
             disabled={running}
             className="btn-primary btn-sm"
           >

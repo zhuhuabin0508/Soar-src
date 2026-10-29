@@ -58,12 +58,11 @@ services:
       - ./backend/app:/app/app
       - ./backend/entrypoint.sh:/app/entrypoint.sh:ro
       - ./backend/requirements.txt:/app/requirements.txt:ro
-      - ./security-tools:/opt/security-tools
       - uploads:/app/uploads
       - backups:/app/backups
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      PATH: /opt/security-tools/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+      PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soar}
       DB_USER: ${POSTGRES_USER:-postgres}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
@@ -104,9 +103,8 @@ services:
     command: ["celery", "-A", "app.core.celery_app", "worker", "-l", "info"]
     volumes:
       - ./backend/app:/app/app
-      - ./security-tools:/opt/security-tools
     environment:
-      PATH: /opt/security-tools/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+      PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soar}
       REDIS_URL: redis://:${REDIS_PASSWORD:-12345678}@redis:6379/0
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-12345678}@redis:6379/0
@@ -148,7 +146,7 @@ services:
     restart: unless-stopped
 
 networks:
-  # 固定名称，便于 security-tools 等旁路栈按容器名互访。
+  # 固定网络名（历史沿用 config_default；security-tools 旁路栈已移除）。
   # 若不存在，dev.sh up 会先创建；已存在则直接加入（服务器上沿用原网络，数据卷不受影响）。
   soar-net:
     name: config_default

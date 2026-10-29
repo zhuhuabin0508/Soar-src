@@ -6,17 +6,27 @@
 - 单条 / 全部标记已读
 - 单条通知删除
 - 管理员发布公告（创建通知）
+- 个人提醒偏好（每类型：右侧滑出 / 仅铃铛）
 """
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
 from app.models.notification import Notification
 from app.models.user import User
+from app.models.user_notification_pref import (
+    POPUP_MODES,
+    POPUP_MODE_SILENT,
+    POPUP_MODE_TOAST,
+    UserNotificationPref,
+    default_popup_mode,
+)
 from app.schemas.notification import (
     NotificationCreate,
     NotificationListResponse,
@@ -81,6 +91,134 @@ def get_unread_count(
         .count()
     )
     return {"unread_count": unread_count}
+
+
+class NotificationPrefUpdate(BaseModel):
+    """更新单类型提醒偏好。"""
+
+    event_type: str = Field(..., min_length=1, max_length=50)
+    popup_mode: str = Field(..., description="toast（右侧滑出）/ silent（仅铃铛）")
+
+
+@router.get("/prefs")
+def get_prefs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("notification", "view")),
+) -> dict:
+    """获取当前用户的通知提醒偏好（按类型目录合并默认值）。"""
+    from app.api.v1.notification_rules import EVENT_TYPES
+
+    # 用户已配置的偏好（不含通配 *，个人偏好按具体类型生效）
+    rows = (
+        db.query(UserNotificationPref)
+        .filter(UserNotificationPref.user_id == current_user.id)
+        .all()
+    )
+    user_prefs = {r.event_type: r.popup_mode for r in rows}
+
+    prefs = []
+    for meta in EVENT_TYPES:
+        if meta["value"] == "*":
+            continue  # 通配仅用于通知规则路由，个人偏好不适用
+        prefs.append(
+            {
+                "event_type": meta["value"],
+                "label": meta["label"],
+                "desc": meta["desc"],
+                "group": meta["group"],
+                # 已配置用用户值，否则按类型默认策略（工单滑出，其余静默）
+                "popup_mode": user_prefs.get(meta["value"], default_popup_mode(meta["value"])),
+                "customized": meta["value"] in user_prefs,
+            }
+        )
+    return {
+        "prefs": prefs,
+        "popup_modes": [
+            {"value": POPUP_MODE_TOAST, "label": "右侧滑出"},
+            {"value": POPUP_MODE_SILENT, "label": "仅铃铛"},
+        ],
+    }
+
+
+@router.put("/prefs")
+def update_pref(
+    payload: NotificationPrefUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("notification", "view")),
+) -> dict:
+    """更新当前用户某通知类型的提醒方式（不存在则新增，存在则覆盖）。"""
+    from app.api.v1.notification_rules import EVENT_TYPES
+
+    valid_types = {m["value"] for m in EVENT_TYPES if m["value"] != "*"}
+    if payload.event_type not in valid_types:
+        raise HTTPException(status_code=422, detail=f"不支持的通知类型：{payload.event_type}")
+    if payload.popup_mode not in POPUP_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"提醒方式仅支持 {' / '.join(POPUP_MODES)}",
+        )
+
+    row = (
+        db.query(UserNotificationPref)
+        .filter(
+            UserNotificationPref.user_id == current_user.id,
+            UserNotificationPref.event_type == payload.event_type,
+        )
+        .first()
+    )
+    if row:
+        row.popup_mode = payload.popup_mode
+    else:
+        row = UserNotificationPref(
+            user_id=current_user.id,
+            event_type=payload.event_type,
+            popup_mode=payload.popup_mode,
+        )
+        db.add(row)
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发首存撞 (user_id, event_type) 唯一约束：另一请求已插入同类型行，
+        # 回滚后转为覆盖更新，保证幂等
+        db.rollback()
+        row = (
+            db.query(UserNotificationPref)
+            .filter(
+                UserNotificationPref.user_id == current_user.id,
+                UserNotificationPref.event_type == payload.event_type,
+            )
+            .first()
+        )
+        if row is None:  # 极端：并发插入方又已删除，让调用方重试
+            raise HTTPException(status_code=409, detail="偏好保存冲突，请重试")
+        row.popup_mode = payload.popup_mode
+        db.commit()
+
+    logger.info(
+        "通知提醒偏好已更新: user_id=%s, event_type=%s, popup_mode=%s",
+        current_user.id, payload.event_type, payload.popup_mode,
+    )
+    return {
+        "success": True,
+        "event_type": payload.event_type,
+        "popup_mode": payload.popup_mode,
+    }
+
+
+@router.delete("/prefs")
+def reset_prefs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("notification", "view")),
+) -> dict:
+    """恢复默认：清空当前用户全部提醒偏好（回到工单滑出、其余静默）。"""
+    deleted = (
+        db.query(UserNotificationPref)
+        .filter(UserNotificationPref.user_id == current_user.id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    logger.info("通知提醒偏好已重置: user_id=%s, 清除 %d 条", current_user.id, deleted)
+    return {"success": True, "deleted_count": deleted}
 
 
 @router.put("/read-all")

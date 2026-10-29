@@ -993,7 +993,6 @@ function FeedbackAdmin() {
     <PageContainer className="flex flex-col">
       <PageHeader
         title="反馈管理"
-        description="处理用户提交的 BUG 与优化建议"
         actions={
           selectedKeys.length > 0 && (
             <div className="flex items-center gap-2">

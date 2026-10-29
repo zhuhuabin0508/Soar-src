@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.api.v1.alerts as alerts_mod
 import app.api.v1.ingest as ingest_mod
 from app.core.timezone import beijing_now
 from app.database import Base, get_db
@@ -81,9 +82,15 @@ def _build_client():
 
 
 class TestAlertStatsTrend:
-    def test_trend_24h_structure_and_counts(self):
+    def test_trend_24h_structure_and_counts(self, monkeypatch):
         """插入 3 条告警（2 条当前小时 + 1 条上一小时），trend_24h 共 24 项且对应小时计数正确。"""
-        now = beijing_now()
+        # 固定端点内的"当前时间"到整点后 30 分（测试数据与断言用同一基准）：
+        # 原先直接用真实 beijing_now() 再减 5 分钟，在每小时前 5 分钟执行时
+        # "当前小时"数据会落进上一小时，导致本用例每小时偶发失败一次。
+        fixed_now = beijing_now().replace(minute=30, second=0, microsecond=0)
+        monkeypatch.setattr(alerts_mod, "beijing_now", lambda: fixed_now)
+
+        now = fixed_now
         db = _TestSessionLocal()
         try:
             for i, offset in enumerate((0, 0, 1)):  # 2 条当前小时 + 1 条上一小时

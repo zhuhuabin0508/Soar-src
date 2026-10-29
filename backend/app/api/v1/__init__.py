@@ -50,6 +50,7 @@ from app.api.v1 import (
     webhook,
     workflows,
     workflow_versions,
+    ws,
 )
 
 api_router = APIRouter()
@@ -93,6 +94,8 @@ api_router.include_router(system_monitor.router)
 api_router.include_router(notifications.router)
 # 通知规则（事件类型路由 → 目标用户/角色）
 api_router.include_router(notification_rules.router)
+# WebSocket 实时推送（通知实时提醒通道，query token 鉴权）
+api_router.include_router(ws.router)
 # 数据备份与恢复
 api_router.include_router(backup.router)
 # 已封禁 IP 管理

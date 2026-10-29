@@ -995,6 +995,28 @@ def run_lightweight_migrations(engine) -> None:
             "assets",
             {"type_code": "VARCHAR(64)"},
         )
+        # assets.ip 列扩宽：多 IP/网段逗号列表合并存储可超 256 字符
+        # （实测导入单条可达 800+ 字符），模型已改为 String(2048)，
+        # 此处为老库把 varchar(<2048) 扩到 varchar(2048)，幂等（已达标则跳过）
+        try:
+            insp_assets = inspect(engine)
+            if insp_assets.has_table("assets"):
+                ip_col = next(
+                    (c for c in insp_assets.get_columns("assets") if c["name"] == "ip"),
+                    None,
+                )
+                # get_columns 返回 dict：{"name":..., "type": String(...), ...}
+                cur_len = getattr(ip_col.get("type"), "length", None) if ip_col else None
+                if cur_len is not None and cur_len < 2048:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            'ALTER TABLE "assets" ALTER COLUMN "ip" TYPE VARCHAR(2048)'
+                        ))
+                    logger.info(
+                        "轻量迁移: assets.ip 列已扩为 VARCHAR(2048)（原 %s 字符）", cur_len
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("assets.ip 列扩宽失败: %s", exc)
         # asset_tags 表新增 category 列（标签分类）
         ensure_columns(
             engine,
@@ -1303,6 +1325,116 @@ def run_lightweight_migrations(engine) -> None:
             _ensure_govcloud_search_indexes(engine)
         except Exception as index_exc:  # noqa: BLE001
             logger.warning("资产发现查询索引创建失败（忽略）: %s", index_exc)
+        # 资产 IP 区间索引（asset_ip_intervals，int8range + GiST，
+        # 见 app/core/asset_ip_index）：
+        # 1) 早期版本误用 int4range——IPv4 整数是无符号 32 位，超过 int4
+        #    上限 2147483647（=127.255.255.255），128.0.0.0 起 IP 插入报
+        #    integer out of range。检测到旧列类型时 DROP 重建（纯索引表，
+        #    数据由下方回填自动重建），并清除回填水位重新全量；
+        # 2) 检测重复行（并发回填可能产生）时同样清表重灌；
+        # 3) 建唯一索引 (asset_id, ip_range) + 插入侧 ON CONFLICT DO NOTHING，
+        #    保证并发写入（ORM 事件与回填交错）不产生重复行；
+        # 4) 增量回填存量资产（首次全量 98k 约 3-5 秒，之后每次启动通常 0 行）；
+        #    写入路径由 ORM 事件实时同步，此处只兜底首次上线与漏网数据。
+        try:
+            from app.core.asset_ip_index import backfill_asset_ip_intervals
+            from app.models.asset import AssetIpInterval
+
+            insp_ip = inspect(engine)
+            if insp_ip.has_table(AssetIpInterval.__tablename__):
+                ip_range_col = next(
+                    (
+                        c
+                        for c in insp_ip.get_columns(AssetIpInterval.__tablename__)
+                        if c["name"] == "ip_range"
+                    ),
+                    None,
+                )
+                rebuild = ip_range_col is not None and "INT4RANGE" in str(
+                    ip_range_col.get("type")
+                ).upper()
+                if not rebuild:
+                    # 唯一索引建立前必须先清重复行；表可随时由回填重建，直接清空
+                    with engine.connect() as conn:
+                        dup = conn.execute(text(
+                            "SELECT 1 FROM asset_ip_intervals "
+                            "GROUP BY asset_id, ip_range HAVING COUNT(*) > 1 LIMIT 1"
+                        )).first()
+                        rebuild = dup is not None
+                if rebuild:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(f"DROP TABLE {AssetIpInterval.__tablename__}")
+                        )
+                        conn.execute(text(
+                            "DELETE FROM system_configs "
+                            "WHERE key = 'asset_ip_index_backfill_max_id'"
+                        ))
+                    logger.info(
+                        "轻量迁移: asset_ip_intervals 重建（int4range 版本或存在重复行）"
+                    )
+            # DROP 后单表重建（不依赖外层迁移后的第二次 create_all）；
+            # 老表补建唯一索引（模型定义已含，create_all 只对新建表生效）
+            AssetIpInterval.__table__.create(bind=engine, checkfirst=True)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_asset_ip_intervals_asset_range "
+                    "ON asset_ip_intervals (asset_id, ip_range)"
+                ))
+
+            # IPv6 区间索引独立表（numrange + GiST）：int8range 无法容纳 128 位地址
+            from app.models.asset import AssetIpv6Interval
+
+            AssetIpv6Interval.__table__.create(bind=engine, checkfirst=True)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_asset_ipv6_intervals_asset_range "
+                    "ON asset_ipv6_intervals (asset_id, ip_range)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_asset_ipv6_intervals_gist "
+                    "ON asset_ipv6_intervals USING GIST (ip_range)"
+                ))
+
+            # 封禁目标列扩宽：支持 CIDR / 范围 / 多值表达式（原 varchar(45) 只够单 IPv6）
+            for table, column, target_len in (
+                ("banned_ips", "ip", 2048),
+                ("approval_tickets", "ip", 2048),
+                ("ban_records", "ip", 2048),
+            ):
+                try:
+                    insp_col = inspect(engine)
+                    if not insp_col.has_table(table):
+                        continue
+                    col = next(
+                        (c for c in insp_col.get_columns(table) if c["name"] == column),
+                        None,
+                    )
+                    cur_len = getattr(col.get("type"), "length", None) if col else None
+                    if cur_len is not None and cur_len < target_len:
+                        with engine.begin() as conn:
+                            conn.execute(text(
+                                f'ALTER TABLE "{table}" ALTER COLUMN "{column}" '
+                                f"TYPE VARCHAR({target_len})"
+                            ))
+                        logger.info(
+                            "轻量迁移: %s.%s 列已扩为 VARCHAR(%d)（原 %s 字符）",
+                            table, column, target_len, cur_len,
+                        )
+                except Exception as widen_exc:  # noqa: BLE001
+                    logger.warning("列扩宽失败 %s.%s（忽略）: %s", table, column, widen_exc)
+
+            from app.database import SessionLocal
+
+            bf_db = SessionLocal()
+            try:
+                backfilled = backfill_asset_ip_intervals(bf_db)
+            finally:
+                bf_db.close()
+            if backfilled:
+                logger.info("轻量迁移: 资产IP区间索引回填 %d 条资产", backfilled)
+        except Exception as backfill_exc:  # noqa: BLE001
+            logger.warning("资产IP区间索引迁移/回填失败（忽略）: %s", backfill_exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning("轻量迁移失败（忽略继续）: %s", exc)
     finally:

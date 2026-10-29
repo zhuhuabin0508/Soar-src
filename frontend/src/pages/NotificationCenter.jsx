@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Bell, Megaphone, AlertTriangle, XCircle, ExternalLink, Settings2,
-  Activity, ShieldAlert, RefreshCw, MessageSquare, Clock, Ticket,
+  Bell, BellRing, Megaphone, AlertTriangle, XCircle, ExternalLink, Settings2,
+  Activity, ShieldAlert, RefreshCw, RotateCcw, MessageSquare, Clock, Ticket,
 } from 'lucide-react'
 import { notificationsApi, notificationRulesApi } from '../api/notifications'
 import NotificationRulesPanel from '../components/NotificationRulesPanel'
@@ -115,8 +115,14 @@ const PAGE_SIZE = 20
 
 function NotificationCenter() {
   const navigate = useNavigate()
-  // Tab 切换：list（通知列表） | rules（通知规则）
-  const [tab, setTab] = useState('list')
+  // Tab 切换：list（通知列表） | rules（通知规则） | prefs（提醒设置）
+  // URL ?tab= 驱动（铃铛下拉「提醒设置」直达 /notifications?tab=prefs，支持浏览器返回）
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const tab = ['list', 'rules', 'prefs'].includes(tabParam) ? tabParam : 'list'
+  const setTab = (next) => {
+    setSearchParams(next === 'list' ? {} : { tab: next })
+  }
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -141,6 +147,71 @@ function NotificationCenter() {
   // 通知详情弹窗
   const [detailItem, setDetailItem] = useState(null)
   useLockBackgroundScroll(!!detailItem)
+  // 提醒设置：类型偏好列表 + 加载/保存状态
+  const [prefs, setPrefs] = useState([])
+  const [prefsLoading, setPrefsLoading] = useState(false)
+  const [prefsError, setPrefsError] = useState('')
+  // 正在保存的类型（点选即存，行内轻量 loading）
+  const [savingType, setSavingType] = useState('')
+
+  const loadPrefs = useCallback(async () => {
+    setPrefsLoading(true)
+    setPrefsError('')
+    try {
+      const res = await notificationsApi.getPrefs()
+      setPrefs(res?.prefs || [])
+    } catch (err) {
+      setPrefsError(err.message || '加载提醒设置失败')
+    } finally {
+      setPrefsLoading(false)
+    }
+  }, [])
+
+  // 首次切到提醒设置 tab 时拉取
+  useEffect(() => {
+    if (tab === 'prefs' && !prefs.length && !prefsLoading) loadPrefs()
+  }, [tab, prefs.length, prefsLoading, loadPrefs])
+
+  // 点选即存：更新单类型提醒方式（无提交按钮，符合即时生效）
+  const handleUpdatePref = async (eventType, popupMode) => {
+    const target = prefs.find((p) => p.event_type === eventType)
+    if (!target || target.popup_mode === popupMode) return
+    setSavingType(eventType)
+    // 乐观更新：立即切换选中态，失败再回滚
+    setPrefs((list) =>
+      list.map((p) => (p.event_type === eventType ? { ...p, popup_mode } : p)),
+    )
+    try {
+      await notificationsApi.updatePref(eventType, popupMode)
+      // 同步通知铃铛的偏好缓存（内存 + localStorage）
+      window.dispatchEvent(new CustomEvent('soar:notification-prefs-changed'))
+    } catch (err) {
+      setPrefs((list) =>
+        list.map((p) =>
+          p.event_type === eventType ? { ...p, popup_mode: target.popup_mode } : p,
+        ),
+      )
+      setPrefsError(err.message || '保存失败')
+    } finally {
+      setSavingType('')
+    }
+  }
+
+  // 恢复默认：清空个人偏好（回到工单滑出、其余静默）
+  const handleResetPrefs = async () => {
+    if (savingType) return
+    setSavingType('all')
+    try {
+      await notificationsApi.resetPrefs()
+      await loadPrefs()
+      // 同步通知铃铛的偏好缓存
+      window.dispatchEvent(new CustomEvent('soar:notification-prefs-changed'))
+    } catch (err) {
+      setPrefsError(err.message || '恢复默认失败')
+    } finally {
+      setSavingType('')
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -322,12 +393,140 @@ function NotificationCenter() {
           <Settings2 className="h-3.5 w-3.5" />
           通知规则
         </button>
+        <button
+          type="button"
+          onClick={() => setTab('prefs')}
+          className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            tab === 'prefs'
+              ? 'bg-primary/10 text-primary ring-1 ring-primary/25'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          }`}
+        >
+          <BellRing className="h-3.5 w-3.5" />
+          提醒设置
+        </button>
       </div>
 
       {/* 通知规则 Tab */}
       {tab === 'rules' ? (
         <div className="flex-1 overflow-y-auto p-6">
           <NotificationRulesPanel />
+        </div>
+      ) : tab === 'prefs' ? (
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* 提醒设置：按类型配置「右侧滑出 / 仅铃铛」，点选即存 */}
+          <div className="mx-auto max-w-3xl">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-foreground">通知提醒方式</h2>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  「右侧滑出」在页面右上角弹出提醒卡片，可直接点击跳转；「仅铃铛」不弹窗，只在铃铛徽章计数。同类型
+                  30 秒内连续到达的提醒会合并（首条立即弹出，后续不重复弹窗）。默认：工单滑出，其余静默。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleResetPrefs}
+                disabled={!prefs.length || !!savingType}
+                className="btn-secondary btn-sm"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                恢复默认
+              </button>
+            </div>
+
+            {prefsError && (
+              <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {prefsError}
+              </p>
+            )}
+
+            {prefsLoading ? (
+              <div className="mt-4 space-y-3">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-14 w-full" />
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 space-y-5">
+                {Object.entries(
+                  prefs.reduce((acc, p) => {
+                    ;(acc[p.group || '其他'] = acc[p.group || '其他'] || []).push(p)
+                    return acc
+                  }, {}),
+                ).map(([group, list]) => (
+                  <div key={group}>
+                    <div className="mb-2 flex items-center gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">{group}</span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                    <div className="divide-y divide-border rounded-lg border border-border bg-card">
+                      {list.map((p) => {
+                        const disabled = savingType === p.event_type
+                        return (
+                          <div
+                            key={p.event_type}
+                            className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 ${
+                              disabled ? 'opacity-60' : ''
+                            }`}
+                          >
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span className={`shrink-0 rounded-full p-1.5 ${getTypeCls(p.event_type)}`}>
+                                {getTypeIcon(p.event_type)}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium text-foreground">
+                                    {p.label || typeLabels[p.event_type] || p.event_type}
+                                  </span>
+                                  {p.customized && (
+                                    <span className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">
+                                      已自定义
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                                  {p.desc}
+                                </div>
+                              </div>
+                            </div>
+                            {/* 分段单选：两选项平铺（符合少于 5 个选项用单选组的规范） */}
+                            <div className="flex shrink-0 items-center rounded-lg border border-border bg-muted/50 p-0.5">
+                              {[
+                                { value: 'toast', label: '右侧滑出' },
+                                { value: 'silent', label: '仅铃铛' },
+                              ].map((opt) => (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  disabled={disabled}
+                                  onClick={() => handleUpdatePref(p.event_type, opt.value)}
+                                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                    p.popup_mode === opt.value
+                                      ? 'bg-background text-foreground shadow-sm ring-1 ring-border'
+                                      : 'text-muted-foreground hover:text-foreground'
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+                {!prefs.length && !prefsError && (
+                  <EmptyState
+                    icon={Bell}
+                    title="暂无通知类型"
+                    description="当前系统未注册通知类型"
+                  />
+                )}
+              </div>
+            )}
+          </div>
         </div>
       ) : (
         <div className="flex flex-1 flex-col overflow-hidden">

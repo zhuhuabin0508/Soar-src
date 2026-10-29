@@ -13,8 +13,10 @@ from app.core.timezone import beijing_now, beijing_now_iso
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.ip_validation import validate_ban_target
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.models.user import User
@@ -30,10 +32,19 @@ router = APIRouter(
 )
 
 
+def _ip_compare_key(value) -> str:
+    """封禁记录查重用的宽松比较键：去首尾空白 + 小写。
+
+    历史记录可能是未归一化写法（``2001:DB8::1``、前后带空格），严格相等会
+    漏判重复；这里只做空白/大小写规整，不改变语义（多值分隔符差异仍视为不同）。
+    """
+    return str(value or "").strip().lower()
+
+
 class ManualBanRequest(BaseModel):
     """手动新增封禁 IP 请求体。"""
 
-    ip: str = Field(..., description="待封禁的 IP 地址")
+    ip: str = Field(..., min_length=1, max_length=2048, description="待封禁的 IP 地址")
     ban_level: str = Field("medium", description="封禁等级：low/medium/high/serious")
     ban_duration: int = Field(3600, description="封禁时长（秒），0 表示永久")
     region: str = Field("", description="归属地区")
@@ -101,12 +112,28 @@ def manual_ban_ip(
     if body.ban_level not in ("low", "medium", "high", "serious"):
         raise HTTPException(status_code=400, detail="封禁等级必须为 low/medium/high/serious")
 
+    # 校验封禁目标格式（单 IP / CIDR / 范围 / 多值；拒绝主机名/文本/通配）
+    try:
+        ban_ip = validate_ban_target(body.ip, "封禁目标")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not ban_ip:
+        # 纯空白输入经归一化后为空串：不能带着空目标去调用设备 API
+        raise HTTPException(status_code=422, detail="封禁目标不能为空")
+
     # 查重：同 IP 已有记录则拒绝（避免浪费设备 API 调用）
-    existing = db.query(BannedIP).filter(BannedIP.ip == body.ip).first()
+    existing = db.query(BannedIP).filter(BannedIP.ip == ban_ip).first()
+    if existing is None:
+        # 兜底：历史记录可能是未归一化写法（大小写/空格），按规整键再查一次
+        existing = (
+            db.query(BannedIP)
+            .filter(func.lower(func.trim(BannedIP.ip)) == _ip_compare_key(ban_ip))
+            .first()
+        )
     if existing is not None:
         raise HTTPException(
             status_code=409,
-            detail=f"IP {body.ip} 已存在封禁记录（id={existing.id}, status={existing.status}）",
+            detail=f"IP {ban_ip} 已存在封禁记录（id={existing.id}, status={existing.status}）",
         )
 
     # 查找设备的 block_ip 动作
@@ -118,7 +145,7 @@ def manual_ban_ip(
 
     # 调用设备 API 执行封禁
     params = {
-        "ip": body.ip,
+        "ip": ban_ip,
         "duration": str(body.ban_duration),
         "ban_level": body.ban_level,
         "reason": body.reason or "手动添加封禁",
@@ -127,7 +154,7 @@ def manual_ban_ip(
     result = execute_device_action(device, action, params, db=db, source="api")
     if not result["success"]:
         logger.warning("手动封禁 IP 设备 API 调用失败: ip=%s, device=%s, error=%s",
-                       body.ip, device.name, result.get("error"))
+                       ban_ip, device.name, result.get("error"))
         raise HTTPException(
             status_code=502,
             detail=f"设备 API 封禁失败: {result.get('error')} (status={result.get('status_code')})",
@@ -149,7 +176,7 @@ def manual_ban_ip(
         action_resp = str(result.get("response_body"))[:4000]
 
     record = BannedIP(
-        ip=body.ip,
+        ip=ban_ip,
         ban_level=body.ban_level,
         ban_duration=body.ban_duration,
         expired_at=expired_at,
@@ -166,7 +193,7 @@ def manual_ban_ip(
     db.commit()
     db.refresh(record)
     logger.info("手动新增封禁 IP: %s, level=%s, duration=%s, device=%s",
-                body.ip, body.ban_level, body.ban_duration, device.name)
+                ban_ip, body.ban_level, body.ban_duration, device.name)
     return to_dict(record)
 
 
@@ -344,15 +371,21 @@ async def import_banned_ips(
     skipped = 0
     errors = []
 
-    # 获取已存在的 IP 集合（去重）
-    existing_ips = {r.ip for r in db.query(BannedIP).all()}
+    # 获取已存在的 IP 集合（去重；键做空白/大小写规整，兼容历史未归一化记录）
+    existing_ips = {_ip_compare_key(ip) for (ip,) in db.query(BannedIP.ip).all()}
 
     for idx, row in enumerate(rows[1:], start=2):  # 从第 2 行开始（跳过表头）
         if not row or not row[0].strip():
             continue
         try:
             ip = row[0].strip()
-            if ip in existing_ips:
+            # 入库/下发设备前严格校验封禁目标（支持 CIDR/范围/多值，拒绝文本）
+            try:
+                ip = validate_ban_target(ip, "封禁目标")
+            except ValueError as exc:
+                errors.append(f"第 {idx} 行: {exc}")
+                continue
+            if _ip_compare_key(ip) in existing_ips:
                 skipped += 1
                 continue
 
@@ -413,7 +446,7 @@ async def import_banned_ips(
                 action_response=action_resp,
             )
             db.add(record)
-            existing_ips.add(ip)
+            existing_ips.add(_ip_compare_key(ip))
             imported += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(f"第 {idx} 行: {exc}")

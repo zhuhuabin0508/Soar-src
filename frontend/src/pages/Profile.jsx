@@ -1047,7 +1047,6 @@ function Profile() {
       <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-6 py-4">
         <div>
           <h1 className="text-xl font-semibold text-foreground">个人中心</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">账号设置 / 个人中心</p>
         </div>
       </header>
 

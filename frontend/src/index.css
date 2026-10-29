@@ -234,6 +234,42 @@ button:not(:disabled),
   }
 }
 
+/* ===== Toast 通知卡片动画 =====
+ * 入场：小偏移（24px）+ 轻缩放（0.96→1）+ 淡入，easeOutExpo 曲线快速启动后柔和减速停靠，
+ * 与「瞬间出现」的生硬感相对；离场由 leaving 状态走 transition（加速曲线，快速让位）。
+ */
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateX(24px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+/* 倒计时进度条：scaleX 线性收缩（GPU 友好），时长由内联 style 注入 = toast duration */
+@keyframes toast-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+.toast-enter {
+  /* backwards：入场结束不保持关键帧，避免覆盖离场 transition 的 transform/opacity */
+  animation: toast-enter 320ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-enter,
+  /* 进度条动画时长由内联 style 注入（随 toast 变化），用 !important 覆盖；
+     关闭动画后进度条保持满宽静止，倒计时仍由 JS 定时器负责 */
+  .toast-timer {
+    animation: none !important;
+  }
+}
+
 /* ===== 微交互：卡片 hover 微抬 / 按钮按下回缩（尊重 reduced-motion） ===== */
 @media (prefers-reduced-motion: no-preference) {
   .card-hover {

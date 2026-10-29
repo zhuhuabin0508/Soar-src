@@ -308,7 +308,22 @@ async def lifespan(app: FastAPI):
         start_device_heartbeat()
     except Exception as exc:  # noqa: BLE001
         logger.warning("设备心跳健康检查启动失败（忽略）: %s", exc)
+    # 启动通知 WebSocket 实时推送（Redis Pub/Sub 订阅 → 在线用户 WS 连接；
+    # 失败不影响通知入库，前端保留轮询兜底）
+    try:
+        from app.core.notification_ws import start_notification_ws_listener
+
+        start_notification_ws_listener()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("通知 WebSocket 订阅启动失败（忽略，轮询兜底）: %s", exc)
     yield
+    # 停止通知 WebSocket 订阅协程
+    try:
+        from app.core.notification_ws import stop_notification_ws_listener
+
+        stop_notification_ws_listener()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("通知 WebSocket 订阅停止失败（忽略）: %s", exc)
 
 
 from app.core.changelog import CURRENT_VERSION  # noqa: E402

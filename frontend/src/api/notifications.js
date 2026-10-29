@@ -15,6 +15,14 @@ export const notificationsApi = {
   remove: (id) => request(`/notifications/${id}`, { method: 'DELETE' }),
   // 创建通知（管理员公告）
   create: (body) => request('/notifications', { method: 'POST', body }),
+  // 个人提醒偏好：每类型右侧滑出(toast)/仅铃铛(silent)
+  getPrefs: () => request('/notifications/prefs'),
+  updatePref: (eventType, popupMode) =>
+    request('/notifications/prefs', {
+      method: 'PUT',
+      body: { event_type: eventType, popup_mode: popupMode },
+    }),
+  resetPrefs: () => request('/notifications/prefs', { method: 'DELETE' }),
 }
 
 // 通知规则：配置哪些事件类型通知给哪些用户/角色

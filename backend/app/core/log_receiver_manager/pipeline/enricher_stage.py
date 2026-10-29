@@ -14,6 +14,7 @@
 import ipaddress
 import json
 import logging
+import re
 import threading
 import time
 
@@ -95,31 +96,99 @@ def invalidate_asset_index() -> None:
         _asset_index_cache["built_at"] = 0.0
 
 
+# 多值分隔符：与导入校验 ip_validation.split_ip_expression、检索层 _value_to_intervals 一致
+_IP_SPLIT_RE = re.compile(r"[,;，；、\s]+")
+
+
 def _parse_ip_list(raw: str):
-    """资产 ip 字段（可能是单 IP / CIDR / 起止范围 / 逗号多值）→ 可匹配条目列表。"""
+    """资产 ip 字段（IP / CIDR / 起止范围 / 多值）→ 可匹配条目列表。
+
+    分隔符与导入校验 ``ip_validation.split_ip_expression``、检索层
+    ``tool_builders._value_to_intervals`` 对齐（逗号/分号/顿号/换行/空白）：
+    Excel 单元格内换行的多 IP（如 ``202.104.131.26\\n120.234.15.170``）
+    曾因只按逗号拆分而整串解析失败，资产不进索引 → 工单安全上下文与告警
+    富化均匹配不到。范围支持末段简写（``61.144.224.185-187``）与倒置防御。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    # 整串先按单段解析（"a.b.c.d - a.b.c.e" 带空格的范围不会被空白拆散）
+    whole = _parse_ip_part(text)
+    if whole is not None:
+        return [whole]
     out = []
-    for part in str(raw).replace(";", ",").split(","):
-        part = part.strip()
+    for part in _IP_SPLIT_RE.split(text):
         if not part:
             continue
-        if "/" in part:
-            try:
-                out.append(("net", ipaddress.ip_network(part, strict=False)))
-            except ValueError:
-                continue
-        elif "-" in part:
-            try:
-                a, b = part.split("-", 1)
-                out.append(("range", ipaddress.ip_address(a), ipaddress.ip_address(b)))
-            except ValueError:
-                continue
-        else:
-            try:
-                ipaddress.ip_address(part)
-                out.append(("ip", part))
-            except ValueError:
-                continue
+        entry = _parse_ip_part(part)
+        if entry is not None:
+            out.append(entry)
     return out
+
+
+def _parse_single_ip(value: str):
+    """解析单个 IP（IPv4/IPv6），失败返回 None。"""
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
+def _complete_ip(value: str):
+    """对残缺 IPv4 补 .0 后解析（如 ``198.51.100``），保持数据质量兜底。"""
+    octets = (value or "").split(".")
+    if not value or len(octets) > 4:
+        return None
+    while len(octets) < 4:
+        octets.append("0")
+    return _parse_single_ip(".".join(octets))
+
+
+def _parse_ip_range(part: str):
+    """``start-end``（含末段简写）→ (start, end)；非法/脏数据返回 None。
+
+    倒置范围仅同 /24 时视为笔误交换（如 ``61.144.227.220-61.144.227.226``），
+    跨网段倒置（如 ``172.46.9.1-17.46.9.62``）视为脏数据丢弃，避免生成
+    覆盖大半个地址空间的巨型区间导致任意 IP 误命中（与检索层同口径）。
+    """
+    start_str, _, end_str = part.partition("-")
+    start_str, end_str = start_str.strip(), end_str.strip()
+    start = _parse_single_ip(start_str) or _complete_ip(start_str)
+    if start is None:
+        return None
+    # 末段简写：end 无点且为纯数字（如 "187"）→ 替换 start 的最后一段
+    octets = str(start).split(".")
+    if "." not in end_str and end_str.isdigit():
+        last = int(end_str)
+        if start.version == 4 and 0 <= last <= 255:
+            end = _parse_single_ip(".".join(octets[:3] + [str(last)]))
+        else:
+            end = _complete_ip(end_str)
+    else:
+        end = _parse_single_ip(end_str) or _complete_ip(end_str)
+    if end is None or start.version != end.version:
+        return None
+    s, e = int(start), int(end)
+    if s <= e:
+        return start, end
+    if start.version == 4 and (s >> 8) == (e >> 8):
+        return end, start
+    return None
+
+
+def _parse_ip_part(part: str):
+    """单段 → 索引条目 ``("ip", 文本)`` / ``("net", 网段)`` / ``("range", 起, 止)``。"""
+    if "/" in part:
+        try:
+            return ("net", ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            return None
+    if "-" in part:
+        parsed = _parse_ip_range(part)
+        return ("range", parsed[0], parsed[1]) if parsed else None
+    if _parse_single_ip(part) is None:
+        return None
+    return ("ip", part)
 
 
 def _build_asset_index(db) -> None:

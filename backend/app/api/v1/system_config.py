@@ -5,7 +5,7 @@
 """
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -125,6 +125,18 @@ def list_configs(
     return configs
 
 
+def _validate_config_value(key: str, value: str) -> str:
+    """按配置键校验取值（当前仅登录 IP 白名单需要 IP/CIDR 校验）。"""
+    if key == "security.login_ip_whitelist":
+        from app.core.ip_validation import validate_ip_expression
+
+        try:
+            return validate_ip_expression(value, "登录 IP 白名单")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    return value
+
+
 @router.put("")
 def update_configs(
     body: SystemConfigUpdate,
@@ -133,6 +145,7 @@ def update_configs(
 ) -> dict:
     """批量更新系统配置。"""
     for key, value in body.configs.items():
+        value = _validate_config_value(key, value)
         cfg = db.query(SystemConfig).filter(SystemConfig.key == key).first()
         if cfg:
             cfg.value = value
@@ -174,6 +187,7 @@ def update_security_config(
         if key not in DEFAULT_SECURITY_POLICY:
             continue
         str_value = str(value) if not isinstance(value, bool) else ("true" if value else "false")
+        str_value = _validate_config_value(key, str_value)
         cfg = db.query(SystemConfig).filter(SystemConfig.key == key).first()
         if cfg:
             cfg.value = str_value

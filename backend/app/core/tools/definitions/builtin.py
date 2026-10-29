@@ -127,22 +127,24 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_assets",
         "description": (
-            "资产检索：按 IP/名称/标识/部门查询资产清单"
-            "（主机资产、网段/IP 信息、出口地址等已配置类型）。"
+            "资产检索：按 IP/名称/标识/部门查询资产清单（全部资产类型，含未分类）。"
             "传入单个 IP 会匹配包含该 IP 的 CIDR/范围资产，"
             "并同时在资产发现（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP，"
-            "命中以「资产发现」分组返回；按名称/部门等文本查询时仅检索资产清单。"
+            "命中以「资产发现」分组返回；「资产发现」是资产发现数据，其余按资产类型分组的是资产清单数据，二者应分开展示；"
+            "按名称/部门等文本查询时仅检索资产清单。"
             "支持逗号/分号/空白分隔批量查询（如 '1.2.3.4,5.6.7.8'），"
             "一次调用返回每个 IP 各自的命中——批量研判多个 IP 时必须合并为一次调用，不要逐个查询。"
             "用于研判时对比告警 IP 是否属于已知资产。"
-            "按智能体勾选的资产类型检索：未勾选则不可用；勾选部分则只查这些类型；"
-            "全部勾选则不按类型过滤。同一 IP 若出现在主机/网段/出口等多类下会全部返回。"
+            "检索覆盖全部资产类型，不按类型过滤；同一 IP 若出现在主机/网段/出口等多类下会全部返回。"
+            "不同资产类型的字段集不同：资产清单记录的 extra_fields 携带该类型模板的自定义字段，"
+            "资产发现记录按资源类型模板列全量返回（顶层「资产发现_字段说明」为英文字段名→中文列名对照）；"
+            "展示时应以重点字段为前列，再按记录实际拥有的字段补充类型特有字段，不要硬套固定一套字段。"
         ),
         "parameters_schema": [
             {"name": "keyword", "type": "String", "required": False, "description": "IP/名称/标识/负责人；单个 IP 会做网段包含匹配并同步精确查询资产发现（云主机/裸金属/网络资源/弹性IP）；支持逗号/分号/空白分隔批量查询多个 IP"},
             {"name": "ip", "type": "String", "required": False, "description": "待查询 IP（与 keyword 二选一，优先 keyword）"},
             {"name": "department", "type": "String", "required": False, "description": "按使用单位/部门精确筛选"},
-            {"name": "type_code", "type": "String", "required": False, "description": "忽略；范围由智能体勾选的资产类型决定，同一 IP 跨类型全部返回"},
+            {"name": "type_code", "type": "String", "required": False, "description": "忽略；检索覆盖全部资产类型，同一 IP 跨类型全部返回"},
             {"name": "limit", "type": "Number", "required": False, "description": "非 IP 查询条数上限；按 IP 查询会跨类型返回全部命中"},
         ],
         "code": (
@@ -156,7 +158,6 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "    return await run_search_assets(\n"
             "        keyword=keyword, department=department,\n"
             "        type_code=type_code, limit=limit,\n"
-            "        type_codes=list(enabled_asset_types or []),\n"
             "    )\n"
         ),
         "tool_type": "code",
@@ -742,7 +743,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             {"name": "department", "type": "String", "required": False, "description": "归属部门"},
             {"name": "owner", "type": "String", "required": False, "description": "负责人"},
             {"name": "location", "type": "String", "required": False, "description": "物理位置"},
-            {"name": "ip", "type": "String", "required": False, "description": "IP 地址"},
+            {"name": "ip", "type": "String", "required": False, "description": "IP 地址（支持 IPv4/IPv6、CIDR、范围、末段通配、多值；不接受主机名/待定/N/A 等文本）"},
             {"name": "criticality", "type": "String", "required": False, "description": "重要性：low/medium/high/critical，默认 medium"},
             {"name": "kb_id", "type": "Number", "required": False, "description": "来源知识库 ID（对话录入可不传）"},
             {"name": "kb_name", "type": "String", "required": False, "description": "来源知识库名称"},
@@ -762,6 +763,18 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "    extra = kwargs.get('extra_fields')\n"
             "    if not isinstance(extra, dict):\n"
             "        extra = {}\n"
+            "    # 写入前硬拦截：ip / identifier(type=ip) / extra_fields 中的 IP 类字段\n"
+            "    # 统一按平台规则校验（IPv4/IPv6/CIDR/范围/通配/多值，拒绝主机名等文本）。\n"
+            "    # 沙箱禁止 import，校验函数由 tool_runner 注入命名空间。\n"
+            "    ip_value = (kwargs.get('ip') or '').strip()\n"
+            "    try:\n"
+            "        if ip_value:\n"
+            "            ip_value = validate_ip_expression(ip_value, 'IP')\n"
+            "        if identifier_type == 'ip':\n"
+            "            identifier = validate_ip_expression(identifier, 'identifier', allow_multi=False)\n"
+            "        extra = validate_extra_ip_fields(extra)\n"
+            "    except IPValidationError as exc:\n"
+            "        return {'ok': False, 'error': 'IP 格式不合法: ' + str(exc)}\n"
             "    db = SessionLocal()\n"
             "    try:\n"
             "        existing = db.query(Asset).filter(\n"
@@ -786,7 +799,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "            department=(kwargs.get('department') or '').strip(),\n"
             "            owner=(kwargs.get('owner') or '').strip(),\n"
             "            location=(kwargs.get('location') or '').strip(),\n"
-            "            ip=(kwargs.get('ip') or '').strip(),\n"
+            "            ip=ip_value,\n"
             "            criticality=(kwargs.get('criticality') or 'medium').strip(),\n"
             "            source=(kwargs.get('source') or 'agent_add').strip(),\n"
             "            raw_content=kwargs.get('raw_content') or '',\n"
@@ -827,7 +840,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             {"name": "department", "type": "String", "required": False, "description": "归属部门"},
             {"name": "owner", "type": "String", "required": False, "description": "负责人"},
             {"name": "location", "type": "String", "required": False, "description": "物理位置"},
-            {"name": "ip", "type": "String", "required": False, "description": "IP 地址"},
+            {"name": "ip", "type": "String", "required": False, "description": "IP 地址（支持 IPv4/IPv6、CIDR、范围、末段通配、多值；不接受主机名/待定/N/A 等文本）"},
             {"name": "criticality", "type": "String", "required": False, "description": "重要性：low/medium/high/critical"},
             {"name": "identifier_type", "type": "String", "required": False, "description": "标识类型"},
             {"name": "kb_id", "type": "Number", "required": False, "description": "来源知识库 ID"},
@@ -843,6 +856,20 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "    identifier = (kwargs.get('identifier') or '').strip()\n"
             "    if not identifier:\n"
             "        return {'error': '请提供 identifier 参数定位要更新的资产'}\n"
+            "    # 写入前硬拦截：ip 与 extra_fields 中的 IP 类字段按统一规则校验\n"
+            "    # （沙箱禁止 import，校验函数由 tool_runner 注入命名空间）\n"
+            "    ip_value = kwargs.get('ip')\n"
+            "    if ip_value is not None and str(ip_value).strip():\n"
+            "        try:\n"
+            "            ip_value = validate_ip_expression(ip_value, 'IP')\n"
+            "        except IPValidationError as exc:\n"
+            "            return {'ok': False, 'error': 'IP 格式不合法: ' + str(exc)}\n"
+            "    extra = kwargs.get('extra_fields')\n"
+            "    if isinstance(extra, dict) and extra:\n"
+            "        try:\n"
+            "            extra = validate_extra_ip_fields(extra)\n"
+            "        except IPValidationError as exc:\n"
+            "            return {'ok': False, 'error': 'IP 格式不合法: ' + str(exc)}\n"
             "    db = SessionLocal()\n"
             "    try:\n"
             "        record = db.query(Asset).filter(\n"
@@ -873,7 +900,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "            record.location = v; changed.append('location')\n"
             "        v = kwargs.get('ip')\n"
             "        if v is not None and str(v).strip():\n"
-            "            record.ip = v; changed.append('ip')\n"
+            "            record.ip = ip_value; changed.append('ip')\n"
             "        v = kwargs.get('criticality')\n"
             "        if v is not None and str(v).strip():\n"
             "            record.criticality = v; changed.append('criticality')\n"
@@ -890,7 +917,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "        if v is not None and str(v).strip():\n"
             "            record.raw_content = v; changed.append('raw_content')\n"
             "        extra = kwargs.get('extra_fields')\n"
-            "        if extra and isinstance(extra, dict):\n"
+            "        if isinstance(extra, dict) and extra:\n"
             "            cur = dict(record.extra_fields or {})\n"
             "            cur.update(extra)\n"
             "            record.extra_fields = cur\n"

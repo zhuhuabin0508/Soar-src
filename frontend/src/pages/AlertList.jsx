@@ -745,7 +745,6 @@ export default function AlertList() {
               共 <span className="font-medium tabular-nums text-foreground">{fmtNum(list.total)}</span> 条告警
             </span>
           )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">标准告警模型 · 多设备混合展示 · 筛选排序分页服务端执行</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新告警列表">

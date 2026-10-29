@@ -184,6 +184,132 @@ def test_build_ticket_enrichment_dual_source(monkeypatch):
     assert entry["threat"] == {"is_malicious": False}
 
 
+# ============================================================================
+# 详细数据来源标签（「资产发现-裸金属资产」/「资产清单-A会保持在线系统清单」）
+# ============================================================================
+
+def test_discovery_source_label_uses_resource_label(monkeypatch):
+    """资产发现来源标签取资源类型中文名：资产发现-裸金属资产。"""
+    payload = {
+        "resource_type": "bare_metal",
+        "resource_label": "裸金属资产",
+        "instance_name": "bm-01",
+        "ip_address": "10.0.0.9",
+    }
+    monkeypatch.setattr(
+        "app.agent.discovery_search._search_token",
+        lambda db, token, rts, limit: {"assets": [dict(payload)], "truncated": False},
+    )
+    result = te._match_discovery_asset(_FakeDB(), "10.0.0.9")
+    assert result["source_label"] == "资产发现-裸金属资产"
+    assert result["matches"][0]["source_label"] == "资产发现-裸金属资产"
+
+
+def test_discovery_source_label_without_resource_label():
+    """资源类型名为空时退化为「资产发现」，不编造明细。"""
+    assert te._discovery_source_label({}) == "资产发现"
+    assert te._discovery_source_label({"resource_label": "  "}) == "资产发现"
+
+
+def test_inventory_source_label_prefers_kb_name():
+    """资产清单来源标签优先知识库名：资产清单-A会保持在线系统清单。"""
+    label = te._inventory_source_label(
+        {"kb_name": "A会保持在线系统清单", "type_code": "meeting_online_system"},
+        {"meeting_online_system": "A会保持在线系统清单"},
+    )
+    assert label == "资产清单-A会保持在线系统清单"
+
+
+def test_inventory_source_label_falls_back_to_template_name():
+    """无知识库名时用资产类型模板名（kb_name 存量普遍为空）。"""
+    label = te._inventory_source_label(
+        {"kb_name": "", "type_code": "meeting_online_system"},
+        {"meeting_online_system": "A会保持在线系统清单"},
+    )
+    assert label == "资产清单-A会保持在线系统清单"
+    assert te._inventory_source_label({"type_code": "unknown"}, {}) == "资产清单"
+
+
+def test_decorate_asset_source_labels_backfills_and_is_idempotent(monkeypatch):
+    """存量 enrichment 无 source_label 时按当前模板名补齐，且不修改原数据。"""
+    monkeypatch.setattr(
+        te, "_template_name_map", lambda db: {"meeting_online_system": "A会保持在线系统清单"}
+    )
+    stored = {
+        "sources": [
+            {
+                "role": "src_ip",
+                "ip": "10.144.1.2",
+                "asset": {
+                    "matched": True,
+                    "source": "asset_inventory",
+                    "asset_name": "新版客服流程管理系统",
+                    "asset_ip": "10.144.1.2",
+                    "discovery": None,
+                    "inventory": {
+                        "asset_id": 109080,
+                        "asset_name": "新版客服流程管理系统",
+                        "fields": {"kb_name": "", "type_code": "meeting_online_system"},
+                    },
+                },
+            },
+            {
+                "role": "dst_ip",
+                "ip": "10.0.0.9",
+                "asset": {
+                    "matched": True,
+                    "source": "asset_discovery",
+                    "asset_name": "bm-01",
+                    "discovery": {
+                        "resource_type": "bare_metal",
+                        "resource_label": "裸金属资产",
+                        "matches": [{"resource_type": "bare_metal", "resource_label": "裸金属资产"}],
+                    },
+                    "inventory": None,
+                },
+            },
+        ]
+    }
+    out = te.decorate_asset_source_labels(_FakeDB(), stored)
+    assert out["sources"][0]["asset"]["source_label"] == "资产清单-A会保持在线系统清单"
+    assert out["sources"][0]["asset"]["inventory"]["source_label"] == "资产清单-A会保持在线系统清单"
+    assert out["sources"][1]["asset"]["source_label"] == "资产发现-裸金属资产"
+    assert out["sources"][1]["asset"]["discovery"]["matches"][0]["source_label"] == "资产发现-裸金属资产"
+    # 深拷贝：原数据不被就地修改
+    assert "source_label" not in stored["sources"][0]["asset"]
+
+    again = te.decorate_asset_source_labels(_FakeDB(), out)
+    assert again["sources"][0]["asset"]["source_label"] == "资产清单-A会保持在线系统清单"
+
+
+def test_decorate_asset_source_labels_handles_legacy_flat_structure(monkeypatch):
+    """旧结构工单（字段直接挂在 asset 上）：按 source 判定来源并补标签。"""
+    monkeypatch.setattr(
+        te, "_template_name_map", lambda db: {"host_asset": "主机资产"}
+    )
+    stored = {
+        "sources": [
+            {"ip": "1.1.1.1", "asset": {
+                "matched": True, "source": "asset_inventory", "asset_name": "srv",
+                "fields": {"type_code": "host_asset", "kb_name": ""},
+            }},
+            {"ip": "2.2.2.2", "asset": {
+                "matched": True, "source": "asset_discovery", "asset_name": "bm",
+            }},
+        ]
+    }
+    out = te.decorate_asset_source_labels(_FakeDB(), stored)
+    assert out["sources"][0]["asset"]["source_label"] == "资产清单-主机资产"
+    assert out["sources"][1]["asset"]["source_label"] == "资产发现"
+
+
+def test_decorate_asset_source_labels_passthrough():
+    """非字典 / 无 sources 的 enrichment 原样返回。"""
+    assert te.decorate_asset_source_labels(_FakeDB(), None) is None
+    assert te.decorate_asset_source_labels(_FakeDB(), {}) == {}
+    assert te.decorate_asset_source_labels(_FakeDB(), {"sources": None}) == {"sources": None}
+
+
 def test_extract_ip_takes_first_valid():
     assert te._extract_ip("10.99.0.1, 192.168.1.1") == "10.99.0.1"
     assert te._extract_ip("无效; 8.8.8.8") == "8.8.8.8"
