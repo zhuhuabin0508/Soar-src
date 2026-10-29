@@ -131,10 +131,15 @@ def is_account_locked(user, policy: dict[str, Any]) -> tuple[bool, int]:
     """检查用户是否被锁定。
 
     Returns:
-        ``(locked, remaining_seconds)``：locked=True 时 remaining_seconds 为剩余锁定秒数。
+        ``(locked, remaining_seconds)``：locked=True 时 remaining_seconds 为剩余锁定秒数；
+        ``remaining_seconds < 0`` 表示策略为「需人工解锁」模式，须管理员
+        （``POST /users/{user_id}/unlock``）解除锁定。
     """
     if not user.locked_until:
         return False, 0
+    # 需人工解锁模式：锁定后不随时间自动放行，仅管理员可解锁
+    if not policy.get("security.lockout_auto_unlock", True):
+        return True, -1
     now = beijing_now()
     if now < user.locked_until:
         remaining = int((user.locked_until - now).total_seconds())

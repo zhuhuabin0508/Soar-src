@@ -66,6 +66,12 @@ class UserOut(BaseModel):
     otp_enabled: bool = False
     sso_linked: bool = False
     allowed_login_methods: Optional[list[str]] = None
+    # 等保安全字段：登录失败计数与锁定截止时间（用户管理页展示冻结状态）
+    failed_login_count: int = 0
+    locked_until: Optional[BeijingDatetime] = None
+    # 当前是否处于锁定（冻结）状态：由列表接口按安全策略计算，
+    # 「需人工解锁」模式下 locked_until 过期仍为 True
+    is_locked: bool = False
 
     model_config = {"from_attributes": True}
 

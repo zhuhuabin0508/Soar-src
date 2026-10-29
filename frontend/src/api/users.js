@@ -44,6 +44,9 @@ export const usersApi = {
   // 启用/禁用用户
   toggleActive: (id) =>
     request(`/users/${id}/toggle-active`, { method: 'POST' }),
+  // 解除登录冻结（清除连续登录失败计数与锁定状态，用户可立即重新登录）
+  unlock: (id) =>
+    request(`/users/${id}/unlock`, { method: 'POST' }),
   // 强制下线指定用户的所有会话
   forceLogout: (id) =>
     request(`/users/${id}/force-logout`, { method: 'POST' }),

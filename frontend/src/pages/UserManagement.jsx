@@ -4,6 +4,7 @@ import {
   Trash2, MoreHorizontal, Eye, KeyRound, Power, LogOut, UserX, UserCheck,
   ChevronUp, ChevronDown, Users, Eye as EyeIcon, EyeOff, RefreshCw,
   FileText, ChevronRight, CheckCircle2, Upload, Download, FileSpreadsheet,
+  LockOpen,
 } from 'lucide-react'
 import { usersApi } from '../api/users'
 import { rolesApi } from '../api/roles'
@@ -190,7 +191,7 @@ function PasswordField({ label, value, onChange, placeholder, hint, required, sh
 }
 
 // ============ 用户详情抽屉 ============
-function UserDetailDrawer({ open, user, onClose, onEdit }) {
+function UserDetailDrawer({ open, user, onClose, onEdit, onUnlock }) {
   useLockBackgroundScroll(open)
   if (!open || !user) return null
   return createPortal(
@@ -223,7 +224,7 @@ function UserDetailDrawer({ open, user, onClose, onEdit }) {
         </div>
 
         {/* 标签 */}
-        <div className="flex gap-2 px-5 py-3">
+        <div className="flex flex-wrap gap-2 px-5 py-3">
           <Badge variant="primary">
             {ROLE_LABELS[user.role_name] || user.role_name || ROLE_LABELS[user.role] || user.role || '-'}
           </Badge>
@@ -231,6 +232,7 @@ function UserDetailDrawer({ open, user, onClose, onEdit }) {
             color={user.is_active ? 'success' : 'neutral'}
             label={user.is_active ? '启用' : '禁用'}
           />
+          {user.is_locked && <StatusBadge color="warning" label="已冻结" />}
         </div>
 
         {/* 基本信息 */}
@@ -253,11 +255,33 @@ function UserDetailDrawer({ open, user, onClose, onEdit }) {
               <span className="text-muted-foreground">最近登录</span>
               <span className="tabular-nums text-foreground">{fmtTime(user.last_login_at)}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">登录状态</span>
+              <span className={user.is_locked ? 'font-medium text-warning' : 'text-foreground'}>
+                {user.is_locked
+                  ? `已冻结${user.locked_until ? `（至 ${fmtTime(user.locked_until)}）` : '（需人工解锁）'}`
+                  : '正常'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">连续登录失败</span>
+              <span className="tabular-nums text-foreground">{user.failed_login_count ?? 0} 次</span>
+            </div>
           </div>
         </div>
 
         {/* 操作 */}
         <div className="mt-auto border-t border-border p-5">
+          {user.is_locked && onUnlock && (
+            <button
+              type="button"
+              onClick={() => onUnlock(user)}
+              className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-warning/50 bg-warning/10 py-2 text-sm font-medium text-warning transition hover:bg-warning/20"
+            >
+              <LockOpen className="h-4 w-4" />
+              解除冻结
+            </button>
+          )}
           <button
             type="button"
             onClick={() => { onClose(); onEdit(user) }}
@@ -299,13 +323,13 @@ function RowActions({ row, handlers, canEdit, canDelete, isSelf }) {
     }
   }, [open])
 
-  const { onView, onEdit, onReset, onToggleActive, onDelete, onForceLogout, onViewLoginLogs } = handlers
+  const { onView, onEdit, onReset, onToggleActive, onDelete, onForceLogout, onViewLoginLogs, onUnlock } = handlers
 
   const handleToggle = () => {
     if (!open && btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect()
       const menuW = 176
-      const menuH = 280
+      const menuH = 320
       const left = Math.min(rect.right - menuW, window.innerWidth - menuW - 8)
       const top = Math.min(rect.bottom + 4, window.innerHeight - menuH - 8)
       setMenuPos({ top, left })
@@ -323,6 +347,10 @@ function RowActions({ row, handlers, canEdit, canDelete, isSelf }) {
   items.push({ icon: Eye, label: '查看详情', onClick: handleAction(() => onView(row)) })
   if (canEdit) {
     items.push({ icon: KeyRound, label: '重置密码', onClick: handleAction(() => onReset(row)) })
+  }
+  // 登录失败次数过多被冻结的账户：管理员可立即解除冻结
+  if (canEdit && row.is_locked) {
+    items.push({ icon: LockOpen, label: '解除冻结', onClick: handleAction(() => onUnlock(row)) })
   }
   if (canEdit && !isSelf) {
     items.push({
@@ -491,7 +519,10 @@ function UserManagement() {
       result = result.filter((r) => r.role === roleFilter)
     }
     if (statusFilter) {
-      result = result.filter((r) => (statusFilter === 'active' ? r.is_active : !r.is_active))
+      result = result.filter((r) => {
+        if (statusFilter === 'locked') return !!r.is_locked
+        return statusFilter === 'active' ? r.is_active : !r.is_active
+      })
     }
     if (loginFilter) {
       const now = Date.now()
@@ -787,6 +818,23 @@ function UserManagement() {
     }
   }
 
+  // 解除登录冻结：清除连续登录失败计数与锁定状态，用户可立即重新登录
+  const handleUnlock = async (row) => {
+    const _ok = await confirm({
+      message: `确定解除用户「${row.display_name || row.username}」的登录冻结吗？解除后该用户可立即重新登录。`,
+      variant: 'warning',
+      confirmText: '解除冻结',
+    })
+    if (!_ok) return
+    try {
+      await usersApi.unlock(row.id)
+      await load()
+      toast.success(`已解除 ${row.username} 的登录冻结`)
+    } catch (err) {
+      toast.error(`解除冻结失败：${err.message || err}`)
+    }
+  }
+
   const handleViewLoginLogs = (row) => {
     // 跳转到日志中心，查看该用户的操作日志
     const url = `/logs?username=${encodeURIComponent(row.username)}`
@@ -885,12 +933,20 @@ function UserManagement() {
       },
     },
     {
-      key: 'is_active', header: '状态', width: '76px',
+      key: 'is_active', header: '状态', width: '110px',
       render: (r) => (
-        <StatusBadge
-          color={r.is_active ? 'success' : 'neutral'}
-          label={r.is_active ? '启用' : '禁用'}
-        />
+        <div className="flex flex-col items-start gap-0.5">
+          <StatusBadge
+            color={r.is_active ? 'success' : 'neutral'}
+            label={r.is_active ? '启用' : '禁用'}
+          />
+          {/* 密码连续错误被冻结（锁定中），管理员可在「更多」中解除冻结 */}
+          {r.is_locked && (
+            <span title={r.locked_until ? `锁定至 ${fmtTime(r.locked_until)}` : '需人工解锁'}>
+              <StatusBadge color="warning" label="已冻结" />
+            </span>
+          )}
+        </div>
       ),
     },
     {
@@ -921,6 +977,7 @@ function UserManagement() {
             onDelete: handleDelete,
             onForceLogout: handleForceLogout,
             onViewLoginLogs: handleViewLoginLogs,
+            onUnlock: handleUnlock,
           }}
         />
       ),
@@ -1005,6 +1062,7 @@ function UserManagement() {
                 { value: '', label: '全部状态' },
                 { value: 'active', label: '启用' },
                 { value: 'inactive', label: '禁用' },
+                { value: 'locked', label: '已冻结' },
               ],
             },
             {
@@ -1246,7 +1304,7 @@ function UserManagement() {
           }
         />
         <p className="mt-2 text-[11px] text-muted-foreground">
-          重置后请通知用户尽快登录并修改为自己的密码。
+          重置后请通知用户尽快登录并修改为自己的密码。若该账户因密码错误次数过多被冻结，重置后将一并解除冻结。
         </p>
       </Modal>
 
@@ -1285,7 +1343,7 @@ function UserManagement() {
           }
         />
         <p className="mt-2 text-[11px] text-muted-foreground">
-          所有选中用户将使用相同的新密码，重置后请通知用户尽快修改。
+          所有选中用户将使用相同的新密码，重置后请通知用户尽快修改。被冻结的账户将一并解除冻结。
         </p>
       </Modal>
 
@@ -1372,7 +1430,7 @@ function UserManagement() {
             </div>
           )}
           <p className="text-[11px] text-muted-foreground">
-            新建用户的初始密码需满足密码复杂度策略，且首次登录需修改密码；导出文件不含密码，可编辑后直接导入。
+            新建用户的初始密码需满足密码复杂度策略，且首次登录需修改密码；覆盖导入时填写初始密码会重置密码并一并解除冻结；导出文件不含密码，可编辑后直接导入。
           </p>
         </div>
       </Modal>
@@ -1383,6 +1441,7 @@ function UserManagement() {
         user={detailUser}
         onClose={() => setDetailUser(null)}
         onEdit={openEdit}
+        onUnlock={canEdit ? handleUnlock : undefined}
       />
     </div>
   )

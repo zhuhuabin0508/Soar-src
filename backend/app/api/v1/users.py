@@ -40,7 +40,9 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("user", "view")),
 ) -> list[UserOut]:
-    """列出所有用户（含角色显示名）。"""
+    """列出所有用户（含角色显示名与冻结状态）。"""
+    from app.core.security_policy import get_security_policy, is_account_locked
+
     logger.info("列出所有用户")
     users = db.query(User).order_by(User.id).all()
     # 批量查询角色名，避免 N+1
@@ -49,10 +51,14 @@ def list_users(
     if role_ids:
         roles = db.query(Role).filter(Role.id.in_(role_ids)).all()
         roles_map = {r.id: r.name for r in roles}
+    # 按当前安全策略计算冻结状态（「需人工解锁」模式下 locked_until
+    # 过期仍视为冻结，需管理员调用解锁接口）
+    policy = get_security_policy(db)
     result = []
     for u in users:
         data = UserOut.model_validate(u)
         data.role_name = roles_map.get(u.role_id) if u.role_id else None
+        data.is_locked = is_account_locked(u, policy)[0]
         result.append(data)
     return result
 
@@ -371,6 +377,9 @@ async def import_users(
             if password:
                 existing.password_hash = hash_password(password)
                 existing.must_change_password = True
+                # 重置即解冻（与单个重置密码接口一致）：清零失败计数与锁定状态
+                existing.failed_login_count = 0
+                existing.locked_until = None
             updated += 1
         else:
             # ===== 新建 =====
@@ -548,6 +557,9 @@ def reset_password(
 
     安全防护（防接管）：重置 admin 账号密码为高敏感操作，仅限 admin 执行，
     防止仅持 ``user:edit`` 的自定义角色用户重置管理员密码后登录接管系统。
+
+    重置即解冻：被冻结账户多因密码连续错误，重置后同步清零失败计数、
+    清空锁定截止时间，用户可直接用新密码登录（首登仍强制改密）。
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -564,14 +576,18 @@ def reset_password(
     if errors:
         raise HTTPException(status_code=400, detail="；".join(errors))
 
+    was_frozen = bool(user.failed_login_count or user.locked_until)
     user.password_hash = hash_password(body.new_password)
     # 管理员重置后强制用户下次登录改密
     user.must_change_password = True
+    # 重置即解冻：清除连续登录失败计数与锁定状态
+    user.failed_login_count = 0
+    user.locked_until = None
     db.commit()
     db.refresh(user)
     logger.info(
-        "密码重置: user_id=%s, operator=%s, target_is_admin=%s",
-        user_id, current.username, is_admin(user, db),
+        "密码重置: user_id=%s, operator=%s, target_is_admin=%s, unlocked=%s",
+        user_id, current.username, is_admin(user, db), was_frozen,
     )
     return user
 
@@ -612,6 +628,72 @@ def toggle_active(
     db.commit()
     db.refresh(user)
     logger.info("用户启停: user_id=%s, active=%s, operator=%s", user_id, user.is_active, current.username)
+    return user
+
+
+@router.post("/{user_id}/unlock", response_model=UserOut)
+def unlock_user(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_permission("user", "edit")),
+) -> User:
+    """解锁因连续登录失败被冻结的账户（管理员操作）。
+
+    密码连续错误达到 ``security.max_login_attempts`` 阈值后账户被冻结
+    （``locked_until``）；本接口重置失败计数与锁定截止时间，
+    用户可立即重新登录。适用于不想等待锁定时长（或策略为
+    「需人工解锁」模式）的场景。
+
+    安全策略：
+    - 解锁管理员账号为高敏感操作，仅 admin 可执行（与重置密码/启停一致）；
+    - 记录审计日志（含操作者 IP）。
+
+    Args:
+        user_id: 目标用户 ID。
+        request: HTTP 请求（用于获取客户端 IP）。
+        db: 数据库会话。
+        current: 当前登录用户（鉴权）。
+
+    Returns:
+        解锁后的用户信息。
+    """
+    from app.core.audit import get_client_ip, log_audit
+    from app.core.security_policy import get_security_policy, is_account_locked
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 解锁管理员账号为高敏感操作：仅 admin 可执行（防越权解除管理员锁定）
+    if is_admin(user, db) and not is_admin(current, db):
+        raise HTTPException(status_code=403, detail="仅管理员可解锁管理员账号")
+
+    policy = get_security_policy(db)
+    locked, _remaining = is_account_locked(user, policy)
+    if not locked and not user.failed_login_count:
+        raise HTTPException(status_code=400, detail="该账户当前未被冻结")
+
+    user.failed_login_count = 0
+    user.locked_until = None
+    db.commit()
+    db.refresh(user)
+    log_audit(
+        db,
+        user_id=current.id,
+        username=current.username,
+        action="unlock",
+        resource_type="user",
+        resource_id=str(user_id),
+        ip_address=get_client_ip(request),
+        result="success",
+        detail={"target_user": user.username},
+    )
+    db.commit()
+    logger.info(
+        "账户解锁: user_id=%s, username=%s, operator=%s",
+        user_id, user.username, current.username,
+    )
     return user
 
 

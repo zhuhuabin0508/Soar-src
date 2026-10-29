@@ -278,6 +278,27 @@ def _get_user_login_methods(user: Optional[User], system_methods: list[str]) -> 
     return [m for m in system_methods if m in allowed]
 
 
+def _lock_message(remaining: int) -> str:
+    """构造账户锁定提示文案。
+
+    ``remaining < 0`` 表示策略为「需人工解锁」模式
+    （``security.lockout_auto_unlock=False``），锁定不随时间自动解除，
+    须管理员在用户管理页执行「解除冻结」（``POST /users/{id}/unlock``）。
+    """
+    if remaining < 0:
+        return "账户已被冻结，请联系管理员解除锁定"
+    mins, secs = remaining // 60, remaining % 60
+    return f"账户已被锁定，请在 {mins} 分 {secs} 秒后重试"
+
+
+def _lockout_triggered_message(policy: dict, reason: str) -> str:
+    """连续失败达到阈值触发锁定时的提示文案（区分自动/需人工解锁模式）。"""
+    if not policy.get("security.lockout_auto_unlock", True):
+        return f"{reason}，账户已被冻结，请联系管理员解除锁定"
+    minutes = policy.get("security.lockout_duration_minutes", 15)
+    return f"{reason}，账户已被锁定 {minutes} 分钟"
+
+
 @router.get("/login-methods")
 def get_login_methods(request: Request, db: Session = Depends(get_db)) -> dict:
     """获取系统启用的登录方式（公开接口，登录页初始化渲染登录 Tab 用）。
@@ -433,10 +454,9 @@ def otp_send(body: OtpSendRequest, request: Request, db: Session = Depends(get_d
 
     locked, remaining = is_account_locked(user, policy)
     if locked:
-        mins, secs = remaining // 60, remaining % 60
         raise HTTPException(
             status_code=423,
-            detail=f"账户已被锁定，请在 {mins} 分 {secs} 秒后重试",
+            detail=_lock_message(remaining),
         )
 
     smtp = _load_smtp_config(db)
@@ -542,7 +562,6 @@ def login_otp_direct(
     # 账户锁定检查（复用与密码登录一致的锁定策略）
     locked, remaining = is_account_locked(user, policy)
     if locked:
-        mins, secs = remaining // 60, remaining % 60
         logger.warning("OTP 直接登录失败，账户已锁定: %s, 剩余 %ds", body.username, remaining)
         log_audit(db, user_id=user.id, username=user.username, action="login",
                   resource_type="auth", ip_address=ip, result="failed",
@@ -550,7 +569,7 @@ def login_otp_direct(
                           "method": "otp_direct"})
         raise HTTPException(
             status_code=403,
-            detail=f"账户已被锁定，请在 {mins} 分 {secs} 秒后重试",
+            detail=_lock_message(remaining),
         )
 
     # 验证码校验：邮箱验证码（Redis）或 TOTP 动态码，任一匹配即可
@@ -577,7 +596,7 @@ def login_otp_direct(
         if result["locked"]:
             raise HTTPException(
                 status_code=403,
-                detail=f"验证码错误次数过多，账户已被锁定 {policy.get('security.lockout_duration_minutes', 15)} 分钟",
+                detail=_lockout_triggered_message(policy, "验证码错误次数过多"),
             )
         raise HTTPException(
             status_code=401,
@@ -752,15 +771,13 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)) -
     # 检查账户锁定状态
     locked, remaining = is_account_locked(user, policy)
     if locked:
-        mins = remaining // 60
-        secs = remaining % 60
         logger.warning("登录失败，账户已锁定: %s, 剩余 %ds", body.username, remaining)
         log_audit(db, user_id=user.id, username=user.username, action="login",
                   resource_type="auth", ip_address=ip, result="failed",
                   detail={"reason": "account_locked", "remaining_seconds": remaining})
         raise HTTPException(
             status_code=403,
-            detail=f"账户已被锁定，请在 {mins} 分 {secs} 秒后重试",
+            detail=_lock_message(remaining),
         )
 
     if not verify_password(body.password, user.password_hash):
@@ -773,7 +790,7 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)) -
         if result["locked"]:
             raise HTTPException(
                 status_code=403,
-                detail=f"密码错误次数过多，账户已被锁定 {policy.get('security.lockout_duration_minutes', 15)} 分钟",
+                detail=_lockout_triggered_message(policy, "密码错误次数过多"),
             )
         raise HTTPException(
             status_code=401,
