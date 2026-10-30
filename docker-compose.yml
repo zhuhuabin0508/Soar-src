@@ -1,10 +1,12 @@
-# ===== SOAR 平台：后端栈运行环境（源码挂载 + 热重载）=====
+# ===== SOAR 平台：后端栈运行环境（源码挂载）=====
 # 启动：bash dev.sh up
 # 或：  docker compose --env-file .env.dev up -d
 # 停止：bash dev.sh down   （切勿 down -v，会清空数据卷）
 #
 # 前端不在本编排内：本地开发在宿主机 npm run dev，生产由 Nginx 托管 frontend/dist
-# 后端：挂载 ./backend/app + uvicorn --reload
+# 后端：挂载 ./backend/app，uvicorn 直跑（承载生产流量禁用 --reload：
+#       reloader 文件监听存在竞态卡死风险，导致 API 无响应且容器仍显示 Up；
+#       修改后端代码后需 docker restart soar-backend-dev 或执行 deploy/deploy.sh）
 # Worker 改 Celery 后需：docker restart soar-worker-dev
 services:
   postgres:
@@ -52,8 +54,8 @@ services:
         echo "==> [dev] ensuring DB tables..."
         python -c "from app.database import engine, Base; from app.models import Workflow, Execution, ExecutionTrace; Base.metadata.create_all(bind=engine); print('DB tables ensured (dev)')"
         python -c "from app.core.seed import ensure_seed_data; ensure_seed_data()" || echo "==> [dev] seed skipped"
-        echo "==> [dev] starting uvicorn with --reload on 0.0.0.0:8000"
-        exec uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+        echo "==> [dev] starting uvicorn on 0.0.0.0:8000"
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
     volumes:
       - ./backend/app:/app/app
       - ./backend/entrypoint.sh:/app/entrypoint.sh:ro
@@ -92,6 +94,15 @@ services:
       - "514:514/udp"
     networks: [soar-net]
     restart: unless-stopped
+    # 健康检查：容器内自检 /api/v1/version（无认证接口）。
+    # 卡死场景（进程在但不响应）下约 90 秒标记 unhealthy，供监控告警；
+    # 崩溃退出由 restart: unless-stopped 自动拉起。
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/version', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     mem_limit: 5g
     memswap_limit: 5g
 
