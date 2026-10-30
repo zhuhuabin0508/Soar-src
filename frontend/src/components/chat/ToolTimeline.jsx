@@ -11,13 +11,42 @@
  * - toolCalls: Array<{ name, status, result, message, call_id, started_at?, completed_at? }>
  */
 import { useState } from 'react'
-import { Check, Loader2, AlertTriangle, ChevronRight } from 'lucide-react'
+import { Check, Loader2, AlertTriangle, ChevronRight, Download, FileText } from 'lucide-react'
+import { agentFiles } from '../../api/client'
+
+/** 解析 generate_document 工具的成功结果为下载信息（result 可能是对象或 JSON 字符串）。 */
+function parseDocFile(tc) {
+  if (tc.name !== 'generate_document' || tc.result == null) return null
+  let result = tc.result
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result) } catch { return null }
+  }
+  if (result && typeof result === 'object' && result.ok && result.file_id) return result
+  return null
+}
 
 function ToolNode({ tc, idx, total }) {
   const [open, setOpen] = useState(false)
+  const [downloading, setDownloading] = useState(false)
   const running = tc.status === 'running'
   const isError = !!(tc.message && (tc.message.includes('错误') || tc.message.includes('error')))
   const isLast = idx === total - 1
+
+  // generate_document 成功 → 渲染文档下载卡片（预览入口）
+  const docFile = parseDocFile(tc)
+
+  const handleDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      await agentFiles.download(docFile.file_id, docFile.file_name)
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(e.message || '下载失败')
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   // 序列化结果
   let resultStr = ''
@@ -98,6 +127,29 @@ function ToolNode({ tc, idx, total }) {
             </span>
           )}
         </button>
+        {/* generate_document 成功：展示文档文件卡片与下载入口（无需展开详情即可见） */}
+        {docFile && (
+          <div className="mt-1 flex items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
+            <FileText className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+            <span className="truncate text-xs font-medium text-foreground" title={docFile.file_name}>
+              {docFile.file_name}
+            </span>
+            {docFile.file_size != null && (
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {(docFile.file_size / 1024).toFixed(1)} KB
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              className="ml-auto inline-flex shrink-0 items-center gap-1 rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+            >
+              <Download className="h-3 w-3" />
+              {downloading ? '下载中…' : '下载'}
+            </button>
+          </div>
+        )}
         {/* 展开详情 */}
         {open && (resultStr || tc.message) && (
           <div className="mt-1 max-h-48 overflow-y-auto rounded-md border border-border bg-card p-2 font-mono text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words">
