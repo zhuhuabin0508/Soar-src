@@ -13,13 +13,14 @@
 //   ④ 中央：处置状态流转图（虚线流动连线 + 节点下方停留件数）
 //          + 提交团队工单排名（横排 Top 8，其余合并尾签）
 //          + 最新工单实时列表
-//   ⑤ 右上：封禁IP统计（生效中封禁总数 + 手动封禁 / 工单同步封禁来源构成环）
+//   ⑤ 右上：封禁IP统计（历史累计去重 IP 总数：一个 IP 只算一次、解封/到期不减少
+//          + 手动封禁 / 工单同步封禁来源构成环，来源按各 IP 最新记录归类）
 //   ⑥ 右下：来源平台统计（状态构成堆叠条形图，柱端标注工单总量）
 //   ⑦ 底部：告警播报跑马灯（仅超时 / 紧急工单，不与实时列表重复）
 //   ⑧ 全屏交互：弹窗下钻体系（不跳转路由）——各统计区块点击压入弹窗栈逐级覆盖显示，
 //      面包屑可回跳任意上级（ESC / 遮罩点击关闭当前层）：
 //      团队排名条 → 全部团队数据 → 团队工单列表 → 工单详情（最多四级）；
-//      封禁IP统计 → 封禁IP列表（按来源过滤）→ 来源工单详情（工单同步封禁）；
+//      封禁IP统计 → 封禁IP列表（历史累计按 IP 去重，按来源过滤）→ 来源工单详情（工单同步封禁）；
 //      KPI / 趋势 / 分布 / 流转节点 / 平台 / 实时列表均可点击下钻对应工单列表。
 //   ⑨ 大屏操作：右上工具条（数据健康度 / 刷新频率切换 / 立即刷新 / 报警开关 / 屏幕适配 /
 //      值守轮播 / 全屏切换 + 实时时钟）；中央实时列表状态筛选（全部 / 进行中 / 已完成 / 已取消）
@@ -1362,7 +1363,7 @@ function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
   )
 }
 
-// ============ ⑤ 右上：封禁IP统计（生效中封禁总数 + 手动 / 工单同步来源构成环） ============
+// ============ ⑤ 右上：封禁IP统计（历史累计去重 IP：一个 IP 只算一次、解封/到期不减少） ============
 // 分钟 → 紧凑可读时长（如 30 分 / 4 时 / 1 天 4 时；工单详情 SLA 时长用）
 function fmtDur(m) {
   if (m === null || m === undefined) return '不限'
@@ -1391,6 +1392,16 @@ const BAN_SOURCE_LABELS = {
 
 // 封禁等级文案（与封禁工作台口径一致：critical 最高）
 const BAN_LEVEL_LABELS = { low: '低', medium: '中', high: '高', critical: '严重' }
+
+// 封禁状态文案与配色（最新一条记录的状态；cancelled 从未下发、不会出现在下钻集）
+const BAN_STATUS_META = {
+  active: { label: '生效中', color: C.green },
+  unbanned: { label: '已解封', color: C.subText },
+  expired: { label: '已到期', color: C.orange },
+  pending_sync: { label: '待同步', color: C.paleBlue },
+  syncing: { label: '同步中', color: C.paleBlue },
+  pending_approval: { label: '待审批', color: C.orange },
+}
 
 // 底部来源指标卡：图标 + 来源名 + 数量大字 + 占比进度条（可点击下钻该来源封禁 IP 列表）
 function BanSourceCard({ icon: Icon, name, value, pct, color, onClick }) {
@@ -1421,11 +1432,11 @@ function BanPanel({ ban, onDrill }) {
   const ticket = ban?.ticket ?? 0
   const other = Math.max(0, total - manual - ticket)
   const pct = (v) => (total > 0 ? Math.round((v / total) * 1000) / 10 : 0)
-  // 下钻入口：构成环 → 全部生效中封禁；来源卡 → 该来源封禁 IP 列表；其他来源注 → 其他来源列表
+  // 下钻入口：构成环 → 全部历史封禁 IP；来源卡 → 该来源封禁 IP 列表；其他来源注 → 其他来源列表
   const drillBans = (source, title, subtitle) => onDrill
     ? () => onDrill({ kind: 'bans', source, title, subtitle })
     : undefined
-  // 来源构成环：手动（蓝）/ 工单同步（橙）/ 其余来源（灰），环心大号总数
+  // 来源构成环：手动（蓝）/ 工单同步（橙）/ 其余来源（灰），环心大号总数（历史去重 IP）
   const donutOption = useMemo(() => {
     const data = BAN_SOURCE_META.map((s) => ({
       value: ban?.[s.key] ?? 0, name: s.label, itemStyle: { color: s.color },
@@ -1434,13 +1445,13 @@ function BanPanel({ ban, onDrill }) {
     return {
       ...CHART_BASE,
       title: {
-        text: String(total), subtext: '当前封禁 IP', left: 'center', top: '36%',
+        text: String(total), subtext: '累计封禁 IP', left: 'center', top: '36%',
         textStyle: { color: C.text, fontSize: 32, fontWeight: 'bold', fontFamily: 'monospace' },
         subtextStyle: { color: C.subText, fontSize: 12 },
       },
       tooltip: {
         trigger: 'item', confine: true,
-        formatter: '{b}：{c} 条（{d}%）',
+        formatter: '{b}：{c} 个 IP（{d}%）',
         backgroundColor: 'rgba(13,24,36,0.92)', borderColor: 'rgba(96,138,188,0.4)',
         textStyle: { color: C.text, fontSize: 12 },
       },
@@ -1457,11 +1468,11 @@ function BanPanel({ ban, onDrill }) {
   return (
     <Panel title="封禁IP统计" subtitle="BANNED IP" icon={ShieldBan}
       className="h-[400px]" bodyClassName="flex flex-col px-3 py-1">
-      {/* 上：来源构成环（环心 = 生效中封禁 IP 总数；点击下钻全部生效中封禁 IP 列表） */}
+      {/* 上：来源构成环（环心 = 历史累计去重封禁 IP 总数；点击下钻全部历史封禁 IP 列表） */}
       <div className="flex h-[224px] shrink-0 flex-col">
         <div className={`min-h-0 flex-1 ${onDrill ? 'cursor-pointer' : ''}`}
-          title={onDrill ? '点击下钻查看全部生效中封禁 IP 列表' : undefined}
-          onClick={drillBans(null, '封禁IP列表 · 全部生效中', '封禁统计下钻')}>
+          title={onDrill ? '点击下钻查看历史封禁 IP 列表（一个 IP 只算一次，解封/到期不减少）' : undefined}
+          onClick={drillBans(null, '封禁IP列表 · 全部历史', '封禁统计下钻 · 按 IP 去重')}>
           <ReactECharts option={donutOption} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }} />
         </div>
         {other > 0 && (
@@ -1469,11 +1480,11 @@ function BanPanel({ ban, onDrill }) {
             title={onDrill ? '点击查看其他来源（自动 / 审批 / 导入）封禁 IP 列表' : undefined}
             className={`shrink-0 text-center text-[11px] transition ${onDrill ? 'cursor-pointer hover:brightness-125' : ''}`}
             style={{ color: C.subText }}>
-            另有其他来源（自动 / 审批 / 导入）封禁 {other} 条
+            另有其他来源（自动 / 审批 / 导入）封禁 {other} 个 IP
           </div>
         )}
       </div>
-      {/* 下：手动封禁 / 工单同步封禁两张来源指标卡（数量 + 占比；点击下钻该来源列表） */}
+      {/* 下：手动封禁 / 工单同步封禁两张来源指标卡（历史去重 IP 数 + 占比；点击下钻该来源列表） */}
       <div className="mt-1.5 grid h-[96px] shrink-0 grid-cols-2 gap-2">
         {BAN_SOURCE_META.map((s) => (
           <BanSourceCard key={s.key} icon={s.icon} name={s.label}
@@ -1645,8 +1656,9 @@ function MarqueeBar({ latest }) {
 // 交互模型：各统计区块点击 → openDrill(view) 压入弹窗栈逐级覆盖显示；面包屑回跳任意上级，
 // × / ESC / 遮罩点击关闭当前层。弹窗内表格行可继续下钻（最深可达四级）。
 // 视图配置 view：{ kind: 'teams' | 'tickets' | 'bans' | 'detail', title, subtitle?, filters?, ticket? }
-// bans 视图另带 source（null=全部生效中 / manual / ticket / other=非手动非工单同步），
-// 数据源为后端 monitor 下钻封禁记录集 ban_records（演示模式为内置演示记录，口径一致）。
+// bans 视图另带 source（null=全部历史 / manual / ticket / other=非手动非工单同步），
+// 数据源为后端 monitor 下钻封禁记录集 ban_records（历史累计按 IP 去重：一个 IP 一行
+// = 最新记录 + 状态 + 历史次数；演示模式为内置演示记录，口径一致）。
 // filters 字段口径与大屏各分区一致（详见 matchDrill），工单数据源由页面主体统一注入
 // （演示阶段为内置演示工单集，后端接入后为聚合接口返回的 tickets）。
 
@@ -2203,10 +2215,11 @@ function TicketDetail({ t, demo = false }) {
   )
 }
 
-// 封禁IP列表（封禁统计卡下钻一级）：生效中封禁记录，分页 + 每页条数可调；
-// 工单同步来源且能匹配到下钻工单集的行可继续下钻来源工单详情（封禁 → 工单，最多再深一级）
-// 封禁剩余时长：永久 → 永久；有到期时间 → 剩余 xx（负数/缺失 → --）
+// 封禁IP列表（封禁统计卡下钻一级）：历史累计去重 IP，一个 IP 一行（最新记录 + 状态 + 历史次数），
+// 分页 + 每页条数可调；工单同步来源且能匹配到下钻工单集的行可继续下钻来源工单详情（封禁 → 工单，最多再深一级）
+// 封禁剩余时长：仅生效中记录展示（永久 → 永久；有到期时间 → 剩余 xx）；已解封/已到期显示 --
 function banRemainingText(r) {
+  if (r.status && r.status !== 'active') return '--'
   if (r.is_permanent) return '永久'
   if (!r.expire_time) return '--'
   const mins = Math.floor((new Date(r.expire_time).getTime() - Date.now()) / 60000)
@@ -2232,18 +2245,21 @@ function BanTable({ rows, onRowClick }) {
       {/* 列头 */}
       <div className="flex shrink-0 items-center px-3 pb-1.5 text-[13px]" style={{ color: C.subText }}>
         <span className="w-[150px] shrink-0">封禁 IP</span>
-        <span className="w-[110px] shrink-0 text-center">封禁来源</span>
-        <span className="w-[64px] shrink-0 text-center">级别</span>
-        <span className="w-[130px] shrink-0 text-right">剩余时长</span>
-        <span className="w-[128px] shrink-0 text-right">封禁时间</span>
+        <span className="w-[100px] shrink-0 text-center">封禁来源</span>
+        <span className="w-[56px] shrink-0 text-center">级别</span>
+        <span className="w-[80px] shrink-0 text-center">状态</span>
+        <span className="w-[56px] shrink-0 text-right" title="该 IP 历史封禁次数（含已解封 / 到期）">次数</span>
+        <span className="w-[110px] shrink-0 text-right">剩余时长</span>
+        <span className="w-[118px] shrink-0 text-right">最近封禁</span>
         <span className="min-w-0 flex-1 truncate text-right">来源工单</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-1">
         {view.length === 0 && (
-          <div className="py-10 text-center text-[13px]" style={{ color: C.subText }}>暂无生效中的封禁记录</div>
+          <div className="py-10 text-center text-[13px]" style={{ color: C.subText }}>暂无封禁记录</div>
         )}
         {view.map((r) => {
           const st = sourceStyle(r.ban_source)
+          const sm = BAN_STATUS_META[r.status] || { label: r.status || '--', color: C.subText }
           const linked = r.ticket_id && onRowClick
           return (
             <div key={r.id}
@@ -2252,19 +2268,27 @@ function BanTable({ rows, onRowClick }) {
               className={`mb-1 flex min-h-[42px] items-center rounded border px-2 text-[14px] transition ${linked ? 'cursor-pointer hover:brightness-125' : ''}`}
               style={{ borderColor: 'rgba(96,138,188,0.18)', background: C.innerBg }}>
               <span className="w-[150px] shrink-0 truncate font-mono" style={{ color: C.text }}>{r.ip}</span>
-              <span className="w-[110px] shrink-0 text-center">
+              <span className="w-[100px] shrink-0 text-center">
                 <span className="inline-flex items-center rounded-full border px-1.5 py-px text-[12px]"
                   style={{ color: st.color, background: st.background, borderColor: st.border }}>
                   {BAN_SOURCE_LABELS[r.ban_source] || r.ban_source || '--'}
                 </span>
               </span>
-              <span className="w-[64px] shrink-0 text-center" style={{ color: C.paleBlue }}>
+              <span className="w-[56px] shrink-0 text-center" style={{ color: C.paleBlue }}>
                 {BAN_LEVEL_LABELS[r.ban_level] || r.ban_level || '--'}
               </span>
-              <span className="w-[130px] shrink-0 truncate text-right font-mono text-[13px] tabular-nums" style={{ color: C.subText }}>
+              <span className="w-[80px] shrink-0 text-center text-[13px]" style={{ color: sm.color }}>
+                {sm.label}
+              </span>
+              <span className="w-[56px] shrink-0 text-right font-mono text-[13px] tabular-nums"
+                title="该 IP 历史封禁次数（含已解封 / 到期）"
+                style={{ color: (r.ban_count ?? 1) > 1 ? C.cyan : C.subText }}>
+                {r.ban_count ?? 1}
+              </span>
+              <span className="w-[110px] shrink-0 truncate text-right font-mono text-[13px] tabular-nums" style={{ color: C.subText }}>
                 {banRemainingText(r)}
               </span>
-              <span className="w-[128px] shrink-0 text-right font-mono tabular-nums" style={{ color: C.subText }}>
+              <span className="w-[118px] shrink-0 text-right font-mono tabular-nums" style={{ color: C.subText }}>
                 {r.created_at ? r.created_at.slice(5, 16).replace('T', ' ') : '--'}
               </span>
               <span className="min-w-0 flex-1 truncate text-right font-mono" style={{ color: linked ? C.cyan : C.subText }}>
@@ -2282,8 +2306,8 @@ function BanTable({ rows, onRowClick }) {
 
 // 弹窗壳：层级标记 + 面包屑（可点回跳）+ 关闭；主体按 view.kind 分发
 // teams → 全部团队数据（由当前数据源实时聚合，保证与排名条/各级下钻列表口径一致）；
-// tickets → 筛选后的工单列表；bans → 封禁IP列表（view.source 限定来源，null=全部 /
-// manual / ticket / other=非手动非工单同步）；detail → 单工单详情
+// tickets → 筛选后的工单列表；bans → 封禁IP列表（历史累计按 IP 去重，view.source 限定
+// 来源，null=全部历史 / manual / ticket / other=非手动非工单同步）；detail → 单工单详情
 // truncated：后端下钻工单集超上限截断时弹窗内提示（仅真实数据模式；封禁集截断用 bansTruncated）
 // loading：下钻工单集按需拉取中（大屏轮询不再携带全量下钻集）
 // demo：演示数据兜底（详情内时间线跳过 /tickets/{id}，按工单字段降级展示）
@@ -2298,7 +2322,7 @@ function DrillModal({ level, view, stack, tickets, bans = [], bansTruncated = fa
     () => (view.kind === 'tickets' ? tickets.filter((t) => matchDrill(t, view.filters)) : []),
     [view.kind, view.filters, tickets],
   )
-  // 封禁IP列表：按 view.source 过滤（null=全部生效中；other=手动/工单同步之外的来源）
+  // 封禁IP列表：按 view.source 过滤（null=全部历史；other=手动/工单同步之外的来源）
   const banRows = useMemo(() => {
     if (view.kind !== 'bans') return []
     if (!view.source) return bans
@@ -2360,7 +2384,7 @@ function DrillModal({ level, view, stack, tickets, bans = [], bansTruncated = fa
         )}
         {view.kind === 'bans' && bansTruncated && (
           <div className="shrink-0 px-4 pt-2 text-[12px]" style={{ color: C.orange }}>
-            封禁记录较多，弹窗仅基于最近一批记录展示（面板统计数字为全量口径）
+            封禁 IP 较多，弹窗仅基于最近一批 IP 展示（面板统计数字为全量口径）
           </div>
         )}
         {view.kind === 'teams' && (
@@ -2505,45 +2529,63 @@ function buildDemoTickets() {
   return tickets
 }
 
-// 演示封禁记录（降级预览层）：生效中封禁按来源区分（手动 17 / 工单同步 24 / 其他 5），
+// 演示封禁记录（降级预览层）：历史累计口径，按 IP 去重（与后端一致）——
+// 一个 IP 可有多条历史记录（封禁 → 解封/到期 → 再封禁），已解封/到期仍在列（只增不减）；
 // 固定种子确定性生成；工单同步记录从演示工单集取来源工单（ticket_id/ticket_no），
-// 弹窗内可继续下钻工单详情。字段口径与后端 monitor 下钻封禁记录集一致。
+// 弹窗内可继续下钻工单详情。字段口径与后端 monitor 下钻封禁记录集一致
+// （每个 IP 一行 = 最新一条记录 + status 状态 + ban_count 历史次数）。
 function buildDemoBans(tickets) {
   const rand = mulberry32(0x20261102)
   const pick = (arr) => arr[Math.floor(rand() * arr.length)]
   const between = (a, b) => a + Math.floor(rand() * (b - a + 1))
-  const now = new Date()
-  const records = []
+  const now = Date.now()
   let seq = 0
-  const add = (source) => {
+  const ipOf = () => `${between(1, 223)}.${between(0, 255)}.${between(0, 255)}.${between(1, 254)}`
+  const make = (ip, source, status, createdMs) => {
     seq += 1
-    const created = new Date(now)
-    created.setDate(created.getDate() - between(0, 29))
-    created.setHours(between(0, 23), between(0, 59), between(0, 59), 0)
     const permanent = rand() < (source === 'manual' ? 0.24 : 0.12)
-    // 非永久：剩余 1 小时 ~ 15 天（保证演示态全部处于生效中）
-    const expire = new Date(now.getTime() + between(60, 60 * 24 * 15) * 60000)
     const lv = rand() < 0.15 ? 'critical' : rand() < 0.45 ? 'high' : rand() < 0.8 ? 'medium' : 'low'
     const srcTicket = source === 'ticket' ? pick(tickets) : null
-    records.push({
-      id: seq,
-      ip: `${between(1, 223)}.${between(0, 255)}.${between(0, 255)}.${between(1, 254)}`,
-      ban_source: source,
-      ban_level: lv,
-      is_permanent: permanent,
+    // 非永久：到期时间在封禁后 1 小时 ~ 15 天（expired 的可能已过，展示按 status 判断）
+    const expireMs = createdMs + between(60, 60 * 24 * 15) * 60000
+    return {
+      id: seq, ip, ban_source: source, ban_level: lv, is_permanent: permanent,
       ban_duration: permanent ? 0 : between(3600, 3600 * 24 * 30),
-      expire_time: permanent ? null : isoLocal(expire),
+      expire_time: permanent ? null : isoLocal(new Date(expireMs)),
+      status,
       ticket_id: srcTicket ? srcTicket.id : null,
       ticket_no: srcTicket ? srcTicket.ticket_no : null,
-      created_at: isoLocal(created),
-    })
+      created_at: isoLocal(new Date(createdMs)),
+    }
   }
-  for (let i = 0; i < 17; i += 1) add('manual')
-  for (let i = 0; i < 24; i += 1) add('ticket')
+  // 原始历史记录：同一 IP 约 1/3 有一段更早的已解封/到期记录（再封禁场景）
+  const raw = []
+  const addIp = (source, latestStatus) => {
+    const ip = ipOf()
+    const latestMs = now - between(0, 29) * 86400000 - between(0, 86399) * 1000
+    if (rand() < 0.34) {
+      raw.push(make(ip, source, rand() < 0.5 ? 'unbanned' : 'expired', latestMs - between(3, 20) * 86400000))
+    }
+    raw.push(make(ip, source, latestStatus, latestMs))
+  }
+  // 手动 17 / 工单同步 24 / 其他 5 个 IP；最新状态约 3/4 生效中，其余已解封/已到期
+  const addWithStatus = (source) => addIp(source, rand() < 0.75 ? 'active' : (rand() < 0.5 ? 'unbanned' : 'expired'))
+  for (let i = 0; i < 17; i += 1) addWithStatus('manual')
+  for (let i = 0; i < 24; i += 1) addWithStatus('ticket')
   const OTHER_SOURCES = ['auto', 'approval', 'import']
-  for (let i = 0; i < 5; i += 1) add(pick(OTHER_SOURCES))
-  // 最新在前（与后端下钻封禁记录集排序一致）
-  return records.sort((a, b) => b.created_at.localeCompare(a.created_at))
+  for (let i = 0; i < 5; i += 1) addWithStatus(pick(OTHER_SOURCES))
+  // 按 IP 归并：一个 IP 一行（最新记录 + 历史次数），来源取最新记录（与后端口径一致）
+  const byIp = new Map()
+  raw.forEach((r) => {
+    const cur = byIp.get(r.ip) || { latest: r, count: 0 }
+    cur.count += 1
+    if (r.id > cur.latest.id) cur.latest = r
+    byIp.set(r.ip, cur)
+  })
+  // 最新在前（与后端下钻封禁记录集按最新记录 id 降序一致）
+  return [...byIp.values()]
+    .map(({ latest, count }) => ({ ...latest, ban_count: count }))
+    .sort((a, b) => b.id - a.id)
 }
 
 // 由演示工单集派生大屏全部分区统计（字段结构与后端 monitor 聚合返回一致）
@@ -2637,8 +2679,9 @@ function buildDemoStats(tickets) {
     flows: [{ id: 1, name: '安全告警处置流程', enabled: true, is_draft: false }],
     flow: { id: 1, name: '安全告警处置流程', auto: true },
     latest: [...tickets].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8),
-    // 封禁 IP 统计与下钻记录集：由演示封禁记录聚合（口径一致：manual/ticket 单列，
-    // 其余来源计入 total；面板数字 = 弹窗下钻列表条数）
+    // 封禁 IP 统计与下钻记录集：由演示封禁记录聚合（历史累计按 IP 去重，
+    // 来源取各 IP 最新记录：manual/ticket 单列，其余来源计入 total；
+    // 面板数字 = 弹窗下钻列表条数）
     ...(() => {
       const banRecords = buildDemoBans(tickets)
       return {
@@ -3287,7 +3330,7 @@ export default function TicketMonitorScreen() {
 
           {/* 右栏 */}
           <div className="flex w-[470px] shrink-0 flex-col gap-3">
-            {/* ⑤ 封禁IP统计（生效中封禁按来源区分：手动 / 工单同步；环/来源卡/其他来源注均可下钻 IP 列表） */}
+            {/* ⑤ 封禁IP统计（历史累计去重 IP：一个 IP 只算一次、解封/到期不减少；环/来源卡/其他来源注均可下钻 IP 列表） */}
             <BanPanel ban={data?.ban_stats} onDrill={openDrill} />
             {/* ⑥ 来源平台统计（点击堆叠段下钻平台×状态工单） */}
             <PlatformPanel rows={data?.platform_stats} onDrill={openDrill} />

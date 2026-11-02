@@ -1146,9 +1146,10 @@ def ticket_monitor_stats(
     下钻工单集 ``tickets``：大屏各分区点击弹窗逐级下钻的数据源，字段口径与各分区统计
     严格一致（team/platform/alert_type/active_today/timeout 等）；极端存量下仅返回最近
     2000 件并以 ``tickets_truncated`` 标记。
-    下钻封禁记录集 ``ban_records``：大屏「封禁IP统计」卡点击弹窗的数据源（与 ``ban_stats``
-    同口径 status=active，最新在前）；同样仅在 ``include_drill=1`` 时下发，极端存量下仅返回
-    最近 2000 条并以 ``ban_records_truncated`` 标记。
+    下钻封禁记录集 ``ban_records``：大屏「封禁IP统计」卡点击弹窗的数据源（历史累计
+    去重口径：一个 IP 一行 = 该 IP 最新一条记录 + ``ban_count`` 历史封禁次数，
+    含已解封/已到期）；同样仅在 ``include_drill=1`` 时下发，极端存量下仅返回
+    最近 2000 个 IP 并以 ``ban_records_truncated`` 标记。
     处置状态流转：``flow_id`` 可指定展示的流程模板；节点序列始终读取模板**当前定义**，
     修改并重新发布模板后大屏在下次轮询自动更新。响应附 ``flows``（可选流程列表）与
     ``flow``（当前生效流程及是否自动选取）。末位「已完结」节点的件数为全流程已解决
@@ -1336,19 +1337,27 @@ def ticket_monitor_stats(
                 row[t.status] = row.get(t.status, 0) + 1
         severity_status.append(row)
 
-    # —— 封禁 IP 统计（大屏右栏「封禁IP统计」卡）：生效中封禁记录按来源区分 ——
-    # 口径与封禁工作台列表一致（status=active 的记录数）；区分手动封禁（manual）与
-    # 工单同步封禁（ticket），其余来源（auto/approval/import）计入 total 不单列。
-    ban_source_counts: dict[str, int] = dict(
+    # —— 封禁 IP 统计（大屏右栏「封禁IP统计」卡）：历史累计口径，按去重 IP 统计 ——
+    # 一个 IP 只算一次（多次封禁 / 解封 / 到期不重复计数，只增不减）；已解封、已到期
+    # 的记录仍计数。cancelled（审批拒绝 / 流程取消，从未真正下发设备）的记录不参与。
+    # 来源归类取该 IP 最新一条记录的 ban_source，保证 手动 + 工单同步 + 其他 = 总数
+    # （构成环各分量不重叠，与下钻列表「一个 IP 一行」严格同口径）。
+    _latest_ban_sq = (
+        db.query(BanRecord.ip.label("ip"), func.max(BanRecord.id).label("rid"))
+        .filter(BanRecord.status != "cancelled")
+        .group_by(BanRecord.ip)
+        .subquery()
+    )
+    _ban_source_counts: dict[str, int] = dict(
         db.query(BanRecord.ban_source, func.count())
-        .filter(BanRecord.status == "active")
+        .join(_latest_ban_sq, BanRecord.id == _latest_ban_sq.c.rid)
         .group_by(BanRecord.ban_source)
         .all()
     )
     ban_stats = {
-        "total": sum(ban_source_counts.values()),
-        "manual": ban_source_counts.get("manual", 0),
-        "ticket": ban_source_counts.get("ticket", 0),
+        "total": sum(_ban_source_counts.values()),
+        "manual": _ban_source_counts.get("manual", 0),
+        "ticket": _ban_source_counts.get("ticket", 0),
     }
 
     # 分组名映射（用于流转节点显示处理分组）
@@ -1432,22 +1441,37 @@ def ticket_monitor_stats(
             })
 
     # —— 下钻封禁记录集（大屏「封禁IP统计」卡点击弹窗数据源）——
-    # 与 ban_stats 同口径（status=active，生效中）；仅 include_drill=True 时构造
-    # （与下钻工单集同策略，常规轮询不下发）；最新在前，极端存量下仅返回最近
-    # drill_limit 条并以 ban_records_truncated 标记。工单同步来源附 ticket_id/ticket_no，
-    # 供前端弹窗内继续下钻来源工单详情。
+    # 与 ban_stats 同口径（历史累计去重 IP）：一个 IP 一行，取该 IP 最新一条记录
+    # （含已解封 / 已到期，状态见 status 字段），附 ban_count = 该 IP 历史封禁次数；
+    # 仅 include_drill=True 时构造（与下钻工单集同策略，常规轮询不下发）；最新在前，
+    # 极端存量下仅返回最近 drill_limit 个 IP 并以 ban_records_truncated 标记。
+    # 工单同步来源附 ticket_id/ticket_no，供前端弹窗内继续下钻来源工单详情。
     ban_records: list[dict] = []
     ban_records_truncated = False
     if include_drill:
-        active_bans = (
+        latest_bans = (
             db.query(BanRecord)
-            .filter(BanRecord.status == "active")
+            .join(_latest_ban_sq, BanRecord.id == _latest_ban_sq.c.rid)
             .order_by(BanRecord.id.desc())
             .limit(drill_limit)
             .all()
         )
         ban_records_truncated = ban_stats["total"] > drill_limit
-        for r in active_bans:
+        # 本批 IP 的历史封禁次数（仅聚合本次下发的 IP，避免全量扫描）
+        ban_ip_counts: dict[str, int] = (
+            dict(
+                db.query(BanRecord.ip, func.count())
+                .filter(
+                    BanRecord.status != "cancelled",
+                    BanRecord.ip.in_([r.ip for r in latest_bans]),
+                )
+                .group_by(BanRecord.ip)
+                .all()
+            )
+            if latest_bans
+            else {}
+        )
+        for r in latest_bans:
             ban_records.append({
                 "id": r.id,
                 "ip": r.ip,
@@ -1456,6 +1480,10 @@ def ticket_monitor_stats(
                 "is_permanent": r.is_permanent,
                 "ban_duration": r.ban_duration,
                 "expire_time": r.expire_time.isoformat() if r.expire_time else None,
+                # 最新一条记录状态（active=生效中 / unbanned=已解封 / expired=已到期…）
+                "status": r.status,
+                # 该 IP 历史封禁次数（含已解封 / 到期，去重统计的辅助信息）
+                "ban_count": ban_ip_counts.get(r.ip, 1),
                 # 工单同步来源信息（ban_source=ticket 时有值）
                 "ticket_id": r.ticket_id,
                 "ticket_no": r.ticket_no,
@@ -1478,11 +1506,13 @@ def ticket_monitor_stats(
         "tickets": drill_tickets,
         "tickets_truncated": drill_truncated,
         "tickets_total": drill_total,
-        # 下钻封禁记录集：封禁IP统计卡弹窗数据源（ban_records_truncated=True 时仅最近 drill_limit 条）
+        # 下钻封禁记录集：封禁IP统计卡弹窗数据源（一个 IP 一行；
+        # ban_records_truncated=True 时仅最近 drill_limit 个 IP）
         "ban_records": ban_records,
         "ban_records_truncated": ban_records_truncated,
         "severity_status": severity_status,
-        # 封禁 IP 统计：生效中封禁记录数（total/manual=手动封禁/ticket=工单同步封禁）
+        # 封禁 IP 统计：历史累计去重 IP 数（total/manual=手动封禁/ticket=工单同步封禁，
+        # 解封 / 到期不减少；来源按各 IP 最新记录归类，分量之和 = total）
         "ban_stats": ban_stats,
         # 大屏流程切换器数据：全部流程模板（含草稿/停用标记）
         "flows": [
