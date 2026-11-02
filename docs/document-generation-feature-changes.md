@@ -17,6 +17,8 @@
 | 4 | 新增 | `backend/tests/test_document_generation.py` | 新文件 | 14 项单元/集成测试（解析、清洗、校验、三格式生成） |
 
 > 无删除文件。开发过程中的临时端到端验证脚本（`tests/_e2e_download_check.py`）已清理，不入库。
+>
+> **追加变更**（2026-10-30）：正文文件名点击下载交互优化，见文末「七」。涉及 2 个前端新增 + 3 个前端修改。
 
 ---
 
@@ -245,3 +247,29 @@ backend/tests/test_document_generation.py       | 新增（14 项测试）
 3. 在 `save_document_as_agent_file` 主函数中增加一个格式分支
 
 工具 `description` 中的格式列表与前端无需改动（前端卡片按返回结果渲染，不感知具体格式）。
+
+---
+
+## 七、追加变更：正文文件名直接点击下载（2026-10-30 交互优化）
+
+**交互问题**：LLM 在回复正文中以 `` `文件名.xlsx` ``（行内代码）提及生成产物时，MarkdownRenderer
+将其渲染为蓝色文本，但只是纯 `<code>` 标签——与文件记录（`toolCalls` 结果里的 `file_id`）
+毫无关联，用户点击无反应，只能去上方工具卡片或文件库下载。
+
+**方案**：渲染正文时把命中的已知文件名自动转为**可点击下载链接**（蓝色 + 下划线 + 下载图标），
+点击走既有 blob + Bearer 下载通道（下载接口需鉴权头，`<a href>` 直链不可用）。
+
+| # | 文件 | 变更 |
+|---|------|------|
+| 1 | `frontend/src/utils/docFiles.js` | **新增**：`parseDocFile` / `collectDocFiles` 共享解析（工具卡片与正文点击下载共用，兼容 result 为对象或 JSON 字符串的历史消息） |
+| 2 | `frontend/src/components/MarkdownRenderer.jsx` | 新增 `fileLinks` / `onDownloadFile` 可选属性：行内代码、链接、加粗、纯文本四种写法命中的文件名均渲染为下载按钮；未传属性时渲染行为与原版完全一致 |
+| 3 | `frontend/src/components/chat/ToolTimeline.jsx` | `parseDocFile` 改为引用共享模块（去重，行为不变） |
+| 4 | `frontend/src/pages/ChatPage.jsx` | `ChatMain` 按消息提取文件列表（generate_document 产物 + file 事件文件，按 `file_id` 去重；WeakMap 缓存避免输入重渲染导致全量重解析 Markdown）并注入 `MarkdownRenderer` |
+| 5 | `frontend/src/utils/docFiles.test.js` | **新增**：6 项单测（对象/JSON 字符串结果、失败降级、去重、空入参），纳入 `npm run test:chat` |
+
+**兼容性**：纯前端改动，不依赖 LLM 输出格式（文件名无论以反引号、链接、加粗还是纯文本提及均可点击）；
+历史消息（刷新后从服务端回放）与流式完成后均可点击（流式进行中正文为纯文本渲染，完成后自动变为可点击）；
+未传 `fileLinks` 的其它 `MarkdownRenderer` 使用方（AgentWorkspace 等）行为不变。无后端 / API 变更。
+
+**验证记录**：`npm run build` 通过（2755 modules，7.23s）；`npm run test:chat` **39 项全部通过**
+（新增 6 项 docFiles 单测 + 回归 33 项对话会话/存储/同步测试）。

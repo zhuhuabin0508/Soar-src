@@ -13,17 +13,7 @@
 import { useState } from 'react'
 import { Check, Loader2, AlertTriangle, ChevronRight, Download, FileText } from 'lucide-react'
 import { agentFiles } from '../../api/client'
-
-/** 解析 generate_document 工具的成功结果为下载信息（result 可能是对象或 JSON 字符串）。 */
-function parseDocFile(tc) {
-  if (tc.name !== 'generate_document' || tc.result == null) return null
-  let result = tc.result
-  if (typeof result === 'string') {
-    try { result = JSON.parse(result) } catch { return null }
-  }
-  if (result && typeof result === 'object' && result.ok && result.file_id) return result
-  return null
-}
+import { parseDocFile } from '../../utils/docFiles'
 
 function ToolNode({ tc, idx, total }) {
   const [open, setOpen] = useState(false)
