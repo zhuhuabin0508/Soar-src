@@ -2900,6 +2900,35 @@ export default function TicketMonitorScreen() {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleFullscreen, refreshNow, tourOn, stopTour])
 
+  // 崩溃自愈（投屏无人值守）：React 在 commit 阶段（如 insertBefore NotFoundError，DOM 与
+  // 虚拟树失配时）抛出的异常会卸载整棵树且 ErrorBoundary 无法捕获，页面白屏。
+  // 大屏所有状态均可由 URL 参数 + localStorage 复原，此处捕获该类未处理异常后自动整页
+  // 重载恢复投屏；带防循环保护（10 分钟窗口内最多自动恢复 3 次，超出则停止避免风暴）。
+  useEffect(() => {
+    const GUARD_KEY = 'ticket_monitor_crash_reloads'
+    const WINDOW_MS = 10 * 60 * 1000
+    const MAX_RELOADS = 3
+    const onErr = (e) => {
+      const msg = String(e?.message || e || '')
+      // 仅处理会破坏 React 树的 DOM 失配类错误（insertBefore/removeChild NotFoundError）；
+      // 普通业务异常（网络等）不触发整页重载
+      if (!/insertBefore|removeChild|NotFoundError/i.test(msg)) return
+      // eslint-disable-next-line no-console
+      console.error('[MonitorSelfHeal] 检测到 DOM 失配崩溃，准备自动恢复：', msg)
+      let reloads = []
+      try {
+        reloads = JSON.parse(window.localStorage.getItem(GUARD_KEY) || '[]')
+          .filter((t) => Date.now() - t < WINDOW_MS)
+      } catch { reloads = [] }
+      if (reloads.length >= MAX_RELOADS) return
+      reloads.push(Date.now())
+      try { window.localStorage.setItem(GUARD_KEY, JSON.stringify(reloads)) } catch { /* 忽略 */ }
+      setTimeout(() => window.location.reload(), 500)
+    }
+    window.addEventListener('error', onErr)
+    return () => window.removeEventListener('error', onErr)
+  }, [])
+
   // URL 参数回写：当前流程/刷新/筛选/适配同步到地址栏（复制链接即可复现同屏；
   // fullscreen 为一次性参数，消费后移除避免刷新被反复触发）
   useEffect(() => {
@@ -2949,12 +2978,15 @@ export default function TicketMonitorScreen() {
   const todayStartIso = isoLocal(new Date(new Date().setHours(0, 0, 0, 0)))
 
   return (
-    <div ref={screenRef}
+    <div ref={screenRef} translate="no"
       className={`fixed inset-0 flex items-center justify-center overflow-hidden ${idle ? 'screen-idle' : ''}`}
       style={{
         background:
           `radial-gradient(ellipse 90% 70% at 50% 45%, ${C.canvasCenter} 0%, ${C.canvasBase} 45%, ${C.canvasEdge} 72%, ${C.deepNavy} 100%)`,
       }}>
+      {/* 说明：translate="no" 阻止浏览器/翻译扩展对大屏 DOM 做翻译改写——
+          整页中文界面被自动翻译时会移动/包裹文本节点，破坏 React 虚拟树与
+          实际 DOM 的对应关系，触发 insertBefore NotFoundError 导致整树卸载白屏 */}
       {/* 背景 1px 科技网格线（低对比，避免抢卡片层级） */}
       <div className="pointer-events-none absolute inset-0"
         style={{
