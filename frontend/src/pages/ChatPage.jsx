@@ -32,6 +32,7 @@ import {
 } from '../utils/chatConversations'
 import { loadActiveSid, loadConversations, saveActiveSid, saveConversations } from '../utils/chatStorage'
 import { mergeServerSessions, toDisplayMessages } from '../utils/chatSync'
+import { collectDocFiles } from '../utils/docFiles'
 import { useAuthStore } from '../store/authStore'
 import ChatToolbar from '../components/chat/ChatToolbar'
 import ModelSwitcher from '../components/chat/ModelSwitcher'
@@ -2095,6 +2096,31 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
   // 用户消息编辑态
   const [editing, setEditing] = useState(false)
 
+  // ===== 正文文件名点击下载（generate_document 产物 + file 事件文件） =====
+  // msg 引用在两次更新之间保持稳定 → fileLinks 引用稳定，避免输入重渲染时
+  // MarkdownRenderer 全量重解析；消息更新（工具结果到达等）产生新引用自动重算
+  const docFileLinks = useMemo(() => {
+    const files = collectDocFiles(msg.toolCalls)
+    for (const f of msg.files || []) {
+      if (
+        f && f.file_id != null && f.file_name &&
+        !files.some((x) => String(x.file_id) === String(f.file_id))
+      ) {
+        files.push({ file_id: f.file_id, file_name: f.file_name })
+      }
+    }
+    return files
+  }, [msg])
+
+  const handleDownloadDocFile = useCallback(async (file) => {
+    if (!file || file.file_id == null) return
+    try {
+      await agentFilesApi.download(file.file_id, file.file_name)
+    } catch (err) {
+      toast.error(`下载失败：${err.message || err}`)
+    }
+  }, [])
+
   const handleCopy = () => {
     navigator.clipboard.writeText(msg.content || '').then(() => {
       setCopied(true)
@@ -2150,7 +2176,11 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
                   ) : msg.status === 'streaming' ? (
                     <div className="whitespace-pre-wrap">{msg.content}</div>
                   ) : (
-                    <MarkdownRenderer content={msg.content} />
+                    <MarkdownRenderer
+                      content={msg.content}
+                      fileLinks={docFileLinks}
+                      onDownloadFile={handleDownloadDocFile}
+                    />
                   )}
                   {msg.status === 'streaming' && (
                     <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-primary align-middle" />
