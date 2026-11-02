@@ -200,7 +200,7 @@ export default function DeviceOnboard() {
       case 'device':
         return !!deviceForm.name.trim()
       case 'log': {
-        if (!validateSingleIP(logForm.sourceIp, '源 IP 地址')) return false
+        if (validateSingleIP(logForm.sourceIp, '源 IP 地址')) return false
         if (logForm.receiverMode === 'existing' && !logForm.receiverId) return false
         if (logForm.receiverMode === 'new') {
           const p = Number(logForm.port)
@@ -211,7 +211,7 @@ export default function DeviceOnboard() {
         return true
       }
       case 'response': {
-        if (!validateSingleIP(respForm.deviceIp, '设备 IP')) return false
+        if (validateSingleIP(respForm.deviceIp, '设备 IP')) return false
         if (!respForm.apiPath.trim()) return false
         if (needUserPass && (!respForm.username.trim() || !respForm.password)) return false
         if (needApiKey && !respForm.apiKey.trim()) return false
