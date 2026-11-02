@@ -11,7 +11,7 @@ import { confirm } from '../../components/ConfirmDialog'
 import { Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination } from '../../components/ui'
 import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
-import { hasPermission, isAdmin } from '../../utils/permissions'
+import { hasPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
 import { getApprovals, approveExecution, rejectExecution, deleteExecution } from '../../api/approvals'
 
@@ -83,7 +83,9 @@ function DetailSection({ title, data }) {
 
 export default function BanApprovals({ embedded = false }) {
   const canApprove = hasPermission('approval', 'approve')
-  const admin = isAdmin()
+  // 删除按钮按工单来源分流：工作流工单需 approval:delete，封禁工单需 ban_workflow:delete
+  const canDeleteWf = hasPermission('approval', 'delete')
+  const canDeleteBan = hasPermission('ban_workflow', 'delete')
   const [tab, setTab] = useState('pending')
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
@@ -176,7 +178,7 @@ export default function BanApprovals({ embedded = false }) {
       .finally(() => setSubmitting(false))
   }
 
-  // 删除工单（仅 admin）：封禁工单走 ban-workflow 接口，工作流工单走旧接口
+  // 删除工单（需 ban_workflow:delete / approval:delete）：封禁工单走 ban-workflow 接口，工作流工单走旧接口
   const doDelete = async (r) => {
     const isWf = r.source === 'workflow'
     const ok = await confirm({
@@ -244,7 +246,7 @@ export default function BanApprovals({ embedded = false }) {
     },
     { key: 'status', header: '状态', width: '85px', render: (r) => <Badge variant={TICKET_VARIANT[r.status] || 'neutral'}>{r.status_label}</Badge> },
     {
-      key: 'actions', header: '操作', width: tab === 'pending' && canApprove ? '235px' : (admin ? '110px' : '70px'),
+      key: 'actions', header: '操作', width: tab === 'pending' && canApprove ? '235px' : ((canDeleteWf || canDeleteBan) ? '110px' : '70px'),
       render: (r) => (
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-primary" title="查看详情" onClick={() => openDetail(r)}>
@@ -260,8 +262,8 @@ export default function BanApprovals({ embedded = false }) {
               </button>
             </>
           )}
-          {admin && (
-            <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-destructive" title="删除（仅管理员）" onClick={() => doDelete(r)}>
+          {(r.source === 'workflow' ? canDeleteWf : canDeleteBan) && (
+            <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-destructive" title="删除工单" onClick={() => doDelete(r)}>
               <Trash2 className="h-4 w-4" />
             </button>
           )}

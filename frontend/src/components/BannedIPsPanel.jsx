@@ -665,10 +665,13 @@ function BannedIPsPanel() {
         <div className="flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">IP 地址 *</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                IP 地址 <span className="text-destructive">*</span>
+                <span className="ml-1.5 font-normal text-muted-foreground/70">可多值，逗号分隔</span>
+              </label>
               <input
                 className={`${inputCls}${createIpTouched && createIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
-                placeholder="如 1.2.3.4 / 10.0.0.0/8 / 1.2.3.4-1.2.3.20"
+                placeholder="如 1.2.3.4, 10.0.0.0/8, 1.2.3.4-1.2.3.20"
                 value={createForm.ip}
                 onChange={(e) => setCreateForm({ ...createForm, ip: e.target.value })}
                 onBlur={() => setCreateIpTouched(true)}

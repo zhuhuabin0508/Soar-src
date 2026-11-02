@@ -36,7 +36,7 @@ import BanWorkbench from './ban/BanWorkbench'
 import AnbotongBlacklist from './ban/AnbotongBlacklist'
 import BanWorkflowInstances from './ban/BanWorkflowInstances'
 import { inputBaseCls } from '../components/property/FormControls'
-import { isAdmin } from '../utils/permissions'
+import { hasPermission } from '../utils/permissions'
 import { confirm } from '../components/ConfirmDialog'
 import { CompactSelect } from '../components/ui'
 
@@ -432,12 +432,13 @@ function ApprovalCard({ item, onApprove, onReject, onDelete, busy }) {
 function ApprovalCenter() {
   const [searchParams, setSearchParams] = useSearchParams()
   // 支持 URL ?tab=banned / blacklist / all 直达；默认为统一审批中心。
-  // 「已封禁 IP」「安博通黑名单」为仅管理员功能：非 admin 强制落到审批中心，避免其访问管理员专属数据。
-  const isAdminUser = isAdmin()
+  // 「已封禁 IP」「安博通黑名单」按权限矩阵控制（ban_workflow:view）：
+  // 无权限时强制落到审批中心，避免其访问无权数据。
+  const canViewBan = hasPermission('ban_workflow', 'view')
   const requestedTab = searchParams.get('tab') === 'banned' ? 'banned'
     : searchParams.get('tab') === 'blacklist' ? 'blacklist'
       : searchParams.get('tab') === 'all' ? 'all' : 'approval'
-  const initialTab = ((requestedTab === 'banned' || requestedTab === 'blacklist') && !isAdminUser) ? 'approval' : requestedTab
+  const initialTab = ((requestedTab === 'banned' || requestedTab === 'blacklist') && !canViewBan) ? 'approval' : requestedTab
 
   const [items, setItems] = useState([])
   const [stats, setStats] = useState(null)
@@ -453,7 +454,8 @@ function ApprovalCenter() {
   // 查询筛选条件：pending | all | banned
   const [tab, setTab] = useState(initialTab)
   // 全部历史 Tab 内子视图：instances（封禁实例）/ approvals（审批历史）
-  const [historyTab, setHistoryTab] = useState('instances')
+  // 封禁实例子页数据需 ban_workflow:view，无权限时默认落在审批历史
+  const [historyTab, setHistoryTab] = useState(canViewBan ? 'instances' : 'approvals')
   const [workflowId, setWorkflowId] = useState(searchParams.get('workflow_id') || '')
   const [keyword, setKeyword] = useState(searchParams.get('q') || '')
   const [quickFilter, setQuickFilter] = useState(searchParams.get('filter') || '') // 严重/境外/今日/近7天
@@ -481,9 +483,9 @@ function ApprovalCenter() {
   }, [])
 
   // 拉取封禁工作流统计（待审批工单 + 生效中封禁）
-  // 「已封禁 IP」为仅管理员功能：非 admin 不请求，避免 403 报错。
+  // 「已封禁 IP」数据按权限矩阵控制（ban_workflow:view）：无权限不请求，避免 403 报错。
   const loadBanStats = useCallback(async () => {
-    if (!isAdmin()) return
+    if (!hasPermission('ban_workflow', 'view')) return
     try {
       const [st, active] = await Promise.all([
         banWorkflowApi.stats(),
@@ -580,11 +582,11 @@ function ApprovalCenter() {
     }
   }
 
-  // 删除历史工单（仅 admin）
+  // 删除历史工单（需 approval:delete 权限，按钮显隐同口径）
   const handleDelete = async (item) => {
     const ok = await confirm({
       title: `删除工单 #${item.execution_id}`,
-      message: '删除后该执行记录从工作台移除，操作仅限管理员。确定删除？',
+      message: '删除后该执行记录从工作台移除，需「工作台-删除」权限。确定删除？',
       danger: true,
     })
     if (!ok) return
@@ -653,7 +655,7 @@ function ApprovalCenter() {
             待处理
             <span className="tabular-nums">{pendingTotal.toLocaleString()}</span>
           </button>
-          {isAdmin() && (
+          {canViewBan && (
             <button
               type="button"
               onClick={() => switchTab('banned')}
@@ -709,7 +711,7 @@ function ApprovalCenter() {
               </span>
             )}
           </button>
-          {isAdmin() && (
+          {canViewBan && (
             <button
               type="button"
               onClick={() => switchTab('banned')}
@@ -728,7 +730,7 @@ function ApprovalCenter() {
               )}
             </button>
           )}
-          {isAdmin() && (
+          {canViewBan && (
             <button
               type="button"
               onClick={() => switchTab('blacklist')}
@@ -757,30 +759,32 @@ function ApprovalCenter() {
         </div>
 
         {/* ====== 审批中心 Tab：统一审批（封禁工单 + 工作流人工审批） ====== */}
-        {tab === 'approval' || ((tab === 'banned' || tab === 'blacklist') && !isAdmin()) ? (
+        {tab === 'approval' || ((tab === 'banned' || tab === 'blacklist') && !canViewBan) ? (
           <BanApprovals embedded />
         ) : tab === 'banned' ? (
-          /* ====== 已封禁 IP Tab：嵌入封禁工作台（新封禁工作流数据，仅管理员） ====== */
+          /* ====== 已封禁 IP Tab：嵌入封禁工作台（新封禁工作流数据，需 ban_workflow:view） ====== */
           <BanWorkbench embedded />
         ) : tab === 'blacklist' ? (
-          /* ====== 安博通黑名单 Tab：设备侧实时黑名单（分页 + IP 精确查询，仅管理员） ====== */
+          /* ====== 安博通黑名单 Tab：设备侧实时黑名单（分页 + IP 精确查询，需 ban_workflow:view） ====== */
           <AnbotongBlacklist embedded />
         ) : (
           <>
             {/* ====== 全部历史 Tab：统一历史（封禁实例 + 审批历史） ====== */}
             <div className="mb-4 flex w-full items-center border-b border-border">
-              <button
-                type="button"
-                onClick={() => setHistoryTab('instances')}
-                className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-                  historyTab === 'instances'
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                <Activity className="h-4 w-4" />
-                封禁实例
-              </button>
+              {canViewBan && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryTab('instances')}
+                  className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
+                    historyTab === 'instances'
+                      ? 'border-primary text-foreground'
+                      : 'border-transparent text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <Activity className="h-4 w-4" />
+                  封禁实例
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setHistoryTab('approvals')}
@@ -949,7 +953,7 @@ function ApprovalCenter() {
                     item={item}
                     onApprove={handleApprove}
                     onReject={handleReject}
-                    onDelete={isAdmin() ? handleDelete : undefined}
+                    onDelete={hasPermission('approval', 'delete') ? handleDelete : undefined}
                     busy={busyId === item.execution_id}
                   />
                 ))}

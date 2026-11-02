@@ -19,7 +19,7 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "dashboard": ["view"],
     "bigscreen": ["view"],
     "bigscreen2": ["view"],
-    "approval": ["view", "approve"],
+    "approval": ["view", "approve", "delete"],
     "chat": ["view"],
     # 智能体编排
     "agent": ["view", "edit", "delete", "execute"],
@@ -44,8 +44,9 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     # 运行监控
     "execution": ["view", "export"],
     "notification": ["view", "edit"],
-    # 告警自动封禁工作流（实例管理 / 封禁审批 / 封禁工作台 / 触发规则）
-    "ban_workflow": ["view", "edit"],
+    # 告警自动封禁工作流（实例管理 / 封禁审批 / 封禁工作台 / 安博通黑名单 / 触发规则）
+    # view=查看（工作台/黑名单/详情）、edit=编辑（封禁/解封/同步/规则）、export=CSV 导出、delete=删除记录
+    "ban_workflow": ["view", "edit", "export", "delete"],
     # 系统管理
     "user": ["view", "edit", "delete"],
     "role": ["view", "edit", "delete"],

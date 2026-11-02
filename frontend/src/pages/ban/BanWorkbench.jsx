@@ -1,4 +1,4 @@
-// 封禁工作台（已封禁 IP 模块）：状态筛选 + 来源标识 + 手动封禁 + 解封 + 删除/批量删除（admin）
+// 封禁工作台（已封禁 IP 模块）：状态筛选 + 来源标识 + 手动封禁 + 解封 + 删除/批量删除（ban_workflow:delete）
 // + CSV/Excel 导入（仅入库待同步）+ 同步安博通封禁（单条/批量，资产匹配预览后确认）
 // + 导出（全部/当前筛选/选中 + 字段选择）
 // 详情含封禁方案、智能体研判结论、审批记录、关联告警（点击跳转告警列表按 IP 过滤）
@@ -6,16 +6,16 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ShieldBan, ShieldCheck, Search, Inbox, LockOpen, Loader2, RotateCw, ExternalLink, Plus, Trash2,
-  Upload, Download, Info, CheckCircle2, AlertTriangle, SkipForward, XCircle,
+  Upload, Download, Info, CheckCircle2, AlertTriangle, SkipForward, XCircle, X,
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
 import { Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect } from '../../components/ui'
 import { Modal, Drawer } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
-import { hasPermission, isAdmin, guardNavPermission } from '../../utils/permissions'
+import { hasPermission, guardNavPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
-import { validateBanTarget } from '../../utils/ipValidation'
+import { validateBanTarget, validateSingleIP, splitIPExpression } from '../../utils/ipValidation'
 
 const STATUS_OPTIONS = [
   { v: 'pending_sync', label: '待同步' }, { v: 'syncing', label: '同步中' },
@@ -56,6 +56,22 @@ const fmtDuration = (seconds, permanent) => {
   const days = s / 86400
   if (days >= 1) return `${Number(days.toFixed(2))} 天`
   return `${Number((s / 3600).toFixed(2))} 小时`
+}
+// 设备侧时长（秒，-1 为永久）→ 中文（预检抽屉展示设备黑名单条目用；与安博通黑名单页一致）
+// 设备对永久条目的 leftTime 返回 uint64 最大值（18446744073709551615，即"无限"）：
+// 超过 1e12 秒（约 3 万年）按永久展示，避免换算出天文数字
+const fmtDeviceDuration = (sec) => {
+  if (sec == null || sec === '') return '--'
+  const n = Number(sec)
+  if (Number.isNaN(n)) return String(sec)
+  if (n < 0 || n > 1e12) return '永久'
+  const d = Math.floor(n / 86400)
+  const h = Math.floor((n % 86400) / 3600)
+  const m = Math.floor((n % 3600) / 60)
+  if (d > 0) return `${d}天${h}小时`
+  if (h > 0) return `${h}小时${m}分`
+  if (m > 0) return `${m}分钟`
+  return '不足1分钟'
 }
 // 资产匹配详情字段中文名（与后端 _ASSET_BRIEF_KEYS 对应）
 const ASSET_DETAIL_LABELS = {
@@ -134,12 +150,12 @@ function ImportProgressBar({ progress, fileName }) {
   )
 }
 
-function DetailSection({ title, data }) {
+function DetailSection({ title, data, maxH = 'max-h-52' }) {
   if (!data) return null
   return (
-    <div>
+    <div className="min-w-0">
       <div className="mb-1.5 text-xs font-medium text-muted-foreground">{title}</div>
-      <pre className="max-h-52 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">
+      <pre className={`${maxH} overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground`}>
         {typeof data === 'string' ? data : JSON.stringify(data, null, 2)}
       </pre>
     </div>
@@ -148,8 +164,10 @@ function DetailSection({ title, data }) {
 
 export default function BanWorkbench({ embedded = false }) {
   const navigate = useNavigate()
+  const canView = hasPermission('ban_workflow', 'view')
   const canEdit = hasPermission('ban_workflow', 'edit')
-  const admin = isAdmin()
+  const canDelete = hasPermission('ban_workflow', 'delete')
+  const canExport = hasPermission('ban_workflow', 'export')
   const [status, setStatus] = useState('')
   const [ip, setIp] = useState('')
   const [page, setPage] = useState(1)
@@ -180,9 +198,68 @@ export default function BanWorkbench({ embedded = false }) {
     setManualOpen(true)
   }
 
+  // ===== 手动封禁 IP 预检：输入合法封禁目标后，自动逐 IP 查询设备黑名单 =====
+  // 命中（found）→ 弹窗加宽、右侧内嵌面板滑出条目详情（形式同「发起工单」的相似工单推荐）；
+  // 未命中 → 面板不滑出，仅在输入框下给弱提示。用户可收起面板（IP 变化后有新命中会重新滑出）。
+  // 查询时机：防抖 700ms + 整个表达式校验通过才查（避免输入半截 IP 就打设备接口）；
+  // 多值时只对「单 IP」目标逐个精确查询（设备黑名单按精确条目查询，CIDR/范围跳过）。
+  const [dupCheck, setDupCheck] = useState({ loading: false, results: [], fetchedAt: null })
+  const [dupHidden, setDupHidden] = useState(false)
+  const dupSeq = useRef(0)
+  useEffect(() => {
+    // 弹窗关闭 / 无查看权限（预检接口需 ban_workflow:view，无权限轮询会 403）：清空预检状态
+    if (!manualOpen || !canView) {
+      setDupCheck({ loading: false, results: [], fetchedAt: null })
+      setDupHidden(false)
+      return undefined
+    }
+    const raw = manualForm.ip.trim()
+    // 输入为空 / 表达式非法（多半是还在输入）：不打设备接口，收起面板
+    if (!raw || validateBanTarget(raw, '封禁目标')) {
+      setDupCheck((s) => ({ ...s, loading: false }))
+      return undefined
+    }
+    const singleIps = splitIPExpression(raw).filter((t) => !validateSingleIP(t, 'IP'))
+    if (!singleIps.length) {
+      // 全是 CIDR / 范围目标：设备按精确条目查询，无法预检
+      setDupCheck((s) => ({ ...s, loading: false }))
+      return undefined
+    }
+    const seq = ++dupSeq.current
+    const timer = setTimeout(() => {
+      setDupCheck((s) => ({ ...s, loading: true }))
+      Promise.all(singleIps.slice(0, 20).map(async (target) => {
+        try {
+          // 404（未封禁）后端已归一为 found=false 业务结果，不会 reject
+          const res = await banWorkflowApi.anbotongBlacklistQuery(target)
+          return {
+            ip: target, found: Boolean(res?.found), entry: res?.entry || null,
+            note: res?.note || '', device: res?.device || null, error: '',
+          }
+        } catch (e) {
+          return { ip: target, found: false, entry: null, note: '', device: null, error: e?.message || '查询失败' }
+        }
+      })).then((results) => {
+        // 竞态保护：输入已再次变化时丢弃本次结果
+        if (seq !== dupSeq.current) return
+        const hasFound = results.some((r) => r.found)
+        // 查到新命中时自动重新滑出（用户上次手动收起后 IP 已变化）
+        if (hasFound) setDupHidden(false)
+        setDupCheck({ loading: false, results, fetchedAt: new Date().toISOString() })
+      })
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [manualOpen, manualForm.ip, canView])
+  // 预检结果派生：命中条目 / 未命中 IP / 查询失败 IP（弱提示 + 右侧面板共用）
+  const dupFound = dupCheck.results.filter((r) => r.found)
+  const dupMissed = dupCheck.results.filter((r) => !r.found && !r.error).map((r) => r.ip)
+  const dupQueryErrors = dupCheck.results.filter((r) => r.error)
+  // 右侧预检面板：有命中且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
+  const showDupPanel = dupFound.length > 0 && !dupHidden
+
   // 选择（批量同步）
   const [selected, setSelected] = useState([])
-  // 批量删除（仅 admin）
+  // 批量删除（需 ban_workflow:delete）
   const [batchDeleteBusy, setBatchDeleteBusy] = useState(false)
   const [batchDeleteResult, setBatchDeleteResult] = useState(null)
   // 同步安博通封禁：预览 / 结果
@@ -275,7 +352,12 @@ export default function BanWorkbench({ embedded = false }) {
       region: manualForm.region.trim(),
     })
       .then((rec) => {
-        toast.success(`IP ${rec.ip} 已下发封禁（已同步安博通阻断器）`)
+        const n = rec?.created_count || 1
+        toast.success(
+          n > 1
+            ? `${n} 个目标已全部下发封禁（已同步安博通阻断器，逐目标生成 ${n} 条封禁记录）`
+            : `IP ${rec.ip} 已下发封禁（已同步安博通阻断器）`
+        )
         setManualOpen(false)
         setManualIpTouched(false)
         setManualReasonTouched(false)
@@ -287,7 +369,7 @@ export default function BanWorkbench({ embedded = false }) {
       .finally(() => setManualSubmitting(false))
   }
 
-  // 删除封禁记录（仅 admin）
+  // 删除封禁记录（需 ban_workflow:delete）
   const doDelete = async (r) => {
     const ok = await confirm({
       title: `删除封禁记录 ${r.ip}`,
@@ -305,7 +387,7 @@ export default function BanWorkbench({ embedded = false }) {
     }
   }
 
-  // 批量删除封禁记录（仅 admin）：逐条独立处理，结果弹窗展示成功/失败明细
+  // 批量删除封禁记录（需 ban_workflow:delete）：逐条独立处理，结果弹窗展示成功/失败明细
   const doBatchDelete = async () => {
     const ids = Array.from(new Set(selected))
     if (!ids.length) return
@@ -338,7 +420,7 @@ export default function BanWorkbench({ embedded = false }) {
     setExportOpen(true)
   }
 
-  // 导出 CSV（admin，支持全部/当前筛选/选中 + 字段选择）
+  // 导出 CSV（需 ban_workflow:export，支持全部/当前筛选/选中 + 字段选择）
   const doExport = async () => {
     setExporting(true)
     try {
@@ -470,7 +552,7 @@ export default function BanWorkbench({ embedded = false }) {
     {
       // 主键识别列冻结在左侧：超宽表格横向滚动时 IP 始终可见（勾选列宽 44px）
       key: 'ip', header: 'IP', width: '150px',
-      sticky: 'left', stickyOffset: canEdit || admin ? 44 : 0,
+      sticky: 'left', stickyOffset: canEdit || canDelete ? 44 : 0,
       render: (r) => (
         <button className="font-mono text-[13px] font-medium text-foreground transition hover:text-primary" onClick={(e) => { e.stopPropagation(); openDetail(r.id) }}>
           {r.ip}
@@ -514,7 +596,7 @@ export default function BanWorkbench({ embedded = false }) {
     { key: 'alert_count', header: '关联告警', width: '85px', numeric: true, render: (r) => <span className="tabular-nums">{r.alert_count}</span> },
     {
       // 操作列冻结在右侧：滚动浏览长行时操作按钮不被挤出视野
-      key: 'actions', header: '操作', width: canEdit && admin ? '180px' : (canEdit || admin ? '150px' : '70px'),
+      key: 'actions', header: '操作', width: canEdit && canDelete ? '180px' : (canEdit || canDelete ? '150px' : '70px'),
       sticky: 'right',
       render: (r) => (
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
@@ -535,8 +617,8 @@ export default function BanWorkbench({ embedded = false }) {
               <LockOpen className="h-4 w-4" />
             </button>
           )}
-          {admin && (
-            <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-destructive" title="删除（仅管理员）" onClick={() => doDelete(r)}>
+          {canDelete && (
+            <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-destructive" title="删除封禁记录" onClick={() => doDelete(r)}>
               <Trash2 className="h-4 w-4" />
             </button>
           )}
@@ -590,7 +672,7 @@ export default function BanWorkbench({ embedded = false }) {
               <Upload className="h-3.5 w-3.5" /> 导入
             </Button>
           )}
-          {admin && (
+          {canExport && (
             <Button size="sm" variant="ghost" onClick={openExport} loading={exporting}>
               <Download className="h-3.5 w-3.5" /> 导出
             </Button>
@@ -613,7 +695,7 @@ export default function BanWorkbench({ embedded = false }) {
                   <ShieldCheck className="h-3.5 w-3.5" /> 同步安博通封禁（{pendingSelected.length}）
                 </Button>
               )}
-              {admin && (
+              {canDelete && (
                 <Button size="sm" variant="danger" loading={batchDeleteBusy} onClick={doBatchDelete}>
                   <Trash2 className="h-3.5 w-3.5" /> 批量删除（{selected.length}）
                 </Button>
@@ -635,7 +717,7 @@ export default function BanWorkbench({ embedded = false }) {
           data={list.items}
           loading={loading}
           rowKey="id"
-          selectable={canEdit || admin}
+          selectable={canEdit || canDelete}
           selectedKeys={selected}
           onSelectChange={setSelected}
           onRowClick={(r) => openDetail(r.id)}
@@ -731,8 +813,8 @@ export default function BanWorkbench({ embedded = false }) {
             {(t.agent_decision || t.approval_ticket) && (
               <section>
                 <div className="mb-2 text-xs font-semibold text-muted-foreground">研判与审批</div>
-                <div className="grid gap-3 lg:grid-cols-2">
-                  <DetailSection title="智能体研判结论" data={t.agent_decision} />
+                <div className="grid gap-3">
+                  <DetailSection title="智能体研判结论" data={t.agent_decision} maxH="max-h-[28rem]" />
                   <DetailSection title="审批记录" data={t.approval_ticket ? {
                     状态: t.approval_ticket.status_label,
                     审批人: t.approval_ticket.approver || '--',
@@ -798,11 +880,12 @@ export default function BanWorkbench({ embedded = false }) {
         </div>
       </Modal>
 
-      {/* 手动封禁表单：按「封禁目标 → 封禁策略 → 原因与备注」分区；必填项红 * 标识；提交中锁死取消出口 */}
+      {/* 手动封禁表单：按「封禁目标 → 封禁策略 → 原因与备注」分区；必填项红 * 标识；提交中锁死取消出口。
+          有预检命中时右侧内嵌面板展示（同「发起工单」的相似工单推荐形式），弹窗同步加宽为 xl */}
       <Modal
         open={manualOpen}
         title="手动发起封禁"
-        maxWidth="max-w-xl"
+        maxWidth={showDupPanel ? 'max-w-6xl' : 'max-w-xl'}
         onClose={() => { if (!manualSubmitting) setManualOpen(false) }}
         footer={(
           <>
@@ -813,22 +896,50 @@ export default function BanWorkbench({ embedded = false }) {
           </>
         )}
       >
-        <div className="space-y-4 text-sm">
+        <div className="flex min-h-0 flex-1 items-start gap-4">
+        <div className="min-w-0 flex-1 space-y-4 py-2 text-sm">
           {/* 封禁目标 */}
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">
               目标 IP / CIDR / 范围 <span className="text-destructive">*</span>
-              <span className="ml-1.5 font-normal text-muted-foreground/70">可多值</span>
+              <span className="ml-1.5 font-normal text-muted-foreground/70">可多值，逗号分隔，最多 20 个</span>
             </label>
             <input
               className={`${inputBaseCls} h-[38px] w-full font-mono${manualIpTouched && manualIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
-              placeholder="如 203.0.113.50 / 10.0.0.0/8 / 1.2.3.4-1.2.3.20"
+              placeholder="如 203.0.113.50, 10.0.0.0/8, 1.2.3.4-1.2.3.20"
               value={manualForm.ip}
               onChange={(e) => setManualForm((f) => ({ ...f, ip: e.target.value }))}
               onBlur={() => setManualIpTouched(true)}
             />
             {manualIpTouched && manualIpError && (
               <div className="mt-1 text-[11px] text-destructive">{manualIpError}</div>
+            )}
+            {/* IP 预检弱提示：查询中 / 命中但面板被收起（点击展开，同相似工单）/ 均未命中（不滑出面板） */}
+            {manualOpen && dupCheck.loading && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> 正在查询设备黑名单…
+              </div>
+            )}
+            {manualOpen && !dupCheck.loading && dupFound.length > 0 && dupHidden && (
+              <button
+                type="button"
+                onClick={() => setDupHidden(false)}
+                className="mt-1 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition hover:border-amber-500/50"
+                title="展开右侧 IP 封禁状态预检面板">
+                <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+                IP 预检 · {dupFound.length} 个 IP 已在黑名单中（点击展开）
+              </button>
+            )}
+            {manualOpen && !dupCheck.loading && dupFound.length > 0 && !dupHidden && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-600">
+                <AlertTriangle className="h-3 w-3 shrink-0" />
+                {dupFound.length} 个 IP 已在设备黑名单中，详情见右侧
+              </div>
+            )}
+            {manualOpen && !dupCheck.loading && dupCheck.results.length > 0 && dupFound.length === 0 && dupQueryErrors.length === 0 && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                已查询 {dupCheck.results.length} 个 IP，均不在设备黑名单中
+              </div>
             )}
           </div>
 
@@ -931,6 +1042,67 @@ export default function BanWorkbench({ embedded = false }) {
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>提交后立即通过默认「安博通阻断器」下发设备封禁，记录标记为「手动封禁」；非永久封禁到期由定时任务联动设备自动解封。</span>
           </div>
+        </div>
+        {/* IP 封禁状态预检面板：有命中且未收起时从右侧滑出（同「发起工单」的相似工单推荐形式） */}
+        {showDupPanel && (
+          <aside className="drawer-enter sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
+            <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+              <span className="text-[13px] font-medium text-foreground">IP 封禁状态预检</span>
+              <span className="text-[11px] tabular-nums text-muted-foreground">命中 {dupFound.length}/{dupCheck.results.length}</span>
+              <button type="button" onClick={() => setDupHidden(true)}
+                className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                title="收起 IP 封禁状态预检面板（IP 变化后有新命中会重新滑出）">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div data-allow-scroll className="max-h-[62vh] space-y-2 overflow-y-auto overscroll-contain p-2.5">
+              {/* 命中条目详情（设备返回的全部字段） */}
+              {dupFound.map((r) => (
+                <div key={r.ip} className="rounded-md border border-border bg-card p-2.5">
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <span className="font-mono text-[13px] font-semibold text-foreground">{r.ip}</span>
+                    <span className="ml-auto"><Badge variant="danger">已在封禁中</Badge></span>
+                  </div>
+                  <dl className="space-y-1">
+                    {[
+                      ['封禁原因', r.entry?.reason],
+                      ['生效时间', r.entry?.effectTime],
+                      ['封禁时长', fmtDeviceDuration(r.entry?.age)],
+                      ['剩余时长', fmtDeviceDuration(r.entry?.leftTime)],
+                      ['策略组', r.entry?.policy_group_name],
+                      ['状态', r.entry?.state],
+                      ['启用', (r.entry?.enable === 1 || r.entry?.enable === '1') ? '启用' : '停用'],
+                      ['命中次数', r.entry?.hit_num],
+                    ].map(([label, value]) => (
+                      <div key={label} className="flex items-center justify-between gap-2">
+                        <dt className="shrink-0 text-[11px] text-muted-foreground">{label}</dt>
+                        <dd className="min-w-0 truncate font-mono text-[12px] text-foreground" title={String(value ?? '')}>
+                          {value == null || value === '' ? '--' : String(value)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {r.device?.name && (
+                    <div className="mt-1.5 border-t border-border pt-1.5 text-[11px] text-muted-foreground">封堵设备：{r.device.name}</div>
+                  )}
+                </div>
+              ))}
+              {/* 查询失败 / 未命中列表：确认知晓「哪些可以封」 */}
+              {dupQueryErrors.length > 0 && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                  {dupQueryErrors.map((r) => `${r.ip}：${r.error}`).join('；')}
+                </div>
+              )}
+              {dupMissed.length > 0 && (
+                <div className="px-0.5 text-[11px] text-muted-foreground">未在黑名单中：{dupMissed.join('、')}</div>
+              )}
+            </div>
+            <div className="border-t border-amber-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+              预检仅对单 IP 精确查询设备黑名单，CIDR / 范围不做预检{dupCheck.fetchedAt && `；更新于 ${fmtTime(dupCheck.fetchedAt)}`}
+            </div>
+          </aside>
+        )}
         </div>
       </Modal>
       {/* 导入封禁记录（CSV/Excel）：逐行校验字段，仅入库为「待同步」，不自动下发 */}

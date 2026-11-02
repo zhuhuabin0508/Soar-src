@@ -5,9 +5,9 @@
 - ``GET/POST/PUT/DELETE /ban-workflow/rules``：触发规则 CRUD（修改实时生效）
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/anbotong/blacklist`` + ``GET .../blacklist/query``：安博通黑名单
-  分页拉取与单个 IP 精确查询（仅 admin）
+  分页拉取与单个 IP 精确查询（需 ban_workflow:view）
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
-- ``POST /ban-workflow/banned-ips/batch-delete``：封禁记录批量删除（仅 admin）
+- ``POST /ban-workflow/banned-ips/batch-delete``：封禁记录批量删除（需 ban_workflow:delete）
 - ``GET /ban-workflow/banned-ips/export/csv`` / ``GET .../import/template`` /
   ``POST .../import/csv``：封禁工作台 CSV/Excel 导入导出（导入仅入库待同步）
 - ``POST /ban-workflow/banned-ips/sync-preview`` / ``POST .../sync``：同步安博通封禁前
@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.core.timezone import BEIJING_TZ, beijing_now
 from app.database import get_db
-from app.dependencies import get_current_user, require_permission, require_role
+from app.dependencies import get_current_user, require_permission
 from app.devices import ban_target
 from app.models.alert_event import AlertEvent
 from app.models.banned_ip import BannedIP
@@ -837,7 +837,7 @@ def escalate_ticket(
                            comment=str(body.get("comment") or "升级转人工调查"))
 
 
-@router.get("/anbotong/blacklist", dependencies=[Depends(require_role("admin"))])
+@router.get("/anbotong/blacklist", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def get_anbotong_blacklist(
     request: Request,
     page: int = Query(1, ge=1, description="页码（1 起）"),
@@ -877,7 +877,7 @@ def get_anbotong_blacklist(
     }
 
 
-@router.get("/anbotong/blacklist/query", dependencies=[Depends(require_role("admin"))])
+@router.get("/anbotong/blacklist/query", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def query_anbotong_blacklist_entry(
     ip: str = Query(..., min_length=1, max_length=64, description="要查询的 IP 地址"),
     db: Session = Depends(get_db),
@@ -1279,7 +1279,7 @@ def sync_banned_ips_to_device(
     }
 
 
-@router.get("/banned-ips", dependencies=[Depends(require_role("admin"))])
+@router.get("/banned-ips", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def list_banned_ips(
     status: str = Query("", description="active/pending_sync/syncing/pending_approval/expired/unbanned/cancelled"),
     ip: str = Query("", description="IP 关键词"),
@@ -1307,12 +1307,12 @@ class BannedIpBatchDeleteBody(BaseModel):
     ids: list[int] = Field(..., min_length=1, max_length=200, description="待删除的封禁记录 ID")
 
 
-@router.post("/banned-ips/batch-delete", dependencies=[Depends(require_role("admin"))])
+@router.post("/banned-ips/batch-delete", dependencies=[Depends(require_permission("ban_workflow", "delete"))])
 def batch_delete_banned_ips(
     body: BannedIpBatchDeleteBody, request: Request,
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> dict:
-    """批量删除封禁记录（仅 admin）。
+    """批量删除封禁记录（需 ban_workflow:delete）。
 
     与单条删除逻辑一致：「生效中」且由本平台下发设备的记录先联动设备解封，
     解封失败的记录保留并计入失败（避免设备侧黑名单残留），其余记录删除并记录审计日志。
@@ -1381,7 +1381,7 @@ def batch_delete_banned_ips(
     }
 
 
-@router.get("/banned-ips/{record_id}", dependencies=[Depends(require_role("admin"))])
+@router.get("/banned-ips/{record_id}", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def get_banned_ip(record_id: int, db: Session = Depends(get_db)) -> dict:
     """封禁记录详情：封禁方案 + 研判结论 + 决策依据 + 审批记录 + 关联告警列表。"""
     record = db.query(BanRecord).filter(BanRecord.id == record_id).first()
@@ -1532,7 +1532,8 @@ def unban_ip(
 class ManualBanBody(BaseModel):
     ip: str = Field(
         ..., min_length=1, max_length=2048,
-        description="封禁目标：单 IP / CIDR / 范围 / 多值（IPv4/IPv6）",
+        description="封禁目标：单 IP / CIDR / 范围 / 多值（IPv4/IPv6）；"
+                    "多值拆分逐个下发并逐条落记录，单次最多 20 个目标",
     )
     ban_level: str = Field("medium", description="封禁等级 low/medium/high/critical")
     ban_duration: int = Field(3600, gt=0, description="封禁时长（秒），is_permanent 时忽略")
@@ -1541,16 +1542,53 @@ class ManualBanBody(BaseModel):
     region: str = Field("", max_length=64, description="归属地区")
 
 
+# 单次手动封禁的目标数上限：安博通黑名单接口一次只接受一个 blist 条目，
+# 多值必须拆成单目标逐个下发（串行设备调用），上限防止一次请求拖垮接口
+# （与批量状态查询接口的 20 个上限保持一致）
+_MANUAL_BAN_MAX_TARGETS = 20
+
+
+def _rollback_dispatched_bans(
+    db: Session, device, action, targets: list, *,
+    user_id, source_ip: str,
+) -> tuple[int, list]:
+    """多目标下发中途失败时，回滚本次已成功下发的设备条目（尽力而为）。
+
+    返回 ``(回滚成功数, 回滚失败的目标列表)``；回滚失败的目标设备侧仍生效，
+    由调用方提示用户到设备黑名单手动处理。
+    """
+    rolled, failed = 0, []
+    for target in targets:
+        try:
+            unban = ban_target.run_unblock(
+                db, device, action, ip=target, source="ban_workbench",
+                user_id=user_id, source_ip=source_ip,
+            )
+            ok, _ = ban_target.check_unblock_result(unban)
+        except Exception:  # noqa: BLE001
+            ok = False
+        if ok:
+            rolled += 1
+        else:
+            failed.append(target)
+    return rolled, failed
+
+
 def _issue_manual_ban(
     db: Session, *, user: User, ip: str, ban_level: str, ban_duration: int,
     is_permanent: bool, reason: str, region: str, client_ip: str,
-) -> BanRecord:
+) -> list:
     """下发一条手动封禁（校验 → 去重 → 下发封禁设备 → 写 ban_records → 同步 legacy 工作台）。
 
     与导入同步链路共用 ``app.devices.ban_target``：设备下发失败抛 502，
     **不会**落「生效中」平台记录，避免平台与设备状态不一致。
+
+    多值目标（逗号分隔的单 IP / CIDR / 范围）拆成单目标逐个下发：设备接口
+    一次只接受一个 blist 条目，整串下发会被设备静默丢弃（返回空条目）；
+    平台侧也按目标逐条落 BanRecord，否则整串表达式无法逐 IP 解封 / 到期。
+    任一目标下发失败会回滚本次已成功的设备条目，保证「全成功才落库」。
     """
-    from app.core.ip_validation import validate_ban_target
+    from app.core.ip_validation import split_ip_expression, validate_ban_target
 
     # 封禁目标校验：支持单 IP / CIDR / 范围 / 多值（拒绝主机名/文本/通配）
     try:
@@ -1567,10 +1605,31 @@ def _issue_manual_ban(
     if not reason:
         raise HTTPException(status_code=400, detail="封禁原因不能为空")
 
-    # 已生效的封禁不重复下发
-    existing = db.query(BanRecord).filter(BanRecord.ip == ip, BanRecord.status == "active").first()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail=f"IP {ip} 已在封禁中（{_BAN_SOURCE_LABELS.get(existing.ban_source, '')}），请先解封再重新封禁")
+    # 多值表达式拆成单目标（去重，保留顺序）：设备侧逐个下发，平台侧逐条落库
+    targets = list(dict.fromkeys(split_ip_expression(ip)))
+    if len(targets) > _MANUAL_BAN_MAX_TARGETS:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"单次最多封禁 {_MANUAL_BAN_MAX_TARGETS} 个目标，当前 {len(targets)} 个，请分批提交"),
+        )
+
+    # 已生效的封禁不重复下发：任何一个目标在封禁中就整体拒绝（先全部校验
+    # 再下发，避免一半目标已下发到设备才发现重复）
+    dup_map = {
+        r.ip: r
+        for r in db.query(BanRecord)
+        .filter(BanRecord.ip.in_(targets), BanRecord.status == "active")
+        .all()
+    }
+    if dup_map:
+        dup_text = "、".join(
+            f"{t}（{_BAN_SOURCE_LABELS.get(dup_map[t].ban_source, '')}）"
+            for t in targets if t in dup_map
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"IP {dup_text} 已在封禁中，请先解封再重新封禁",
+        )
 
     device, action, device_err = ban_target.resolve_default_device(db)
     if device_err or device is None or action is None:
@@ -1579,62 +1638,86 @@ def _issue_manual_ban(
             detail=device_err or "未找到可用的安博通封禁设备，请先在设备管理中接入并启用",
         )
     duration_seconds = 0 if is_permanent else ban_duration
-    result = ban_target.run_block(
-        db, device, action, ip=ip, duration_seconds=duration_seconds, reason=reason,
-        source="ban_workbench", user_id=user.id, source_ip=client_ip,
-    )
-    ok, err = ban_target.check_block_result(result)
-    if not ok:
-        logger.error("手动封禁下发失败 ip=%s device=%s: %s", ip, device.name, err)
-        raise HTTPException(status_code=502, detail=f"封禁设备「{device.name}」下发失败：{err}")
+    # 逐目标下发；中途失败立即停止并回滚已下发的目标（全成功才落库）
+    dispatched: list = []
+    for target in targets:
+        result = ban_target.run_block(
+            db, device, action, ip=target, duration_seconds=duration_seconds,
+            reason=reason, source="ban_workbench", user_id=user.id, source_ip=client_ip,
+        )
+        ok, err = ban_target.check_block_result(result)
+        if not ok:
+            logger.error(
+                "手动封禁下发失败 ip=%s target=%s device=%s: %s",
+                ip, target, device.name, err,
+            )
+            rolled, rollback_failed = _rollback_dispatched_bans(
+                db, device, action, [t for t, _ in dispatched],
+                user_id=user.id, source_ip=client_ip,
+            )
+            detail = (
+                f"封禁设备「{device.name}」下发失败：目标 {target}：{err}；"
+                f"已回滚 {rolled} 个本次已下发的目标，未创建封禁记录"
+            )
+            if rollback_failed:
+                detail += (
+                    "；回滚失败、设备侧仍生效（请到安博通黑名单手动处理）："
+                    f"{'、'.join(rollback_failed)}"
+                )
+            raise HTTPException(status_code=502, detail=detail)
+        dispatched.append((target, result))
 
     now = beijing_now()
     expire_time = None if is_permanent else now + timedelta(seconds=duration_seconds)
-    record_id = ban_target.extract_record_id(result.get("response_body"))
-    record = BanRecord(
-        ip=ip,
-        ban_level=ban_level,
-        ban_duration=ban_duration,
-        is_permanent=is_permanent,
-        expire_time=expire_time,
-        reason=reason,
-        region=region,
-        ban_source="manual",
-        ban_device=device.name,
-        record_id=record_id,
-        status="active",
-    )
-    db.add(record)
-    # 同步 legacy 已封禁 IP 表
-    legacy = db.query(BannedIP).filter(BannedIP.ip == ip).first()
-    if legacy is None:
-        legacy = BannedIP(ip=ip)
-        db.add(legacy)
-    legacy.ban_level = ban_level
-    legacy.ban_duration = ban_duration
-    legacy.expired_at = expire_time or (now + timedelta(days=36500))
-    legacy.region = region
-    legacy.reason = reason
-    legacy.status = "active"
-    legacy.source = "manual"
-    legacy.device_id = device.id
-    legacy.device_name = device.name
-    legacy.action_response = ban_target.summarize_response(result)
+    records: list = []
+    for target, result in dispatched:
+        record_id = ban_target.extract_record_id(result.get("response_body"))
+        record = BanRecord(
+            ip=target,
+            ban_level=ban_level,
+            ban_duration=ban_duration,
+            is_permanent=is_permanent,
+            expire_time=expire_time,
+            reason=reason,
+            region=region,
+            ban_source="manual",
+            ban_device=device.name,
+            record_id=record_id,
+            status="active",
+        )
+        db.add(record)
+        # 同步 legacy 已封禁 IP 表
+        legacy = db.query(BannedIP).filter(BannedIP.ip == target).first()
+        if legacy is None:
+            legacy = BannedIP(ip=target)
+            db.add(legacy)
+        legacy.ban_level = ban_level
+        legacy.ban_duration = ban_duration
+        legacy.expired_at = expire_time or (now + timedelta(days=36500))
+        legacy.region = region
+        legacy.reason = reason
+        legacy.status = "active"
+        legacy.source = "manual"
+        legacy.device_id = device.id
+        legacy.device_name = device.name
+        legacy.action_response = ban_target.summarize_response(result)
+        records.append(record)
     db.commit()
 
-    write_audit(
-        db, action="manual_ban", resource_type="ban_record", resource_id=record.id,
-        detail={
-            "ip": ip, "ban_plan": {
-                "ban_level": ban_level, "ban_duration": ban_duration,
-                "is_permanent": is_permanent, "reason": reason, "region": region,
+    for record, (_, result) in zip(records, dispatched):
+        write_audit(
+            db, action="manual_ban", resource_type="ban_record", resource_id=record.id,
+            detail={
+                "ip": record.ip, "ban_plan": {
+                    "ban_level": ban_level, "ban_duration": ban_duration,
+                    "is_permanent": is_permanent, "reason": reason, "region": region,
+                },
+                "record_id": record.record_id, "device": device.name,
+                "status_code": result.get("status_code"),
             },
-            "record_id": record_id, "device": device.name,
-            "status_code": result.get("status_code"),
-        },
-        operator=user.username, ip_address=client_ip, user_id=user.id,
-    )
-    return record
+            operator=user.username, ip_address=client_ip, user_id=user.id,
+        )
+    return records
 
 
 @router.post("/banned-ips", status_code=201, dependencies=[Depends(require_permission("ban_workflow", "edit"))])
@@ -1642,8 +1725,12 @@ def create_manual_ban(
     body: ManualBanBody, request: Request,
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> dict:
-    """手动发起封禁：调用封禁工具下发 → 写 ban_records（ban_source=manual）→ 同步 legacy 工作台。"""
-    record = _issue_manual_ban(
+    """手动发起封禁：调用封禁工具下发 → 写 ban_records（ban_source=manual）→ 同步 legacy 工作台。
+
+    多值目标拆分逐个下发、逐条落记录；响应返回首条记录，并附
+    ``created_count``（实际创建的记录数）与 ``targets``（各目标列表）。
+    """
+    records = _issue_manual_ban(
         db,
         user=user,
         ip=body.ip,
@@ -1654,7 +1741,10 @@ def create_manual_ban(
         region=body.region.strip(),
         client_ip=request.client.host if request.client else "",
     )
-    return _record_item(db, record)
+    item = _record_item(db, records[0])
+    item["created_count"] = len(records)
+    item["targets"] = [r.ip for r in records]
+    return item
 
 
 # ----------------------------------------------------------------------
@@ -1691,7 +1781,7 @@ _WB_EXPORT_FIELDS = {
 _WB_EXPORT_DEFAULT_FIELDS = list(_WB_EXPORT_FIELDS.keys())
 
 
-@router.get("/banned-ips/export/csv", dependencies=[Depends(require_role("admin"))])
+@router.get("/banned-ips/export/csv", dependencies=[Depends(require_permission("ban_workflow", "export"))])
 def export_banned_ips_csv(
     ids: str = Query("", description="逗号分隔的封禁记录 ID（传了就只导出这些记录）"),
     status: str = Query("", description="按状态筛选导出"),
@@ -1701,7 +1791,7 @@ def export_banned_ips_csv(
     user: User = Depends(get_current_user),
     request: Request = None,
 ) -> StreamingResponse:
-    """导出封禁记录为 CSV（仅管理员），支持全部/当前筛选/选中与字段选择。
+    """导出封禁记录为 CSV（需 ban_workflow:export），支持全部/当前筛选/选中与字段选择。
 
     前 6 列仍与导入模板一致：IP地址 / 封禁等级 / 封禁时长(天) / 是否永久 /
     封禁原因 / 归属地区；修改后可直接重新导入（时长支持小数天）。
@@ -1920,14 +2010,14 @@ def import_banned_ips_csv(
 
 
 # ----------------------------------------------------------------------
-# 删除（仅 admin）
+# 删除（需 ban_workflow:delete）
 # ----------------------------------------------------------------------
-@router.delete("/banned-ips/{record_id}", status_code=204, dependencies=[Depends(require_role("admin"))])
+@router.delete("/banned-ips/{record_id}", status_code=204, dependencies=[Depends(require_permission("ban_workflow", "delete"))])
 def delete_banned_ip(
     record_id: int, request: Request,
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> None:
-    """删除封禁记录（仅 admin）。
+    """删除封禁记录（需 ban_workflow:delete）。
 
     「生效中」且由本平台下发设备的记录会先联动解封：设备解封失败返回 502 且不删除，
     避免删除后设备侧黑名单残留（永久条目尤其无法自动清理）。
@@ -1971,12 +2061,12 @@ def delete_banned_ip(
     )
 
 
-@router.delete("/approvals/{ticket_id}", status_code=204, dependencies=[Depends(require_role("admin"))])
+@router.delete("/approvals/{ticket_id}", status_code=204, dependencies=[Depends(require_permission("ban_workflow", "delete"))])
 def delete_approval_ticket(
     ticket_id: int, request: Request,
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> None:
-    """删除审批工单（仅 admin；关联的 pending_approval 封禁记录一并置为 cancelled）。"""
+    """删除审批工单（需 ban_workflow:delete；关联的 pending_approval 封禁记录一并置为 cancelled）。"""
     ticket = db.query(ApprovalTicket).filter(ApprovalTicket.id == ticket_id).first()
     if ticket is None:
         raise HTTPException(status_code=404, detail="审批工单不存在")

@@ -3,7 +3,7 @@ import { ShieldBan, RotateCw, Inbox, Search, X } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelect } from '../../components/ui'
 import { inputBaseCls } from '../../components/property/FormControls'
-import { isAdmin } from '../../utils/permissions'
+import { hasPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
 import { validateSingleIP } from '../../utils/ipValidation'
 
@@ -63,14 +63,14 @@ const blacklistColumns = [
 ]
 
 /**
- * 安博通黑名单（设备实时，仅 admin）：从封禁工作台拆出的独立 Tab 页。
+ * 安博通黑名单（设备实时，需 ban_workflow:view）：从封禁工作台拆出的独立 Tab 页。
  * 分页拉取 + 自动刷新间隔可调 + 单个 IP 精确查询（设备「查询指定黑名单」，
  * 404 = 未封禁属业务结果，异常按 502 报错）。
  */
 export default function AnbotongBlacklist({ embedded = false }) {
-  const admin = isAdmin()
-  // 安博通黑名单（设备实时，分页）：仅 admin（端点 require_role("admin")；非 admin 轮询会 403 且
-  // client.js 对 403 全局 toast，必须避免）
+  const canView = hasPermission('ban_workflow', 'view')
+  // 安博通黑名单（设备实时，分页）：需 ban_workflow:view（端点已按权限矩阵校验；
+  // 无权限轮询会 403 且 client.js 对 403 全局 toast，必须避免）
   const [blacklist, setBlacklist] = useState({
     device: null, page: 1, count: 50, page_full: false, paginated: true,
     items: [], note: '', fetched_at: null,
@@ -121,17 +121,17 @@ export default function AnbotongBlacklist({ embedded = false }) {
     loadBlacklist(1, nc)
     try { localStorage.setItem(BLACKLIST_PAGE_SIZE_STORAGE_KEY, String(nc)) } catch { /* 隐私模式等写入失败可忽略 */ }
   }
-  // 初始加载：admin 进入即拉一次当前数据（与自动刷新开关无关）
+  // 初始加载：有查看权限进入即拉一次当前数据（与自动刷新开关无关）
   useEffect(() => {
-    if (!admin) return
+    if (!canView) return
     loadBlacklist()
-  }, [admin, loadBlacklist])
+  }, [canView, loadBlacklist])
   // 自动刷新：按当前间隔轮询当前页；调整间隔时重建 timer，embedded 卸载（切 Tab）清理
   useEffect(() => {
-    if (!admin || !blacklistRefreshMs) return undefined
+    if (!canView || !blacklistRefreshMs) return undefined
     const timer = setInterval(() => loadBlacklist(), blacklistRefreshMs)
     return () => clearInterval(timer)
-  }, [admin, blacklistRefreshMs, loadBlacklist])
+  }, [canView, blacklistRefreshMs, loadBlacklist])
   const changeBlacklistRefresh = (value) => {
     const ms = Number(value)
     setBlacklistRefreshMs(ms)

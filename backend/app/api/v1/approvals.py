@@ -20,14 +20,14 @@ from sqlalchemy.orm import Session
 from app.core.audit import get_client_ip, log_audit
 from app.core.redis_client import get_redis
 from app.database import get_db
-from app.dependencies import get_current_user, is_admin, require_permission
+from app.dependencies import get_current_user, require_permission
 from app.models import Execution, Workflow
 from app.schemas.approval import ApprovalActionResponse, ApprovalItem
 
 logger = logging.getLogger(__name__)
 
 # P0-1：审批相关接口强制登录；权限按接口单独声明
-# （列表/统计=approval:view，approve/reject=approval:approve，删除=admin）
+# （列表/统计=approval:view，approve/reject=approval:approve，删除=approval:delete）
 router = APIRouter(
     prefix="/approvals",
     tags=["approvals"],
@@ -354,15 +354,13 @@ def reject_execution(
     )
 
 
-@router.delete("/{execution_id}", status_code=204)
+@router.delete("/{execution_id}", status_code=204, dependencies=[Depends(require_permission("approval", "delete"))])
 def delete_execution(
     execution_id: int,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ) -> None:
-    """删除审批执行记录（仅 admin；用于工作台清理测试/无效数据）。"""
-    if not is_admin(user, db):
-        raise HTTPException(status_code=403, detail="仅管理员可删除工作台数据")
+    """删除审批执行记录（需 approval:delete；用于工作台清理测试/无效数据）。"""
     execution = db.query(Execution).filter(Execution.id == execution_id).first()
     if execution is None:
         raise HTTPException(status_code=404, detail="执行记录不存在")
