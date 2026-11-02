@@ -116,7 +116,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : undefined}
-        className={`relative z-modal flex max-h-[90vh] w-full ${widthCls} flex-col rounded-lg border border-border bg-card shadow-2xl modal-enter`}
+        className={`relative z-modal flex max-h-[90vh] w-full ${widthCls} flex-col rounded-lg border border-border bg-card shadow-2xl modal-enter transition-[max-width] duration-300 ease-out`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">

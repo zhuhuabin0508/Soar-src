@@ -633,6 +633,11 @@ button:not(:disabled),
   .drawer-enter {
     animation: drawer-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
   }
+  /* 弹窗内嵌侧栏面板（IP 预检 / 相似工单推荐式）：比整屏抽屉更柔——
+     淡入 + 轻位移，且延迟 60ms 让弹窗先开始展宽再浮现，避免"突然蹦出"的突兀感 */
+  .panel-enter-soft {
+    animation: panel-in-soft 280ms cubic-bezier(0.16, 1, 0.3, 1) 60ms both;
+  }
 }
 @keyframes modal-overlay-in {
   from { opacity: 0; }
@@ -644,6 +649,10 @@ button:not(:disabled),
 }
 @keyframes drawer-in {
   from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes panel-in-soft {
+  from { opacity: 0; transform: translateX(24px); }
   to { opacity: 1; transform: translateX(0); }
 }
 

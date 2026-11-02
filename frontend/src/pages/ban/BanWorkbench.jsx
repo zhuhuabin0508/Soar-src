@@ -1043,9 +1043,9 @@ export default function BanWorkbench({ embedded = false }) {
             <span>提交后立即通过默认「安博通阻断器」下发设备封禁，记录标记为「手动封禁」；非永久封禁到期由定时任务联动设备自动解封。</span>
           </div>
         </div>
-        {/* IP 封禁状态预检面板：有命中且未收起时从右侧滑出（同「发起工单」的相似工单推荐形式） */}
+        {/* IP 封禁状态预检面板：有命中且未收起时柔和浮现（弹窗先平滑展宽，面板随后淡入轻滑入） */}
         {showDupPanel && (
-          <aside className="drawer-enter sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
+          <aside className="panel-enter-soft sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
             <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
               <span className="text-[13px] font-medium text-foreground">IP 封禁状态预检</span>
