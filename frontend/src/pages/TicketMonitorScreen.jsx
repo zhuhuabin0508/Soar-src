@@ -3115,34 +3115,10 @@ export default function TicketMonitorScreen() {
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleFullscreen, refreshNow, tourOn, stopTour])
 
-  // 崩溃自愈（投屏无人值守）：React 在 commit 阶段（如 insertBefore NotFoundError，DOM 与
-  // 虚拟树失配时）抛出的异常会卸载整棵树且 ErrorBoundary 无法捕获，页面白屏。
-  // 大屏所有状态均可由 URL 参数 + localStorage 复原，此处捕获该类未处理异常后自动整页
-  // 重载恢复投屏；带防循环保护（10 分钟窗口内最多自动恢复 3 次，超出则停止避免风暴）。
-  useEffect(() => {
-    const GUARD_KEY = 'ticket_monitor_crash_reloads'
-    const WINDOW_MS = 10 * 60 * 1000
-    const MAX_RELOADS = 3
-    const onErr = (e) => {
-      const msg = String(e?.message || e || '')
-      // 仅处理会破坏 React 树的 DOM 失配类错误（insertBefore/removeChild NotFoundError）；
-      // 普通业务异常（网络等）不触发整页重载
-      if (!/insertBefore|removeChild|NotFoundError/i.test(msg)) return
-      // eslint-disable-next-line no-console
-      console.error('[MonitorSelfHeal] 检测到 DOM 失配崩溃，准备自动恢复：', msg)
-      let reloads = []
-      try {
-        reloads = JSON.parse(window.localStorage.getItem(GUARD_KEY) || '[]')
-          .filter((t) => Date.now() - t < WINDOW_MS)
-      } catch { reloads = [] }
-      if (reloads.length >= MAX_RELOADS) return
-      reloads.push(Date.now())
-      try { window.localStorage.setItem(GUARD_KEY, JSON.stringify(reloads)) } catch { /* 忽略 */ }
-      setTimeout(() => window.location.reload(), 500)
-    }
-    window.addEventListener('error', onErr)
-    return () => window.removeEventListener('error', onErr)
-  }, [])
+  // 崩溃自愈已上移到 src/main.jsx（组件树外全局监听 + 重建 root）。
+  // 此前挂在组件 useEffect 里的监听无效：commit 阶段崩溃卸载整树时，effect cleanup
+  // 先移除了监听器，错误冒泡到 window 时已无人接收（jsdom 复现已证实）；且保留会与
+  // 全局恢复双重触发整页 reload。详见 main.jsx 的 CrashRecovery 注释。
 
   // URL 参数回写：当前流程/刷新/筛选/适配同步到地址栏（复制链接即可复现同屏；
   // fullscreen 为一次性参数，消费后移除避免刷新被反复触发）
