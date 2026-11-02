@@ -22,12 +22,24 @@ import { AlertTriangle, RefreshCw, Copy, Check } from 'lucide-react'
 import { getFirstPermittedPath } from './AppShell'
 
 // 友好降级 UI：错误图标 + 标题 + 摘要 + 操作按钮
-function ErrorFallback({ error, onReset, onReload }) {
+// componentStack：React 提交/渲染阶段的组件路径。像 insertBefore NotFoundError 这类
+// 提交阶段异常，error.stack 只有 react-dom 内部帧（Gc/fl/dl/ll…），必须靠组件栈才能定位页面。
+function ErrorFallback({ error, componentStack, onReset, onReload }) {
   const isDev = import.meta.env?.DEV
   const [copied, setCopied] = useState(false)
+  // 错误信息附带当前路由，便于把一次报错和具体页面/操作对上
+  const routeInfo = typeof window !== 'undefined'
+    ? `${window.location.pathname}${window.location.search}`
+    : ''
   const copyStack = async () => {
+    const text = [
+      `路径：${routeInfo}`,
+      '',
+      error?.stack || String(error || ''),
+      componentStack ? `\n\n组件栈：${componentStack}` : '',
+    ].join('\n')
     try {
-      await navigator.clipboard.writeText(error?.stack || String(error || ''))
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
@@ -49,6 +61,7 @@ function ErrorFallback({ error, onReset, onReload }) {
         <pre className="max-h-40 w-full max-w-2xl overflow-auto rounded-md border border-border bg-muted p-3 text-left text-xs text-destructive">
           {error.message}
           {error?.stack ? '\n\n' + error.stack : ''}
+          {componentStack ? '\n\n组件栈：' + componentStack : ''}
         </pre>
       )}
       <div className="flex items-center gap-2">
@@ -73,7 +86,7 @@ function ErrorFallback({ error, onReset, onReload }) {
 export class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { hasError: false, error: null }
+    this.state = { hasError: false, error: null, componentStack: '' }
   }
   static getDerivedStateFromError(error) {
     return { hasError: true, error }
@@ -82,15 +95,18 @@ export class ErrorBoundary extends Component {
     // 上报到控制台，便于调试；可在此扩展远程上报
     // eslint-disable-next-line no-console
     console.error('[ErrorBoundary]', error, info)
+    // 保留组件栈：提交阶段异常（如 insertBefore NotFoundError）只有它才能指出具体页面/组件
+    this.setState({ componentStack: info?.componentStack || '' })
   }
   handleReset = () => {
-    this.setState({ hasError: false, error: null })
+    this.setState({ hasError: false, error: null, componentStack: '' })
   }
   render() {
     if (this.state.hasError) {
       return (
         <ErrorFallback
           error={this.state.error}
+          componentStack={this.state.componentStack}
           onReset={this.handleReset}
         />
       )

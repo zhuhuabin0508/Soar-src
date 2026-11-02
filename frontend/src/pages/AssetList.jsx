@@ -753,8 +753,10 @@ function AggregateTable({ columns, data, selected, onToggleRow, onToggleGroup, a
       <table className="w-full border-collapse text-left">
         <thead>
           <tr className="border-b border-border bg-muted text-xs text-muted-foreground">
-            {columns.map((col) => (
-              <th key={col.key || col.header} className="whitespace-nowrap px-4 py-3 font-medium">
+            {columns.map((col, idx) => (
+              // key 只用字符串/序号：col.header 可能是 JSX 元素，
+              // 直接当 key 会被强制转成同一个 "[object Object]" 造成重复 key
+              <th key={col.key || `__col_${idx}`} className="whitespace-nowrap px-4 py-3 font-medium">
                 {col.header}
               </th>
             ))}

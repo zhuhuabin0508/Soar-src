@@ -809,7 +809,10 @@ export function CompactSelect({
             const active = opt.value === String(value ?? '')
             const showGroup = opt.group && opt.group !== options[i - 1]?.group
             return (
-              <Fragment key={`${opt.group || ''}-${opt.value || '__empty'}`}>
+            // key 必须唯一：同组内可能同时存在多个空值选项（占位 + 「全部」），
+            // 仅用 group+value 会撞 key，导致 React 复用错 DOM 节点、
+            // 提交阶段 insertBefore 锚点失效（NotFoundError）
+              <Fragment key={`${opt.group || ''}-${opt.value || '__empty'}-${i}`}>
                 {showGroup && (
                   <div className="px-3 pb-0.5 pt-2 text-[10px] font-medium tracking-wide text-muted-foreground">{opt.group}</div>
                 )}
