@@ -352,7 +352,8 @@ export function ErrorState({ title = '加载失败', description, onRetry, class
 
 // ===== DataTable =====
 // 统一数据表格：语义令牌 + 骨架加载 + 空态 + 粘性表头 + 批量选择
-// columns: [{ key, header, render?, className?, width?, numeric? }]
+// columns: [{ key, header, render?, className?, width?, numeric?, sticky?, stickyOffset? }]
+// sticky: 'left' | 'right' 冻结列；stickyOffset 仅用于左侧冻结列，表示前序冻结列累计宽度（px）
 // data: 行数据数组
 // loading / emptyText / emptyDescription / emptyIcon / emptyAction（带图标+引导按钮的空态）
 // onRowClick / rowClickHint（行点击的 hover 提示文案，默认「点击查看详情」）/ stickyHeader
@@ -417,6 +418,22 @@ export function DataTable({
 
   const colSpan = columns.length + (selectable ? 1 : 0)
 
+  // 冻结列（sticky）：'left' | 'right'。单元格必须自带不透明底色，
+  // 否则横向滚动时下层行内容会透出（背景与分割线样式见 index.css .table-sticky-*）
+  const stickyCellCls = (col, isHeader) => {
+    if (col.sticky === 'left') {
+      return isHeader
+        ? 'sticky left-0 z-sticky table-sticky-head table-sticky-left'
+        : 'sticky z-dropdown table-sticky-cell table-sticky-left'
+    }
+    if (col.sticky === 'right') {
+      return isHeader
+        ? 'sticky right-0 z-sticky table-sticky-head table-sticky-right'
+        : 'sticky z-dropdown table-sticky-cell table-sticky-right'
+    }
+    return ''
+  }
+
   return (
     <div
       className={`table-wrap overflow-x-auto ${maxHeight ? 'overflow-y-auto' : ''} ${className}`}
@@ -449,10 +466,17 @@ export function DataTable({
               </th>
             )}
             {columns.map((col) => (
+              // 表头默认单行省略（避免全局换行把其它表格表头挤高）；
+              // 长字段名场景可由列配置 wrapHeader: true 显式开启换行
               <th
                 key={col.key}
-                className={`whitespace-nowrap px-4 ${dCls.header} font-semibold ${col.numeric ? 'text-right tabular-nums' : ''} ${col.className || ''}`}
-                style={col.width ? { width: col.width } : undefined}
+                className={`px-4 align-middle leading-snug ${dCls.header} font-semibold ${col.numeric ? 'text-right tabular-nums' : ''} ${col.wrapHeader ? 'break-words whitespace-normal' : 'truncate whitespace-nowrap'} ${col.className || ''} ${stickyCellCls(col, true)}`}
+                style={col.sticky || col.width ? {
+                  ...(col.width ? { width: col.width } : {}),
+                  ...(col.sticky === 'left' ? { left: `${col.stickyOffset || 0}px` } : {}),
+                  ...(col.sticky === 'right' ? { right: 0 } : {}),
+                } : undefined}
+                title={typeof col.header === 'string' ? col.header : undefined}
               >
                 {col.header}
               </th>
@@ -512,7 +536,7 @@ export function DataTable({
                   onDragEnd={() => { setDragIndex(null); setDragOverIndex(null) }}
                   onClick={() => handleRowClick(row)}
                   title={clickable ? rowClickHint : undefined}
-                  className={`table-row-hover border-b border-border ${clickable ? 'cursor-pointer' : ''} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${checked ? 'bg-primary/5' : ''} ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'ring-2 ring-inset ring-primary/50 bg-primary/5' : ''} ${extraRowCls}`}
+                  className={`table-row-hover border-b border-border ${clickable ? 'cursor-pointer' : ''} ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${checked ? 'table-row-selected bg-primary/5' : ''} ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'ring-2 ring-inset ring-primary/50 bg-primary/5' : ''} ${extraRowCls}`}
                 >
                   {selectable && (
                     <td key="__select" className={`px-3 ${dCls.cell}`} style={{ width: '44px' }} onClick={(e) => e.stopPropagation()}>
@@ -530,7 +554,12 @@ export function DataTable({
                   {columns.map((col) => (
                     <td
                       key={col.key}
-                      className={`overflow-hidden text-ellipsis whitespace-nowrap px-4 ${dCls.cell} text-foreground ${col.numeric ? 'text-right tabular-nums' : ''} ${col.className || ''}`}
+                      className={`overflow-hidden text-ellipsis whitespace-nowrap px-4 ${dCls.cell} text-foreground ${col.numeric ? 'text-right tabular-nums' : ''} ${col.className || ''} ${stickyCellCls(col, false)}`}
+                      style={
+                        col.sticky === 'left' ? { left: `${col.stickyOffset || 0}px` }
+                          : col.sticky === 'right' ? { right: 0 }
+                            : undefined
+                      }
                     >
                       {col.render ? col.render(row) : row[col.key]}
                     </td>

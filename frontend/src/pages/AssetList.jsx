@@ -5,7 +5,7 @@ import {
   Plus, Download, Upload, RefreshCw, Trash2, Pencil, Search,
   X, Tag as TagIcon, ChevronRight, ChevronDown, History, Server, Network, Globe, Boxes,
   Loader2, CheckCircle2, XCircle, SlidersHorizontal, RotateCcw, Copy, Eye, Database,
-  Save, Bookmark, MoreVertical, SearchX, MapPin,
+  Save, Bookmark, MoreVertical, SearchX, MapPin, Columns3,
 } from 'lucide-react'
 import { assetsApi } from '../api/assets'
 import { Modal } from '../components/Dialog'
@@ -26,6 +26,25 @@ const CRIT_LABELS = { low: '低', medium: '中', high: '高', critical: '严重'
 const CRIT_COLORS = { low: 'success', medium: 'warning', high: 'warning', critical: 'danger' }
 
 const TEMPLATE_ICONS = { host_asset: Server, network_segment: Network, egress_ip: Globe }
+
+// ===== 列表列宽策略 =====
+// DataTable 为 table-fixed：未声明宽度的列会“均分”剩余宽度，导致「序号」这类很窄的字段
+// 也占一整列，长文本列反而被挤扁，表头只能溢出压到相邻列。
+// 因此短字段（数值 / 下拉 / 日期 / IP）显式定宽，长文本列不设宽度由表格分配剩余空间。
+const FIELD_LIST_WIDTH = {
+  number: '88px',
+  select: '112px',
+  date: '112px',
+  ip: '132px',
+}
+
+// 列设置持久化：{ [资产类型code]: 隐藏字段key[] }
+const HIDDEN_COLUMNS_STORAGE_KEY = 'soar_asset_list_hidden_fields'
+
+// 冻结列：左侧依次为复选框（56px）+ 标识字段，偏移量按下表累加
+const SELECT_COL_WIDTH = 56
+const IDENTIFIER_COL_STICKY_OFFSET = SELECT_COL_WIDTH
+
 
 // 从资产记录按字段定义取值
 function getFieldValue(rec, fdef) {
@@ -405,6 +424,105 @@ function TruncateCell({ text, maxWidth = 160, mono = false }) {
     </span>
   )
 }
+
+// ===== 行操作「更多」菜单 =====
+// 操作列收敛：详情/编辑保留为显性按钮，复制 IP / 删除收进 ⋯ 菜单，
+// 避免一行 4 个按钮把数据列挤扁。
+// 单元格是 overflow-hidden 且表格内部横滚，绝对定位菜单会被裁切，因此用 Portal + fixed 定位。
+function RowActionsMenu({ onCopy, onDelete, canDelete }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
+  const MENU_WIDTH = 152
+  const MENU_HEIGHT = canDelete ? 76 : 44
+
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    const onDocMouseDown = (e) => {
+      // 点在按钮上交给 toggle 自己处理，避免“关闭后立即又被打开”
+      if (btnRef.current?.contains(e.target) || menuRef.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    const onKeyDown = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDocMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    // 表格横滚 / 纵向滚动 / 窗口尺寸变化后菜单锚点失效，直接收起
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [open])
+
+  const toggle = (e) => {
+    e.stopPropagation()
+    if (open) { setOpen(false); return }
+    const rect = btnRef.current.getBoundingClientRect()
+    const openUp = rect.bottom + MENU_HEIGHT + 8 > window.innerHeight
+    setPos({
+      top: openUp ? Math.max(8, rect.top - MENU_HEIGHT - 4) : rect.bottom + 4,
+      left: Math.max(8, Math.min(window.innerWidth - MENU_WIDTH - 8, rect.right - MENU_WIDTH)),
+    })
+    setOpen(true)
+  }
+
+  const runAndClose = (fn) => (e) => {
+    e.stopPropagation()
+    setOpen(false)
+    fn()
+  }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={toggle}
+        className={`btn-secondary btn-sm ${open ? 'ring-1 ring-ring' : ''}`}
+        title="更多操作（复制 IP / 删除）"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <MoreVertical className="h-3 w-3" />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-modal w-[152px] rounded-md border border-border bg-popover p-1 shadow-lg"
+          style={{ top: pos.top, left: pos.left }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={runAndClose(onCopy)}
+            className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+          >
+            <Copy className="h-3.5 w-3.5 text-muted-foreground" /> 复制 IP
+          </button>
+          {canDelete && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={runAndClose(onDelete)}
+              className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs text-destructive transition-colors hover:bg-destructive/10"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> 删除
+            </button>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
 
 // 筛选条件 Tag（支持单个删除）
 function FilterChip({ label, onRemove }) {
@@ -833,6 +951,27 @@ export default function AssetList() {
   const [viewName, setViewName] = useState('')
   const [viewDropdownOpen, setViewDropdownOpen] = useState(false)
 
+  // ===== 列设置 =====
+  // 只影响列表列展示，不影响详情/导出；按资产类型分别记忆，避免切类型后设置串味
+  const [hiddenFieldsMap, setHiddenFieldsMap] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(HIDDEN_COLUMNS_STORAGE_KEY) || '{}')
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    } catch { return {} }
+  })
+  const [columnMenuOpen, setColumnMenuOpen] = useState(false)
+  const columnMenuRef = useRef(null)
+  useEffect(() => {
+    if (!columnMenuOpen) return
+    const onDocMouseDown = (e) => {
+      if (columnMenuRef.current && !columnMenuRef.current.contains(e.target)) {
+        setColumnMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [columnMenuOpen])
+
   const persistViews = (views) => {
     setSavedViews(views)
     try { localStorage.setItem('soar_asset_views', JSON.stringify(views)) } catch { /* ignore */ }
@@ -980,10 +1119,38 @@ export default function AssetList() {
     }
   }, [selectAllMode, items, selected, total, activeTypeCode, keyword, fStatus, fCrit, fDept, fTag])
 
+  // 列设置：当前类型下被隐藏的字段（标识字段不参与隐藏）
+  const hiddenFieldKeys = useMemo(() => {
+    const stored = hiddenFieldsMap[activeTemplate?.code]
+    return new Set(Array.isArray(stored) ? stored : [])
+  }, [hiddenFieldsMap, activeTemplate])
+  const hiddenColumnCount = activeTemplate
+    ? (activeTemplate.fields || []).filter(
+      (f) => f.show_in_list && f.key !== activeTemplate.identifier_field && hiddenFieldKeys.has(f.key)
+    ).length
+    : 0
+  const toggleColumnVisible = (fieldKey) => {
+    if (!activeTemplate) return
+    const code = activeTemplate.code
+    const stored = hiddenFieldsMap[code]
+    const nextSet = new Set(Array.isArray(stored) ? stored : [])
+    if (nextSet.has(fieldKey)) nextSet.delete(fieldKey)
+    else nextSet.add(fieldKey)
+    const nextMap = { ...hiddenFieldsMap, [code]: [...nextSet] }
+    setHiddenFieldsMap(nextMap)
+    try { localStorage.setItem(HIDDEN_COLUMNS_STORAGE_KEY, JSON.stringify(nextMap)) } catch { /* ignore */ }
+  }
+  const resetHiddenColumns = () => {
+    if (!activeTemplate) return
+    const nextMap = { ...hiddenFieldsMap, [activeTemplate.code]: [] }
+    setHiddenFieldsMap(nextMap)
+    try { localStorage.setItem(HIDDEN_COLUMNS_STORAGE_KEY, JSON.stringify(nextMap)) } catch { /* ignore */ }
+  }
+
   // 动态列：根据模板字段 show_in_list 生成
   const columns = useMemo(() => {
     const cols = []
-    // 选择列
+    // 选择列（冻结左侧，横向滚动时仍可勾选）
     cols.push({
       key: '__select',
       header: (
@@ -993,6 +1160,10 @@ export default function AssetList() {
           onChange={handleHeaderSelectAll}
         />
       ),
+      // 定宽，避免复选框列被 table-fixed 均分成一大列
+      width: `${SELECT_COL_WIDTH}px`,
+      sticky: 'left',
+      stickyOffset: 0,
       render: (row) => (
         <input
           type="checkbox"
@@ -1008,17 +1179,34 @@ export default function AssetList() {
         />
       ),
     })
-    // 标识字段列（始终显示）
+    // 标识字段列（始终显示并固定为字段列首列：冻结偏移量才成立；
+    // 即使模板把标识字段设为「列表不展示」也保留，否则列表无法定位资产）
     if (activeTemplate) {
-      const fieldCols = (activeTemplate.fields || [])
-        .filter((f) => f.show_in_list)
-        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+      const fields = activeTemplate.fields || []
+      const identifierField = fields.find((f) => f.key === activeTemplate.identifier_field)
+      const fieldCols = (identifierField ? [identifierField] : []).concat(
+        fields
+          .filter((f) => f.show_in_list && f.key !== activeTemplate.identifier_field && !hiddenFieldKeys.has(f.key))
+          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+      )
       fieldCols.forEach((f) => {
         const isNumericField = f.type === 'number'
+        // 标识字段（如清单「序号」）属于定位用的编号，不参与金额类右对齐；
+        // 同时收窄列宽，避免数字被推到最右侧、左侧留出大片空白
+        const isIdentifierField = f.key === activeTemplate.identifier_field
         cols.push({
           key: f.key,
           header: f.label,
-          numeric: isNumericField,
+          // 模板字段名可能较长，允许表头换行（DataTable 默认单行省略）
+          wrapHeader: true,
+          numeric: isNumericField && !isIdentifierField,
+          width: isIdentifierField
+            ? (isNumericField ? '88px' : '176px')
+            : FIELD_LIST_WIDTH[f.type],
+          className: isIdentifierField && isNumericField ? 'tabular-nums' : '',
+          // 标识字段冻结左侧（紧跟复选框列），横向滚动时始终能看到当前行是哪条资产
+          sticky: isIdentifierField ? 'left' : undefined,
+          stickyOffset: isIdentifierField ? IDENTIFIER_COL_STICKY_OFFSET : undefined,
           render: (row) => {
             const v = getFieldValue(row, f)
             if (f.key === activeTemplate.identifier_field) {
@@ -1048,8 +1236,8 @@ export default function AssetList() {
         })
       })
     } else {
-      // 无模板：默认列
-      cols.push({ key: 'identifier', header: '标识', render: (r) => <TruncateCell text={r.identifier} maxWidth={140} mono /> })
+      // 无模板：默认列（标识列同样冻结左侧）
+      cols.push({ key: 'identifier', header: '标识', sticky: 'left', stickyOffset: IDENTIFIER_COL_STICKY_OFFSET, render: (r) => <TruncateCell text={r.identifier} maxWidth={140} mono /> })
       cols.push({ key: 'name', header: '名称', render: (r) => <TruncateCell text={r.name} maxWidth={140} /> })
       cols.push({ key: 'ip', header: 'IP', render: (r) => <TruncateCell text={r.ip} maxWidth={130} mono /> })
       cols.push({ key: 'department', header: '部门', render: (r) => <TruncateCell text={r.department} maxWidth={160} /> })
@@ -1062,6 +1250,7 @@ export default function AssetList() {
     // 标签列（彩色 Tag 色块，前 2 个 + +N）
     cols.push({
       key: '__tags', header: '标签',
+      width: '112px',
       render: (row) =>
         row.tags?.length ? (
           <div className="flex flex-wrap items-center gap-1" title={row.tags.map((t) => t.name).join('、')}>
@@ -1070,9 +1259,9 @@ export default function AssetList() {
           </div>
         ) : <span className="text-xs text-muted-foreground">-</span>,
     })
-    // 操作列（行操作显性化：详情/编辑/删除/复制 IP）
+    // 操作列（冻结右侧）：高频「详情/编辑」显性展示，复制 IP / 删除收进 ⋯ 菜单，降低列宽占用
     cols.push({
-      key: '__actions', header: '操作', width: '270px',
+      key: '__actions', header: '操作', width: '220px', sticky: 'right',
       render: (row) => (
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <button type="button" onClick={() => setDetail(row)} className="btn-secondary btn-sm" title="查看详情">
@@ -1083,19 +1272,18 @@ export default function AssetList() {
               <Pencil className="h-3 w-3" /> 编辑
             </button>
           )}
-          <button type="button" onClick={() => copyText(row.ip || row.identifier)} className="btn-secondary btn-sm" title="复制 IP">
-            <Copy className="h-3 w-3" />
-          </button>
-          {canDelete && (
-            <button type="button" onClick={() => handleDelete(row)} className="btn-danger btn-sm" title="删除">
-              <Trash2 className="h-3 w-3" />
-            </button>
+          {(canDelete || row.ip || row.identifier) && (
+            <RowActionsMenu
+              canDelete={canDelete}
+              onCopy={() => copyText(row.ip || row.identifier)}
+              onDelete={() => handleDelete(row)}
+            />
           )}
         </div>
       ),
     })
     return cols
-  }, [activeTemplate, items, selected, selectAllMode, handleHeaderSelectAll])
+  }, [activeTemplate, items, selected, selectAllMode, handleHeaderSelectAll, hiddenFieldKeys])
 
   // 新增/编辑提交
   const handleSubmit = async ({ fields, tag_ids }) => {
@@ -1302,6 +1490,76 @@ export default function AssetList() {
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${filterOpen ? 'rotate-180' : ''}`} />
             </button>
           </div>
+
+          {/* 右：列设置（字段显隐，按资产类型记忆） */}
+          {activeTemplate && (
+            <div className="relative ml-auto" ref={columnMenuRef}>
+              <button
+                type="button"
+                onClick={() => setColumnMenuOpen((o) => !o)}
+                className={`btn-sm flex items-center gap-1.5 rounded-md border transition-colors ${
+                  hiddenColumnCount > 0
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-transparent text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+                title="设置列表显示字段"
+              >
+                <Columns3 className="h-4 w-4" /> 列设置
+                {hiddenColumnCount > 0 && (
+                  <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                    {hiddenColumnCount}
+                  </span>
+                )}
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${columnMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {columnMenuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-lg border border-border bg-popover p-3 shadow-xl">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-xs font-medium text-foreground">显示字段</span>
+                    <button
+                      type="button"
+                      onClick={resetHiddenColumns}
+                      disabled={hiddenColumnCount === 0}
+                      className="text-[11px] text-primary transition-opacity hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      恢复默认
+                    </button>
+                  </div>
+                  <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">
+                    标识字段始终显示；设置按资产类型记忆，仅影响列表
+                  </p>
+                  <div className="max-h-64 space-y-0.5 overflow-y-auto">
+                    {(activeTemplate.fields || [])
+                      .filter((f) => f.show_in_list)
+                      .slice()
+                      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+                      .map((f) => {
+                        const isIdentifier = f.key === activeTemplate.identifier_field
+                        const checked = isIdentifier || !hiddenFieldKeys.has(f.key)
+                        return (
+                          <label
+                            key={f.key}
+                            className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs ${
+                              isIdentifier ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-muted'
+                            }`}
+                            title={isIdentifier ? '标识字段用于定位资产，不可隐藏' : `字段：${f.label}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={isIdentifier}
+                              onChange={() => toggleColumnVisible(f.key)}
+                            />
+                            <span className="flex-1 truncate text-foreground">{f.label}</span>
+                            {isIdentifier && <span className="shrink-0 text-[10px] text-muted-foreground">标识</span>}
+                          </label>
+                        )
+                      })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {/* 高级筛选面板（可折叠，默认收起；展开显示 4 个筛选项 + 一键重置） */}
         {filterOpen && (

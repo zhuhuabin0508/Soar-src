@@ -422,6 +422,37 @@ button:not(:disabled),
     @apply hover:bg-accent;
   }
 
+  /* 冻结列（sticky）：粘性单元格自带不透明底色，避免横向滚动时下层内容透出；
+     内侧 0.5px 阴影作为命中的切分提示，与表格微边框风格一致 */
+  .table-sticky-cell {
+    background: var(--card);
+  }
+
+  .table-sticky-head {
+    background: var(--table-header);
+  }
+
+  .table-row-hover:hover .table-sticky-cell {
+    background: var(--accent);
+  }
+
+  /* 选中行：冻结列不透明底色必须跟随行选中底色，否则冻结单元格仍是普通卡片色 */
+  .table-row-selected .table-sticky-cell {
+    background: color-mix(in oklch, oklch(var(--primary)) 5%, var(--card));
+  }
+
+  .table-row-selected:hover .table-sticky-cell {
+    background: color-mix(in oklch, oklch(var(--primary)) 8%, var(--accent));
+  }
+
+  .table-sticky-left {
+    box-shadow: inset -0.5px 0 0 var(--border);
+  }
+
+  .table-sticky-right {
+    box-shadow: inset 0.5px 0 0 var(--border);
+  }
+
   /* 标签 / 徽章 */
   .badge {
     @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
