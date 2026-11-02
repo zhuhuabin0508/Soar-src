@@ -209,10 +209,26 @@ def _resolve_route(
     explicit_route: str | None,
     node_label: str,
 ) -> str:
-    """解析流转去向：显式选择 → 校验白名单；未选择 → 条件建议/默认路由。"""
+    """解析流转去向：条件路由命中时强制走条件去向；未命中走显式选择/默认路由。
+
+    - 字段值命中路由条件（如「是否需要处置=是」）→ 流转去向锁定为该条件路由，
+      显式改选不一致时拒绝（保证确定性流转，前端同步锁定不可改选）
+    - 未命中条件 → 显式选择（校验白名单）；未选择则走默认路由
+    """
     whitelist = {r.get("to") for r in routes or [] if isinstance(r, dict) and r.get("to")}
     if not whitelist:
         raise HTTPException(status_code=400, detail=f"节点「{node_label}」未配置流转路由")
+    suggested, default = suggest_route(routes, field_values)
+    if suggested:
+        if explicit_route and explicit_route != suggested:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"节点「{node_label}」按填写内容命中流转条件，必须流转至「{suggested}」，"
+                    f"不支持手动改选「{explicit_route}」"
+                ),
+            )
+        return suggested
     if explicit_route:
         if explicit_route not in whitelist:
             raise HTTPException(
@@ -220,8 +236,7 @@ def _resolve_route(
                 detail=f"流转去向 {explicit_route} 不在节点「{node_label}」的路由白名单内",
             )
         return explicit_route
-    suggested, default = suggest_route(routes, field_values)
-    target = suggested or default
+    target = default
     if not target:
         raise HTTPException(status_code=400, detail=f"节点「{node_label}」无可用流转路由")
     return target
@@ -1028,15 +1043,99 @@ def list_tickets(
 
 # ============ 监控大屏聚合 ============
 
+def _monitor_light(db: Session, now, today_start) -> dict:
+    """轻量模式聚合（大屏高频轮询）：KPI + 最新工单，不做全量 SLA/趋势/下钻。
+
+    KPI 全部走 SQL 聚合（只 count，不加载整表）；SLA 仅对「处理中」工单与
+    最新 20 件工单做评估，并只加载这些工单的流转记录，避免大屏轮询把
+    全量工单与全部流转记录反复载入内存。
+    """
+    active_filter = or_(Ticket.archived.is_(False), Ticket.archived.is_(None))
+    base = db.query(Ticket).filter(active_filter)
+
+    kpi = {
+        "total": base.count(),
+        "today_new": base.filter(Ticket.created_at >= today_start).count(),
+        "today_closed": base.filter(
+            Ticket.closed_at.isnot(None), Ticket.closed_at >= today_start,
+        ).count(),
+        "pending": base.filter(Ticket.status == "processing").count(),
+        "processing_active": (
+            db.query(Ticket.id)
+            .join(TicketNodeRecord, TicketNodeRecord.ticket_id == Ticket.id)
+            .filter(
+                active_filter,
+                Ticket.status == "processing",
+                TicketNodeRecord.action == "submit",
+                TicketNodeRecord.created_at >= today_start,
+            )
+            .distinct()
+            .count()
+        ),
+        "completed": base.filter(Ticket.status == "completed").count(),
+        "cancelled": base.filter(Ticket.status == "cancelled").count(),
+        "timeout_warning": 0,  # 下方按处理中工单 SLA 评估后回填
+    }
+
+    processing = base.filter(Ticket.status == "processing").all()
+    latest_tickets = base.order_by(Ticket.created_at.desc()).limit(20).all()
+    eval_tickets: dict[int, Ticket] = {t.id: t for t in processing}
+    eval_tickets.update({t.id: t for t in latest_tickets})
+    by_ticket: dict[int, list] = {}
+    if eval_tickets:
+        records = (
+            db.query(TicketNodeRecord)
+            .filter(TicketNodeRecord.ticket_id.in_(list(eval_tickets)))
+            .order_by(TicketNodeRecord.ticket_id, TicketNodeRecord.created_at)
+            .all()
+        )
+        for r in records:
+            by_ticket.setdefault(r.ticket_id, []).append(r)
+    sla_config = get_sla_config(db)
+    sla_eval = {
+        tid: evaluate_ticket_sla(t, by_ticket.get(tid, []), now, sla_config)
+        for tid, t in eval_tickets.items()
+    }
+    kpi["timeout_warning"] = sum(1 for t in processing if sla_eval[t.id]["timeout"])
+
+    latest = []
+    for t in latest_tickets:
+        latest.append({
+            "id": t.id,
+            "ticket_no": t.ticket_no,
+            "title": t.title,
+            "priority": t.priority,
+            "priority_label": PRIORITY_LABELS.get(t.priority, t.priority),
+            "status": t.status,
+            "status_label": STATUS_LABELS.get(t.status, t.status),
+            "current_node_name": t.current_node_name or t.current_node_key,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "timeout": sla_eval[t.id]["timeout"],
+            "remind_count": t.remind_count or 0,
+        })
+
+    return {
+        "light": True,
+        "generated_at": now.isoformat(),
+        "kpi": kpi,
+        "latest": latest,
+    }
+
+
 @router.get("/monitor")
 def ticket_monitor_stats(
     flow_id: int | None = Query(default=None, description="指定流程模板 ID；缺省时自动选取进行中工单最多的流程"),
+    light: bool = Query(default=False, description="轻量模式：仅返回 kpi + latest（供大屏高频轮询）"),
+    include_drill: bool = Query(default=True, description="是否下发下钻工单集（大屏按需拉取时可关闭以减小响应体）"),
+    drill_limit: int = Query(default=2000, ge=100, le=2000, description="下钻工单集条数上限（最新在前）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_monitor", "view")),
 ):
     """工单监控大屏聚合数据（KPI / 趋势 / 分布 / 团队排名 / 来源平台 / SLA / 流转节点 / 最新工单）。
 
-    数据均来自真实工单（排除归档），按大屏七个分区一次返回，前端 15s 轮询。
+    数据均来自真实工单（排除归档），按大屏七个分区一次返回；大屏按「轻量 → 全景」分层轮询：
+    ``light=1`` 只算 KPI + 最新工单（高频），全景（趋势/分布/团队/平台/SLA/流转/下钻集）低频刷新。
+    ``include_drill=0`` 不下发下钻工单集（默认轮询用），大屏打开下钻弹窗时再按需请求。
     需要独立权限 ticket_monitor:view（叠加 router 级 ticket:view）。
     提交团队排名 ``team_stats``：按各流程模板首节点「提交团队」字段聚合（按 label 定位，
     跨模板字段 key 兼容），全流程口径，降序 ``[{name, value}]``。
@@ -1045,11 +1144,15 @@ def ticket_monitor_stats(
     2000 件并以 ``tickets_truncated`` 标记。
     处置状态流转：``flow_id`` 可指定展示的流程模板；节点序列始终读取模板**当前定义**，
     修改并重新发布模板后大屏在下次轮询自动更新。响应附 ``flows``（可选流程列表）与
-    ``flow``（当前生效流程及是否自动选取）。
+    ``flow``（当前生效流程及是否自动选取）。末位「已完结」节点的件数为全流程已解决
+    （``completed``）工单数，不随 ``flow_id`` 变化（与 KPI「已解决」口径一致）。
     注意：本路由必须注册在 ``GET /{ticket_id}`` 之前，避免 "monitor" 被路径参数吞掉。
     """
     now = beijing_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 轻量模式：只算高频区（SQL 聚合 KPI + 最新工单），不加载全量工单/流转记录
+    if light:
+        return _monitor_light(db, now, today_start)
 
     tickets = [t for t in db.query(Ticket).all() if not t.archived]
     records = (
@@ -1094,6 +1197,23 @@ def ticket_monitor_stats(
         "cancelled": len(cancelled),
         "timeout_warning": len(timeout_warn),
     }
+
+    # —— 最新工单（中央实时列表 + 底部跑马灯）——
+    latest = []
+    for t in sorted(tickets, key=lambda x: x.created_at or now, reverse=True)[:20]:
+        latest.append({
+            "id": t.id,
+            "ticket_no": t.ticket_no,
+            "title": t.title,
+            "priority": t.priority,
+            "priority_label": PRIORITY_LABELS.get(t.priority, t.priority),
+            "status": t.status,
+            "status_label": STATUS_LABELS.get(t.status, t.status),
+            "current_node_name": t.current_node_name or t.current_node_key,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "timeout": sla_eval[t.id]["timeout"],
+            "remind_count": t.remind_count or 0,
+        })
 
     # —— 趋势：24h 按小时 / 7 天、30 天按天（新增 vs 关闭）——
     def _trend_by_hour(n_hours: int) -> list[dict]:
@@ -1265,8 +1385,8 @@ def ticket_monitor_stats(
                 "group": group_map.get(n.get("group_id"), ""),
                 "current": node_counts.get(n.get("key"), 0),
             })
-    # 已完结计数限定所选流程，避免多流程混算
-    flow_finished = sum(1 for t in finished if t.flow_id == selected_flow_id) if selected_flow_id else 0
+    # 已完结计数 = 全流程已解决（completed）工单数，不随所选流程变化（与 KPI「已解决」口径一致）
+    flow_finished = len(completed)
     flow_nodes.append({
         "key": "_finished",
         "name": "已完结",
@@ -1274,61 +1394,50 @@ def ticket_monitor_stats(
         "current": flow_finished,
     })
 
-    # —— 最新工单（中央实时列表 + 底部跑马灯）——
-    latest = []
-    for t in sorted(tickets, key=lambda x: x.created_at or now, reverse=True)[:20]:
-        latest.append({
-            "id": t.id,
-            "ticket_no": t.ticket_no,
-            "title": t.title,
-            "priority": t.priority,
-            "priority_label": PRIORITY_LABELS.get(t.priority, t.priority),
-            "status": t.status,
-            "status_label": STATUS_LABELS.get(t.status, t.status),
-            "current_node_name": t.current_node_name or t.current_node_key,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "timeout": sla_eval[t.id]["timeout"],
-            "remind_count": t.remind_count or 0,
-        })
-
     # —— 下钻工单集（大屏各分区弹窗逐级下钻的数据源）——
     # 字段口径与各分区统计严格一致：team/platform/alert_type 与团队排名、来源平台、
-    # 类型分布同源（首节点语义字段）；active_today 与 KPI「处理中（今日活跃）」一致；
-    # timeout 与 SLA 超时预警一致；nodeKey/closedAll 与流转节点停留/已完结计数一致
-    # （前端按 flow_id + current_node_key 过滤）。上限保护：极端存量下仅返回最近创建的工单。
-    drill_limit = 2000
+    # 类型分布同源（首节点语义字段）；active_today 与 KPI「处理中」卡「今日活跃」小字一致；
+    # timeout 与 SLA 超时预警一致；nodeKey 与流转节点停留一致（前端按 flow_id + current_node_key
+    # 过滤）；status=completed 与流转图「已完结」计数一致（全流程已解决口径）。
+    # 上限保护：极端存量下仅返回最近创建的工单。
+    # include_drill=False 时不构造下钻集（大屏常规轮询用，打开弹窗时再按需请求）。
     drill_source = sorted(tickets, key=lambda x: x.created_at or now, reverse=True)
-    drill_truncated = len(drill_source) > drill_limit
+    drill_total = len(drill_source)
+    drill_truncated = drill_total > drill_limit
     drill_tickets = []
-    for t in drill_source[:drill_limit]:
-        ev = sla_eval[t.id]
-        drill_tickets.append({
-            "id": t.id,
-            "ticket_no": t.ticket_no,
-            "title": t.title,
-            "flow_id": t.flow_id,
-            "priority": t.priority,
-            "priority_label": PRIORITY_LABELS.get(t.priority, t.priority),
-            "status": t.status,
-            "status_label": STATUS_LABELS.get(t.status, t.status),
-            "team": _start_value(t, "team"),
-            "platform": _start_value(t, "platform"),
-            "alert_type": _start_value(t, "alert_type"),
-            "src_ip": _start_value(t, "src_ip"),
-            "current_node_key": t.current_node_key,
-            "current_node_name": t.current_node_name,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "closed_at": t.closed_at.isoformat() if t.closed_at else None,
-            # SLA 超时预警（进行中工单超目标）
-            "timeout": ev["timeout"],
-            # 今日活跃（进行中且今日有提交流转），与 KPI processing_active 口径一致
-            "active_today": t.status == "processing" and t.id in today_submit_ids,
-            "response_minutes": ev["response_minutes"],
-            "resolve_minutes": ev["resolve_minutes"],
-        })
+    if include_drill:
+        for t in drill_source[:drill_limit]:
+            ev = sla_eval[t.id]
+            drill_tickets.append({
+                "id": t.id,
+                "ticket_no": t.ticket_no,
+                "title": t.title,
+                "flow_id": t.flow_id,
+                "priority": t.priority,
+                "priority_label": PRIORITY_LABELS.get(t.priority, t.priority),
+                "status": t.status,
+                "status_label": STATUS_LABELS.get(t.status, t.status),
+                "team": _start_value(t, "team"),
+                "platform": _start_value(t, "platform"),
+                "alert_type": _start_value(t, "alert_type"),
+                "src_ip": _start_value(t, "src_ip"),
+                "current_node_key": t.current_node_key,
+                "current_node_name": t.current_node_name,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                # SLA 超时预警（进行中工单超目标）
+                "timeout": ev["timeout"],
+                # 今日活跃（进行中且今日有提交流转），与 KPI processing_active 口径一致
+                "active_today": t.status == "processing" and t.id in today_submit_ids,
+                "response_minutes": ev["response_minutes"],
+                "resolve_minutes": ev["resolve_minutes"],
+            })
 
     return {
+        "generated_at": now.isoformat(),
+        "light": False,
         "kpi": kpi,
+        "latest": latest,
         "trend": trend,
         "dist": {"priority": priority_dist, "type": type_dist},
         # 来源平台统计表：各平台 工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决
@@ -1336,9 +1445,10 @@ def ticket_monitor_stats(
         # 提交团队排名：各流程首节点「提交团队」字段聚合（降序 [{name, value}]）
         "team_stats": team_stats,
         # 下钻工单集：各分区点击弹窗逐级下钻的数据源（最新在前；
-        # tickets_truncated=True 时仅含最近 2000 件，前端弹窗内提示）
+        # tickets_truncated=True 时仅含最近 drill_limit 件，前端弹窗内提示）
         "tickets": drill_tickets,
         "tickets_truncated": drill_truncated,
+        "tickets_total": drill_total,
         "severity_status": severity_status,
         "sla": sla,
         # 大屏流程切换器数据：全部流程模板（含草稿/停用标记）
@@ -1359,8 +1469,6 @@ def ticket_monitor_stats(
             "auto": selected_flow_id == auto_flow_id,
         },
         "flow_nodes": flow_nodes,
-        "latest": latest,
-        "generated_at": now.isoformat(),
     }
 
 

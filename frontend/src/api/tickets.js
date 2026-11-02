@@ -48,7 +48,16 @@ export const ticketApi = {
   getTicket: (id) => request(`/tickets/${id}`),
   // 监控大屏聚合（KPI/趋势/分布/SLA/分组/流转节点/最新工单，一次返回）
   // flowId：指定处置状态流转展示的流程模板；缺省自动选取（进行中工单最多）
-  getMonitorStats: (flowId) => request(`/tickets/monitor${flowId ? `?flow_id=${flowId}` : ''}`),
+  // opts.light：轻量模式（仅 kpi + latest，大屏高频轮询用）
+  // opts.includeDrill === false：不下发下钻工单集（打开下钻弹窗时再按需请求）
+  // opts.drillLimit：下钻工单集上限（100-2000，默认 2000）
+  getMonitorStats: (flowId, opts = {}) => {
+    const params = { flow_id: flowId || undefined }
+    if (opts.light) params.light = 1
+    if (opts.includeDrill === false) params.include_drill = 0
+    if (opts.drillLimit) params.drill_limit = opts.drillLimit
+    return request(`/tickets/monitor${_qs(params)}`)
+  },
   advanceTicket: (id, body) => request(`/tickets/${id}/advance`, { method: 'POST', body }),
   // 回退工单：当前节点退回上一节点，comment 必填（回退原因）
   rollbackTicket: (id, body) => request(`/tickets/${id}/rollback`, { method: 'POST', body }),

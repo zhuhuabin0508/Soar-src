@@ -676,6 +676,13 @@ export default function TicketDetail() {
     () => evalRoutes(currentNode?.routes, values),
     [currentNode, values],
   )
+  // 条件路由锁定：填写的字段值命中路由条件时（如「是否需要处置=是」→ 应急处置），
+  // 去向强制为该条件路由（按钮禁用不可改选，后端 _resolve_route 同步强制校验）；
+  // 条件不再命中时清空残留（多路由回到手动选择，避免沿用旧值导致误流转）
+  useEffect(() => {
+    if (routeSuggested) setRouteTo(routeSuggested)
+    else if (routeOptions.length > 1) setRouteTo('')
+  }, [routeSuggested, routeOptions.length])
   const currentFields = currentNode?.fields || []
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
@@ -686,6 +693,26 @@ export default function TicketDetail() {
     }
     return out
   }, [currentFields, values]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 联动字段刚展开时自动定位并聚焦：如「是否需要处置」选「是」后出现必填的「处置建议」，
+  // 避免处理人仍按原位置点击提交、实际漏填被拦截却以为"没有反应"
+  const prevExtKeysRef = useRef(null)
+  useEffect(() => {
+    const keys = new Set(renderFields.filter(({ ext }) => ext).map(({ field: f }) => f.key))
+    if (prevExtKeysRef.current) {
+      const added = [...keys].filter((k) => !prevExtKeysRef.current.has(k))
+      if (added.length) {
+        requestAnimationFrame(() => {
+          const box = document.querySelector(`[data-fkey="${added[0]}"]`)
+          if (!box) return
+          box.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          box.querySelector('input:not([type="radio"]), textarea, select, [contenteditable="true"]')
+            ?.focus({ preventScroll: true })
+        })
+      }
+    }
+    prevExtKeysRef.current = keys
+  }, [renderFields])
 
   // 引用联动字段选项：本工单已提交记录值 + 本次提交值（与后端 advance_ticket 口径一致）
   const refOpts = useMemo(
@@ -736,6 +763,14 @@ export default function TicketDetail() {
   const fieldCls = (f) => ((missingKeys.includes(f.key) || ipErrors[f.key])
     ? `${inputCls} !border-destructive ring-1 !ring-destructive`
     : inputCls)
+  // 当前表单错误提示（提交被拦截后贴在按钮上方，避免只靠顶部 toast 被忽略）
+  const formErrorText = useMemo(() => {
+    const missing = missingKeys
+      .map((k) => renderFields.find(({ field: f }) => f.key === k)?.field.label || k)
+    const ipErrs = Object.entries(ipErrors).filter(([, v]) => v).map(([, v]) => v)
+    const labels = [...new Set([...missing, ...ipErrs])]
+    return labels.length ? `请先完善以下必填项：${labels.join('、')}` : ''
+  }, [missingKeys, ipErrors, renderFields])
 
   const uploadFile = async (fkey, file) => {
     if (!file) return
@@ -786,8 +821,9 @@ export default function TicketDetail() {
     setIpErrors({})
     // 未命中规则的扩展字段的值不提交
     const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
-    if (routeOptions.length > 1 && !routeTo) return toast.error('请选择流转去向')
-    const targetKey = routeTo || routeSuggested || ''
+    if (routeOptions.length > 1 && !routeTo && !routeSuggested) return toast.error('请选择流转去向')
+    // 条件路由命中 → 强制走条件去向（与后端 _resolve_route 一致，处理人不可改选）
+    const targetKey = routeSuggested || routeTo || ''
     const target = nodes.find((n) => n.key === targetKey)
     // 会签感知的确认文案：当前并行节点中间提交 / 目标并行节点 / 目标结束 / 普通流转
     const sp = ticket?.sign_progress
@@ -1459,21 +1495,28 @@ export default function TicketDetail() {
 
                 {routeOptions.length > 1 && (
                   <div>
-                    <label className={labelCls}>流转去向<span className="text-red-500">*</span></label>
+                    <label className={labelCls}>流转去向{routeSuggested ? null : <span className="text-red-500">*</span>}</label>
                     <div className="flex flex-wrap gap-2">
                       {routeOptions.map((r) => {
                         const isSug = routeSuggested === r.to
                         const target = nodes.find((n) => n.key === r.to)
+                        // 条件命中：去向锁定为条件路由，其余按钮禁用不可改选
+                        const locked = !!routeSuggested
                         return (
-                          <button key={r.to} type="button" onClick={() => setRouteTo(r.to)}
-                            className={`rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'}`}>
+                          <button key={r.to} type="button" disabled={locked && !isSug}
+                            onClick={() => { if (!locked) setRouteTo(r.to) }}
+                            className={`rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'} ${locked && !isSug ? 'cursor-not-allowed opacity-40' : ''}`}>
                             {r.label || target?.name || r.to}
-                            {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-500">条件建议</span>}
+                            {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-500">{locked ? '条件命中·锁定' : '条件建议'}</span>}
                           </button>
                         )
                       })}
                     </div>
-                    <p className={hintCls}>按已填内容自动建议流向（绿色标记），可点击调整</p>
+                    <p className={hintCls}>
+                      {routeSuggested
+                        ? '填写内容已命中流转条件，去向锁定为条件路由，不可手动调整'
+                        : '未命中流转条件，请选择流转去向'}
+                    </p>
                   </div>
                 )}
                 {routeOptions.length === 1 && routeOptions[0].to && (
@@ -1488,6 +1531,13 @@ export default function TicketDetail() {
                   <RichEditable className={inputCls} minHeight={64} placeholder="填写本节点的处理说明，可直接粘贴截图" value={comment}
                     onChange={setComment} />
                 </div>
+                {formErrorText && (
+                  <div role="alert"
+                    className="flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>{formErrorText}</span>
+                  </div>
+                )}
                 <Button variant="primary" className="w-full" loading={submitting} onClick={handleSubmit}>
                   <SendHorizonal className="mr-1 h-4 w-4" />提交流转
                 </Button>

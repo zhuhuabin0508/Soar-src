@@ -2,11 +2,12 @@
 //
 // 设计基准 1920×1080，16:9 三栏布局，整屏 transform scale 自适应。
 // 数据来源：GET /tickets/monitor 聚合接口（真实工单数据，排除归档），
-// 页面 15s 轮询整体刷新，底部跑马灯每 8s 轮播一条告警（仅超时 / 紧急工单）。
+// 页面按「刷新频率」（默认 15s，可切换 5s/10s/15s/30s/1min/5min 或暂停）轮询整体刷新，
+// 底部跑马灯每 8s 轮播一条告警（仅超时 / 紧急工单）。
 // 提交团队排名按流程模板首节点「提交团队」字段聚合；接口接入前以演示样例渲染（带标记）。
 //
 // 七个分区（代码内以注释分隔）：
-//   ① 顶部：标题栏 + 核心 KPI 总览（等宽数字；超时预警↔待处理橙红描边编组）
+//   ① 顶部：标题栏 + 核心 KPI 总览（等宽数字；超时预警↔处理中橙红描边编组）
 //   ② 左上：工单趋势分析（近 24 小时 / 7 天 / 30 天，新增 vs 关闭）
 //   ③ 左下：事件类型与等级分布（类型 <10 件切横向条形、≥10 件环形；严重度×状态堆叠条形）
 //   ④ 中央：处置状态流转图（虚线流动连线 + 节点下方停留件数）
@@ -19,28 +20,57 @@
 //      面包屑可回跳任意上级（ESC / 遮罩点击关闭当前层）：
 //      团队排名条 → 全部团队数据 → 团队工单列表 → 工单详情（最多四级）；
 //      KPI / 趋势 / 分布 / 流转节点 / SLA / 平台 / 实时列表均可点击下钻对应工单列表。
-import { useEffect, useMemo, useRef, useState } from 'react'
+//   ⑨ 大屏操作：右上工具条（数据健康度 / 刷新频率切换 / 立即刷新 / 报警开关 / 屏幕适配 /
+//      值守轮播 / 全屏切换 + 实时时钟）；中央实时列表状态筛选（全部 / 进行中 / 已完成 / 已取消）
+//      + 快捷筛选（仅超时 / 仅紧急 / ★关注）+ 纵向无缝自动滚动（悬停暂停 + 速度可选）。
+//   ⑩ 投屏细节：空闲 30s 自动隐藏光标与工具条；快捷键 F 全屏 / R 刷新 / 1-4 状态筛选 / T 轮播。
+//   ⑪ 参数化：/ticket-monitor?flow=&refresh=&status=&fit=&fullscreen=1（可直接投屏开机直启）。
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { AlertTriangle, Activity, CheckCircle2, Clock, Layers, Timer, TimerReset, Trophy } from 'lucide-react'
+import {
+  AlertTriangle, Activity, Bell, BellOff, CheckCircle2, Clock, Copy, ExternalLink,
+  Layers, Maximize2, Minimize2, Pause, Play, RefreshCw, Send, Star, Timer, TimerReset, Trophy,
+} from 'lucide-react'
 import { ticketApi } from '../api/tickets'
+import { toast } from '../store/toastStore'
 
-// ============ 主题常量（参考大屏风格：深蓝黑底 + 灰蓝科技蓝 + 橙色强调 + 青色装饰） ============
+// ============ 主题常量（最初版：深蓝黑底 + 灰蓝科技蓝 + 橙色强调 + 青色装饰） ============
+// 背景为深蓝黑底，中心略亮、四角压暗；卡片为高透磨砂玻璃：
+// 约 60% 背景透出 + backdrop-filter 模糊 + 斜向玻璃反光 + 细霜纹理 + 微发光描边。
+const PANEL_GLASS =
+  'linear-gradient(318deg, rgba(205,230,250,0.10) 0%, rgba(205,230,250,0.045) 30%, rgba(205,230,250,0.02) 62%) padding-box, '
+  + 'linear-gradient(0deg, rgba(205,230,250,0.04) 0%, rgba(205,230,250,0.04) 100%) padding-box, '
+  + 'radial-gradient(85% 65% at 0% 0%, rgba(96,138,188,0.06) 0%, rgba(96,138,188,0) 62%) padding-box, '
+  + 'repeating-linear-gradient(45deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 7px) padding-box, '
+  + 'linear-gradient(158deg, rgba(16,30,44,0.40) 0%, rgba(13,25,37,0.38) 100%) padding-box'
+
 const C = {
-  deepNavy: '#0B131C',      // 底色（深蓝黑）
-  panelBg: 'rgba(14, 26, 38, 0.78)',
+  // 背景层：中心略亮 → 过渡 → 四角压暗
+  deepNavy: '#0B131C',          // 四角/边缘深底
+  canvasCenter: '#16222E',      // 中心亮区
+  canvasBase: '#111D2A',        // 画面主底色
+  canvasEdge: '#0D1824',        // 过渡带
+  // 卡片层：高透磨砂玻璃（约 60% 背景透出）
+  panelBg: PANEL_GLASS,
+  panelFade: 'rgba(17, 30, 43, 0.85)',       // 列表滚动渐隐（与玻璃合成色一致）
   panelBorder: 'rgba(96, 138, 188, 0.38)',
-  techBlue: '#4E8AD4',      // 科技蓝（主色）
-  lightBlue: '#6FA0D8',     // 浅蓝（辅助）
+  panelBorderSoft: 'rgba(96, 138, 188, 0.22)',
+  innerBg: 'rgba(255, 255, 255, 0.04)',     // 卡面之上的内层卡片
+  innerBgSoft: 'rgba(255, 255, 255, 0.028)',
+  controlBg: 'rgba(14, 26, 38, 0.80)',      // 输入/下拉等控件底
+  techBlue: '#4E8AD4',          // 科技蓝（主色）
+  lightBlue: '#6FA0D8',         // 浅蓝（辅助）
   paleBlue: '#A8C8EC',
-  cyan: '#45B8CD',          // 青色霓虹（装饰线条/流光）
-  accent: '#E57832',        // 橙色强调（标题竖条/点缀）
+  cyan: '#45B8CD',              // 青色霓虹（装饰线条/流光）
+  accent: '#E57832',            // 橙色强调（标题竖条/点缀）
+  // 文字层
   text: '#E6ECF2',
   subText: '#93A6B8',
   axis: 'rgba(110, 140, 175, 0.45)',
   split: 'rgba(80, 120, 170, 0.12)',
-  red: '#FF4D4F',           // 紧急/超时
-  orange: '#FFA940',        // 高危
-  green: '#41D08C',         // 已解决
+  red: '#FF4D4F',               // 紧急/超时
+  orange: '#FFA940',            // 高危
+  green: '#41D08C',             // 已解决
   grayBlue: '#5D7089',
   tooltipBg: '#10222F',
 }
@@ -66,8 +96,14 @@ function Panel({ title, subtitle, icon: Icon, right, children, className = '', b
   const cornerColor = alert ? C.red : C.cyan
   const cornerGlow = alert ? 'rgba(255,77,79,0.6)' : 'rgba(69,184,205,0.6)'
   return (
-    <div className={`relative flex flex-col rounded-md border backdrop-blur-md ${className}`}
-      style={{ background: C.panelBg, borderColor: C.panelBorder, boxShadow: `0 0 14px rgba(80, 130, 190, 0.14), inset 0 0 24px rgba(8, 16, 26, 0.4)` }} {...rest}>
+    <div className={`relative flex flex-col rounded-md border backdrop-blur-xl ${className}`}
+      style={{
+        background: C.panelBg,
+        borderColor: C.panelBorder,
+        backdropFilter: 'blur(24px) saturate(150%)',
+        WebkitBackdropFilter: 'blur(24px) saturate(150%)',
+        boxShadow: '0 8px 26px rgba(2, 6, 12, 0.30), 0 0 16px rgba(80, 130, 190, 0.12), inset 0 1px 0 rgba(168, 200, 236, 0.16), inset 0 0 32px rgba(96, 138, 188, 0.06)',
+      }} {...rest}>
       {/* 玻璃顶缘高光：层叠质感 */}
       <div className="pointer-events-none absolute inset-x-3 top-0 z-10 h-px"
         style={{ background: 'linear-gradient(90deg, transparent, rgba(168,200,236,0.4), transparent)' }} />
@@ -77,14 +113,15 @@ function Panel({ title, subtitle, icon: Icon, right, children, className = '', b
       <span className="pointer-events-none absolute bottom-0 right-0 z-10 h-2.5 w-2.5 rounded-br border-b-2 border-r-2"
         style={{ borderColor: cornerColor, filter: `drop-shadow(0 0 3px ${cornerGlow})` }} />
       <div className="flex items-center gap-2 border-b px-4 py-2.5"
-        style={{ borderColor: 'rgba(96,138,188,0.22)' }}>
-        <span className="h-3.5 w-[3px] rounded" style={{ background: C.accent, boxShadow: `0 0 6px ${C.accent}80` }} />
-        <span className="text-[16px] font-bold tracking-wide" style={{ color: C.text }}>{title}</span>
+        style={{ borderColor: C.panelBorderSoft }}>
+        <span className="h-3.5 w-[3px] shrink-0 rounded" style={{ background: C.accent, boxShadow: `0 0 6px ${C.accent}80` }} />
+        {/* 标题不换行（窄面板也要完整展示）；空间不足时优先压缩英文副标题与右侧操作区 */}
+        <span className="shrink-0 whitespace-nowrap text-[16px] font-bold tracking-wide" style={{ color: C.text }}>{title}</span>
         {subtitle && (
-          <span className="truncate text-[10px] uppercase tracking-[2px]" style={{ color: C.subText, opacity: 0.75 }}>{subtitle}</span>
+          <span className="min-w-0 truncate text-[10px] uppercase tracking-[2px]" style={{ color: C.subText, opacity: 0.75 }}>{subtitle}</span>
         )}
-        {Icon && <Icon className="h-3.5 w-3.5" style={{ color: C.lightBlue }} />}
-        <div className="ml-auto flex items-center gap-2">{right}</div>
+        {Icon && <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: C.lightBlue }} />}
+        <div className="ml-auto flex shrink-0 items-center gap-2">{right}</div>
       </div>
       <div className={`min-h-0 flex-1 ${bodyClassName}`}>{children}</div>
     </div>
@@ -94,18 +131,158 @@ function Panel({ title, subtitle, icon: Icon, right, children, className = '', b
 // ============ ① 顶部：标题栏 + 时钟 ============
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
 
-function HeaderBar({ demo }) {
+// 数据刷新频率选项（值 = 毫秒；0 = 暂停自动刷新，仅手动刷新）。选择后本地记忆，刷新页面仍生效。
+const REFRESH_OPTIONS = [
+  { label: '5 秒', value: 5000 },
+  { label: '10 秒', value: 10000 },
+  { label: '15 秒', value: 15000 },
+  { label: '30 秒', value: 30000 },
+  { label: '1 分钟', value: 60000 },
+  { label: '5 分钟', value: 300000 },
+  { label: '暂停刷新', value: 0 },
+]
+const REFRESH_KEY = 'ticket_monitor_refresh_ms'
+const DEFAULT_REFRESH_MS = 15000
+
+function readRefreshMs() {
+  try {
+    const raw = window.localStorage.getItem(REFRESH_KEY)
+    // 空值（首次进入）不能用 Number(null)=0，否则会误命中「暂停刷新」
+    if (raw === null || raw === '') return DEFAULT_REFRESH_MS
+    const n = Number(raw)
+    return REFRESH_OPTIONS.some((o) => o.value === n) ? n : DEFAULT_REFRESH_MS
+  } catch {
+    return DEFAULT_REFRESH_MS
+  }
+}
+
+// ============ 大屏偏好（全部本地记忆，可被 URL 参数覆盖）============
+const SPEED_KEY = 'ticket_monitor_speed'      // 实时列表滚动速度 px/s
+const WATCH_KEY = 'ticket_monitor_watch'      // ★关注工单 id 列表
+const ALARM_KEY = 'ticket_monitor_alarm'      // 声光报警开关
+const FIT_KEY = 'ticket_monitor_fit'          // 屏幕适配：contain=等比留边 / cover=满屏拉伸
+const SPEED_OPTIONS = [
+  { label: '慢', value: 12 },
+  { label: '中', value: 24 },
+  { label: '快', value: 36 },
+]
+const DEFAULT_SPEED = 24
+const FIT_OPTIONS = [
+  { label: '等比', value: 'contain' },
+  { label: '满屏', value: 'cover' },
+]
+const IDLE_MS = 30000       // 无操作自动隐藏光标/工具条
+const TOUR_MS = 15000       // 值守轮播间隔
+
+function readSpeed() {
+  try {
+    const n = Number(window.localStorage.getItem(SPEED_KEY))
+    return SPEED_OPTIONS.some((o) => o.value === n) ? n : DEFAULT_SPEED
+  } catch {
+    return DEFAULT_SPEED
+  }
+}
+
+function readWatchIds() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(WATCH_KEY) || '[]')
+    return Array.isArray(raw) ? raw.map(Number).filter((x) => Number.isFinite(x)) : []
+  } catch {
+    return []
+  }
+}
+
+function readFlag(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw === null) return fallback
+    return raw === '1' || raw === 'true'
+  } catch {
+    return fallback
+  }
+}
+
+function readFit() {
+  try {
+    const raw = window.localStorage.getItem(FIT_KEY)
+    return FIT_OPTIONS.some((o) => o.value === raw) ? raw : 'contain'
+  } catch {
+    return 'contain'
+  }
+}
+
+// ============ URL 参数（可直接生成投屏专用链接）============
+// /ticket-monitor?flow=<流程ID>&refresh=<刷新毫秒>&status=<全部|processing|completed|cancelled>
+//                &fit=<contain|cover>&fullscreen=1
+// 参数优先级高于本地记忆；fullscreen=1 因浏览器策略需首个用户手势后进入全屏（页面会提示点击）
+function readUrlParams() {
+  let p
+  try {
+    p = new URLSearchParams(window.location.search)
+  } catch {
+    p = new URLSearchParams()
+  }
+  const refresh = Number(p.get('refresh'))
+  const status = p.get('status')
+  const fit = p.get('fit')
+  return {
+    flow: (p.get('flow') || '').trim() || null,
+    refresh: REFRESH_OPTIONS.some((o) => o.value === refresh) ? refresh : null,
+    status: ['all', 'processing', 'completed', 'cancelled'].includes(status) ? status : null,
+    fit: FIT_OPTIONS.some((o) => o.value === fit) ? fit : null,
+    fullscreen: p.get('fullscreen') === '1' || p.get('fullscreen') === 'true',
+  }
+}
+
+// KPI 迷你趋势采样（本屏观测最近 24 次；切换流程时重置）
+const KPI_FIELDS = ['total', 'today_new', 'pending', 'processing_active', 'completed', 'cancelled', 'timeout_warning']
+const KPI_HIST_MAX = 24
+const DRILL_CACHE_MS = 5 * 60 * 1000   // 下钻工单集缓存有效期（按需拉取，避免每次轮询下发 2000 条）
+const ALARM_FLASH_MS = 4200            // 新增超时工单时顶部红闪时长
+const STATUS_HOTKEYS = { 1: 'all', 2: 'processing', 3: 'completed', 4: 'cancelled' }
+
+// ============ 数据健康度（正常 / 延迟 / 断开）============
+const HEALTH_META = {
+  ok: { color: C.green, label: '正常' },
+  stale: { color: C.orange, label: '延迟' },
+  offline: { color: C.red, label: '断开' },
+}
+
+// ============ ① 顶部标题栏 + 工具条 ============
+// 工具条：健康度 · 时钟 · 刷新频率 · 立即刷新 · 报警 · 屏幕适配 · 值守轮播 · 全屏
+function HeaderBar({
+  demo, refreshMs, onRefreshMs, onRefresh, refreshing, lastUpdated,
+  isFullscreen, onToggleFullscreen, health, alarmOn, onToggleAlarm,
+  fit, onFit, tourOn, onToggleTour, hidden,
+}) {
   const [now, setNow] = useState(new Date())
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(t)
   }, [])
   const pad = (n) => String(n).padStart(2, '0')
+  const updatedAt = lastUpdated
+    ? `${pad(lastUpdated.getHours())}:${pad(lastUpdated.getMinutes())}:${pad(lastUpdated.getSeconds())}`
+    : '--:--:--'
+  // 工具条按钮统一样式（玻璃底 + 微描边，悬停提亮）
+  const toolBtn = {
+    borderColor: 'rgba(96,138,188,0.40)',
+    background: 'rgba(78,138,212,0.10)',
+    color: C.paleBlue,
+  }
+  const hm = HEALTH_META[health?.status] || HEALTH_META.ok
+  const healthTip = [
+    `数据源：${hm.label}`,
+    lastUpdated ? `最近成功 ${updatedAt}` : null,
+    health?.latency != null ? `响应 ${health.latency}ms` : null,
+    health?.fails ? `连续失败 ${health.fails} 次` : null,
+    health?.error || null,
+  ].filter(Boolean).join(' · ')
   return (
     <div className="relative flex h-16 items-center justify-center px-6">
       {/* 标题底衬光带 */}
       <div className="absolute inset-x-0 top-0 h-16"
-        style={{ background: 'linear-gradient(180deg, rgba(69,184,205,0.20) 0%, rgba(11,19,28,0) 100%)' }} />
+        style={{ background: 'linear-gradient(180deg, rgba(69,184,205,0.14) 0%, rgba(13,24,38,0) 100%)' }} />
       {/* 演示模式标记（全屏演示数据时显示；后端聚合接口接入后自动消失） */}
       {demo && (
         <span className="absolute left-6 top-2 z-10 flex items-center gap-1 rounded border px-1.5 py-0.5 text-[12px]"
@@ -116,11 +293,11 @@ function HeaderBar({ demo }) {
           演示数据
         </span>
       )}
-      {/* 两侧对称装饰线（青色霓虹） */}
+      {/* 两侧装饰线（青色霓虹）；右侧让位于工具条，避免穿过控件文字 */}
       <div className="absolute left-6 top-1/2 h-[2px] w-[260px] -translate-y-1/2"
         style={{ background: `linear-gradient(90deg, transparent, ${C.cyan})`, boxShadow: `0 0 8px ${C.cyan}66` }} />
-      <div className="absolute right-6 top-1/2 h-[2px] w-[260px] -translate-y-1/2"
-        style={{ background: `linear-gradient(270deg, transparent, ${C.cyan})`, boxShadow: `0 0 8px ${C.cyan}66` }} />
+      <div className="absolute top-1/2 h-[2px] w-[150px] -translate-y-1/2"
+        style={{ right: 600, background: `linear-gradient(270deg, transparent, ${C.cyan})`, boxShadow: `0 0 8px ${C.cyan}66` }} />
       <div className="relative text-center">
         <h1 className="text-[30px] font-bold tracking-[6px]"
           style={{ color: C.text, textShadow: `0 0 18px ${C.cyan}59`, fontFamily: "'PingFang SC','Microsoft YaHei',sans-serif" }}>
@@ -130,14 +307,93 @@ function HeaderBar({ demo }) {
           TICKET&nbsp;MONITORING&nbsp;&amp;&nbsp;OPERATIONS&nbsp;CENTER
         </div>
       </div>
-      {/* 右上角实时时钟 */}
-      <div className="absolute right-6 top-1/2 -translate-y-1/2 text-right">
-        <div className="font-mono text-[20px] font-bold tabular-nums" style={{ color: C.text }}>
-          {pad(now.getHours())}:{pad(now.getMinutes())}:{pad(now.getSeconds())}
+
+      {/* 右上工具条：健康度 · 时钟 · 刷新频率 · 立即刷新 · 报警 · 屏幕适配 · 值守轮播 · 全屏
+          （独立玻璃底托，压住装饰线；空闲 30s 自动淡出，鼠标一动恢复） */}
+      <div className={`absolute right-6 top-1/2 z-20 flex -translate-y-1/2 items-center gap-2 rounded-md border px-2.5 py-1.5 backdrop-blur-xl transition-opacity duration-500 ${hidden ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+        data-tour
+        style={{
+          background: C.panelBg,
+          borderColor: C.panelBorder,
+          backdropFilter: 'blur(20px) saturate(150%)',
+          WebkitBackdropFilter: 'blur(20px) saturate(150%)',
+          boxShadow: '0 4px 16px rgba(2,6,12,0.28), 0 0 12px rgba(80,130,190,0.12), inset 0 1px 0 rgba(168,200,236,0.16)',
+        }}>
+        {/* 数据健康度：正常 / 延迟 / 断开（悬停查看最近成功时间、响应耗时、连续失败次数） */}
+        <div className="flex items-center gap-1 text-[12px]" style={{ color: hm.color }} title={healthTip}>
+          <span className={`h-1.5 w-1.5 rounded-full ${health?.status === 'ok' ? 'animate-pulse' : ''}`}
+            style={{ background: hm.color, boxShadow: `0 0 6px ${hm.color}` }} />
+          {hm.label}
         </div>
-        <div className="text-[13px]" style={{ color: C.subText }}>
-          {now.getFullYear()}-{pad(now.getMonth() + 1)}-{pad(now.getDate())}&nbsp;&nbsp;{WEEKDAYS[now.getDay()]}
+        <span className="h-8 w-px shrink-0" style={{ background: 'rgba(96,138,188,0.32)' }} />
+        {/* 实时时钟 */}
+        <div className="text-right">
+          <div className="font-mono text-[18px] font-bold leading-tight tabular-nums" style={{ color: C.text }}>
+            {pad(now.getHours())}:{pad(now.getMinutes())}:{pad(now.getSeconds())}
+          </div>
+          <div className="text-[11px] leading-tight" style={{ color: C.subText }}>
+            {now.getFullYear()}-{pad(now.getMonth() + 1)}-{pad(now.getDate())}&nbsp;{WEEKDAYS[now.getDay()]}
+          </div>
         </div>
+        <span className="h-8 w-px shrink-0" style={{ background: 'rgba(96,138,188,0.32)' }} />
+        {/* 刷新频率：选择即生效并本地记忆；暂停态以橙色提示 */}
+        <div className="flex flex-col">
+          <div className="flex items-center gap-1 text-[12px]" style={{ color: C.subText }}>
+            <span>刷新</span>
+            <select
+              value={refreshMs}
+              onChange={(e) => onRefreshMs(Number(e.target.value))}
+              title="实时列表刷新频率（选择后立即生效并记住；全景数据每 60s 或 4 个周期自动同步一次；暂停仅保留手动刷新）"
+              className="cursor-pointer rounded border px-1 py-0.5 text-[12px] outline-none transition hover:brightness-125"
+              style={{ ...toolBtn, background: C.controlBg, colorScheme: 'dark' }}>
+              {REFRESH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div className="mt-0.5 text-[10px] tabular-nums"
+            style={{ color: refreshMs === 0 ? C.orange : C.subText, opacity: 0.9 }}>
+            {refreshMs === 0 ? '已暂停自动刷新' : `更新于 ${updatedAt}`}
+          </div>
+        </div>
+        {/* 立即刷新（刷新中图标旋转） */}
+        <button type="button" onClick={onRefresh} title="立即刷新数据（R）" aria-label="立即刷新数据"
+          className="flex h-6 w-6 items-center justify-center rounded border transition hover:brightness-125"
+          style={toolBtn}>
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+        </button>
+        {/* 报警开关：新增超时工单时提示音 + 顶部红闪 */}
+        <button type="button" onClick={onToggleAlarm}
+          title={alarmOn ? '声光报警：开（新增超时工单时响铃+顶部红闪，点击关闭）' : '声光报警：关（点击开启）'}
+          aria-label={alarmOn ? '关闭声光报警' : '开启声光报警'} aria-pressed={alarmOn}
+          className="flex h-6 w-6 items-center justify-center rounded border transition hover:brightness-125"
+          style={alarmOn ? { ...toolBtn, color: C.orange, borderColor: 'rgba(229,120,50,0.55)', background: 'rgba(229,120,50,0.14)' } : toolBtn}>
+          {alarmOn ? <Bell className="h-3.5 w-3.5" /> : <BellOff className="h-3.5 w-3.5" />}
+        </button>
+        {/* 屏幕适配：等比（16:9 留黑边）/ 满屏（拉伸填满非 16:9 投影） */}
+        <select
+          value={fit}
+          onChange={(e) => onFit(e.target.value)}
+          title="屏幕适配：等比=保持 16:9（4K/2K 等比放大，最清晰）；满屏=拉伸填满（非 16:9 投影/带鱼屏）"
+          className="cursor-pointer rounded border px-1 py-0.5 text-[12px] outline-none transition hover:brightness-125"
+          style={{ ...toolBtn, background: C.controlBg, colorScheme: 'dark' }}>
+          {FIT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {/* 值守轮播：每 15s 轮播「处理中 / 超时 / 平台 / 团队」下钻视图（鼠标点击/ESC 即停） */}
+        <button type="button" onClick={onToggleTour} data-tour
+          title={tourOn ? '值守轮播：进行中（每 15s 自动切换下钻视图，点击/ESC 停止）' : '值守轮播：每 15s 自动轮播重点下钻视图（T）'}
+          aria-label={tourOn ? '停止值守轮播' : '开始值守轮播'} aria-pressed={tourOn}
+          className="flex h-6 w-6 items-center justify-center rounded border transition hover:brightness-125"
+          style={tourOn ? { ...toolBtn, color: C.cyan, borderColor: 'rgba(69,184,205,0.55)', background: 'rgba(69,184,205,0.16)' } : toolBtn}>
+          {tourOn ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+        </button>
+        {/* 全屏切换（浏览器级全屏，隐藏系统任务栏/浏览器边框，大屏投放用） */}
+        <button type="button" onClick={onToggleFullscreen}
+          title={isFullscreen ? '退出全屏（ESC / F）' : '进入全屏（F 或浏览器 F11）'}
+          aria-label={isFullscreen ? '退出全屏' : '进入全屏'}
+          className="flex h-6 items-center gap-1 rounded border px-1.5 text-[12px] transition hover:brightness-125"
+          style={toolBtn}>
+          {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          <span>{isFullscreen ? '退出' : '全屏'}</span>
+        </button>
       </div>
     </div>
   )
@@ -172,12 +428,49 @@ function useCountUp(value, duration = 800) {
   return value === null || value === undefined ? value : display
 }
 
-// groupBorder：与关联卡片同色橙红描边做视觉编组（超时预警↔待处理）
+// 系统「减少动态效果」偏好：开启时关闭实时列表自动滚动（无障碍）
+function usePrefersReducedMotion() {
+  const [reduce, setReduce] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!mq) return undefined
+    const sync = () => setReduce(mq.matches)
+    sync()
+    mq.addEventListener?.('change', sync)
+    return () => mq.removeEventListener?.('change', sync)
+  }, [])
+  return reduce
+}
+
+// 迷你趋势线（KPI 卡右上角）：本屏观测到的最近 24 个采样点，纯 SVG 不引入图表实例
+function Sparkline({ values, color, width = 56, height = 16 }) {
+  if (!Array.isArray(values) || values.length < 2) return null
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = max - min || 1
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * width
+    const y = height - 1 - ((v - min) / span) * (height - 3)
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+  const lastX = width
+  const lastY = height - 1 - ((values[values.length - 1] - min) / span) * (height - 3)
+  return (
+    <svg width={width} height={height} className="shrink-0" aria-hidden="true" style={{ opacity: 0.85 }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx={lastX} cy={lastY} r="1.8" fill={color} />
+    </svg>
+  )
+}
+
+// groupBorder：与关联卡片同色橙红描边做视觉编组（超时预警↔处理中）
 // zeroNote：数值为 0 时灰色虚线描边 + 底部文案（避免"灰得像坏了"）
-// note：底部小字补充口径（如"占待处理 X%"）
+// note：底部小字补充口径（如"占处理中 X%"）
+// spark：本屏观测的迷你趋势数据（≥2 个采样才显示）
+// pulse：数值异常时描边呼吸（超时预警 > 0）
 // onClick：点击卡片下钻对应口径的工单列表（弹窗，不跳转）
-function KpiCard({ label, value, unit = '件', tone = 'blue', delta, deltaLabel = '较昨日', note, zeroNote, groupBorder, onClick }) {
-  const toneColor = tone === 'red' ? C.red : tone === 'green' ? C.green : tone === 'orange' ? C.orange : C.lightBlue
+function KpiCard({ label, value, unit = '件', tone = 'blue', delta, deltaLabel = '较昨日', note, zeroNote, groupBorder, onClick, spark, pulse }) {
+  const toneColor = tone === 'red' ? C.red : tone === 'green' ? C.green : tone === 'orange' ? C.orange : tone === 'gray' ? C.grayBlue : C.lightBlue
   const animated = useCountUp(value)
   const zeroState = value === 0 && zeroNote
   const bottomNote = zeroState ? zeroNote : note
@@ -185,17 +478,24 @@ function KpiCard({ label, value, unit = '件', tone = 'blue', delta, deltaLabel 
     <div
       onClick={onClick}
       title={onClick ? '点击下钻查看对应工单列表' : undefined}
-      className={`relative flex flex-col justify-center rounded-md border px-4 py-2 transition-all duration-300 hover:brightness-110 ${onClick ? 'cursor-pointer' : ''}`}
+      className={`relative flex flex-col justify-center rounded-md border px-4 py-2 backdrop-blur-lg transition-all duration-300 hover:brightness-110 ${onClick ? 'cursor-pointer' : ''} ${pulse ? 'kpi-alert-pulse' : ''}`}
       style={{
-        background: 'linear-gradient(160deg, rgba(78,138,212,0.14), rgba(14,26,38,0.72))',
-        borderColor: groupBorder ? 'rgba(255,77,79,0.60)' : zeroState ? 'rgba(147,166,184,0.45)' : 'rgba(96,138,188,0.35)',
+        background: C.panelBg,
+        borderColor: groupBorder ? 'rgba(255,77,79,0.60)' : zeroState ? 'rgba(147,166,184,0.45)' : C.panelBorder,
         borderStyle: zeroState ? 'dashed' : 'solid',
-        boxShadow: groupBorder ? '0 0 10px rgba(255,77,79,0.16)' : '0 0 10px rgba(80,130,190,0.10)',
+        backdropFilter: 'blur(18px) saturate(150%)',
+        WebkitBackdropFilter: 'blur(18px) saturate(150%)',
+        boxShadow: groupBorder
+          ? '0 0 12px rgba(255,77,79,0.20), inset 0 1px 0 rgba(255,220,220,0.18)'
+          : '0 4px 16px rgba(2, 6, 12, 0.28), 0 0 12px rgba(80, 130, 190, 0.10), inset 0 1px 0 rgba(168,200,236,0.16)',
       }}>
-      <div className="text-[14px]" style={{ color: C.subText }}>{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[14px]" style={{ color: C.subText }}>{label}</span>
+        <Sparkline values={spark} color={toneColor} />
+      </div>
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-[32px] font-bold leading-[1.15] tabular-nums"
-          style={{ color: zeroState ? 'rgba(147,166,184,0.85)' : toneColor, textShadow: `0 0 10px ${toneColor}40` }}>
+          style={{ color: zeroState ? 'rgba(147,166,184,0.9)' : toneColor, textShadow: `0 0 10px ${toneColor}40` }}>
           {animated ?? '--'}
         </span>
         <span className="text-[12px]" style={{ color: C.subText }}>{unit}</span>
@@ -325,7 +625,7 @@ function pieOption(rows) {
       type: 'pie', radius: ['48%', '70%'], center: ['50%', '46%'],
       label: { color: C.text, fontSize: 13, width: 100, overflow: 'break', formatter: '{b}\n{c}件 · {d}%' },
       labelLine: { length: 14, length2: 10, lineStyle: { color: C.axis } },
-      itemStyle: { borderColor: '#0A1220', borderWidth: 1 },
+      itemStyle: { borderColor: '#0B131C', borderWidth: 1 },
       data,
     }],
   }
@@ -477,7 +777,7 @@ function DistPanel({ dist, severityStatus, onDrill }) {
 // ============ ④ 中央-上：处置状态流转图（虚线流动连线 + 节点下方停留件数 + 流程切换） ============
 // flows：可选流程模板列表；activeFlow：后端当前生效流程（auto=自动选取）；
 // selected/onSelect：切换器受控状态（'' = 自动）。节点序列来自模板当前定义，改模板后轮询自动更新。
-// onDrill：点击节点卡片下钻该节点停留工单（完成节点 → 已关闭工单）
+// onDrill：点击节点卡片下钻该节点停留工单（完成节点 → 全流程已解决工单）
 function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }) {
   const nodes = flowNodes || []
   const flowsList = flows || []
@@ -494,7 +794,7 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
             value={selectValue}
             onChange={(e) => onSelect(e.target.value)}
             className="max-w-[240px] cursor-pointer truncate rounded border px-2 py-1 text-[13px] outline-none transition focus:ring-1"
-            style={{ borderColor: 'rgba(96,138,188,0.45)', color: C.text, background: 'rgba(16,34,52,0.9)' }}
+            style={{ borderColor: 'rgba(96,138,188,0.45)', color: C.text, background: C.controlBg }}
           >
             <option value="">自动（工单最多的流程）</option>
             {flowsList.map((f) => (
@@ -528,25 +828,26 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
                   <div className="flex min-w-0 flex-1 flex-col items-center" style={{ maxWidth: 150 }}>
                     <div
                       title={onDrill
-                        ? `点击查看「${n.name}」${n.key === '_finished' ? '已关闭' : '停留'}工单列表`
+                        ? `点击查看「${n.name}」${n.key === '_finished' ? '已解决' : '停留'}工单列表`
                         : `${n.name}${n.group ? ` · ${n.group}` : ''}`}
                       onClick={onDrill ? () => onDrill({
                         kind: 'tickets',
-                        title: `「${n.name}」${n.key === '_finished' ? '已关闭工单' : '节点停留工单'}`,
+                        title: `「${n.name}」${n.key === '_finished' ? '已解决工单' : '节点停留工单'}`,
                         subtitle: '处置流转下钻',
-                        // 后端节点计数限定当前展示流程（多流程节点 key 可能重名），下钻同步限定
+                        // 普通节点计数限定当前展示流程（多流程节点 key 可能重名），下钻同步限定；
+                        // 已完结节点为全流程已解决口径（后端计数已不再限定流程，下钻同步不限定）
                         filters: n.key === '_finished'
-                          ? { closedAll: true, flowId: activeFlow?.id ?? null }
+                          ? { status: 'completed' }
                           : { nodeKey: n.key, flowId: activeFlow?.id ?? null },
                       }) : undefined}
                       className={`flex min-w-0 w-full cursor-pointer flex-col items-center rounded-md border px-2 py-2 transition-all duration-300 hover:brightness-125 ${active ? 'node-glow' : ''}`}
                       style={{
                         borderColor: active ? `${C.cyan}99` : 'rgba(96,138,188,0.28)',
                         background: active
-                          ? 'linear-gradient(160deg, rgba(69,184,205,0.22), rgba(14,26,38,0.65))'
+                          ? 'linear-gradient(160deg, rgba(69,184,205,0.26), rgba(255,255,255,0.05))'
                           : n.key === '_finished' && n.current > 0
-                            ? 'linear-gradient(160deg, rgba(65,208,140,0.14), rgba(14,26,38,0.6))'
-                            : 'rgba(14,26,38,0.55)',
+                            ? 'linear-gradient(160deg, rgba(65,208,140,0.16), rgba(255,255,255,0.05))'
+                            : 'rgba(255,255,255,0.05)',
                       }}
                     >
                       <div className="w-full truncate text-center text-[14px] font-medium" style={{ color: C.text }}>{n.name}</div>
@@ -578,7 +879,7 @@ function FlowPanel({ flowNodes, flows, activeFlow, selected, onSelect, onDrill }
                       style={{ color, textShadow: active ? `0 0 10px ${C.cyan}55` : 'none' }}>
                       {n.current}
                     </span>
-                    <span className="shrink-0 text-[11px]" style={{ color: C.subText }}>{finished ? '✓ 已关闭' : '当前停留'}</span>
+                    <span className="shrink-0 text-[11px]" style={{ color: C.subText }}>{finished ? '✓ 已解决' : '当前停留'}</span>
                   </div>
                   {i < nodes.length - 1 && <div className="mx-2.5 min-w-[28px] flex-1" />}
                 </div>
@@ -675,8 +976,8 @@ function TeamRankPanel({ rows, onDrill }) {
                 style={{
                   borderColor: champion ? 'rgba(245,200,79,0.5)' : 'rgba(96,138,188,0.2)',
                   background: champion
-                    ? 'linear-gradient(165deg, rgba(245,200,79,0.10), rgba(14,26,38,0.65))'
-                    : 'rgba(18,34,52,0.45)',
+                    ? 'linear-gradient(165deg, rgba(245,200,79,0.14), rgba(255,255,255,0.05))'
+                    : C.innerBg,
                 }}>
                 <div className="flex min-w-0 items-center gap-1.5">
                   {meta ? (
@@ -717,7 +1018,7 @@ function TeamRankPanel({ rows, onDrill }) {
             <div title={onDrill ? '点击查看全部团队排名明细' : rest.map((d) => `${d.name} ${d.value} 件`).join(' / ')}
               onClick={onDrill ? () => onDrill({ kind: 'teams', title: '提交团队 · 全部团队数据', subtitle: '全部团队工单排名' }) : undefined}
               className="flex w-[76px] shrink-0 cursor-pointer flex-col items-center justify-center gap-0.5 rounded border border-dashed px-1 transition hover:brightness-125"
-              style={{ borderColor: 'rgba(147,166,184,0.4)', background: 'rgba(18,34,52,0.3)' }}>
+              style={{ borderColor: 'rgba(147,166,184,0.4)', background: C.innerBgSoft }}>
               <span className="text-[12px]" style={{ color: C.subText }}>其余 {rest.length} 队</span>
               <span className="font-mono text-[15px] font-bold tabular-nums" style={{ color: C.subText }}>{restTotal} 件</span>
             </div>
@@ -728,7 +1029,7 @@ function TeamRankPanel({ rows, onDrill }) {
   )
 }
 
-// ============ ④ 中央-下：最新工单实时列表（48px 行高 / 新行 2s 青色渐隐高亮 / 等级 pill / 超时置顶） ============
+// ============ ④ 中央-下：最新工单实时列表（48px 行高 / 状态筛选 / 纵向自动滚动 / 新行渐隐高亮） ============
 // 等级 pill 配色：紧急=红、高=橙、中=蓝、低=灰；紧急另加「!」做色彩之外的告警编码（色盲无障碍）
 const PRIORITY_PILL = {
   critical: { bg: 'rgba(255,77,79,0.16)', color: C.red, border: 'rgba(255,77,79,0.5)' },
@@ -737,33 +1038,285 @@ const PRIORITY_PILL = {
   low: { bg: 'rgba(147,166,184,0.14)', color: C.subText, border: 'rgba(147,166,184,0.35)' },
 }
 
-function LiveList({ latest, onDrill }) {
-  const prevIdsRef = useRef(null)
-  const rows = useMemo(() => {
-    const list = [...(latest || [])]
-    // 超时工单红色高亮并置顶，其余按时间倒序
-    list.sort((a, b) => (b.timeout - a.timeout) || (b.created_at || '').localeCompare(a.created_at || ''))
-    // 行高增至 48px（适配 3-5 米远距离观看）；中央栏加入团队排名条后可视行数调整为 6 行
-    return list.slice(0, 6)
-  }, [latest])
+// 状态筛选项（与工单状态枚举、列表「状态」列文案一致；计数按筛选前全量口径）
+const LIVE_FILTERS = [
+  { key: 'all', label: '全部' },
+  { key: 'processing', label: '进行中' },
+  { key: 'completed', label: '已完成' },
+  { key: 'cancelled', label: '已取消' },
+]
+const ROW_UNIT = 52        // 单行占位高度 = 48px 行高 + 4px 行间距（滚动位移按此整数倍计算）
+const LIVE_MAX_ROWS = 100  // 最多渲染行数（防超长 DOM；筛选计数仍展示全量）
+
+// status/onStatus：状态筛选由父组件持有（便于快捷键 1-4 与 URL 参数联动）
+function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
+  const [hovering, setHovering] = useState(false)
+  const [viewportH, setViewportH] = useState(0)
+  const [speed, setSpeed] = useState(readSpeed)
+  const [quick, setQuick] = useState({ timeout: false, critical: false, watch: false })
+  const [watchIds, setWatchIds] = useState(readWatchIds)
+  const viewportRef = useRef(null)
+  const hoveringRef = useRef(false)
+  const reduceMotion = usePrefersReducedMotion()
+  // 新工单识别：仅在「同一筛选口径」下新增的 id 高亮，切换筛选时不整列表闪烁
+  const seenRef = useRef({ scope: null, ids: new Set() })
+  const setStatus = (v) => { if (onStatus) onStatus(v) }
+  const watchSet = useMemo(() => new Set(watchIds), [watchIds])
+
+  // ★关注：写 localStorage（跨刷新保留），关注工单在列表中置顶
+  const toggleWatch = (id) => {
+    setWatchIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+      try { window.localStorage.setItem(WATCH_KEY, JSON.stringify(next)) } catch { /* 忽略存储异常 */ }
+      return next
+    })
+  }
+
+  const changeSpeed = (v) => {
+    setSpeed(v)
+    try { window.localStorage.setItem(SPEED_KEY, String(v)) } catch { /* 忽略存储异常 */ }
+  }
+
+  // 数据池：下钻工单集（全量）∪ 最新列表（覆盖同 id 的新鲜字段，保证高频轮询能看到新工单）
+  const pool = useMemo(() => {
+    const map = new Map()
+    if (Array.isArray(tickets)) tickets.forEach((t) => map.set(t.id, t))
+    if (Array.isArray(latest)) latest.forEach((t) => map.set(t.id, { ...(map.get(t.id) || {}), ...t }))
+    // 排序：★关注置顶 → 近 24 小时内超时 → 创建时间倒序
+    const recent = isoLocal(new Date(Date.now() - 24 * 3600 * 1000))
+    const urgent = (r) => (r.timeout && (r.created_at || '') >= recent ? 1 : 0)
+    const watched = (r) => (watchSet.has(r.id) ? 1 : 0)
+    return [...map.values()].sort(
+      (a, b) => watched(b) - watched(a) || urgent(b) - urgent(a)
+        || (b.created_at || '').localeCompare(a.created_at || ''),
+    )
+  }, [tickets, latest, watchSet])
+
+  const counts = useMemo(() => {
+    const c = { all: pool.length, processing: 0, completed: 0, cancelled: 0, timeout: 0, critical: 0, watch: 0 }
+    for (const r of pool) {
+      if (Object.prototype.hasOwnProperty.call(c, r.status)) c[r.status] += 1
+      if (r.timeout && r.status === 'processing') c.timeout += 1
+      if (r.priority === 'critical') c.critical += 1
+      if (watchSet.has(r.id)) c.watch += 1
+    }
+    return c
+  }, [pool, watchSet])
+
+  const filtered = useMemo(
+    () => pool.filter((r) => (status === 'all' || r.status === status)
+      && (!quick.timeout || (r.timeout && r.status === 'processing'))
+      && (!quick.critical || r.priority === 'critical')
+      && (!quick.watch || watchSet.has(r.id))),
+    [pool, status, quick, watchSet],
+  )
+  const rows = useMemo(() => filtered.slice(0, LIVE_MAX_ROWS), [filtered])
+  const truncated = filtered.length > rows.length
+  const scopeKey = `${status}|${quick.timeout ? 1 : 0}${quick.critical ? 1 : 0}${quick.watch ? 1 : 0}`
+
   const newIds = useMemo(() => {
     const ids = new Set(rows.map((r) => r.id))
-    const fresh = prevIdsRef.current ? new Set([...ids].filter((id) => !prevIdsRef.current.has(id))) : new Set()
-    prevIdsRef.current = ids
+    const prev = seenRef.current
+    const fresh = prev.scope === scopeKey ? new Set([...ids].filter((id) => !prev.ids.has(id))) : new Set()
+    seenRef.current = { scope: scopeKey, ids }
     return fresh
-  }, [rows])
-  const statusColor = { processing: C.lightBlue, completed: C.green, cancelled: C.subText }
+  }, [rows, scopeKey])
+
+  // 滚动视口高度（面板固定高度，首次渲染后测量；窗口/全屏变化由 ResizeObserver 跟随）
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return undefined
+    const update = () => setViewportH(el.clientHeight)
+    update()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const unitH = rows.length * ROW_UNIT
+  // 内容不足一屏时不滚动（避免空转）；系统开启"减少动态效果"时改为可手动滚动
+  const canScroll = !reduceMotion && rows.length > 0 && unitH > viewportH
+  // 复制份数：保证循环位移期间视口始终被内容填满
+  const copies = canScroll ? Math.max(2, Math.ceil(viewportH / unitH) + 1) : 1
+
+  // 自动滚动：requestAnimationFrame 累加 scrollTop（一份内容走完即回卷，内容由多份复制保证无缝）；
+  // 数据刷新不影响滚动进度（不重建滚动容器），悬停时通过 ref 跳过累加，移出继续
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el || !canScroll) return undefined
+    let raf = 0
+    let last = performance.now()
+    let acc = 0
+    const step = (t) => {
+      // 上限 64ms：切后台/长时间挂起回来时不会瞬移一大段
+      const dt = Math.min(64, Math.max(0, t - last))
+      last = t
+      if (!hoveringRef.current) {
+        acc += (speed * dt) / 1000
+        const px = Math.floor(acc)
+        if (px > 0) {
+          acc -= px
+          el.scrollTop += px
+          if (el.scrollTop >= unitH) el.scrollTop -= unitH
+        }
+      }
+      raf = requestAnimationFrame(step)
+    }
+    raf = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(raf)
+  }, [canScroll, unitH, speed])
+
+  // 切换筛选口径后回到列表顶部
+  useEffect(() => {
+    if (viewportRef.current) viewportRef.current.scrollTop = 0
+  }, [scopeKey])
+
+  const setHover = (v) => {
+    hoveringRef.current = v
+    setHovering(v)
+  }
+
+  const renderRow = (r, ci) => {
+    const isNew = newIds.has(r.id)
+    const watched = watchSet.has(r.id)
+    const time = r.created_at ? r.created_at.slice(11, 19) : '--'
+    const pill = PRIORITY_PILL[r.priority] || PRIORITY_PILL.low
+    return (
+      <div key={`${ci}-${r.id}`}
+        onClick={onDrill ? () => onDrill({
+          kind: 'detail', ticket: r,
+          title: `工单详情 · ${r.ticket_no}`, subtitle: '实时列表下钻',
+        }) : undefined}
+        title={onDrill ? '点击查看工单详情' : undefined}
+        className={`relative mb-1 flex h-12 cursor-pointer items-center rounded border px-2 text-[14px] transition hover:brightness-125 ${isNew ? 'row-enter' : ''}`}
+        style={{
+          borderColor: r.timeout ? 'rgba(255,77,79,0.55)' : watched ? 'rgba(229,120,50,0.35)' : 'rgba(96,138,188,0.18)',
+          background: r.timeout ? 'rgba(255,77,79,0.10)' : watched ? 'rgba(229,120,50,0.08)' : C.innerBg,
+        }}>
+        {/* 新工单插入：2 秒青色渐隐高亮（覆盖层不与行背景冲突） */}
+        {isNew && <span className="row-flash pointer-events-none absolute inset-0 rounded" />}
+        {/* ★关注：点击切换，关注工单置顶（不随滚动被大量新工单淹没） */}
+        <button type="button"
+          onClick={(e) => { e.stopPropagation(); toggleWatch(r.id) }}
+          title={watched ? '取消关注' : '关注该工单（列表中置顶）'}
+          aria-label={watched ? '取消关注工单' : '关注工单'} aria-pressed={watched}
+          className="mr-1 flex w-5 shrink-0 items-center justify-center transition hover:brightness-150">
+          <Star className="h-3.5 w-3.5" style={{ color: watched ? C.orange : 'rgba(147,166,184,0.42)' }}
+            fill={watched ? C.orange : 'none'} />
+        </button>
+        <span className="w-[72px] shrink-0 font-mono tabular-nums" style={{ color: C.subText }}>{time}</span>
+        <span className="w-[150px] shrink-0 font-mono" style={{ color: C.lightBlue }}>{r.ticket_no}</span>
+        <span className="min-w-0 flex-1 truncate" style={{ color: C.text }} title={r.title}>
+          {r.timeout && <span className="mr-1 inline-flex items-center gap-0.5 rounded px-1 py-px text-[12px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>
+            <AlertTriangle className="h-3 w-3" />超时
+          </span>}
+          {r.title}
+        </span>
+        <span className="w-[56px] shrink-0 text-center">
+          <span className="inline-flex items-center rounded-full border px-2 py-px text-[12px]"
+            style={{ background: pill.bg, color: pill.color, borderColor: pill.border }}>
+            {r.priority === 'critical' ? '! ' : ''}{r.priority_label}
+          </span>
+        </span>
+        <span className="w-[64px] shrink-0 text-center" style={{ color: STATUS_COLOR[r.status] || C.subText }}>
+          {r.status === 'completed' ? '✓ ' : ''}{r.status_label}
+        </span>
+        <span className="w-[92px] shrink-0 truncate text-right" style={{ color: C.subText }}>{r.current_node_name || '--'}</span>
+      </div>
+    )
+  }
+
+  // 滚动状态提示色：自动滚动=青色，悬停暂停=橙色
+  const liveColor = canScroll ? (hovering ? C.orange : C.green) : C.subText
   return (
     <Panel
-      title="最新工单实时监控" subtitle="REALTIME LIST" icon={Activity} className="h-[396px]"
+      title="最新工单实时监控"
+      subtitle={truncated ? `REALTIME · TOP ${LIVE_MAX_ROWS}` : 'REALTIME LIST'}
+      icon={Activity}
+      className="h-[396px]"
       alert={(latest || []).some((r) => r.timeout)}
-      right={<span className="flex items-center gap-1 text-[12px]" style={{ color: C.subText }}>
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: C.green, boxShadow: `0 0 6px ${C.green}` }} />实时更新
-      </span>}
-      bodyClassName="px-3 py-2"
+      right={
+        <>
+          {/* 工单状态筛选（计数按全量口径，点击即筛选实时列表） */}
+          <div className="flex items-center gap-1">
+            {LIVE_FILTERS.map((f) => {
+              const active = status === f.key
+              return (
+                <button key={f.key} type="button" aria-pressed={active}
+                  onClick={() => setStatus(f.key)}
+                  title={`筛选：${f.label}（${counts[f.key]} 件）`}
+                  className="rounded border px-1.5 py-[2px] text-[12px] transition hover:brightness-125"
+                  style={active ? {
+                    background: 'rgba(69,184,205,0.16)',
+                    borderColor: 'rgba(69,184,205,0.62)',
+                    color: C.text,
+                    boxShadow: '0 0 8px rgba(69,184,205,0.18)',
+                  } : {
+                    background: 'transparent',
+                    borderColor: 'rgba(96,138,188,0.30)',
+                    color: C.subText,
+                  }}>
+                  {f.label}
+                  <span className="ml-1 font-mono tabular-nums" style={{ opacity: 0.72 }}>{counts[f.key]}</span>
+                </button>
+              )
+            })}
+          </div>
+          {/* 滚动状态（悬停列表自动暂停） */}
+          <span className="ml-1 flex items-center gap-1 text-[12px]" style={{ color: liveColor }}>
+            <span className={`h-1.5 w-1.5 rounded-full ${hovering && canScroll ? '' : 'animate-pulse'}`}
+              style={{ background: liveColor, boxShadow: `0 0 6px ${liveColor}` }} />
+            {canScroll ? (hovering ? '已暂停' : '自动滚动') : '实时更新'}
+          </span>
+        </>
+      }
+      bodyClassName="flex flex-col px-3 py-2"
     >
+      {/* 快捷筛选 + 滚动速度：仅超时 / 仅紧急 / ★关注（与状态筛选叠加生效） */}
+      <div className="mb-1 flex shrink-0 items-center gap-1.5 text-[12px]">
+        {[
+          { key: 'timeout', label: '仅超时', n: counts.timeout, color: C.red, bg: 'rgba(255,77,79,0.16)', border: 'rgba(255,77,79,0.52)' },
+          { key: 'critical', label: '仅紧急', n: counts.critical, color: C.orange, bg: 'rgba(255,169,64,0.14)', border: 'rgba(255,169,64,0.5)' },
+          { key: 'watch', label: '★关注', n: counts.watch, color: C.cyan, bg: 'rgba(69,184,205,0.14)', border: 'rgba(69,184,205,0.5)' },
+        ].map((q) => {
+          const active = quick[q.key]
+          return (
+            <button key={q.key} type="button" aria-pressed={active}
+              onClick={() => setQuick((s) => ({ ...s, [q.key]: !s[q.key] }))}
+              title={`快捷筛选：${q.label}（${q.n} 件）${active ? ' · 再点取消' : ''}`}
+              className="rounded border px-1.5 py-[1px] transition hover:brightness-125"
+              style={active
+                ? { background: q.bg, borderColor: q.border, color: q.color }
+                : { background: 'transparent', borderColor: 'rgba(96,138,188,0.30)', color: C.subText }}>
+              {q.label}
+              <span className="ml-1 font-mono tabular-nums" style={{ opacity: 0.72 }}>{q.n}</span>
+            </button>
+          )
+        })}
+        {truncated && (
+          <span className="ml-1 text-[11px]" style={{ color: C.subText, opacity: 0.8 }}>
+            共 {filtered.length} 件 · 显示前 {LIVE_MAX_ROWS}
+          </span>
+        )}
+        <span className="ml-auto text-[11px]" style={{ color: C.subText }}>速度</span>
+        <div className="flex items-center overflow-hidden rounded border" style={{ borderColor: 'rgba(96,138,188,0.30)' }}>
+          {SPEED_OPTIONS.map((o) => (
+            <button key={o.value} type="button" aria-pressed={speed === o.value}
+              onClick={() => changeSpeed(o.value)}
+              title={`自动滚动速度：${o.label}（${o.value}px/s）`}
+              className="px-1.5 py-[1px] transition hover:brightness-125"
+              style={speed === o.value
+                ? { background: 'rgba(69,184,205,0.16)', color: C.text }
+                : { background: 'transparent', color: C.subText }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
       {/* 表头（字号 +3px，远距可读） */}
-      <div className="flex items-center px-2 pb-1.5 text-[14px]" style={{ color: C.subText }}>
+      <div className="flex shrink-0 items-center px-2 pb-1.5 text-[14px]" style={{ color: C.subText }}>
+        <span className="mr-1 w-5 shrink-0" />
         <span className="w-[72px] shrink-0">时间</span>
         <span className="w-[150px] shrink-0">工单编号</span>
         <span className="min-w-0 flex-1 truncate">工单标题</span>
@@ -771,49 +1324,39 @@ function LiveList({ latest, onDrill }) {
         <span className="w-[64px] shrink-0 text-center">状态</span>
         <span className="w-[92px] shrink-0 text-right">当前节点</span>
       </div>
-      <div className="flex flex-col gap-1">
-        {rows.length === 0 && (
-          <div className="py-10 text-center text-[13px]" style={{ color: C.subText }}>暂无工单数据</div>
-        )}
-        {rows.map((r) => {
-          const isNew = newIds.has(r.id)
-          const time = r.created_at ? r.created_at.slice(11, 19) : '--'
-          const pill = PRIORITY_PILL[r.priority] || PRIORITY_PILL.low
-          return (
-            <div key={r.id}
-              onClick={onDrill ? () => onDrill({
-                kind: 'detail', ticket: r,
-                title: `工单详情 · ${r.ticket_no}`, subtitle: '实时列表下钻',
-              }) : undefined}
-              title={onDrill ? '点击查看工单详情' : undefined}
-              className={`relative flex min-h-[48px] cursor-pointer items-center rounded border px-2 py-2 text-[14px] transition hover:brightness-125 ${isNew ? 'row-enter' : ''}`}
-              style={{
-                borderColor: r.timeout ? 'rgba(255,77,79,0.55)' : 'rgba(96,138,188,0.18)',
-                background: r.timeout ? 'rgba(255,77,79,0.10)' : 'rgba(18,34,52,0.45)',
-              }}>
-              {/* 新工单插入：2 秒青色渐隐高亮（覆盖层不与行背景冲突） */}
-              {isNew && <span className="row-flash pointer-events-none absolute inset-0 rounded" />}
-              <span className="w-[72px] shrink-0 font-mono tabular-nums" style={{ color: C.subText }}>{time}</span>
-              <span className="w-[150px] shrink-0 font-mono" style={{ color: C.lightBlue }}>{r.ticket_no}</span>
-              <span className="min-w-0 flex-1 truncate" style={{ color: C.text }} title={r.title}>
-                {r.timeout && <span className="mr-1 inline-flex items-center gap-0.5 rounded px-1 py-px text-[12px]" style={{ background: 'rgba(255,77,79,0.18)', color: C.red }}>
-                  <AlertTriangle className="h-3 w-3" />超时
-                </span>}
-                {r.title}
-              </span>
-              <span className="w-[56px] shrink-0 text-center">
-                <span className="inline-flex items-center rounded-full border px-2 py-px text-[12px]"
-                  style={{ background: pill.bg, color: pill.color, borderColor: pill.border }}>
-                  {r.priority === 'critical' ? '! ' : ''}{r.priority_label}
-                </span>
-              </span>
-              <span className="w-[64px] shrink-0 text-center" style={{ color: statusColor[r.status] || C.subText }}>
-                {r.status === 'completed' ? '✓ ' : ''}{r.status_label}
-              </span>
-              <span className="w-[92px] shrink-0 truncate text-right" style={{ color: C.subText }}>{r.current_node_name || '--'}</span>
+      {/* 滚动视口：鼠标移入即暂停，移出续播（遮罩放在滚动容器外层，避免随内容滚走） */}
+      <div className="relative min-h-0 flex-1">
+        <div ref={viewportRef}
+          className={`h-full ${canScroll ? 'overflow-hidden' : 'overflow-y-auto'}`}
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          onTouchStart={() => setHover(true)}
+          onTouchEnd={() => setHover(false)}>
+          {rows.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-[13px]" style={{ color: C.subText }}>
+              {status === 'all' && !quick.timeout && !quick.critical && !quick.watch
+                ? '暂无工单数据'
+                : '当前筛选条件下暂无工单'}
             </div>
-          )
-        })}
+          ) : (
+            <div key={scopeKey}>
+              {Array.from({ length: copies }).map((_, ci) => (
+                <div key={ci} aria-hidden={ci > 0 ? 'true' : undefined}>
+                  {rows.map((r) => renderRow(r, ci))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* 上下渐隐遮罩：滚动出入更柔和，避免行被硬切 */}
+        {canScroll && (
+          <>
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-4"
+              style={{ background: `linear-gradient(180deg, ${C.panelFade} 0%, transparent 100%)`, opacity: 0.9 }} />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-4"
+              style={{ background: `linear-gradient(0deg, ${C.panelFade} 0%, transparent 100%)`, opacity: 0.9 }} />
+          </>
+        )}
       </div>
     </Panel>
   )
@@ -852,7 +1395,7 @@ function slaRingColor(rate) {
 function SlaMetric({ icon: Icon, name, value, color }) {
   return (
     <div className="flex flex-col justify-center rounded-md border px-3"
-      style={{ borderColor: 'rgba(96,138,188,0.28)', background: 'rgba(18,34,52,0.45)' }}>
+      style={{ borderColor: 'rgba(96,138,188,0.28)', background: C.innerBg }}>
       <div className="flex items-center gap-1.5">
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
         <span className="truncate text-[12px]" style={{ color: C.subText }}>{name}</span>
@@ -1029,8 +1572,11 @@ function MarqueeBar({ latest }) {
   }, [rows.length])
   if (rows.length === 0) {
     return (
-      <div className="flex h-14 items-center justify-center gap-2 rounded-md border text-[13px]"
-        style={{ background: C.panelBg, borderColor: C.panelBorder, color: C.subText }}>
+      <div className="flex h-14 items-center justify-center gap-2 rounded-md border text-[13px] backdrop-blur-xl"
+        style={{
+          background: C.panelBg, borderColor: C.panelBorder, color: C.subText,
+          backdropFilter: 'blur(20px) saturate(150%)', WebkitBackdropFilter: 'blur(20px) saturate(150%)',
+        }}>
         <CheckCircle2 className="h-4 w-4" style={{ color: C.green }} />
         暂无超时 / 紧急告警工单
       </div>
@@ -1038,8 +1584,12 @@ function MarqueeBar({ latest }) {
   }
   const r = rows[idx % rows.length]
   return (
-    <div className="flex h-14 items-center gap-4 overflow-hidden rounded-md border px-5"
-      style={{ background: C.panelBg, borderColor: 'rgba(255,77,79,0.35)', boxShadow: '0 0 14px rgba(255,77,79,0.10)' }}>
+    <div className="flex h-14 items-center gap-4 overflow-hidden rounded-md border px-5 backdrop-blur-xl"
+      style={{
+        background: C.panelBg, borderColor: 'rgba(255,77,79,0.35)',
+        backdropFilter: 'blur(20px) saturate(150%)', WebkitBackdropFilter: 'blur(20px) saturate(150%)',
+        boxShadow: '0 0 14px rgba(255,77,79,0.10)',
+      }}>
       <span className="flex shrink-0 items-center gap-1.5 rounded px-2 py-0.5 text-[13px] font-medium"
         style={{ background: 'rgba(255,77,79,0.16)', color: C.red, border: `1px solid ${C.red}66` }}>
         <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: C.red, boxShadow: `0 0 6px ${C.red}` }} />! 告警播报
@@ -1079,10 +1629,11 @@ const STATUS_COLOR = { processing: C.lightBlue, completed: C.green, cancelled: C
 
 // 下钻筛选谓词：filters → 工单匹配条件（全部可选，字段口径与各面板统计一致）
 // team=提交团队 / platform=来源平台 / type=告警类型 / status=工单状态 / priority=等级 /
-// activeToday=处理中且今日活跃（KPI「处理中（今日活跃）」口径）/
+// activeToday=处理中且今日活跃（KPI「处理中」卡底部「今日活跃」小字口径）/
 // timeoutOnly=超时预警（进行中且超 SLA，KPI 口径）/ slaTimeout=SLA 超时工单（不限状态，
 // 超时率分子口径，含已完结超时）/ nodeKey+flowId=流转节点停留（多流程节点 key 可能重名，
-// 按当前展示流程限定）/ closedAll+flowId=已关闭（closed_at 口径，与流转图已完结计数一致）/
+// 按当前展示流程限定）；status=completed 与流转图「已完结」计数一致（全流程已解决）/
+// closedAll=已关闭（closed_at 非空）/
 // from,to=创建时间范围（ISO 本地字符串，闭开区间）/ closedOnly+from,to=关闭时间范围（趋势图「关闭工单」）
 function matchDrill(t, f = {}) {
   if (f.flowId != null && t.flow_id !== f.flowId) return false
@@ -1107,8 +1658,9 @@ function matchDrill(t, f = {}) {
   return true
 }
 
-// 弹窗表格通用分页器（工单列表 10 件/页，团队列表 12 队/页）
-function Pager({ total, page, size, unit = '件', onChange }) {
+// 弹窗表格通用分页器（工单列表默认 20 件/页，团队列表 12 队/页）
+// sizes/onSizeChange：可选每页条数切换（工单列表用 10/20/50）
+function Pager({ total, page, size, unit = '件', onChange, sizes, onSizeChange }) {
   const pages = Math.max(1, Math.ceil(total / size))
   const safe = Math.min(page, pages)
   const btnStyle = (disabled) => ({
@@ -1119,7 +1671,17 @@ function Pager({ total, page, size, unit = '件', onChange }) {
   return (
     <div className="flex shrink-0 items-center justify-between border-t px-4 py-2 text-[13px]"
       style={{ borderColor: 'rgba(96,138,188,0.22)', color: C.subText }}>
-      <span>共 <b className="font-mono tabular-nums" style={{ color: C.text }}>{total}</b> {unit}{pages > 1 ? ` · ${size} ${unit}/页` : ''}</span>
+      <span className="flex items-center gap-2">
+        共 <b className="font-mono tabular-nums" style={{ color: C.text }}>{total}</b> {unit}
+        {sizes && onSizeChange && (
+          <select value={size} onChange={(e) => onSizeChange(Number(e.target.value))}
+            title="每页条数（大页容量自动窗口化渲染，长列表不卡顿）"
+            className="cursor-pointer rounded border px-1 py-0.5 text-[12px] outline-none"
+            style={{ colorScheme: 'dark', background: C.controlBg, borderColor: 'rgba(96,138,188,0.35)', color: C.paleBlue }}>
+            {sizes.map((s) => <option key={s} value={s}>{s} {unit}/页</option>)}
+          </select>
+        )}
+      </span>
       {pages > 1 && (
         <span className="flex items-center gap-2">
           <span>第 <b className="font-mono tabular-nums" style={{ color: C.text }}>{safe}</b> / {pages} 页</span>
@@ -1132,11 +1694,32 @@ function Pager({ total, page, size, unit = '件', onChange }) {
 }
 
 // 工单列表（下钻二级/三级通用）：列宽与实时列表对齐，行点击继续下钻工单详情
+// 分页 + 每页条数可调（10/20/50）；超过 20 行自动窗口化渲染，只挂载可视区行（长列表不卡顿）
 function TicketTable({ rows, onRowClick }) {
   const [page, setPage] = useState(1)
-  const size = 10
-  useEffect(() => { setPage(1) }, [rows])
-  const view = useMemo(() => rows.slice((Math.min(page, Math.max(1, Math.ceil(rows.length / size))) - 1) * size, Math.min(page, Math.max(1, Math.ceil(rows.length / size))) * size), [rows, page, size])
+  const [size, setSize] = useState(20)
+  useEffect(() => { setPage(1) }, [rows, size])
+  const pages = Math.max(1, Math.ceil(rows.length / size))
+  const safe = Math.min(page, pages)
+  const view = useMemo(() => rows.slice((safe - 1) * size, safe * size), [rows, safe, size])
+  // 窗口化渲染：行高 42 + 间距 4 = 46px；滚动时只渲染可视区附近的行
+  const ROW_H = 46
+  const listRef = useRef(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [boxH, setBoxH] = useState(0)
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return undefined
+    const update = () => setBoxH(el.clientHeight)
+    update()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const virtual = view.length > 20
+  const start = virtual ? Math.max(0, Math.floor(scrollTop / ROW_H) - 2) : 0
+  const end = virtual ? Math.min(view.length, start + Math.ceil((boxH || 460) / ROW_H) + 5) : view.length
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 列头 */}
@@ -1150,19 +1733,21 @@ function TicketTable({ rows, onRowClick }) {
         <span className="w-[68px] shrink-0 text-center">状态</span>
         <span className="w-[100px] shrink-0 truncate text-right">当前节点</span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1">
+      <div ref={listRef} onScroll={(e) => setScrollTop(e.target.scrollTop)}
+        className="min-h-0 flex-1 overflow-y-auto px-1 pb-1">
         {view.length === 0 && (
           <div className="py-10 text-center text-[13px]" style={{ color: C.subText }}>暂无符合条件的工单</div>
         )}
-        {view.map((r) => {
+        {virtual && start > 0 && <div style={{ height: start * ROW_H }} />}
+        {view.slice(start, end).map((r) => {
           const pill = PRIORITY_PILL[r.priority] || PRIORITY_PILL.low
           return (
             <div key={r.id} onClick={onRowClick ? () => onRowClick(r) : undefined}
               title={onRowClick ? '点击查看工单详情' : undefined}
-              className="flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[14px] transition hover:brightness-125"
+              className="mb-1 flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[14px] transition hover:brightness-125"
               style={{
                 borderColor: r.timeout ? 'rgba(255,77,79,0.5)' : 'rgba(96,138,188,0.18)',
-                background: r.timeout ? 'rgba(255,77,79,0.08)' : 'rgba(18,34,52,0.45)',
+                background: r.timeout ? 'rgba(255,77,79,0.08)' : C.innerBg,
               }}>
               <span className="w-[128px] shrink-0 font-mono tabular-nums" style={{ color: C.subText }}>
                 {r.created_at ? r.created_at.slice(5, 16).replace('T', ' ') : '--'}
@@ -1189,8 +1774,10 @@ function TicketTable({ rows, onRowClick }) {
             </div>
           )
         })}
+        {virtual && end < view.length && <div style={{ height: (view.length - end) * ROW_H }} />}
       </div>
-      <Pager total={rows.length} page={page} size={size} onChange={setPage} />
+      <Pager total={rows.length} page={page} size={size} onChange={setPage}
+        sizes={[10, 20, 50]} onSizeChange={setSize} />
     </div>
   )
 }
@@ -1229,7 +1816,7 @@ function TeamTable({ teams, onTeamClick }) {
               className="flex min-h-[42px] cursor-pointer items-center rounded border px-2 text-[14px] transition hover:brightness-125"
               style={{
                 borderColor: champion ? 'rgba(245,200,79,0.45)' : 'rgba(96,138,188,0.18)',
-                background: champion ? 'rgba(245,200,79,0.06)' : 'rgba(18,34,52,0.45)',
+                background: champion ? 'rgba(245,200,79,0.06)' : C.innerBg,
               }}>
               <span className="w-[64px] shrink-0 text-center">
                 {meta ? (
@@ -1278,10 +1865,250 @@ function TeamTable({ teams, onTeamClick }) {
   )
 }
 
-// 工单详情（下钻末级）：关键信息栅格（字段缺失显示 --，兼容真实接口尚未补充的字段）
-function TicketDetail({ t }) {
+// ============ 工单时间线（下钻详情内：创建 / 每个节点到达 / 完结） ============
+// 动作中文与工单中心详情页 ACTION_META 同语义；配色沿用大屏主题
+const TL_ACTION = {
+  create: { label: '发起', color: C.cyan },
+  submit: { label: '提交流转', color: C.lightBlue },
+  arrive: { label: '到达', color: C.techBlue },
+  rollback: { label: '退回上一步', color: C.orange },
+  transfer: { label: '转办', color: C.cyan },
+  claim: { label: '认领', color: C.techBlue },
+  urge: { label: '催办', color: C.orange },
+  cancel: { label: '取消', color: C.red },
+  end: { label: '完成', color: C.green },
+  current: { label: '处理中', color: C.orange },
+}
+
+// 后端时间串（YYYY-MM-DDTHH:mm:ss 或含 T 的 ISO）→ 展示串（YYYY-MM-DD HH:mm:ss）
+function fmtTimeStr(v) {
+  if (!v) return null
+  return String(v).replace('T', ' ').slice(0, 19)
+}
+
+// 两个时间串之间的间隔（分钟 → 可读时长）；非法/倒序返回 null
+function fmtTimeGap(from, to) {
+  if (!from || !to) return null
+  const a = new Date(String(from).replace(' ', 'T')).getTime()
+  const b = new Date(String(to).replace(' ', 'T')).getTime()
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null
+  return fmtDur(Math.max(0, Math.round((b - a) / 60000)))
+}
+
+/**
+ * 构建节点时间线：创建 → 各节点处理/到达 → 当前节点 → 完成/取消。
+ * - records：/tickets/{id} 返回的节点处理记录（node_key / node_name / action / handler_name / created_at / route_to / comment）
+ * - snapshot：同一接口返回的流程快照，用于把 route_to 解析成节点中文名
+ * - 到达时间口径：一次提交/退回的时间即下一节点的到达时间（与流转引擎一致）
+ * - 无记录（演示数据 / 拉取失败）时退化为：创建 → 当前节点（处理中）→ 完成/取消
+ */
+function buildTimeline(t, records, snapshot) {
+  if (!t) return []
+  const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : []
+  const nodeOf = (key) => (key ? nodes.find((n) => n && n.key === key) || null : null)
+  const nameOf = (key) => (key ? nodeOf(key)?.name || key : '')
+  const items = []
+  const recs = (Array.isArray(records) ? records : [])
+    .filter((r) => r && r.created_at)
+    .slice()
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+  const createdRec = recs.find((r) => r.action === 'create')
+  let prev = fmtTimeStr(t.created_at) || fmtTimeStr(createdRec?.created_at)
+  let lastArrivalKey = null
+  let endTime = null
+  items.push({
+    key: 'create',
+    kind: 'create',
+    title: '创建工单',
+    who: createdRec?.handler_name || t.created_by_name || '',
+    note: [createdRec?.node_name || nameOf(createdRec?.node_key), t.team, t.platform].filter(Boolean).join(' · '),
+    time: prev,
+  })
+  recs.forEach((r, i) => {
+    if (r.action === 'create' || r.action === 'comment') return
+    const at = fmtTimeStr(r.created_at)
+    const key = `r-${r.id ?? i}`
+    // 完结/取消记录只补最终时间（最终事件由工单状态统一生成，避免重复）
+    if (r.action === 'end' || r.action === 'cancel') {
+      endTime = at || endTime
+      return
+    }
+    const nodeName = r.node_name || nameOf(r.node_key) || '--'
+    const meta = TL_ACTION[r.action] || TL_ACTION.submit
+    items.push({
+      key,
+      kind: r.action || 'submit',
+      title: `${meta.label} · 节点「${nodeName}」`,
+      who: r.handler_name || '',
+      note: r.comment || '',
+      time: at,
+    })
+    // 提交/退回后立刻到达下一节点（结束节点由完结事件承载，不再重复一条到达）
+    if ((r.action === 'submit' || r.action === 'rollback') && r.route_to) {
+      const target = nodeOf(r.route_to)
+      const isEnd = r.route_to === 'end' || (target && target.type === 'end')
+      if (!isEnd) {
+        items.push({
+          key: `${key}-arrive`,
+          kind: 'arrive',
+          title: `到达节点「${nameOf(r.route_to)}」`,
+          who: '',
+          note: '',
+          time: at,
+        })
+        lastArrivalKey = r.route_to
+      }
+    }
+    prev = at || prev
+  })
+  // 当前停留节点（进行中）：已由「到达」事件体现时只补“处理中”标记，避免重复
+  if (t.status === 'processing' && t.current_node_name) {
+    const tail = items[items.length - 1]
+    if (lastArrivalKey && lastArrivalKey === t.current_node_key && tail) {
+      tail.current = true
+      tail.who = tail.who || t.claimed_by_name || ''
+    } else {
+      items.push({
+        key: 'current',
+        kind: 'current',
+        title: `当前节点「${t.current_node_name}」`,
+        who: t.claimed_by_name || '',
+        note: '处理中',
+        time: prev,
+      })
+    }
+  }
+  if (t.status === 'completed' || t.status === 'cancelled') {
+    items.push({
+      key: 'end',
+      kind: t.status === 'completed' ? 'end' : 'cancel',
+      title: t.status === 'completed' ? '工单完成' : '工单取消',
+      who: '',
+      note: '',
+      time: endTime || fmtTimeStr(t.closed_at) || prev,
+    })
+  }
+  // 每段耗时（相对上一事件，便于看出节点停留时长）
+  let last = null
+  items.forEach((it) => {
+    if (it.time && last) it.gap = fmtTimeGap(last, it.time)
+    if (it.time) last = it.time
+  })
+  return items
+}
+
+function TicketTimeline({ items, loading, error }) {
+  return (
+    <div className="mt-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="text-[14px] font-semibold" style={{ color: C.text }}>处理时间线</span>
+        <span className="text-[12px]" style={{ color: C.subText }}>创建 / 每个节点到达 / 完结时间</span>
+        {loading && <span className="text-[12px]" style={{ color: C.cyan }}>节点记录加载中…</span>}
+        {!loading && error && (
+          <span className="text-[12px]" style={{ color: C.orange }}>节点记录获取失败，已按工单字段兜底</span>
+        )}
+      </div>
+      <div className="relative pl-5">
+        <span className="absolute bottom-2 left-[5px] top-2 w-px" style={{ background: 'rgba(96,138,188,0.26)' }} />
+        <div className="space-y-2">
+          {items.map((it) => {
+            const meta = TL_ACTION[it.kind] || TL_ACTION.submit
+            return (
+              <div key={it.key} className="relative rounded border px-3 py-1.5"
+                style={{ borderColor: 'rgba(96,138,188,0.22)', background: C.innerBg }}>
+                <span className="absolute -left-5 top-[11px] h-[9px] w-[9px] rounded-full border-2"
+                  style={{ borderColor: meta.color, background: C.deepNavy, boxShadow: `0 0 6px ${meta.color}70` }} />
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="text-[14px] font-semibold" style={{ color: C.text }}>{it.title}</span>
+                  <span className="rounded px-1.5 py-px text-[11px]"
+                    style={{ color: meta.color, background: `${meta.color}1f`, border: `1px solid ${meta.color}55` }}>{meta.label}</span>
+                  {it.current && (
+                    <span className="rounded px-1.5 py-px text-[11px]"
+                      style={{ color: C.orange, background: `${C.orange}1f`, border: `1px solid ${C.orange}55` }}>处理中</span>
+                  )}
+                  {it.who && <span className="text-[12px]" style={{ color: C.subText }}>{it.who}</span>}
+                  {it.gap && <span className="text-[11px]" style={{ color: C.subText, opacity: 0.8 }}>+{it.gap}</span>}
+                  <span className="ml-auto font-mono tabular-nums text-[13px]" style={{ color: it.time ? C.text : C.subText }}>
+                    {it.time || '时间待同步'}
+                  </span>
+                </div>
+                {it.note && (
+                  <div className="mt-0.5 flex flex-wrap items-baseline gap-2 text-[12px]" style={{ color: C.subText }}>
+                    <span className="min-w-0 break-all">{it.note}</span>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 工单详情（下钻末级）：关键信息栅格 + 处理时间线 + 行动按钮（复制工单号 / 催办 / 在工单中心打开）
+// 字段缺失显示 --（兼容真实接口尚未补充的字段）；催办复用工单中心接口（30 分钟限频）
+// demo=true（演示数据兜底）：无真实 id，跳过详情接口，时间线按工单字段降级展示
+function TicketDetail({ t, demo = false }) {
+  const [urging, setUrging] = useState(false)
+  // 节点处理记录 + 流程快照：打开详情时按需拉取 /tickets/{id}（快照用于解析流转去向节点名）
+  const [detail, setDetail] = useState({ records: [], snapshot: null })
+  const [tlLoading, setTlLoading] = useState(false)
+  const [tlError, setTlError] = useState(null)
+  useEffect(() => {
+    if (!t || demo || !t.id) {
+      setDetail({ records: [], snapshot: null })
+      setTlLoading(false)
+      setTlError(null)
+      return undefined
+    }
+    let alive = true
+    setTlLoading(true)
+    setTlError(null)
+    ticketApi.getTicket(t.id)
+      .then((d) => {
+        if (!alive) return
+        setDetail({
+          records: Array.isArray(d?.records) ? d.records : [],
+          snapshot: d?.flow_snapshot || null,
+        })
+      })
+      .catch((e) => {
+        if (!alive) return
+        setDetail({ records: [], snapshot: null })
+        setTlError(e?.message || '获取失败')
+      })
+      .finally(() => { if (alive) setTlLoading(false) })
+    return () => { alive = false }
+  }, [t, demo])
+  const timeline = useMemo(() => buildTimeline(t, detail.records, detail.snapshot), [t, detail])
   if (!t) return null
   const pill = PRIORITY_PILL[t.priority] || PRIORITY_PILL.low
+  const copyNo = async () => {
+    try {
+      await navigator.clipboard.writeText(String(t.ticket_no || ''))
+      toast.success(`已复制工单号 ${t.ticket_no}`)
+    } catch {
+      toast.warning('复制失败，请手动选择工单号')
+    }
+  }
+  const urge = () => {
+    if (urging) return
+    setUrging(true)
+    ticketApi.urgeTicket(t.id)
+      .then(() => toast.success(`已催办 ${t.ticket_no}，已通知当前处理分组`))
+      .catch((e) => toast.error(e?.message || '催办失败（仅发起人/抄送人/管理员可催办，30 分钟内不可重复）'))
+      .finally(() => setUrging(false))
+  }
+  const openTicket = () => {
+    // 新标签页打开工单中心详情，不打断大屏投放
+    window.open(`/tickets/${t.id}`, '_blank', 'noopener,noreferrer')
+  }
+  const actionBtn = {
+    borderColor: 'rgba(96,138,188,0.40)',
+    background: 'rgba(78,138,212,0.10)',
+    color: C.paleBlue,
+  }
   const items = [
     ['工单编号', t.ticket_no, true],
     ['创建时间', t.created_at ? t.created_at.slice(0, 19).replace('T', ' ') : '--'],
@@ -1312,6 +2139,29 @@ function TicketDetail({ t }) {
           </span>
         )}
       </div>
+      {/* 行动区：复制工单号 / 催办（仅进行中）/ 在工单中心打开（新标签页，不打断大屏） */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <button type="button" onClick={copyNo}
+          className="flex items-center gap-1 rounded border px-2 py-1 text-[13px] transition hover:brightness-125"
+          style={actionBtn}>
+          <Copy className="h-3.5 w-3.5" />复制工单号
+        </button>
+        {t.status === 'processing' && (
+          <button type="button" onClick={urge} disabled={urging}
+            className="flex items-center gap-1 rounded border px-2 py-1 text-[13px] transition enabled:hover:brightness-125 disabled:opacity-60"
+            style={{ ...actionBtn, color: C.orange, borderColor: 'rgba(229,120,50,0.5)', background: 'rgba(229,120,50,0.12)' }}>
+          <Send className={`h-3.5 w-3.5 ${urging ? 'animate-pulse' : ''}`} />{urging ? '催办中…' : '一键催办'}
+        </button>
+        )}
+        <button type="button" onClick={openTicket}
+          className="flex items-center gap-1 rounded border px-2 py-1 text-[13px] transition hover:brightness-125"
+          style={actionBtn}>
+          <ExternalLink className="h-3.5 w-3.5" />在工单中心打开
+        </button>
+        <span className="ml-auto text-[12px]" style={{ color: C.subText, opacity: 0.8 }}>
+          提示：催办需具备发起人/抄送人/管理员身份，30 分钟内不可重复
+        </span>
+      </div>
       <div className="grid grid-cols-2 gap-x-8 gap-y-2.5">
         {items.map(([k, v]) => (
           <div key={k} className="flex items-baseline justify-between gap-3 border-b pb-1.5"
@@ -1321,6 +2171,8 @@ function TicketDetail({ t }) {
           </div>
         ))}
       </div>
+      {/* 时间线：创建时间 → 每个节点到达时间 → 完成/取消时间（真实模式按需拉取节点记录） */}
+      <TicketTimeline items={timeline} loading={tlLoading} error={tlError} />
     </div>
   )
 }
@@ -1329,7 +2181,9 @@ function TicketDetail({ t }) {
 // teams → 全部团队数据（由当前数据源实时聚合，保证与排名条/各级下钻列表口径一致）；
 // tickets → 筛选后的工单列表；detail → 单工单详情
 // truncated：后端下钻工单集超上限截断时弹窗内提示（仅真实数据模式）
-function DrillModal({ level, view, stack, tickets, truncated = false, onJump, onClose, onDrill }) {
+// loading：下钻工单集按需拉取中（大屏轮询不再携带全量下钻集）
+// demo：演示数据兜底（详情内时间线跳过 /tickets/{id}，按工单字段降级展示）
+function DrillModal({ level, view, stack, tickets, truncated = false, loading = false, demo = false, onJump, onClose, onDrill }) {
   const teams = useMemo(() => {
     if (view.kind !== 'teams') return []
     const m = new Map()
@@ -1346,16 +2200,18 @@ function DrillModal({ level, view, stack, tickets, truncated = false, onJump, on
   return (
     // 遮罩层：点击关闭当前层；层级越高 zIndex 越大，形成多级覆盖
     <div className="drill-in absolute inset-0 flex items-center justify-center"
-      style={{ zIndex: 40 + level, background: 'rgba(4,9,15,0.55)', backdropFilter: 'blur(3px)' }}
+      style={{ zIndex: 40 + level, background: 'rgba(9,16,26,0.62)', backdropFilter: 'blur(3px)' }}
       onClick={close}>
       <div className="drill-pop flex flex-col overflow-hidden rounded-md border"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: wide ? 920 : 720, maxWidth: '94%',
           height: wide ? 680 : undefined, maxHeight: '78%',
-          background: 'rgba(10,19,29,0.97)',
-          borderColor: 'rgba(96,138,188,0.45)',
-          boxShadow: '0 18px 60px rgba(0,0,0,0.55), 0 0 24px rgba(80,130,190,0.18)',
+          background: C.panelBg,
+          borderColor: C.panelBorder,
+          backdropFilter: 'blur(28px) saturate(155%)',
+          WebkitBackdropFilter: 'blur(28px) saturate(155%)',
+          boxShadow: '0 18px 60px rgba(0,0,0,0.55), 0 0 18px rgba(80,130,190,0.12), inset 0 1px 0 rgba(168,200,236,0.14)',
         }}>
         {/* 头部：层级标记 + 面包屑导航 + 副标题 + 关闭 */}
         <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5" style={{ borderColor: 'rgba(96,138,188,0.22)' }}>
@@ -1379,9 +2235,14 @@ function DrillModal({ level, view, stack, tickets, truncated = false, onJump, on
             style={{ borderColor: 'rgba(96,138,188,0.4)', color: C.subText }}>✕</button>
         </div>
         {/* 主体（截断时团队/工单视图均提示：团队数据由下钻工单集聚合，同为截断口径） */}
+        {loading && view.kind !== 'detail' && (
+          <div className="shrink-0 px-4 pt-2 text-[12px]" style={{ color: C.cyan }}>
+            下钻工单集加载中…
+          </div>
+        )}
         {truncated && view.kind !== 'detail' && (
           <div className="shrink-0 px-4 pt-2 text-[12px]" style={{ color: C.orange }}>
-            工单量较大，弹窗仅基于最近 2000 件展示（面板统计数字为全量口径）
+            工单量较大，弹窗仅基于最近一批工单展示（面板统计数字为全量口径）
           </div>
         )}
         {view.kind === 'teams' && (
@@ -1400,7 +2261,7 @@ function DrillModal({ level, view, stack, tickets, truncated = false, onJump, on
               title: `工单详情 · ${r.ticket_no}`, subtitle: '工单下钻',
             })} />
         )}
-        {view.kind === 'detail' && <TicketDetail t={view.ticket} />}
+        {view.kind === 'detail' && <TicketDetail t={view.ticket} demo={demo} />}
       </div>
     </div>
   )
@@ -1417,7 +2278,8 @@ function DrillModal({ level, view, stack, tickets, truncated = false, onJump, on
 // active_today / timeout / closed_at / response_minutes / resolve_minutes 等。
 
 const DEMO_LABELS = {
-  status: { processing: '处理中', completed: '已完成', cancelled: '已取消' },
+  // 状态文案与后端 STATUS_LABELS / 工单中心保持一致（processing = 进行中）
+  status: { processing: '进行中', completed: '已完成', cancelled: '已取消' },
   priority: { critical: '紧急', high: '高危', medium: '中危', low: '低危' },
 }
 
@@ -1589,9 +2451,9 @@ function buildDemoStats(tickets) {
   const tm = new Map()
   tickets.forEach((t) => tm.set(t.team, (tm.get(t.team) || 0) + 1))
 
-  // 流转节点停留（进行中按节点停留；完成节点 = 已完成 + 已取消）
+  // 流转节点停留（进行中按节点停留；已完结节点 = 全流程已解决工单数，与后端口径一致）
   const flowNodes = DEMO_FLOW_NODES.map((n) => ({ ...n, current: processing.filter((t) => t.current_node_key === n.key).length }))
-  flowNodes.push({ key: '_finished', name: '已关闭', current: completed.length + cancelled.length })
+  flowNodes.push({ key: '_finished', name: '已完结', current: completed.length })
 
   return {
     kpi,
@@ -1633,52 +2495,268 @@ const DEMO_STATS = buildDemoStats(buildDemoTickets())
 
 // ============ 页面主体：1920×1080 基准 + 整屏缩放自适应 ============
 export default function TicketMonitorScreen() {
+  const initialParams = useMemo(readUrlParams, [])
   const [stats, setStats] = useState(null)
-  const [scale, setScale] = useState(1)
   const [error, setError] = useState(null)
   // 处置状态流转的流程选择：'' = 自动（进行中工单最多的流程），选择本地持久化
+  // URL ?flow= 优先（投屏链接可固定流程）
   const [flowId, setFlowId] = useState(() => {
+    if (initialParams.flow) return initialParams.flow
     try { return window.localStorage.getItem('ticket_monitor_flow') || '' } catch { return '' }
   })
   // 弹窗下钻栈：各区块点击 → openDrill(view) 逐级压栈覆盖显示；
   // ESC / 遮罩 / × 关闭当前层，面包屑可回跳任意上级（全程不跳转路由）
   const [drillStack, setDrillStack] = useState([])
+  // 下钻工单集：不再随高频轮询下发（响应体从 2000 条降到 KPI+最新），首次全量与打开弹窗时按需拉取
+  const [drillSet, setDrillSet] = useState({ tickets: [], truncated: false, total: 0, at: 0 })
+  const [drillLoading, setDrillLoading] = useState(false)
+  // 实时列表状态筛选提升到父组件：快捷键 1-4 与 URL ?status= 联动
+  const [liveStatus, setLiveStatus] = useState(() => initialParams.status || 'all')
+  // 数据健康度：ok=正常 / stale=延迟（连续失败 1-2 次）/ offline=断开（≥3 次，保留上一帧继续展示）
+  const [health, setHealth] = useState({ status: 'ok', fails: 0, latency: null, error: null })
+  // 声光报警：新增超时工单时双音提示 + 顶部红闪；开关本地记忆
+  const [alarmOn, setAlarmOn] = useState(() => readFlag(ALARM_KEY, true))
+  const [alarmFlash, setAlarmFlash] = useState(false)
+  // 值守轮播：每 15s 自动切换重点下钻视图，点击工具条以外区域 / ESC 停止
+  const [tourOn, setTourOn] = useState(false)
+  // 空闲态：30s 无操作隐藏光标与工具条（投屏不被操作痕迹干扰），移动/按键即恢复
+  const [idle, setIdle] = useState(false)
+  // 屏幕适配：contain=等比留边（默认，16:9 投影最佳）/ cover=满屏拉伸（非 16:9 拼接屏）
+  const [fit, setFit] = useState(() => initialParams.fit || readFit())
+  const [scale, setScale] = useState({ x: 1, y: 1 })
+  // 刷新频率：右上工具条切换，选择后本地记忆（0 = 暂停自动刷新，仅手动刷新）
+  const [refreshMs, setRefreshMs] = useState(
+    () => (initialParams.refresh != null ? initialParams.refresh : readRefreshMs()),
+  )
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
+  // KPI 迷你趋势采样（本屏观测最近 24 次，切换流程重置）
+  const [kpiHist, setKpiHist] = useState({})
+  // ?fullscreen=1：浏览器要求用户手势后才能全屏，首个点击/按键触发（页面角落给出提示）
+  const [needFsGesture, setNeedFsGesture] = useState(initialParams.fullscreen)
+
+  const mountedRef = useRef(true)
+  const reqRef = useRef({ full: 0, light: 0, drill: 0 })
+  const drillSetRef = useRef(drillSet)
+  const flowRef = useRef(flowId)
+  const timeoutIdsRef = useRef(null)
+  const flashTimerRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const pendingAutoFsRef = useRef(initialParams.fullscreen)
+  const isDemoRef = useRef(false)
+  const dataRef = useRef(null)
+
+  useEffect(() => { drillSetRef.current = drillSet }, [drillSet])
+
+  // 演示模式判定：后端聚合接口未返回 team_stats（字段不存在，如旧版后端或接口异常前）→
+  // 全屏改用内置演示数据（面板数字与弹窗下钻列表条数严格一致），标题栏显示「演示数据」标记。
+  // 后端已接入 team_stats + 下钻工单集 tickets：正常返回即自动切换真实数据，无需改前端。
+  // （派生值须在下方各 effect 的依赖数组之前计算，避免闭包/依赖数组读取未初始化变量）
+  const isDemo = !Array.isArray(stats?.team_stats)
+  const data = isDemo ? DEMO_STATS : stats
+  isDemoRef.current = isDemo
+  dataRef.current = data
+  // 下钻工单集：演示模式用内置数据；真实数据按下钻集（不再随高频轮询下发）
+  const drillTickets = isDemo ? DEMO_STATS.tickets : drillSet.tickets
+  const drillTruncated = !isDemo && drillSet.truncated
+  const kpi = data?.kpi
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+      try { audioCtxRef.current?.close?.() } catch { /* 忽略音频上下文关闭异常 */ }
+    }
+  }, [])
 
   const selectFlow = (v) => {
     setFlowId(v)
     try { window.localStorage.setItem('ticket_monitor_flow', v) } catch { /* 忽略存储异常 */ }
   }
+  const selectRefreshMs = (v) => {
+    setRefreshMs(v)
+    try { window.localStorage.setItem(REFRESH_KEY, String(v)) } catch { /* 忽略存储异常 */ }
+  }
+  const selectFit = (v) => {
+    setFit(v)
+    try { window.localStorage.setItem(FIT_KEY, v) } catch { /* 忽略存储异常 */ }
+  }
+  const toggleAlarm = () => {
+    setAlarmOn((v) => {
+      const next = !v
+      try { window.localStorage.setItem(ALARM_KEY, next ? '1' : '0') } catch { /* 忽略存储异常 */ }
+      return next
+    })
+  }
 
-  // 整屏自适应缩放：取宽/高缩放比最小值，居中留黑边
+  // 整屏自适应：contain 取宽/高缩放比最小值（居中留黑边）；cover 双轴拉伸铺满
+  // （全屏切换时窗口尺寸变化，浏览器会同步触发 resize / fullscreenchange）
   useEffect(() => {
-    const fit = () => {
-      const s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080)
-      setScale(Number.isFinite(s) && s > 0 ? s : 1)
-    }
-    fit()
-    window.addEventListener('resize', fit)
-    return () => window.removeEventListener('resize', fit)
-  }, [])
-
-  // 数据轮询：15s 全量刷新（聚合接口负载极小，保证大屏实时性）；
-  // 切换流程时依赖变化触发立即重载，流程模板修改重新发布后也会在轮询中自动更新
-  useEffect(() => {
-    let alive = true
-    const load = async () => {
-      try {
-        const data = await ticketApi.getMonitorStats(flowId || undefined)
-        if (alive) { setStats(data); setError(null) }
-      } catch (e) {
-        if (alive) setError(String(e?.message || e))
+    const apply = () => {
+      const sx = window.innerWidth / 1920
+      const sy = window.innerHeight / 1080
+      const ok = (v) => Number.isFinite(v) && v > 0
+      if (fit === 'cover') {
+        setScale({ x: ok(sx) ? sx : 1, y: ok(sy) ? sy : 1 })
+      } else {
+        const s = Math.min(sx, sy)
+        setScale({ x: ok(s) ? s : 1, y: ok(s) ? s : 1 })
       }
     }
-    load()
-    const t = setInterval(load, 15000)
-    return () => { alive = false; clearInterval(t) }
+    apply()
+    window.addEventListener('resize', apply)
+    document.addEventListener('fullscreenchange', apply)
+    return () => {
+      window.removeEventListener('resize', apply)
+      document.removeEventListener('fullscreenchange', apply)
+    }
+  }, [fit])
+
+  // 健康度：成功复位；失败累加（1-2 次=延迟，≥3 次=断开；数据保留上一帧）
+  const markHealthOk = useCallback((t0) => {
+    setHealth({ status: 'ok', fails: 0, latency: Math.max(0, Math.round(performance.now() - t0)), error: null })
+    setError(null)
+  }, [])
+  const markHealthFail = useCallback((e) => {
+    const msg = String(e?.message || e)
+    setHealth((h) => {
+      const fails = (h.fails || 0) + 1
+      return { status: fails >= 3 ? 'offline' : 'stale', fails, latency: h.latency, error: msg }
+    })
+    setError(msg)
+  }, [])
+
+  // 全量加载：各面板全量（趋势/分布/团队/流转/SLA/平台）+ 可选下钻工单集
+  const loadFull = useCallback(async ({ withDrill = false } = {}) => {
+    const seq = (reqRef.current.full += 1)
+    const t0 = performance.now()
+    setRefreshing(true)
+    try {
+      const data = await ticketApi.getMonitorStats(flowId || undefined, {
+        includeDrill: withDrill,
+        drillLimit: 2000,
+      })
+      if (!mountedRef.current || seq !== reqRef.current.full) return
+      setStats(data)
+      setLastUpdated(new Date())
+      markHealthOk(t0)
+      if (withDrill && Array.isArray(data?.tickets)) {
+        setDrillSet({
+          tickets: data.tickets,
+          truncated: !!data.tickets_truncated,
+          total: data.tickets_total ?? data.tickets.length,
+          at: Date.now(),
+        })
+      }
+    } catch (e) {
+      if (!mountedRef.current || seq !== reqRef.current.full) return
+      markHealthFail(e)
+    } finally {
+      if (mountedRef.current && seq === reqRef.current.full) setRefreshing(false)
+    }
+  }, [flowId, markHealthOk, markHealthFail])
+
+  // 轻量加载：仅 KPI + 最新工单（高频轮询，响应体极小）
+  const loadLight = useCallback(async () => {
+    const seq = (reqRef.current.light += 1)
+    const t0 = performance.now()
+    try {
+      const data = await ticketApi.getMonitorStats(flowId || undefined, { light: true })
+      if (!mountedRef.current || seq !== reqRef.current.light) return
+      // 首帧尚无全量数据时以全量请求为准（轻量响应缺少各面板数据）
+      setStats((s) => (s ? { ...s, kpi: data.kpi, latest: data.latest, generated_at: data.generated_at } : s))
+      setLastUpdated(new Date())
+      markHealthOk(t0)
+    } catch (e) {
+      if (!mountedRef.current || seq !== reqRef.current.light) return
+      markHealthFail(e)
+    }
+  }, [flowId, markHealthOk, markHealthFail])
+
+  // 按需下钻工单集：打开弹窗时补拉（5 分钟内复用缓存，避免高频轮询重复下发 2000 条）
+  const ensureDrill = useCallback(async () => {
+    const cur = drillSetRef.current
+    if (cur.at && Date.now() - cur.at < DRILL_CACHE_MS && cur.tickets.length) return
+    const seq = (reqRef.current.drill += 1)
+    setDrillLoading(true)
+    try {
+      const data = await ticketApi.getMonitorStats(flowId || undefined, { includeDrill: true, drillLimit: 2000 })
+      if (!mountedRef.current || seq !== reqRef.current.drill) return
+      if (Array.isArray(data?.tickets)) {
+        setDrillSet({
+          tickets: data.tickets,
+          truncated: !!data.tickets_truncated,
+          total: data.tickets_total ?? data.tickets.length,
+          at: Date.now(),
+        })
+      }
+    } catch {
+      if (mountedRef.current && seq === reqRef.current.drill) toast.warning('下钻工单集加载失败，请稍后重试')
+    } finally {
+      if (mountedRef.current && seq === reqRef.current.drill) setDrillLoading(false)
+    }
   }, [flowId])
 
-  // 下钻栈操作：openDrill 压入下一级；jumpDrill 回跳到指定级；closeDrill 关闭指定级（含以上）
-  const openDrill = (view) => setDrillStack((s) => [...s, view])
+  // 分层刷新：高频（light = refreshMs，只取 KPI+最新工单）+ 低频全景（max(60s, 4×refreshMs)）；
+  // 首次加载与切换流程带下钻集，之后全景轮询不再下发下钻集（响应体显著减小）
+  useEffect(() => {
+    loadFull({ withDrill: true })
+    if (refreshMs <= 0) return undefined
+    const light = setInterval(loadLight, refreshMs)
+    const full = setInterval(() => loadFull({ withDrill: false }), Math.max(60000, refreshMs * 4))
+    return () => {
+      clearInterval(light)
+      clearInterval(full)
+    }
+  }, [loadFull, loadLight, refreshMs])
+
+  // 手动刷新（工具条 / R 键）：带下钻集，保证打开弹窗时数据同步
+  const refreshNow = useCallback(() => { loadFull({ withDrill: true }) }, [loadFull])
+
+  // 浏览器级全屏：隐藏浏览器边框与任务栏，便于会议室/指挥中心投放
+  const screenRef = useRef(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(Boolean(document.fullscreenElement))
+    onFs()
+    document.addEventListener('fullscreenchange', onFs)
+    return () => document.removeEventListener('fullscreenchange', onFs)
+  }, [])
+  const toggleFullscreen = useCallback(() => {
+    pendingAutoFsRef.current = false
+    setNeedFsGesture(false)
+    try {
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.()?.catch?.(() => {})
+      } else {
+        screenRef.current?.requestFullscreen?.()?.catch?.(() => {})
+      }
+    } catch {
+      /* 浏览器不支持或被拒绝（非用户手势等）时静默忽略，可改用 F11 */
+    }
+  }, [])
+
+  // ?fullscreen=1：等待首个用户手势（浏览器全屏策略要求）后自动进入全屏
+  useEffect(() => {
+    if (!pendingAutoFsRef.current) return undefined
+    const fire = () => {
+      if (!pendingAutoFsRef.current) return
+      toggleFullscreen()
+    }
+    window.addEventListener('pointerdown', fire)
+    window.addEventListener('keydown', fire)
+    return () => {
+      window.removeEventListener('pointerdown', fire)
+      window.removeEventListener('keydown', fire)
+    }
+  }, [toggleFullscreen])
+
+  // 下钻栈操作：openDrill 压入下一级（并按需补拉下钻工单集）；jump/close 回跳与关闭
+  const openDrill = useCallback((view) => {
+    setDrillStack((s) => [...s, view])
+    if (!isDemoRef.current) ensureDrill()
+  }, [ensureDrill])
   const jumpDrill = (idx) => setDrillStack((s) => s.slice(0, idx + 1))
   const closeDrill = (level) => setDrillStack((s) => s.slice(0, level))
 
@@ -1690,20 +2768,180 @@ export default function TicketMonitorScreen() {
     return () => window.removeEventListener('keydown', onKey)
   }, [drillStack.length])
 
-  // 演示模式判定：后端聚合接口未返回 team_stats（字段不存在，如旧版后端或接口异常前）→
-  // 全屏改用内置演示数据（面板数字与弹窗下钻列表条数严格一致），标题栏显示「演示数据」标记。
-  // 后端已接入 team_stats + 下钻工单集 tickets：正常返回即自动切换真实数据，无需改前端。
-  const isDemo = !Array.isArray(stats?.team_stats)
-  const data = isDemo ? DEMO_STATS : stats
-  const drillTickets = isDemo ? DEMO_STATS.tickets : (Array.isArray(stats?.tickets) ? stats.tickets : [])
-  // 下钻工单集超上限截断（后端 tickets_truncated）：弹窗内提示，避免与面板全量口径混淆
-  const drillTruncated = !isDemo && !!stats?.tickets_truncated
+  // 值守轮播：停止并收起轮播视图（保留用户自己打开的下钻层）
+  const stopTour = useCallback(() => {
+    setTourOn(false)
+    setDrillStack((s) => (s.some((v) => v.tour) ? [] : s))
+  }, [])
+
+  // 值守轮播：每 15s 依次展示 处理中 / 超时预警 / 平台（取量最大平台）/ 提交团队排名
+  useEffect(() => {
+    if (!tourOn) return undefined
+    let i = 0
+    const buildViews = () => {
+      const d = dataRef.current
+      const top = [...(d?.platform_stats || [])].sort((a, b) => (b.total || 0) - (a.total || 0))[0]
+      const views = [
+        {
+          kind: 'tickets', tour: true, title: '值守轮播 · 处理中工单',
+          subtitle: 'AUTO TOUR · 每 15 秒切换', filters: { status: 'processing' },
+        },
+        {
+          kind: 'tickets', tour: true, title: '值守轮播 · SLA 超时预警',
+          subtitle: 'AUTO TOUR · 每 15 秒切换', filters: { timeoutOnly: true },
+        },
+      ]
+      if (top?.name) {
+        views.push({
+          kind: 'tickets', tour: true, title: `值守轮播 · 来源平台「${top.name}」`,
+          subtitle: 'AUTO TOUR · 每 15 秒切换', filters: { platform: top.name },
+        })
+      }
+      views.push({ kind: 'teams', tour: true, title: '值守轮播 · 提交团队排名', subtitle: 'AUTO TOUR · 每 15 秒切换' })
+      return views
+    }
+    const tick = () => {
+      const views = buildViews()
+      setDrillStack([views[i % views.length]])
+      i += 1
+      if (!isDemoRef.current) ensureDrill()
+    }
+    tick()
+    const t = setInterval(tick, TOUR_MS)
+    return () => clearInterval(t)
+  }, [tourOn, ensureDrill])
+
+  // 轮播期间：点击工具条以外区域 或 ESC 停止（避免值守结束后仍自动切换）
+  useEffect(() => {
+    if (!tourOn) return undefined
+    const onDown = (e) => {
+      if (e.target?.closest?.('[data-tour]')) return
+      stopTour()
+    }
+    const onKey = (e) => { if (e.key === 'Escape') stopTour() }
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [tourOn, stopTour])
+
+  // 声光报警：新增「超时且进行中」工单 → 双音提示 + 顶部红闪（首帧只记基线，不误报）
+  const playAlarm = useCallback(() => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext
+      if (!Ctx) return
+      const ctx = audioCtxRef.current || (audioCtxRef.current = new Ctx())
+      if (ctx.state === 'suspended') ctx.resume?.()
+      const t0 = ctx.currentTime
+      ;[880, 660].forEach((freq, i) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        const start = t0 + i * 0.22
+        osc.type = 'triangle'
+        osc.frequency.setValueAtTime(freq, start)
+        gain.gain.setValueAtTime(0.0001, start)
+        gain.gain.exponentialRampToValueAtTime(0.18, start + 0.03)
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.2)
+        osc.connect(gain).connect(ctx.destination)
+        osc.start(start)
+        osc.stop(start + 0.22)
+      })
+    } catch {
+      /* 浏览器自动播放策略限制时静默（仅保留视觉红闪） */
+    }
+  }, [])
+  useEffect(() => {
+    const ids = new Set(
+      (data?.latest || []).filter((t) => t.timeout && t.status === 'processing').map((t) => t.id),
+    )
+    const prev = timeoutIdsRef.current
+    timeoutIdsRef.current = ids
+    if (!prev) return                       // 首帧只记录基线
+    const added = [...ids].filter((id) => !prev.has(id))
+    if (added.length === 0 || !alarmOn) return
+    playAlarm()
+    setAlarmFlash(true)
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = setTimeout(() => setAlarmFlash(false), ALARM_FLASH_MS)
+  }, [data?.latest, alarmOn, playAlarm])
+
+  // 空闲 30s：隐藏光标 + 收起工具条（投屏观感），任意移动/按键/滚动恢复
+  useEffect(() => {
+    let timer
+    const wake = () => {
+      setIdle(false)
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => setIdle(true), IDLE_MS)
+    }
+    wake()
+    const events = ['pointermove', 'pointerdown', 'keydown', 'wheel']
+    events.forEach((ev) => window.addEventListener(ev, wake, { passive: true }))
+    return () => {
+      if (timer) clearTimeout(timer)
+      events.forEach((ev) => window.removeEventListener(ev, wake))
+    }
+  }, [])
+
+  // 快捷键：F 全屏 / R 刷新 / T 轮播 / 1-4 状态筛选（输入控件与组合键不拦截）
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return
+      const tag = (e.target?.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return
+      const key = String(e.key).toLowerCase()
+      if (key === 'f') { e.preventDefault(); toggleFullscreen() }
+      else if (key === 'r') { e.preventDefault(); refreshNow() }
+      else if (key === 't') { e.preventDefault(); if (tourOn) stopTour(); else setTourOn(true) }
+      else if (STATUS_HOTKEYS[key]) { e.preventDefault(); setLiveStatus(STATUS_HOTKEYS[key]) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleFullscreen, refreshNow, tourOn, stopTour])
+
+  // URL 参数回写：当前流程/刷新/筛选/适配同步到地址栏（复制链接即可复现同屏；
+  // fullscreen 为一次性参数，消费后移除避免刷新被反复触发）
+  useEffect(() => {
+    try {
+      const qs = new URLSearchParams(window.location.search)
+      if (flowId) qs.set('flow', flowId); else qs.delete('flow')
+      if (refreshMs !== DEFAULT_REFRESH_MS) qs.set('refresh', String(refreshMs)); else qs.delete('refresh')
+      if (liveStatus !== 'all') qs.set('status', liveStatus); else qs.delete('status')
+      if (fit !== 'contain') qs.set('fit', fit); else qs.delete('fit')
+      qs.delete('fullscreen')
+      const q = qs.toString()
+      window.history.replaceState(null, '', `${window.location.pathname}${q ? `?${q}` : ''}${window.location.hash}`)
+    } catch {
+      /* 隐私模式等场景下忽略 URL 写入异常 */
+    }
+  }, [flowId, refreshMs, liveStatus, fit])
+
+  // KPI 迷你趋势：每次采样缓存最近 24 个点；切换流程清空（避免跨流程曲线混淆）
+  useEffect(() => {
+    if (flowRef.current !== flowId) {
+      flowRef.current = flowId
+      setKpiHist({})
+      setDrillSet({ tickets: [], truncated: false, total: 0, at: 0 })
+    }
+  }, [flowId])
+  useEffect(() => {
+    if (!kpi) return
+    setKpiHist((h) => {
+      const next = {}
+      for (const f of KPI_FIELDS) {
+        const arr = Array.isArray(h[f]) ? h[f].slice(-(KPI_HIST_MAX - 1)) : []
+        if (typeof kpi[f] === 'number') arr.push(kpi[f])
+        next[f] = arr
+      }
+      return next
+    })
+  }, [kpi])
 
   // KPI：今日新增对比昨日（趋势 days30 末两个点）
   const yesterdayNew = data?.trend?.days30?.length >= 2 ? data.trend.days30[data.trend.days30.length - 2]?.new : undefined
-  const kpi = data?.kpi
   const todayDelta = kpi && yesterdayNew !== undefined ? kpi.today_new - yesterdayNew : undefined
-  // 超时预警占待处理比例（待处理为 0 时无意义，显示 —）
+  // 超时预警占处理中比例（处理中为 0 时无意义，显示 —）
   const warnPct = kpi && kpi.pending > 0 && kpi.timeout_warning != null
     ? Math.round((kpi.timeout_warning / kpi.pending) * 1000) / 10
     : null
@@ -1711,14 +2949,16 @@ export default function TicketMonitorScreen() {
   const todayStartIso = isoLocal(new Date(new Date().setHours(0, 0, 0, 0)))
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center overflow-hidden"
+    <div ref={screenRef}
+      className={`fixed inset-0 flex items-center justify-center overflow-hidden ${idle ? 'screen-idle' : ''}`}
       style={{
-        background: `radial-gradient(120% 90% at 50% 0%, #16222E 0%, ${C.deepNavy} 55%, #05090F 100%)`,
+        background:
+          `radial-gradient(ellipse 90% 70% at 50% 45%, ${C.canvasCenter} 0%, ${C.canvasBase} 45%, ${C.canvasEdge} 72%, ${C.deepNavy} 100%)`,
       }}>
-      {/* 背景 1px 科技网格线 */}
+      {/* 背景 1px 科技网格线（低对比，避免抢卡片层级） */}
       <div className="pointer-events-none absolute inset-0"
         style={{
-          backgroundImage: 'linear-gradient(rgba(78,109,148,0.10) 1px, transparent 1px), linear-gradient(90deg, rgba(78,109,148,0.10) 1px, transparent 1px)',
+          backgroundImage: 'linear-gradient(rgba(80,120,170,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(80,120,170,0.06) 1px, transparent 1px)',
           backgroundSize: '48px 48px',
         }} />
       <style>{`
@@ -1747,31 +2987,64 @@ export default function TicketMonitorScreen() {
         .drill-in { animation: drillIn 0.18s ease-out; }
         @keyframes drillPop { from { opacity: 0; transform: scale(0.96) translateY(12px); } to { opacity: 1; transform: scale(1) translateY(0); } }
         .drill-pop { animation: drillPop 0.22s ease-out; }
+        /* KPI 异常（超时预警>0）描边呼吸 + 声光报警顶部红闪 */
+        @keyframes kpiPulse {
+          0%, 100% { box-shadow: 0 0 10px rgba(255,77,79,0.16); }
+          50% { box-shadow: 0 0 22px rgba(255,77,79,0.55); }
+        }
+        .kpi-alert-pulse { animation: kpiPulse 2.4s ease-in-out infinite; }
+        @keyframes alarmFlash { 0%, 100% { opacity: 0; } 35% { opacity: 1; } 65% { opacity: 0.45; } }
+        .alarm-flash { animation: alarmFlash 1s ease-in-out 4; }
+        /* 空闲态：隐藏鼠标光标（投屏观感） */
+        .screen-idle, .screen-idle * { cursor: none !important; }
         /* 系统开启"减少动态效果"时关闭装饰动画 */
         @media (prefers-reduced-motion: reduce) {
           .flow-dash, .node-glow, .row-enter, .row-flash, .count-bounce, .marquee-enter, .screen-fade,
-          .drill-in, .drill-pop { animation: none !important; }
+          .drill-in, .drill-pop, .kpi-alert-pulse, .alarm-flash { animation: none !important; }
         }
       `}</style>
 
-      <div className="screen-fade absolute" style={{ width: 1920, height: 1080, transform: `scale(${scale})`, transformOrigin: 'center' }}>
-        {/* ① 顶部标题栏（演示模式带「演示数据」标记） */}
-        <HeaderBar demo={isDemo} />
+      <div className="screen-fade absolute"
+        style={{ width: 1920, height: 1080, transform: `scale(${scale.x}, ${scale.y})`, transformOrigin: 'center' }}>
+        {/* ① 顶部标题栏（演示模式带「演示数据」标记；右侧工具条：刷新频率 / 立即刷新 / 全屏 + 时钟） */}
+        <HeaderBar
+          demo={isDemo}
+          refreshMs={refreshMs}
+          onRefreshMs={selectRefreshMs}
+          onRefresh={refreshNow}
+          refreshing={refreshing}
+          lastUpdated={lastUpdated}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
+          health={health}
+          alarmOn={alarmOn}
+          onToggleAlarm={toggleAlarm}
+          fit={fit}
+          onFit={selectFit}
+          tourOn={tourOn}
+          onToggleTour={() => (tourOn ? stopTour() : setTourOn(true))}
+          hidden={idle}
+        />
 
-        {/* ① KPI 指标卡横排（点击下钻对应口径工单列表；超时预警↔待处理同色橙红描边编组，处理中 0 件灰色虚线态） */}
+        {/* ① KPI 指标卡横排（点击下钻对应口径工单列表；超时预警↔处理中同色橙红描边编组，处理中 0 件灰色虚线态）
+            处理中 + 已解决 + 已取消 = 工单总量（三类状态完整口径，便于总量核对）；
+            「处理中」卡为全部进行中工单（合并原「待处理」卡），底部小字展示今日活跃数 */}
         <div className="mt-1 grid h-[96px] grid-cols-6 gap-3 px-4">
-          <KpiCard label="工单总量" value={kpi?.total} tone="blue"
+          <KpiCard label="工单总量" value={kpi?.total} tone="blue" spark={kpiHist.total}
             onClick={() => openDrill({ kind: 'tickets', title: '全部工单列表', subtitle: 'KPI 下钻 · 工单总量' })} />
-          <KpiCard label="今日新增" value={kpi?.today_new} tone="blue" delta={todayDelta}
+          <KpiCard label="今日新增" value={kpi?.today_new} tone="blue" delta={todayDelta} spark={kpiHist.today_new}
             onClick={() => openDrill({ kind: 'tickets', title: '今日新增工单', subtitle: 'KPI 下钻 · 今日创建', filters: { from: todayStartIso } })} />
-          <KpiCard label="待处理" value={kpi?.pending} tone="orange" groupBorder
-            onClick={() => openDrill({ kind: 'tickets', title: '待处理工单', subtitle: 'KPI 下钻 · 进行中', filters: { status: 'processing' } })} />
-          <KpiCard label="处理中（今日活跃）" value={kpi?.processing_active} tone="blue" zeroNote="暂无进行中工单"
-            onClick={() => openDrill({ kind: 'tickets', title: '今日活跃处理中工单', subtitle: 'KPI 下钻 · 今日活跃', filters: { status: 'processing', activeToday: true } })} />
-          <KpiCard label="已解决" value={kpi?.completed} tone="green"
+          <KpiCard label="处理中" value={kpi?.pending} tone="orange" groupBorder zeroNote="暂无进行中工单"
+            note={kpi ? `今日活跃 ${kpi.processing_active} 件` : '今日活跃 —'}
+            spark={kpiHist.pending}
+            onClick={() => openDrill({ kind: 'tickets', title: '处理中工单', subtitle: 'KPI 下钻 · 进行中', filters: { status: 'processing' } })} />
+          <KpiCard label="已解决" value={kpi?.completed} tone="green" spark={kpiHist.completed}
             onClick={() => openDrill({ kind: 'tickets', title: '已解决工单', subtitle: 'KPI 下钻 · 已完成', filters: { status: 'completed' } })} />
+          <KpiCard label="已取消" value={kpi?.cancelled} tone="gray" spark={kpiHist.cancelled}
+            onClick={() => openDrill({ kind: 'tickets', title: '已取消工单', subtitle: 'KPI 下钻 · 已取消', filters: { status: 'cancelled' } })} />
           <KpiCard label="超时预警" value={kpi?.timeout_warning} tone={(kpi?.timeout_warning ?? 0) > 0 ? 'red' : 'blue'} groupBorder
-            note={`占待处理 ${warnPct == null ? '—' : `${warnPct}%`}`}
+            note={`占处理中 ${warnPct == null ? '—' : `${warnPct}%`}`} spark={kpiHist.timeout_warning}
+            pulse={(kpi?.timeout_warning ?? 0) > 0}
             onClick={() => openDrill({ kind: 'tickets', title: 'SLA 超时预警工单', subtitle: 'KPI 下钻 · 超时预警', filters: { timeoutOnly: true } })} />
         </div>
 
@@ -1798,10 +3071,11 @@ export default function TicketMonitorScreen() {
             />
             {/* ④ 提交团队工单排名（模板「提交团队」字段聚合；卡片/尾签/查看全部可下钻） */}
             <TeamRankPanel rows={data?.team_stats} onDrill={openDrill} />
-            {/* ④ 最新工单实时列表（行点击查看工单详情） */}
+            {/* ④ 最新工单实时列表（状态筛选 + 自动滚动 + 行点击查看工单详情） */}
             {/* 实时列表行点击 → 工单详情：latest 记录字段精简，按 id 从下钻工单集换完整对象，
                 保证详情页 team/platform/alert_type/SLA 时长等字段完整展示 */}
-            <LiveList latest={data?.latest}
+            <LiveList latest={data?.latest} tickets={drillTickets}
+              status={liveStatus} onStatus={setLiveStatus}
               onDrill={(v) => openDrill(v.kind === 'detail' && v.ticket
                 ? { ...v, ticket: drillTickets.find((x) => x.id === v.ticket.id) || v.ticket }
                 : v)} />
@@ -1824,15 +3098,35 @@ export default function TicketMonitorScreen() {
         {/* ⑧ 弹窗下钻层（按栈逐级覆盖显示，全程不离开大屏；数据源与面板同源保证口径一致） */}
         {drillStack.map((view, i) => (
           <DrillModal key={i} level={i} view={view} stack={drillStack} tickets={drillTickets}
-            truncated={drillTruncated} onJump={jumpDrill} onClose={closeDrill} onDrill={openDrill} />
+            truncated={drillTruncated} loading={drillLoading} demo={isDemo}
+            onJump={jumpDrill} onClose={closeDrill} onDrill={openDrill} />
         ))}
       </div>
 
-      {/* 数据加载失败提示（未登录 / 接口异常） */}
-      {error && (
+      {/* 声光报警：新增超时工单时顶部红边 + 内发光闪烁（4 秒；仅视觉，提示音受浏览器策略限制） */}
+      {alarmFlash && (
+        <div className="alarm-flash pointer-events-none absolute inset-0 z-[55]"
+          style={{ border: '2px solid rgba(255,77,79,0.75)', boxShadow: 'inset 0 0 120px 24px rgba(255,77,79,0.45)' }} />
+      )}
+
+      {/* ?fullscreen=1 提示：浏览器要求用户手势才允许全屏，点击/按键任意位置即进入 */}
+      {needFsGesture && (
+        <div className="absolute bottom-4 left-4 z-30 rounded border px-3 py-1.5 text-[12px]"
+          style={{ background: 'rgba(69,184,205,0.12)', borderColor: 'rgba(69,184,205,0.45)', color: C.paleBlue }}>
+          点击任意位置进入全屏投屏（URL 参数 fullscreen=1）
+        </div>
+      )}
+
+      {/* 数据加载异常：断线时保留上一帧继续展示（不白屏），底部提示 + 工具条健康度同步变色 */}
+      {error && (!stats || health.status === 'offline') && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded border px-4 py-2 text-[12px]"
           style={{ background: 'rgba(255,77,79,0.12)', borderColor: 'rgba(255,77,79,0.4)', color: C.red }}>
-          数据加载失败：{error}（大屏需在已登录会话中访问，15 秒后自动重试）
+          {stats ? '数据源断开，正在展示上一帧数据' : '数据加载失败'}：{error}
+          {stats ? '（' : '（大屏需在已登录会话中访问'}
+          {refreshMs > 0
+            ? `，${refreshMs >= 60000 ? `${refreshMs / 60000} 分钟` : `${refreshMs / 1000} 秒`}后自动重试`
+            : '，自动刷新已暂停，可点右上角刷新或按 R'}
+          ）
         </div>
       )}
     </div>

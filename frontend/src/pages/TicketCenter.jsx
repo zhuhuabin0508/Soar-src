@@ -230,6 +230,13 @@ export default function TicketCenter() {
     () => evalRoutes(currentFlow?.first_node?.routes, values),
     [currentFlow, values],
   )
+  // 条件路由锁定（与工单详情页一致）：字段值命中路由条件时去向强制为条件路由
+  //（按钮禁用不可改选，后端 _resolve_route 同步强制校验）；
+  // 条件不再命中时清空残留（多路由回到手动选择）
+  useEffect(() => {
+    if (routeSuggested) setRouteTo(routeSuggested)
+    else if (routeOptions.length > 1) setRouteTo('')
+  }, [routeSuggested, routeOptions.length])
 
   // 引用联动字段选项：发起表单仅有本次填写值（与后端 create_ticket 口径一致）
   const refOpts = useMemo(
@@ -310,14 +317,15 @@ export default function TicketCenter() {
     setIpErrors({})
     // 未命中规则的扩展字段的值不提交
     const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
-    if (routeOptions.length > 1 && !routeTo) return toast.error('请选择流转去向')
+    if (routeOptions.length > 1 && !routeTo && !routeSuggested) return toast.error('请选择流转去向')
     setCreating(true)
     ticketApi.createTicket({
       flow_id: Number(flowId),
       title: title.trim(),
       priority: ticketPriority,
       field_values: submitValues,
-      route_to: routeTo || (routeSuggested || ''),
+      // 条件路由命中 → 强制走条件去向（与后端 _resolve_route 一致，发起人不可改选）
+      route_to: routeSuggested || routeTo || '',
       comment: comment.trim() || null,
       related_alert_id: alertPrefill?.alert?.id || null,
       related_alert_uuid: alertPrefill?.alert?.uuid || null,
@@ -902,21 +910,27 @@ export default function TicketCenter() {
           {/* 流转去向 */}
           {currentFlow && routeOptions.length > 1 && (
             <div>
-              <label className={labelCls}>流转去向<span className="text-red-500">*</span></label>
+              <label className={labelCls}>流转去向{routeSuggested ? null : <span className="text-red-500">*</span>}</label>
               <div className="flex flex-wrap items-center gap-2">
                 {routeOptions.map((r) => {
                   const isSug = routeSuggested === r.to
+                  // 条件命中：去向锁定为条件路由，其余按钮禁用不可改选
+                  const locked = !!routeSuggested
                   return (
-                    <button key={r.to} type="button"
-                      onClick={() => setRouteTo(r.to)}
-                      className={`rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'}`}>
+                    <button key={r.to} type="button" disabled={locked && !isSug}
+                      onClick={() => { if (!locked) setRouteTo(r.to) }}
+                      className={`rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'} ${locked && !isSug ? 'cursor-not-allowed opacity-40' : ''}`}>
                       {r.label || r.to}
-                      {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-500">条件建议</span>}
+                      {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-500">{locked ? '条件命中·锁定' : '条件建议'}</span>}
                     </button>
                   )
                 })}
               </div>
-              <p className={hintCls}>已按当前填写内容自动建议流向（绿色标记），可点击调整；仅一条路由时自动流转</p>
+              <p className={hintCls}>
+                {routeSuggested
+                  ? '填写内容已命中流转条件，去向锁定为条件路由，不可手动调整'
+                  : '未命中流转条件，请选择流转去向；仅一条路由时自动流转'}
+              </p>
             </div>
           )}
 
