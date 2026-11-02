@@ -1407,7 +1407,7 @@ def _parse_import_file(filename: str, raw: bytes) -> list[dict]:
 
 
 @router.post("/import")
-async def import_assets(
+def import_assets(
     file: UploadFile = File(..., description="CSV/XLSX/XLS 文件"),
     type_code: str = Query("", description="资产类型模板代码；传了则按模板字段映射导入"),
     conflict_strategy: str = Query("skip", description="冲突策略：skip跳过/overwrite覆盖/error报错中止"),
@@ -1416,6 +1416,12 @@ async def import_assets(
     user: User = Depends(require_permission("asset_list", "edit")),
 ) -> dict:
     """批量导入资产（CSV/Excel）。
+
+    注意：本端点必须是同步 def——批量导入含大量同步 SQLAlchemy 操作
+    （commit 触发 asset_ip_index 的 ORM 事件钩子逐资产重建 IP 区间，
+    N+1 放大后单次可达分钟级）。async def 会把这些操作直接跑在事件
+    循环上，冻结全部 API（502）直至看门狗自杀重启；同步 def 由
+    FastAPI 放入线程池执行，只阻塞本请求。
 
     模板模式（传 ``type_code``）：
     - 列名按模板字段 label → key 映射，由 ``_apply_template_to_asset`` 分发到标准列/extra。
@@ -1432,7 +1438,8 @@ async def import_assets(
     - 限制 100000 行，超限返回 413。
     - 返回 ``{total, inserted, updated, skipped, errors}``。
     """
-    raw = await file.read()
+    # 同步上下文：直接读底层文件对象（等价于 async 版的 await file.read()）
+    raw = file.file.read()
     filename = (file.filename or "").lower()
 
     try:
