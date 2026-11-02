@@ -240,6 +240,23 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         # 建表失败不应阻断 API 启动（例如 DB 暂未就绪时仍允许健康检查）
         logger.warning("启动初始化失败（忽略，继续启动）: %s", exc)
+    # 上次进程未完成的「同步中」占位已无在途请求，恢复为待同步（避免永久卡在同步中）
+    try:
+        from app.database import SessionLocal
+        from app.models.workflow_ban import BanRecord
+
+        _db = SessionLocal()
+        try:
+            _n = _db.query(BanRecord).filter(BanRecord.status == "syncing").update(
+                {"status": "pending_sync"}, synchronize_session=False,
+            )
+            _db.commit()
+            if _n:
+                logger.info("恢复上次未完成的封禁同步占位: %d 条", _n)
+        finally:
+            _db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("恢复封禁同步占位失败（忽略）: %s", exc)
     # 推送系统更新通知（版本变化时广播到通知中心）
     try:
         from app.core.changelog import notify_system_update
@@ -316,6 +333,14 @@ async def lifespan(app: FastAPI):
         start_notification_ws_listener()
     except Exception as exc:  # noqa: BLE001
         logger.warning("通知 WebSocket 订阅启动失败（忽略，轮询兜底）: %s", exc)
+    # 启动事件循环看门狗（单进程后端卡死时打印线程栈并退出，由 Docker 自动拉起）
+    # 必须放在启动任务全部完成之后：建表/迁移/种子耗时不应被判定为卡死
+    try:
+        from app.core.loop_watchdog import start_loop_watchdog
+
+        start_loop_watchdog()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("事件循环看门狗启动失败（忽略）: %s", exc)
     yield
     # 停止通知 WebSocket 订阅协程
     try:
@@ -387,6 +412,16 @@ def get_version():
     finally:
         db.close()
     return {"version": CURRENT_VERSION, "platform_name": platform_name}
+
+
+@app.get("/api/v1/health")
+async def health_check():
+    """轻量健康检查（不查库、不依赖线程池，供容器 healthcheck 使用）。
+
+    事件循环卡死时本接口同样无响应，因此 Docker 会判为 unhealthy；
+    配合进程级看门狗（自动退出）与 ``restart: unless-stopped`` 实现自愈。
+    """
+    return {"status": "ok", "alive": True}
 
 # ============ WebSocket 端点：执行进度实时推送 ============
 from fastapi import WebSocket as _WS  # noqa: E402

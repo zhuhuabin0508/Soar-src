@@ -53,7 +53,8 @@ services:
         python -c "from app.database import engine, Base; from app.models import Workflow, Execution, ExecutionTrace; Base.metadata.create_all(bind=engine); print('DB tables ensured (dev)')"
         python -c "from app.core.seed import ensure_seed_data; ensure_seed_data()" || echo "==> [dev] seed skipped"
         echo "==> [dev] starting uvicorn with --reload on 0.0.0.0:8000"
-        exec uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+        exec uvicorn app.main:app --reload --reload-dir /app/app --reload-delay 1 \
+          --timeout-graceful-shutdown 10 --host 0.0.0.0 --port 8000
     volumes:
       - ./backend/app:/app/app
       - ./backend/entrypoint.sh:/app/entrypoint.sh:ro
@@ -81,11 +82,26 @@ services:
       WORKFLOW_SOC_AGENT_ID: ${WORKFLOW_SOC_AGENT_ID:-0}
       WORKFLOW_SYSTEM_USER_ID: ${WORKFLOW_SYSTEM_USER_ID:-0}
       BAN_ANALYST_AGENT_ID: ${BAN_ANALYST_AGENT_ID:-0}
+      # 卡死时输出 C 层/全线程堆栈，便于定位阻塞点
+      PYTHONFAULTHANDLER: "1"
+      # 事件循环看门狗阈值（秒）：超时未响应即打印线程栈并退出，由 restart 策略拉起
+      LOOP_WATCHDOG_TIMEOUT: ${LOOP_WATCHDOG_TIMEOUT:-90}
+      # 心跳探测间隔（秒；代码内限制不超过阈值的一半）
+      LOOP_WATCHDOG_INTERVAL: ${LOOP_WATCHDOG_INTERVAL:-5}
+      # 看门狗总开关（临时关闭用于预期的超长同步任务）
+      LOOP_WATCHDOG_ENABLED: ${LOOP_WATCHDOG_ENABLED:-true}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # 健康检查：不查库的轻量端点。事件循环卡死时接口同样无响应 → 容器转为 unhealthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
     ports:
       - "127.0.0.1:8001:8000"
       # 把容器内 514 UDP 发布到宿主机，供上游设备(青藤/防火墙)推送 syslog
