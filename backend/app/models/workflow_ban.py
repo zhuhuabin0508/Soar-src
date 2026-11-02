@@ -125,7 +125,8 @@ class BanRecord(Base):
     reason = Column(Text, nullable=True)
     region = Column(String(64), nullable=True)
     source_instance_id = Column(Integer, nullable=True, index=True)
-    # 封禁来源：auto（工作流自动）/ approval（审批通过）/ manual（手动发起）/ ticket（工单同步）
+    # 封禁来源：auto（工作流自动）/ approval（审批通过）/ manual（手动发起）/
+    # ticket（工单同步）/ import（导入待同步）
     ban_source = Column(String(16), nullable=False, default="auto")
     # 封禁工具返回的记录 ID
     record_id = Column(String(64), nullable=True)
@@ -134,7 +135,7 @@ class BanRecord(Base):
     ticket_no = Column(String(32), nullable=True, comment="来源工单号（冗余展示）")
     ticket_node = Column(String(64), nullable=True, comment="触发同步的工单节点 key（防重复同步）")
     ban_device = Column(String(255), nullable=True, comment="封禁设备（工单同步时填写的设备信息）")
-    # pending_approval / active / expired / unbanned / cancelled
+    # pending_sync（导入待同步）/ pending_approval / active / expired / unbanned / cancelled
     status = Column(String(20), nullable=False, default="active", index=True)
     unban_reason = Column(Text, nullable=True)
     unban_operator = Column(String(64), nullable=True)

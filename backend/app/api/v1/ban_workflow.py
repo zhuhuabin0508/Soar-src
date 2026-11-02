@@ -6,7 +6,9 @@
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
 - ``GET /ban-workflow/banned-ips/export/csv`` / ``GET .../import/template`` /
-  ``POST .../import/csv``：封禁工作台 CSV 导入导出（封禁时长按天）
+  ``POST .../import/csv``：封禁工作台 CSV/Excel 导入导出（导入仅入库待同步）
+- ``POST /ban-workflow/banned-ips/sync-preview`` / ``POST .../sync``：同步安博通封禁前
+  的资产匹配预览与用户确认下发
 - ``GET /ban-workflow/circuit-breaker`` / ``POST .../reset``：熔断状态查询与人工恢复
 - ``GET /ban-workflow/stats``：监控页工作流统计卡片数据
 """
@@ -26,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.core.timezone import BEIJING_TZ, beijing_now
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission, require_role
+from app.devices import ban_target
 from app.models.alert_event import AlertEvent
 from app.models.banned_ip import BannedIP
 from app.models.ticket import Ticket
@@ -53,14 +56,14 @@ _FINAL_RESULT_LABELS = {
     "escalated": "已升级",
 }
 _BAN_SOURCE_LABELS = {
-    "auto": "自动封禁", "approval": "审批封禁", "manual": "手动封禁", "chat": "聊天封禁", "ticket": "工单同步",
+    "auto": "自动封禁", "approval": "审批封禁", "manual": "手动封禁", "chat": "聊天封禁",
+    "ticket": "工单同步", "import": "导入封禁",
 }
 # 工单智能体研判建议动作中文（工单同步封禁详情的研判结论展示用）
 _TICKET_AGENT_ACTION_LABELS = {"ban": "建议封禁", "monitor": "观察监控", "ignore": "忽略（暂不处置）"}
 
 # 封禁等级（工作台口径：critical 为最高级）中文映射，CSV 导入导出用
 _LEVEL_LABELS = {"low": "低", "medium": "中", "high": "高", "critical": "严重"}
-_LEVEL_REVERSE = {v: k for k, v in _LEVEL_LABELS.items()}
 
 
 def _duration_days_label(seconds: int, is_permanent: bool) -> str:
@@ -87,6 +90,229 @@ def _parse_days(value: str) -> int:
     if days <= 0 or days > 36500:
         raise ValueError(f"封禁时长天数无效: {value}")
     return max(1, round(days * 86400))
+
+
+# ----------------------------------------------------------------------
+# 封禁工作台导入解析（与资产导入同口径：CSV / XLSX / XLS + 逐行校验）
+# ----------------------------------------------------------------------
+_WB_IMPORT_MAX_ROWS = 20000
+# 单次上传体积上限（xlsx/xls 解析会整体载入内存，必须限制，避免拖垮进程）
+_WB_IMPORT_MAX_BYTES = 20 * 1024 * 1024
+_WB_IMPORT_HEADER_LABELS = {
+    "ip": "IP地址", "ban_level": "封禁等级", "ban_duration_days": "封禁时长(天)",
+    "is_permanent": "是否永久", "reason": "封禁原因", "region": "归属地区",
+    "ban_device": "封堵设备",
+}
+# 表头别名：兼容模板中文列名、导出列名与英文 key（归一化后比较）
+_WB_IMPORT_HEADER_ALIASES = {
+    "ip地址": "ip", "ip": "ip", "封禁目标": "ip",
+    "封禁等级": "ban_level", "等级": "ban_level", "ban_level": "ban_level",
+    "封禁时长(天)": "ban_duration_days", "封禁时长": "ban_duration_days",
+    "时长(天)": "ban_duration_days", "时长": "ban_duration_days",
+    "ban_duration_days": "ban_duration_days", "ban_duration": "ban_duration_days",
+    "是否永久": "is_permanent", "永久": "is_permanent", "is_permanent": "is_permanent",
+    "封禁原因": "reason", "原因": "reason", "封禁理由": "reason", "reason": "reason",
+    "归属地区": "region", "地区": "region", "region": "region",
+    "封堵设备": "ban_device", "封堵设备名称": "ban_device", "封禁设备": "ban_device",
+    "设备名称": "ban_device", "设备": "ban_device", "ban_device": "ban_device",
+}
+# 封禁等级兼容中英文及常见等级叫法
+_WB_IMPORT_LEVEL_ALIASES = {
+    "低": "low", "低危": "low", "low": "low",
+    "中": "medium", "中危": "medium", "medium": "medium",
+    "高": "high", "高危": "high", "high": "high",
+    "严重": "critical", "严重级": "critical", "critical": "critical", "serious": "critical",
+}
+_WB_PERMANENT_TRUE = {"是", "永久", "true", "yes", "y", "1"}
+_WB_PERMANENT_FALSE = {"否", "false", "no", "n", "0"}
+
+
+def _wb_norm_header(value) -> str:
+    """表头归一化：去空白/BOM、全角括号转半角、转小写。"""
+    text = "" if value is None else str(value)
+    text = text.replace("\ufeff", "").replace("（", "(").replace("）", ")")
+    return "".join(text.split()).lower()
+
+
+def _wb_cell_text(value) -> str:
+    """Excel 单元格 → 去空白字符串。
+
+    兼容 Excel 常见类型：``None`` → 空串；布尔 → 是/否；整数值浮点（1.0）→ ``1``，
+    避免「是否永久」列被 Excel 存成数字后判定失败。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _decode_wb_import_text(raw: bytes) -> str:
+    """解码导入文本：优先 UTF-8(SIG)，回退 GB18030（兼容 Excel 导出的中文 CSV）。"""
+    for enc in ("utf-8-sig", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _read_wb_import_matrix(filename: str, raw: bytes) -> list[list]:
+    """读取 CSV/XLSX/XLS 为二维单元格矩阵（保留空行由调用方过滤）。"""
+    if filename.endswith(".csv"):
+        text = _decode_wb_import_text(raw)
+        return [list(row) for row in csv.reader(io.StringIO(text))]
+    if filename.endswith(".xlsx"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        ws = wb.active
+        return [list(row) for row in ws.iter_rows(values_only=True)]
+    if filename.endswith(".xls"):
+        import xlrd
+
+        book = xlrd.open_workbook(file_contents=raw)
+        sheet = book.sheet_by_index(0)
+        return [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]
+    raise ValueError(f"不支持的文件类型: {filename}（仅支持 .csv/.xlsx/.xls）")
+
+
+def _parse_wb_import_file(filename: str, raw: bytes) -> tuple[list[dict], list[str]]:
+    """解析导入文件为行字典（键为统一字段 key），并校验表头。
+
+    Returns:
+        ``(rows, unknown_headers)``；``rows`` 中每行额外带 ``_row``（文件行号），
+        仅包含表头中实际存在的字段（调用方据此区分「列缺失」与「值非法」）。
+
+    Raises:
+        ValueError: 文件为空、缺少必需列、行数超限等可直接展示的错误。
+    """
+    matrix = _read_wb_import_matrix(filename, raw)
+    header_idx = None
+    for i, row in enumerate(matrix):
+        if any(_wb_cell_text(c) for c in row):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError("文件为空")
+
+    header_row = matrix[header_idx]
+    keys: list[str] = []
+    unknown: list[str] = []
+    for cell in header_row:
+        raw_header = _wb_cell_text(cell)
+        key = _WB_IMPORT_HEADER_ALIASES.get(_wb_norm_header(raw_header))
+        if key is None:
+            if raw_header and raw_header not in unknown:
+                unknown.append(raw_header)
+            continue
+        if key not in keys:
+            keys.append(key)
+    missing = [k for k in ("ip", "reason") if k not in keys]
+    if missing:
+        names = "、".join(_WB_IMPORT_HEADER_LABELS[k] for k in missing)
+        raise ValueError(f"缺少必需列：{names}。请使用模板或检查表头是否与模板一致")
+
+    rows: list[dict] = []
+    for row_no, row in enumerate(matrix[header_idx + 1:], start=header_idx + 2):
+        values = [_wb_cell_text(c) for c in row]
+        if not any(values):
+            continue
+        # 以 # 开头的说明行（模板底部常见）自动跳过
+        if values[0].startswith("#"):
+            continue
+        item: dict = {"_row": row_no}
+        for i in range(len(header_row)):
+            # 行短于表头时按空白补齐，保证「列存在但值为空」也能被字段校验拦截
+            cell = row[i] if i < len(row) else None
+            # 同一列可能多个表头映射到同一 key：保留首个非空值
+            key = _WB_IMPORT_HEADER_ALIASES.get(_wb_norm_header(header_row[i]))
+            if key is not None:
+                val = _wb_cell_text(cell)
+                if key not in item or not item.get(key):
+                    item[key] = val
+        rows.append(item)
+
+    if len(rows) > _WB_IMPORT_MAX_ROWS:
+        raise ValueError(f"行数过多（{len(rows)}），请分批导入（每次 ≤{_WB_IMPORT_MAX_ROWS} 行）")
+    return rows, unknown
+
+
+def _validate_wb_import_row(row: dict) -> dict:
+    """校验单行导入数据并归一化；非法时抛 ``ValueError``（消息直接展示给用户）。"""
+    from app.core.ip_validation import IPValidationError, validate_ban_target
+
+    if "ip" not in row:
+        raise ValueError("缺少 IP地址 列")
+    raw_ip = _wb_cell_text(row.get("ip"))
+    if not raw_ip:
+        raise ValueError("IP地址不能为空")
+    try:
+        ip = validate_ban_target(raw_ip, "IP地址")
+    except IPValidationError as exc:
+        raise ValueError(str(exc)) from exc
+
+    if "ban_level" in row:
+        level_raw = _wb_cell_text(row.get("ban_level")).lower()
+        if not level_raw:
+            raise ValueError("封禁等级不能为空（低/中/高/严重）")
+        ban_level = _WB_IMPORT_LEVEL_ALIASES.get(level_raw)
+        if ban_level is None:
+            raise ValueError("封禁等级不合法，仅支持 低/中/高/严重")
+    else:
+        ban_level = "medium"
+
+    if "is_permanent" in row:
+        permanent_raw = _wb_cell_text(row.get("is_permanent")).lower()
+        if permanent_raw in _WB_PERMANENT_TRUE:
+            is_permanent = True
+        elif permanent_raw in _WB_PERMANENT_FALSE or not permanent_raw:
+            # 空值按「非永久」处理（模板常留空），由封禁时长决定
+            is_permanent = False
+        else:
+            raise ValueError("是否永久不合法，仅支持 是/否")
+    else:
+        is_permanent = False
+
+    if is_permanent:
+        ban_duration = 0
+    elif "ban_duration_days" in row:
+        days_raw = _wb_cell_text(row.get("ban_duration_days"))
+        if not days_raw:
+            raise ValueError("封禁时长(天)不能为空")
+        try:
+            ban_duration = _parse_days(days_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(str(exc) or "封禁时长(天)不是有效数字") from exc
+    else:
+        ban_duration = 86400
+
+    reason = _wb_cell_text(row.get("reason"))
+    if not reason:
+        raise ValueError("封禁原因不能为空")
+    if len(reason) > 500:
+        raise ValueError("封禁原因过长（最多 500 字符）")
+
+    region = _wb_cell_text(row.get("region")) if "region" in row else ""
+    if len(region) > 64:
+        raise ValueError("归属地区过长（最多 64 字符）")
+
+    # 封堵设备可选：留空则同步时使用默认「安博通阻断器」
+    ban_device = _wb_cell_text(row.get("ban_device")) if "ban_device" in row else ""
+    if len(ban_device) > 255:
+        raise ValueError("封堵设备名称过长（最多 255 字符）")
+
+    return {
+        "ip": ip,
+        "ban_level": ban_level,
+        "ban_duration": ban_duration,
+        "is_permanent": is_permanent,
+        "reason": reason,
+        "region": region,
+        "ban_device": ban_device,
+    }
 
 
 def _jload(raw, default=None):
@@ -611,9 +837,12 @@ def escalate_ticket(
 # 封禁工作台（已封禁 IP 模块，数据源 ban_records）
 # ======================================================================
 _RECORD_STATUS_LABELS = {
-    "active": "生效中", "pending_approval": "待审批", "expired": "已解封",
-    "unbanned": "已解封", "cancelled": "已取消",
+    "active": "生效中", "pending_sync": "待同步", "syncing": "同步中",
+    "pending_approval": "待审批",
+    "expired": "已解封", "unbanned": "已解封", "cancelled": "已取消",
 }
+# 导入后仅入库、等待人工确认同步安博通的状态
+_PENDING_SYNC_STATUS = "pending_sync"
 
 
 def _record_risk_level(db: Session, instance_id: Optional[int]) -> str:
@@ -668,9 +897,314 @@ def _record_item(db: Session, r: BanRecord) -> dict:
     }
 
 
+# ----------------------------------------------------------------------
+# 同步安博通封禁：设备定位 + 资产匹配（与工单安全上下文同一套匹配逻辑）
+# ----------------------------------------------------------------------
+# 设备动作定位 / 下发统一走 app.devices.ban_target，解封与到期自动解封复用同一套逻辑。
+
+# 资产匹配结果里给前端展示的常用字段（避免把发现侧整条原始记录塞进响应）
+_ASSET_BRIEF_KEYS = (
+    "resource_type", "resource_label", "instance_name", "inst_name", "name",
+    "hostname", "cmdb_id", "department", "owner", "status", "criticality",
+    "ip", "identifier", "asset_type", "os", "company", "using_unit", "using_dept",
+)
+
+
+def _brief_value(value) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)[:200]
+    return str(value)[:200]
+
+
+def _asset_match_for_ip(db: Session, ip: str) -> dict:
+    """单 IP 资产匹配（复用工单安全上下文的 ``_match_asset``），返回前端展示结构。"""
+    from app.core.ticket_enrichment import _match_asset
+
+    try:
+        matched = _match_asset(db, ip)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("封禁同步资产匹配失败, ip=%s: %s", ip, exc)
+        return {"matched": False, "error": f"资产匹配失败: {exc}", "assets": []}
+    if not matched.get("matched"):
+        return {"matched": False, "assets": []}
+
+    assets: list[dict] = []
+    discovery = matched.get("discovery") or {}
+    for hit in (discovery.get("matches") or [])[:5]:
+        if not isinstance(hit, dict):
+            continue
+        details = {}
+        for key in _ASSET_BRIEF_KEYS:
+            if hit.get(key) not in (None, "", [], {}):
+                details[key] = _brief_value(hit[key])
+        assets.append({
+            "source": "asset_discovery",
+            "source_label": hit.get("source_label") or discovery.get("source_label") or "资产发现",
+            "asset_name": (
+                hit.get("instance_name") or hit.get("inst_name") or hit.get("name")
+                or hit.get("cmdb_id") or ""
+            ),
+            "asset_ip": hit.get("ip") or hit.get("asset_ip") or ip,
+            "details": details,
+        })
+    inventory = matched.get("inventory") or {}
+    if inventory:
+        fields = inventory.get("fields") or {}
+        details = {}
+        for key in _ASSET_BRIEF_KEYS:
+            if fields.get(key) not in (None, "", [], {}):
+                details[key] = _brief_value(fields[key])
+        tags = fields.get("tags") or []
+        if tags:
+            details["tags"] = "、".join(
+                str(t.get("name")) for t in tags if isinstance(t, dict) and t.get("name")
+            )[:200]
+        assets.append({
+            "source": "asset_inventory",
+            "source_label": inventory.get("source_label") or "资产清单",
+            "asset_name": inventory.get("asset_name") or fields.get("name") or "",
+            "asset_ip": inventory.get("asset_ip") or ip,
+            "details": details,
+        })
+
+    return {
+        "matched": True,
+        "source": matched.get("source") or "",
+        "source_label": matched.get("source_label") or "",
+        "asset_name": matched.get("asset_name") or "",
+        "assets": assets,
+    }
+
+
+class BannedIpSyncBody(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=200, description="待同步的封禁记录 ID")
+    device_id: Optional[int] = Field(
+        None,
+        description="指定执行设备（仅用于未记录「封堵设备」的记录；不覆盖记录级配置；不传则自动定位安博通阻断器）",
+    )
+
+
+@router.post("/banned-ips/sync-preview", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def preview_banned_ip_sync(body: BannedIpSyncBody, db: Session = Depends(get_db)) -> dict:
+    """同步安博通封禁前的预览：资产匹配结果 + 是否可同步（不产生任何下发）。"""
+    device, action, device_error = ban_target.resolve_default_device(db, body.device_id)
+    records = db.query(BanRecord).filter(BanRecord.id.in_(body.ids)).all()
+    by_id = {r.id: r for r in records}
+    record_ips = [r.ip for r in records]
+    # 批量取「已有生效中记录」的 IP，避免逐条查询造成 N+1
+    active_ips = {
+        ip for (ip,) in db.query(BanRecord.ip).filter(
+            BanRecord.ip.in_(record_ips), BanRecord.status == "active",
+        ).all()
+    } if record_ips else set()
+    asset_cache: dict[str, dict] = {}
+    device_cache: dict[str, tuple] = {}
+    items = []
+    for rid in body.ids:
+        r = by_id.get(rid)
+        if r is None:
+            items.append({
+                "id": rid, "ip": "", "status": "", "status_label": "",
+                "syncable": False, "message": "封禁记录不存在",
+                "asset_match": {"matched": False, "assets": []},
+                "device_name": "",
+            })
+            continue
+        if r.ip not in asset_cache:
+            asset_cache[r.ip] = _asset_match_for_ip(db, r.ip)
+        # device_id 只决定「未记录封堵设备」的记录走哪台设备，不覆盖记录级配置
+        target_device, _target_action, device_err = ban_target.resolve_device_for_record(
+            db, r, device, action, device_error, device_cache,
+        )
+        message = ""
+        syncable = True
+        if r.status != _PENDING_SYNC_STATUS:
+            syncable = False
+            message = f"当前状态为「{_RECORD_STATUS_LABELS.get(r.status, r.status)}」，仅待同步记录可同步"
+        elif r.ip in active_ips:
+            syncable = False
+            message = "该 IP 已有生效中的封禁记录，无需重复同步"
+        elif device_err:
+            syncable = False
+            message = device_err
+        items.append({
+            "id": r.id,
+            "ip": r.ip,
+            "status": r.status,
+            "status_label": _RECORD_STATUS_LABELS.get(r.status, r.status),
+            "ban_level": r.ban_level,
+            "ban_level_label": _LEVEL_LABELS.get(r.ban_level, r.ban_level),
+            "is_permanent": r.is_permanent,
+            "ban_duration": r.ban_duration,
+            "reason": r.reason or "",
+            "region": r.region or "",
+            "ban_device": r.ban_device or "",
+            "device_name": target_device.name if target_device else (r.ban_device or ""),
+            "asset_match": asset_cache[r.ip],
+            "syncable": syncable,
+            "message": message,
+        })
+    matched_n = sum(1 for i in items if i.get("asset_match", {}).get("matched"))
+    return {
+        "ok": True,
+        "device": {"id": device.id, "name": device.name} if device else None,
+        "device_error": device_error or "",
+        "total": len(items),
+        "matched": matched_n,
+        "unmatched": len(items) - matched_n,
+        "syncable": sum(1 for i in items if i["syncable"]),
+        "blocked": sum(1 for i in items if not i["syncable"]),
+        "items": items,
+    }
+
+
+@router.post("/banned-ips/sync", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def sync_banned_ips_to_device(
+    body: BannedIpSyncBody, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> dict:
+    """确认同步：仅对待同步记录下发安博通封禁，成功后才置为生效中。"""
+    device, action, device_error = ban_target.resolve_default_device(db, body.device_id)
+    device_cache: dict[str, tuple] = {}
+    client_ip = request.client.host if request.client else ""
+    success_n = failed_n = skipped_n = 0
+    items: list[dict] = []
+    for rid in body.ids:
+        r = db.query(BanRecord).filter(BanRecord.id == rid).first()
+        if r is None:
+            failed_n += 1
+            items.append({"id": rid, "ip": "", "success": False, "message": "封禁记录不存在"})
+            continue
+        if r.status != _PENDING_SYNC_STATUS:
+            skipped_n += 1
+            items.append({
+                "id": rid, "ip": r.ip, "success": False, "skipped": True,
+                "message": f"当前状态为「{_RECORD_STATUS_LABELS.get(r.status, r.status)}」，仅待同步记录可同步",
+            })
+            continue
+        dup = (
+            db.query(BanRecord)
+            .filter(BanRecord.ip == r.ip, BanRecord.status == "active", BanRecord.id != r.id)
+            .first()
+        )
+        if dup is not None:
+            skipped_n += 1
+            items.append({
+                "id": rid, "ip": r.ip, "success": False, "skipped": True,
+                "message": "该 IP 已有生效中的封禁记录，无需重复同步",
+            })
+            continue
+        # device_id 只决定「未记录封堵设备」的记录走哪台设备，不覆盖记录级配置
+        target_device, target_action, device_err = ban_target.resolve_device_for_record(
+            db, r, device, action, device_error, device_cache,
+        )
+        if device_err or target_device is None or target_action is None:
+            failed_n += 1
+            items.append({
+                "id": rid, "ip": r.ip, "success": False,
+                "message": device_err or "未找到可用的安博通封禁设备",
+            })
+            continue
+
+        # 条件更新占位「同步中」：并发重复提交时只有一个请求能真正下发设备
+        claimed = (
+            db.query(BanRecord)
+            .filter(BanRecord.id == rid, BanRecord.status == _PENDING_SYNC_STATUS)
+            .update({"status": "syncing"}, synchronize_session=False)
+        )
+        db.commit()
+        if not claimed:
+            skipped_n += 1
+            items.append({
+                "id": rid, "ip": r.ip, "success": False, "skipped": True,
+                "message": "该记录正在被其他请求同步，请稍后刷新查看结果",
+            })
+            continue
+
+        duration_seconds = 0 if r.is_permanent else int(r.ban_duration or 3600)
+        result = ban_target.run_block(
+            db, target_device, target_action,
+            ip=r.ip, duration_seconds=duration_seconds,
+            reason=r.reason or "导入封禁", source="ban_workbench",
+            user_id=user.id, source_ip=client_ip,
+        )
+        ok, err = ban_target.check_block_result(result)
+        if not ok:
+            # 下发失败：退回待同步，避免展示为生效中
+            r.status = _PENDING_SYNC_STATUS
+            db.commit()
+            failed_n += 1
+            items.append({
+                "id": rid, "ip": r.ip, "success": False,
+                "message": err, "status_code": result.get("status_code"),
+            })
+            continue
+
+        # 下发成功后才更新平台记录，避免设备失败却展示为生效中
+        now = beijing_now()
+        expire_time = None if r.is_permanent else now + timedelta(seconds=duration_seconds)
+        r.status = "active"
+        r.ban_device = target_device.name
+        r.expire_time = expire_time
+        r.created_at = now
+        body_data = result.get("response_body")
+        r.record_id = ban_target.extract_record_id(body_data)
+        # 同步 legacy 已封禁 IP 表（其他页面/智能体工具读该表）
+        legacy = db.query(BannedIP).filter(BannedIP.ip == r.ip).first()
+        if legacy is None:
+            legacy = BannedIP(ip=r.ip)
+            db.add(legacy)
+        legacy.ban_level = r.ban_level
+        legacy.ban_duration = int(r.ban_duration or 3600)
+        legacy.expired_at = expire_time or (now + timedelta(days=36500))
+        legacy.region = r.region or ""
+        legacy.reason = r.reason or ""
+        legacy.status = "active"
+        legacy.source = "import"
+        legacy.device_id = target_device.id
+        legacy.device_name = target_device.name
+        legacy.action_response = ban_target.summarize_response(result)
+        db.commit()
+        success_n += 1
+        items.append({
+            "id": rid, "ip": r.ip, "success": True,
+            "message": f"已同步至{target_device.name}", "ban_device": target_device.name,
+            "device_name": target_device.name,
+        })
+
+    # 本次实际涉及的封堵设备（导入记录可逐条指定设备）
+    used_devices = sorted({i.get("device_name") for i in items if i.get("device_name")})
+    write_audit(
+        db, action="sync_ban", resource_type="ban_record", resource_id="",
+        detail={
+            "ids": body.ids, "success": success_n, "failed": failed_n, "skipped": skipped_n,
+            "failed_items": [i for i in items if not i.get("success")][:20],
+            "device": device.name if device else "",
+            "devices": used_devices,
+        },
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+    )
+    logger.info(
+        "封禁工作台同步安博通完成: 成功 %d 条, 失败 %d 条, 跳过 %d 条, default_device=%s, devices=%s",
+        success_n, failed_n, skipped_n, device.name if device else "-",
+        ",".join(used_devices) or "-",
+    )
+    return {
+        "ok": True,
+        "total": len(body.ids),
+        "success": success_n,
+        "failed": failed_n,
+        "skipped": skipped_n,
+        "device": {"id": device.id, "name": device.name} if device else None,
+        "device_error": device_error or "",
+        "devices": used_devices,
+        "items": items,
+    }
+
+
 @router.get("/banned-ips", dependencies=[Depends(require_role("admin"))])
 def list_banned_ips(
-    status: str = Query("", description="active/pending_approval/expired/unbanned/cancelled"),
+    status: str = Query("", description="active/pending_sync/syncing/pending_approval/expired/unbanned/cancelled"),
     ip: str = Query("", description="IP 关键词"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -760,6 +1294,16 @@ def get_banned_ip(record_id: int, db: Session = Depends(get_db)) -> dict:
     return item
 
 
+def _record_issued_to_device(record: BanRecord) -> bool:
+    """记录是否由本平台真实下发到封禁设备。
+
+    仅「导入封禁 / 手动封禁」且已记录封堵设备名的记录会真正调用设备；
+    工单同步、自动/审批封禁只落平台记录（设备下发由各自链路负责），
+    解封时不能对其调用设备，否则会对不存在的条目发无效请求。
+    """
+    return bool((record.ban_device or "").strip()) and (record.ban_source or "") in ("import", "manual")
+
+
 class UnbanBody(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500, description="解封原因（必填）")
 
@@ -769,12 +1313,39 @@ def unban_ip(
     record_id: int, body: UnbanBody, request: Request,
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> dict:
-    """解封：填写原因，记录操作人与时间；同步 legacy 工作台并写审计。"""
+    """解封：先联动设备解封（已下发记录），成功后再更新平台状态并写审计。
+
+    设备解封失败返回 502 且平台记录保持「生效中」，避免设备仍封禁却显示已解封。
+    """
     record = db.query(BanRecord).filter(BanRecord.id == record_id).first()
     if record is None:
         raise HTTPException(status_code=404, detail="封禁记录不存在")
     if record.status != "active":
         raise HTTPException(status_code=400, detail="仅生效中的封禁记录可解封")
+
+    client_ip = request.client.host if request.client else ""
+    device = None
+    result: dict = {}
+    if _record_issued_to_device(record):
+        device, action, device_err = ban_target.resolve_unblock_device(db, record.ban_device)
+        if device_err or device is None or action is None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{device_err or '未找到可用的解封设备'}，平台记录保持生效中",
+            )
+        result = ban_target.run_unblock(
+            db, device, action, ip=record.ip, source="ban_workbench",
+            user_id=user.id, source_ip=client_ip,
+        )
+        ok, err = ban_target.check_unblock_result(result)
+        if not ok:
+            logger.error(
+                "解封设备下发失败 ip=%s device=%s: %s", record.ip, device.name, err,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"设备「{device.name}」解封失败：{err}，平台记录保持生效中",
+            )
 
     now = beijing_now()
     record.status = "unbanned"
@@ -790,8 +1361,10 @@ def unban_ip(
     write_audit(
         db, action="unban", resource_type="ban_record", resource_id=record.id,
         detail={"ip": record.ip, "reason": body.reason.strip(), "manual": True,
-                "instance_id": record.source_instance_id},
-        operator=user.username, ip_address=request.client.host if request.client else "",
+                "instance_id": record.source_instance_id,
+                "device": device.name if device else "",
+                "status_code": result.get("status_code")},
+        operator=user.username, ip_address=client_ip,
         user_id=user.id,
     )
     return {"ok": True, "status": "unbanned", "unban_time": now}
@@ -816,10 +1389,10 @@ def _issue_manual_ban(
     db: Session, *, user: User, ip: str, ban_level: str, ban_duration: int,
     is_permanent: bool, reason: str, region: str, client_ip: str,
 ) -> BanRecord:
-    """下发一条手动封禁（校验 → 去重 → 调封禁工具 → 写 ban_records → 同步 legacy 工作台）。
+    """下发一条手动封禁（校验 → 去重 → 下发封禁设备 → 写 ban_records → 同步 legacy 工作台）。
 
-    单条手动封禁（``POST /banned-ips``）与 CSV 导入（``POST /banned-ips/import/csv``）
-    共用本函数；校验或下发失败抛 ``HTTPException``，由调用方决定提示或记入行错误。
+    与导入同步链路共用 ``app.devices.ban_target``：设备下发失败抛 502，
+    **不会**落「生效中」平台记录，避免平台与设备状态不一致。
     """
     from app.core.ip_validation import validate_ban_target
 
@@ -843,23 +1416,25 @@ def _issue_manual_ban(
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"IP {ip} 已在封禁中（{_BAN_SOURCE_LABELS.get(existing.ban_source, '')}），请先解封再重新封禁")
 
-    ban_plan = {
-        "ban_level": ban_level,
-        "ban_duration": ban_duration,
-        "is_permanent": is_permanent,
-        "reason": reason,
-        "region": region,
-    }
-    # 调封禁工具下发（失败重试 3 次由 ban_client 内实现）
-    from app.workflow import ban_client
-    try:
-        record_id = ban_client.record_ban(ip, ban_plan)
-    except ban_client.BanCallError as exc:
-        logger.error("手动封禁下发失败 ip=%s: %s", ip, exc)
-        raise HTTPException(status_code=502, detail="封禁工具调用失败，请稍后重试或联系管理员")
+    device, action, device_err = ban_target.resolve_default_device(db)
+    if device_err or device is None or action is None:
+        raise HTTPException(
+            status_code=502,
+            detail=device_err or "未找到可用的安博通封禁设备，请先在设备管理中接入并启用",
+        )
+    duration_seconds = 0 if is_permanent else ban_duration
+    result = ban_target.run_block(
+        db, device, action, ip=ip, duration_seconds=duration_seconds, reason=reason,
+        source="ban_workbench", user_id=user.id, source_ip=client_ip,
+    )
+    ok, err = ban_target.check_block_result(result)
+    if not ok:
+        logger.error("手动封禁下发失败 ip=%s device=%s: %s", ip, device.name, err)
+        raise HTTPException(status_code=502, detail=f"封禁设备「{device.name}」下发失败：{err}")
 
     now = beijing_now()
-    expire_time = None if is_permanent else now + timedelta(seconds=ban_duration)
+    expire_time = None if is_permanent else now + timedelta(seconds=duration_seconds)
+    record_id = ban_target.extract_record_id(result.get("response_body"))
     record = BanRecord(
         ip=ip,
         ban_level=ban_level,
@@ -869,6 +1444,7 @@ def _issue_manual_ban(
         reason=reason,
         region=region,
         ban_source="manual",
+        ban_device=device.name,
         record_id=record_id,
         status="active",
     )
@@ -885,11 +1461,21 @@ def _issue_manual_ban(
     legacy.reason = reason
     legacy.status = "active"
     legacy.source = "manual"
+    legacy.device_id = device.id
+    legacy.device_name = device.name
+    legacy.action_response = ban_target.summarize_response(result)
     db.commit()
 
     write_audit(
         db, action="manual_ban", resource_type="ban_record", resource_id=record.id,
-        detail={"ip": ip, "ban_plan": ban_plan, "record_id": record_id},
+        detail={
+            "ip": ip, "ban_plan": {
+                "ban_level": ban_level, "ban_duration": ban_duration,
+                "is_permanent": is_permanent, "reason": reason, "region": region,
+            },
+            "record_id": record_id, "device": device.name,
+            "status_code": result.get("status_code"),
+        },
         operator=user.username, ip_address=client_ip, user_id=user.id,
     )
     return record
@@ -916,10 +1502,10 @@ def create_manual_ban(
 
 
 # ----------------------------------------------------------------------
-# CSV 导入导出（封禁时长按天；导出含只读列，导入只取前 6 列）
+# CSV 导入导出（封禁时长按天；导出含只读列，导入只取 IP/等级/时长/永久/原因/地区/封堵设备）
 # ----------------------------------------------------------------------
-# 导入解析的列（与导出/模板前 6 列一致；导出额外的封禁方式/状态/时间列仅展示用）
-_WB_CSV_COLUMNS = ["IP地址", "封禁等级", "封禁时长(天)", "是否永久", "封禁原因", "归属地区"]
+# 导入解析的列（与模板列一致；导出额外的封禁方式/状态/时间列仅展示用）
+_WB_CSV_COLUMNS = ["IP地址", "封禁等级", "封禁时长(天)", "是否永久", "封禁原因", "归属地区", "封堵设备"]
 
 
 def _wb_csv_response(content: str, filename: str) -> StreamingResponse:
@@ -931,38 +1517,73 @@ def _wb_csv_response(content: str, filename: str) -> StreamingResponse:
     )
 
 
+# 导出可选字段：key → (表头, 取值函数)
+_WB_EXPORT_FIELDS = {
+    "ip": ("IP地址", lambda r: r.ip),
+    "ban_level": ("封禁等级", lambda r: _LEVEL_LABELS.get(r.ban_level, r.ban_level)),
+    "ban_duration_days": ("封禁时长(天)", lambda r: _duration_days_label(r.ban_duration, r.is_permanent)),
+    "is_permanent": ("是否永久", lambda r: "是" if r.is_permanent else "否"),
+    "reason": ("封禁原因", lambda r: r.reason or ""),
+    "region": ("归属地区", lambda r: r.region or ""),
+    "ban_source": ("封禁方式", lambda r: _BAN_SOURCE_LABELS.get(r.ban_source, r.ban_source or "")),
+    "status": ("当前状态", lambda r: _RECORD_STATUS_LABELS.get(r.status, r.status)),
+    "created_at": ("开始封禁时间", lambda r: r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""),
+    "expire_time": ("解封时间", lambda r: r.expire_time.strftime("%Y-%m-%d %H:%M:%S") if r.expire_time else ""),
+    "ban_device": ("封堵设备", lambda r: r.ban_device or ""),
+    "record_id": ("封禁工具记录", lambda r: r.record_id or ""),
+}
+_WB_EXPORT_DEFAULT_FIELDS = list(_WB_EXPORT_FIELDS.keys())
+
+
 @router.get("/banned-ips/export/csv", dependencies=[Depends(require_role("admin"))])
 def export_banned_ips_csv(
+    ids: str = Query("", description="逗号分隔的封禁记录 ID（传了就只导出这些记录）"),
+    status: str = Query("", description="按状态筛选导出"),
+    ip: str = Query("", description="按 IP 关键词筛选导出"),
+    fields: str = Query("", description="逗号分隔的导出字段 key；不传导出全部字段"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     request: Request = None,
 ) -> StreamingResponse:
-    """导出封禁工作台全部封禁记录为 CSV（仅管理员）。
+    """导出封禁记录为 CSV（仅管理员），支持全部/当前筛选/选中与字段选择。
 
-    列：IP地址 / 封禁等级 / 封禁时长(天) / 是否永久 / 封禁原因 / 归属地区 /
-    封禁方式 / 当前状态 / 开始封禁时间 / 解封时间。前 6 列与导入模板一致，
-    修改后可直接重新导入（时长支持小数天，如 0.5 = 12 小时）。
+    前 6 列仍与导入模板一致：IP地址 / 封禁等级 / 封禁时长(天) / 是否永久 /
+    封禁原因 / 归属地区；修改后可直接重新导入（时长支持小数天）。
     """
     from app.core.audit import get_client_ip, log_audit
 
-    records = db.query(BanRecord).order_by(BanRecord.id.desc()).all()
+    query = db.query(BanRecord)
+    id_values: list[int] = []
+    if ids.strip():
+        for part in ids.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                id_values.append(int(part))
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"记录 ID 不合法: {part}")
+        query = query.filter(BanRecord.id.in_(id_values))
+    else:
+        if status:
+            query = query.filter(BanRecord.status == status)
+        if ip:
+            query = query.filter(BanRecord.ip.ilike(f"%{ip}%"))
+    records = query.order_by(BanRecord.id.desc()).all()
+
+    selected_fields = [f.strip() for f in fields.split(",") if f.strip()]
+    unknown = [f for f in selected_fields if f not in _WB_EXPORT_FIELDS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"不支持的导出字段: {', '.join(unknown)}")
+    if not selected_fields:
+        selected_fields = _WB_EXPORT_DEFAULT_FIELDS
+
     buf = io.StringIO()
     buf.write("\ufeff")  # BOM，确保 Excel 正确识别 UTF-8
     writer = csv.writer(buf)
-    writer.writerow(_WB_CSV_COLUMNS + ["封禁方式", "当前状态", "开始封禁时间", "解封时间"])
+    writer.writerow([_WB_EXPORT_FIELDS[f][0] for f in selected_fields])
     for r in records:
-        writer.writerow([
-            r.ip,
-            _LEVEL_LABELS.get(r.ban_level, r.ban_level),
-            _duration_days_label(r.ban_duration, r.is_permanent),
-            "是" if r.is_permanent else "否",
-            r.reason or "",
-            r.region or "",
-            _BAN_SOURCE_LABELS.get(r.ban_source, r.ban_source or ""),
-            _RECORD_STATUS_LABELS.get(r.status, r.status),
-            r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else "",
-            r.expire_time.strftime("%Y-%m-%d %H:%M:%S") if r.expire_time else "",
-        ])
+        writer.writerow([_WB_EXPORT_FIELDS[f][1](r) for f in selected_fields])
     content = buf.getvalue()
     buf.close()
 
@@ -970,114 +1591,176 @@ def export_banned_ips_csv(
     log_audit(
         db, user_id=user.id, username=user.username, action="export",
         resource_type="ban_record", ip_address=get_client_ip(request) if request else "unknown",
-        result="success", detail={"count": len(records)},
+        result="success",
+        detail={
+            "count": len(records), "ids": id_values[:100],
+            "status": status, "ip": ip, "fields": selected_fields,
+        },
     )
     db.commit()
     filename = f"ban_workbench_banned_ips_{beijing_now().strftime('%Y%m%d_%H%M%S')}.csv"
     return _wb_csv_response(content, filename)
 
 
-@router.get("/banned-ips/import/template", dependencies=[Depends(require_role("admin"))])
+@router.get("/banned-ips/import/template", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
 def download_banned_ips_template() -> StreamingResponse:
-    """下载封禁工作台 CSV 导入模板（仅含表头与两行示例）（仅管理员）。"""
+    """下载封禁工作台 CSV 导入模板（表头 + 示例 + 说明行）。
+
+    与导入接口同权限：有导入权限的编辑者可下载模板。
+    """
     buf = io.StringIO()
     buf.write("\ufeff")
     writer = csv.writer(buf)
     writer.writerow(_WB_CSV_COLUMNS)
-    # 示例：7 天封禁 / 0.5 天（12 小时）封禁；时长支持小数天
-    writer.writerow(["203.0.113.50", "高", "7", "否", "威胁情报确认恶意IP", "美国"])
-    writer.writerow(["198.51.100.23", "中", "0.5", "否", "短时异常扫描行为", ""])
+    # 示例：7 天封禁 / 0.5 天（12 小时）封禁；时长支持小数天；封堵设备可留空
+    writer.writerow(["203.0.113.50", "高", "7", "否", "威胁情报确认恶意IP", "美国", "安博通阻断器"])
+    writer.writerow(["198.51.100.23", "中", "0.5", "否", "短时异常扫描行为", "", ""])
+    # 说明行：以 # 开头，导入时自动跳过，不影响解析
+    writer.writerow([
+        "# 导入后记录为「待同步」，不会自动下发；请在列表中勾选并点击「同步安博通封禁」",
+        "封禁等级：低/中/高/严重", "时长支持小数天", "是否永久：是/否", "封禁原因必填",
+        "可选", "封堵设备：可留空，留空使用默认安博通阻断器",
+    ])
     content = buf.getvalue()
     buf.close()
     return _wb_csv_response(content, "ban_workbench_import_template.csv")
 
 
 @router.post("/banned-ips/import/csv", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
-async def import_banned_ips_csv(
+def import_banned_ips_csv(
     file: UploadFile = File(...),
     request: Request = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """CSV 批量导入封禁（逐行下发，来源标记 manual）。
+    """批量导入封禁记录（CSV/XLSX/XLS），导入后仅入库为「待同步」。
 
-    格式与导出/模板一致：``IP地址, 封禁等级, 封禁时长(天), 是否永久, 封禁原因, 归属地区``
-    （首行表头跳过，多余列忽略）。要点：
+    与资产导入一致：先校验表头与逐行字段，返回总数/成功/失败/跳过及失败原因。
+    本接口**不会**调用安博通下发封禁，导入成功的记录状态为 ``pending_sync``，
+    需由用户在工作台手动点击「同步安博通封禁」（可批量）并在资产匹配预览中确认。
 
-    - 封禁时长按**天**填写，支持小数（``0.5`` = 12 小时）；「是否永久」为 是/否；
-    - 封禁等级支持中文（低/中/高/严重）或英文 key，无法识别时按「中」处理；
-    - 每行都会调用封禁工具实际下发；已在封禁中的 IP 跳过（不覆盖），下发失败的
-      行记入 errors 且不影响其他行；
-    - 封禁原因为空时默认「CSV 导入封禁」；
-    - 逐行下发较慢（含失败重试），建议单次导入不超过 50 行。
+    格式：``IP地址, 封禁等级, 封禁时长(天), 是否永久, 封禁原因, 归属地区, 封堵设备``；
+    封禁时长按天、支持小数（0.5 = 12 小时）；等级支持 低/中/高/严重；
+    封堵设备可选，留空则同步时使用默认「安博通阻断器」。
+
+    实现说明：本接口为同步函数（FastAPI 自动放入线程池执行），避免 xlsx/xls
+    同步解析阻塞事件循环；文件体积与行数均有上限，且已存在记录按批查询去重，
+    避免逐行查库造成 N+1。
     """
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="请上传 CSV 文件")
+    filename = (file.filename or "").lower()
+    if not filename.endswith((".csv", ".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="请上传 CSV 或 Excel 文件（.csv/.xlsx/.xls）")
 
-    content = await file.read()
     try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            text = content.decode("gbk")
-        except UnicodeDecodeError:
-            raise HTTPException(status_code=400, detail="文件编码不支持，请使用 UTF-8 编码")
-
-    rows = list(csv.reader(io.StringIO(text)))
-    if len(rows) < 2:
-        raise HTTPException(status_code=400, detail="CSV 文件为空或只有表头")
+        content = file.file.read(_WB_IMPORT_MAX_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"读取上传文件失败：{exc}")
+    if len(content) > _WB_IMPORT_MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"文件过大（>{_WB_IMPORT_MAX_BYTES // (1024 * 1024)}MB），请分批导入",
+        )
+    try:
+        rows, unknown_headers = _parse_wb_import_file(filename, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not rows:
+        raise HTTPException(status_code=400, detail="文件为空或只有表头")
 
     client_ip = request.client.host if request and request.client else ""
     imported = 0
-    skipped = 0
-    errors: list[str] = []
+    errors: list[dict] = []
+    skipped_items: list[dict] = []
+    seen: set[str] = set()
 
-    for idx, row in enumerate(rows[1:], start=2):  # 从第 2 行开始（跳过表头）
-        if not row or not row[0].strip():
-            continue
-        raw_ip = row[0].strip()
+    # 第一遍：纯内存校验 + 文件内去重（不查库）
+    validated: list[tuple[int, dict]] = []
+    for row in rows:
+        row_no = int(row.get("_row") or 0)
+        raw_ip = _wb_cell_text(row.get("ip"))
         try:
-            # 封禁等级：中文 → key；英文 key 原样；其他按 medium
-            level_raw = row[1].strip() if len(row) > 1 else ""
-            ban_level = _LEVEL_REVERSE.get(level_raw, level_raw if level_raw in _LEVEL_LABELS else "medium")
-            # 封禁时长（天）→ 秒：永久封禁忽略时长（占位 3600）；空默认 1 天
-            days_raw = row[2].strip() if len(row) > 2 else ""
-            is_permanent = (row[3].strip() if len(row) > 3 else "") in ("是", "永久", "true", "True", "yes", "1")
-            if is_permanent:
-                ban_duration = 3600
-            elif days_raw:
-                ban_duration = _parse_days(days_raw)
-            else:
-                ban_duration = 86400
-            reason = row[4].strip() if len(row) > 4 else ""
-            region = row[5].strip() if len(row) > 5 else ""
+            data = _validate_wb_import_row(row)
+        except ValueError as exc:
+            errors.append({"row": row_no, "ip": raw_ip, "msg": str(exc)})
+            continue
+        ip = data["ip"]
+        if ip in seen:
+            skipped_items.append({"row": row_no, "ip": ip, "msg": "文件内重复 IP，已跳过"})
+            continue
+        seen.add(ip)
+        validated.append((row_no, data))
 
-            _issue_manual_ban(
-                db, user=user, ip=raw_ip, ban_level=ban_level,
-                ban_duration=ban_duration, is_permanent=is_permanent,
-                reason=reason or "CSV 导入封禁", region=region, client_ip=client_ip,
+    # 第二遍：批量查已存在记录（每批 500 个 IP），避免逐行 N+1 查询
+    existing: dict[str, str] = {}
+    candidate_ips = [data["ip"] for _row_no, data in validated]
+    for start in range(0, len(candidate_ips), 500):
+        chunk = candidate_ips[start:start + 500]
+        hits = (
+            db.query(BanRecord.ip, BanRecord.status)
+            .filter(
+                BanRecord.ip.in_(chunk),
+                BanRecord.status.in_(["active", _PENDING_SYNC_STATUS]),
             )
-            imported += 1
-        except HTTPException as exc:
-            db.rollback()
-            if exc.status_code == 409:
-                skipped += 1
-            else:
-                errors.append(f"第 {idx} 行 [{raw_ip}]: {exc.detail}")
-        except Exception as exc:  # noqa: BLE001
-            db.rollback()
-            errors.append(f"第 {idx} 行 [{raw_ip}]: {exc}")
+            .all()
+        )
+        for ip, status in hits:
+            # 同一 IP 同时存在两种状态时优先按「生效中」提示
+            if ip not in existing or status == "active":
+                existing[ip] = status
 
+    for row_no, data in validated:
+        ip = data["ip"]
+        status = existing.get(ip)
+        if status == "active":
+            skipped_items.append({
+                "row": row_no, "ip": ip,
+                "msg": f"该 IP 已在封禁中（{_RECORD_STATUS_LABELS.get(status, status)}）",
+            })
+            continue
+        if status == _PENDING_SYNC_STATUS:
+            skipped_items.append({"row": row_no, "ip": ip, "msg": "该 IP 已存在待同步记录，已跳过"})
+            continue
+        db.add(BanRecord(
+            ip=ip,
+            ban_level=data["ban_level"],
+            ban_duration=data["ban_duration"],
+            is_permanent=data["is_permanent"],
+            expire_time=None,
+            reason=data["reason"],
+            region=data["region"],
+            ban_device=data["ban_device"] or None,
+            ban_source="import",
+            status=_PENDING_SYNC_STATUS,
+        ))
+        imported += 1
+
+    db.commit()
     write_audit(
         db, action="import", resource_type="ban_record", resource_id="",
-        detail={"imported": imported, "skipped": skipped, "errors": errors[:20],
-                "source": "ban_workbench_csv"},
+        detail={
+            "imported": imported, "failed": len(errors),
+            "skipped": len(skipped_items), "errors": errors[:20],
+            "source": "ban_workbench_import", "pending_sync": True,
+        },
         operator=user.username, ip_address=client_ip, user_id=user.id,
     )
-    db.commit()
-    logger.info("封禁工作台 CSV 导入完成: 导入 %d 条, 跳过 %d 条, 错误 %d 条",
-                imported, skipped, len(errors))
-    return {"ok": True, "imported": imported, "skipped": skipped, "errors": errors}
+    logger.info(
+        "封禁工作台导入完成: 待同步 %d 条, 失败 %d 条, 跳过 %d 条",
+        imported, len(errors), len(skipped_items),
+    )
+    return {
+        "ok": True,
+        "total": len(rows),
+        "imported": imported,
+        "failed": len(errors),
+        "skipped": len(skipped_items),
+        "errors": errors[:200],
+        "skipped_items": skipped_items[:200],
+        "errors_truncated": len(errors) > 200,
+        "skipped_truncated": len(skipped_items) > 200,
+        "unknown_headers": unknown_headers,
+        "message": "导入成功，记录已入库为「待同步」；请勾选后点击「同步安博通封禁」",
+    }
 
 
 # ----------------------------------------------------------------------
@@ -1088,17 +1771,46 @@ def delete_banned_ip(
     record_id: int, request: Request,
     db: Session = Depends(get_db), user: User = Depends(get_current_user),
 ) -> None:
-    """删除封禁记录（仅 admin；不通知封禁工具，仅清工作台数据）。"""
+    """删除封禁记录（仅 admin）。
+
+    「生效中」且由本平台下发设备的记录会先联动解封：设备解封失败返回 502 且不删除，
+    避免删除后设备侧黑名单残留（永久条目尤其无法自动清理）。
+    """
     record = db.query(BanRecord).filter(BanRecord.id == record_id).first()
     if record is None:
         raise HTTPException(status_code=404, detail="封禁记录不存在")
+    client_ip = request.client.host if request.client else ""
+    device = None
+    unban_result: dict = {}
+    if record.status == "active" and _record_issued_to_device(record):
+        device, action, device_err = ban_target.resolve_unblock_device(db, record.ban_device)
+        if device_err or device is None or action is None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{device_err or '未找到可用的解封设备'}，未删除记录（设备侧封禁仍生效）",
+            )
+        unban_result = ban_target.run_unblock(
+            db, device, action, ip=record.ip, source="ban_workbench",
+            user_id=user.id, source_ip=client_ip,
+        )
+        ok, err = ban_target.check_unblock_result(unban_result)
+        if not ok:
+            logger.error(
+                "删除前解封设备失败 ip=%s device=%s: %s", record.ip, device.name, err,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"设备「{device.name}」解封失败：{err}，未删除记录（设备侧封禁仍生效）",
+            )
     snapshot = {"id": record.id, "ip": record.ip, "status": record.status, "record_id": record.record_id}
     db.delete(record)
     db.commit()
     write_audit(
         db, action="delete", resource_type="ban_record", resource_id=record_id,
-        detail={"snapshot": snapshot},
-        operator=user.username, ip_address=request.client.host if request.client else "",
+        detail={"snapshot": snapshot, "device": device.name if device else "",
+                "unblocked": bool(device),
+                "status_code": unban_result.get("status_code")},
+        operator=user.username, ip_address=client_ip,
         user_id=user.id,
     )
 

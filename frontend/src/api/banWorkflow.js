@@ -62,28 +62,77 @@ export const banWorkflowApi = {
   deleteBannedIp: (id) => request(`/ban-workflow/banned-ips/${id}`, { method: 'DELETE' }),
   // 删除审批工单（仅 admin）
   deleteApproval: (id) => request(`/ban-workflow/approvals/${id}`, { method: 'DELETE' }),
-  // 导出封禁记录 CSV（触发浏览器下载；时长按天）
-  exportBannedIpsCsv: async () => {
-    const resp = await fetch('/api/v1/ban-workflow/banned-ips/export/csv', {
+  // 同步安博通封禁：下发前的资产匹配预览（不产生设备调用）
+  syncPreview: (ids, deviceId = null) => request('/ban-workflow/banned-ips/sync-preview', {
+    method: 'POST', body: { ids, device_id: deviceId },
+  }),
+  // 确认同步安博通封禁（仅 pending_sync 记录会真正下发）
+  syncBans: (ids, deviceId = null) => request('/ban-workflow/banned-ips/sync', {
+    method: 'POST', body: { ids, device_id: deviceId },
+  }),
+  // 导出封禁记录 CSV（支持全部/筛选/选中 + 字段选择；时长按天）
+  exportBannedIpsCsv: async ({ ids, status, ip, fields } = {}) => {
+    const params = new URLSearchParams()
+    if (Array.isArray(ids) && ids.length) params.set('ids', ids.join(','))
+    else {
+      if (status) params.set('status', status)
+      if (ip) params.set('ip', ip)
+    }
+    if (Array.isArray(fields) && fields.length) params.set('fields', fields.join(','))
+    const query = params.toString()
+    const resp = await fetch(`/api/v1/ban-workflow/banned-ips/export/csv${query ? `?${query}` : ''}`, {
       headers: { ...authHeader() },
-    })
-    if (!resp.ok) throw new Error(`导出失败: HTTP ${resp.status}`)
-    await downloadCsv(resp, `ban_workbench_banned_ips_${new Date().toISOString().slice(0, 10)}.csv`)
-  },
-  // 导入 CSV 封禁记录（逐行下发封禁；时长按天，支持小数如 0.5=12小时）
-  importBannedIpsCsv: async (file) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    const resp = await fetch('/api/v1/ban-workflow/banned-ips/import/csv', {
-      method: 'POST',
-      headers: { ...authHeader() },
-      body: formData,
     })
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}))
-      throw new Error(err.detail || `导入失败: HTTP ${resp.status}`)
+      throw new Error(err.detail || `导出失败: HTTP ${resp.status}`)
     }
-    return resp.json()
+    await downloadCsv(resp, `ban_workbench_banned_ips_${new Date().toISOString().slice(0, 10)}.csv`)
+  },
+  // 导入 CSV/Excel 封禁记录（仅入库待同步，不自动下发）
+  // onProgress: ({ phase, percent, loaded, total }) => void
+  importBannedIpsWithProgress: (file, onProgress) => {
+    return new Promise((resolve, reject) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/v1/ban-workflow/banned-ips/import/csv')
+      const token = localStorage.getItem('soar_token')
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress({
+            phase: 'uploading',
+            percent: Math.round((e.loaded / e.total) * 100),
+            loaded: e.loaded,
+            total: e.total,
+          })
+        }
+      }
+      xhr.upload.onload = () => onProgress?.({ phase: 'processing' })
+      xhr.onload = () => {
+        let data = null
+        try { data = JSON.parse(xhr.responseText) } catch { /* 非 JSON */ }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.({ phase: 'done' })
+          resolve(data)
+        } else {
+          onProgress?.({ phase: 'error' })
+          if (xhr.status === 401 && !window.location.pathname.startsWith('/login')) {
+            localStorage.removeItem('soar_token')
+            localStorage.removeItem('soar_user')
+            setTimeout(() => { window.location.href = '/login' }, 100)
+          }
+          const detail = (data && (data.detail || data.message)) || `HTTP ${xhr.status}`
+          reject(new Error(`导入失败：${detail}`))
+        }
+      }
+      xhr.onerror = () => {
+        onProgress?.({ phase: 'error' })
+        reject(new Error('网络错误，导入失败'))
+      }
+      xhr.send(formData)
+    })
   },
   // 下载 CSV 导入模板（含表头与示例行）
   downloadBannedIpTemplate: async () => {

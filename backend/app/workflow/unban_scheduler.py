@@ -22,8 +22,50 @@ logger = logging.getLogger(__name__)
 _SCAN_INTERVAL_SECONDS = 60
 
 
+def _unban_device_best_effort(db, record: BanRecord) -> tuple[str, bool]:
+    """到期解封时联动设备解封（best-effort，失败只告警不影响平台解封）。
+
+    仅处理「导入封禁 / 手动封禁」且已记录封堵设备的记录（本平台真实下发过），
+    工单/自动审批记录只落平台数据，不对设备发无效解封请求。
+
+    Returns:
+        ``(device_name, unblocked)``；未联动设备时返回 ``("", False)``。
+    """
+    if not (record.ban_device or "").strip():
+        return "", False
+    if (record.ban_source or "") not in ("import", "manual"):
+        return "", False
+    from app.devices import ban_target
+
+    try:
+        device, action, err = ban_target.resolve_unblock_device(db, record.ban_device)
+        if err or device is None or action is None:
+            logger.warning(
+                "到期解封跳过设备联动（记录 #%s, ip=%s）: %s", record.id, record.ip, err,
+            )
+            return "", False
+        result = ban_target.run_unblock(
+            db, device, action, ip=record.ip, source="unban_scheduler",
+        )
+        ok, err = ban_target.check_unblock_result(result)
+        if not ok:
+            logger.warning(
+                "到期解封设备下发失败（记录 #%s, ip=%s, device=%s）: %s",
+                record.id, record.ip, device.name, err,
+            )
+            return "", False
+        return device.name, True
+    except Exception:  # noqa: BLE001
+        logger.exception("到期解封设备联动异常（记录 #%s, ip=%s）", record.id, record.ip)
+        return "", False
+
+
 def scan_expired_bans() -> int:
-    """扫描到期封禁记录并自动解封，返回处理条数。"""
+    """扫描到期封禁记录并自动解封，返回处理条数。
+
+    已真实下发设备的记录先 best-effort 联动设备解封，避免设备侧黑名单残留
+    （永久条目不会到期，但定时/有限时长条目到期后必须清理设备侧条目）。
+    """
     db = SessionLocal()
     try:
         now = beijing_now()
@@ -33,6 +75,7 @@ def scan_expired_bans() -> int:
             .all()
         )
         for record in rows:
+            device_name, unblocked = _unban_device_best_effort(db, record)
             record.status = "expired"
             record.unban_reason = "封禁到期自动解封"
             record.unban_operator = "system"
@@ -43,7 +86,10 @@ def scan_expired_bans() -> int:
                 legacy.status = "expired"
             write_audit(
                 db, action="unban", resource_type="ban_record", resource_id=record.id,
-                detail={"ip": record.ip, "reason": "封禁到期自动解封", "auto": True},
+                detail={
+                    "ip": record.ip, "reason": "封禁到期自动解封", "auto": True,
+                    "device": device_name, "device_unblocked": unblocked,
+                },
             )
             notify_ops(db, f"IP {record.ip} 封禁到期已自动解封", f"封禁记录 #{record.id} 到期自动解封（原因：封禁时长结束）。")
         if rows:
