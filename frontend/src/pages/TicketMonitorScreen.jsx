@@ -13,13 +13,14 @@
 //   ④ 中央：处置状态流转图（虚线流动连线 + 节点下方停留件数）
 //          + 提交团队工单排名（横排 Top 8，其余合并尾签）
 //          + 最新工单实时列表
-//   ⑤ 右上：SLA 时效分析（超时率主环阈值变色 + 底部达标率/响应/解决指标条）
+//   ⑤ 右上：封禁IP统计（生效中封禁总数 + 手动封禁 / 工单同步封禁来源构成环）
 //   ⑥ 右下：来源平台统计（状态构成堆叠条形图，柱端标注工单总量）
 //   ⑦ 底部：告警播报跑马灯（仅超时 / 紧急工单，不与实时列表重复）
 //   ⑧ 全屏交互：弹窗下钻体系（不跳转路由）——各统计区块点击压入弹窗栈逐级覆盖显示，
 //      面包屑可回跳任意上级（ESC / 遮罩点击关闭当前层）：
 //      团队排名条 → 全部团队数据 → 团队工单列表 → 工单详情（最多四级）；
-//      KPI / 趋势 / 分布 / 流转节点 / SLA / 平台 / 实时列表均可点击下钻对应工单列表。
+//      封禁IP统计 → 封禁IP列表（按来源过滤）→ 来源工单详情（工单同步封禁）；
+//      KPI / 趋势 / 分布 / 流转节点 / 平台 / 实时列表均可点击下钻对应工单列表。
 //   ⑨ 大屏操作：右上工具条（数据健康度 / 刷新频率切换 / 立即刷新 / 报警开关 / 屏幕适配 /
 //      值守轮播 / 全屏切换 + 实时时钟）；中央实时列表状态筛选（全部 / 进行中 / 已完成 / 已取消）
 //      + 快捷筛选（仅超时 / 仅紧急 / ★关注）+ 纵向无缝自动滚动（悬停暂停 + 速度可选）。
@@ -28,8 +29,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import {
-  AlertTriangle, Activity, Bell, BellOff, CheckCircle2, Clock, Copy, ExternalLink,
-  Layers, Maximize2, Minimize2, Pause, Play, RefreshCw, Send, Star, Timer, TimerReset, Trophy,
+  AlertTriangle, Activity, Bell, BellOff, CheckCircle2, Copy, ExternalLink,
+  Layers, Maximize2, Minimize2, Pause, Play, RefreshCw, Send, ShieldBan, Star, TimerReset, Trophy,
 } from 'lucide-react'
 import { ticketApi } from '../api/tickets'
 import { toast } from '../store/toastStore'
@@ -932,7 +933,6 @@ function TeamRankPanel({ rows, onDrill }) {
   const max = list.length ? Math.max(...list.map((d) => d.value || 0)) : 0
   const top = list.slice(0, TEAM_RANK_TOP_N)
   const rest = list.slice(TEAM_RANK_TOP_N)
-  const restTotal = rest.reduce((s, d) => s + (d.value || 0), 0)
   const pct = (v) => (total > 0 ? Math.round(((v || 0) / total) * 1000) / 10 : 0)
   return (
     <Panel
@@ -940,7 +940,7 @@ function TeamRankPanel({ rows, onDrill }) {
       className="h-[128px]" bodyClassName="px-3 py-2"
       right={(
         <>
-          <span className="text-[12px]" style={{ color: C.subText }}>{list.length} 队 · 共 {total} 件</span>
+          <span className="text-[12px]" style={{ color: C.subText }}>{list.length} 队</span>
           {onDrill && (
             <button
               onClick={() => onDrill({ kind: 'teams', title: '提交团队 · 全部团队数据', subtitle: '全部团队工单排名' })}
@@ -1015,12 +1015,12 @@ function TeamRankPanel({ rows, onDrill }) {
             )
           })}
           {rest.length > 0 && (
-            <div title={onDrill ? '点击查看全部团队排名明细' : rest.map((d) => `${d.name} ${d.value} 件`).join(' / ')}
+            <div title={onDrill ? '点击查看全部团队排名明细' : rest.map((d) => d.name).join(' / ')}
               onClick={onDrill ? () => onDrill({ kind: 'teams', title: '提交团队 · 全部团队数据', subtitle: '全部团队工单排名' }) : undefined}
               className="flex w-[76px] shrink-0 cursor-pointer flex-col items-center justify-center gap-0.5 rounded border border-dashed px-1 transition hover:brightness-125"
               style={{ borderColor: 'rgba(147,166,184,0.4)', background: C.innerBgSoft }}>
-              <span className="text-[12px]" style={{ color: C.subText }}>其余 {rest.length} 队</span>
-              <span className="font-mono text-[15px] font-bold tabular-nums" style={{ color: C.subText }}>{restTotal} 件</span>
+              <span className="text-[12px]" style={{ color: C.subText }}>其余</span>
+              <span className="font-mono text-[15px] font-bold tabular-nums" style={{ color: C.subText }}>{rest.length} 队</span>
             </div>
           )}
         </div>
@@ -1362,8 +1362,8 @@ function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
   )
 }
 
-// ============ ⑤ 右上：SLA 时效分析（超时率主环 + 底部指标条，按优先级 SLA 目标口径） ============
-// 分钟 → 紧凑可读时长（如 30 分 / 4 时 / 1 天 4 时）
+// ============ ⑤ 右上：封禁IP统计（生效中封禁总数 + 手动 / 工单同步来源构成环） ============
+// 分钟 → 紧凑可读时长（如 30 分 / 4 时 / 1 天 4 时；工单详情 SLA 时长用）
 function fmtDur(m) {
   if (m === null || m === undefined) return '不限'
   if (m < 60) return `${m} 分`
@@ -1377,98 +1377,117 @@ function fmtDur(m) {
   return h ? `${d} 天 ${h} 时` : `${d} 天`
 }
 
-const SLA_PRIORITY_ROWS = [
-  ['critical', '紧急'],
-  ['high', '高危'],
-  ['medium', '中危'],
-  ['low', '低危'],
+// 封禁来源展示元数据：key 与后端 ban_stats 字段一致（manual=手动封禁 / ticket=工单同步封禁）
+const BAN_SOURCE_META = [
+  { key: 'manual', label: '手动封禁', color: C.lightBlue, icon: ShieldBan },
+  { key: 'ticket', label: '工单同步封禁', color: C.orange, icon: Send },
 ]
 
-// 主环配色：超时率 ≤30% 青绿（良好）/ 30%-60% 橙（关注）/ >60% 红（告警），带轻微外发光
-function slaRingColor(rate) {
-  if (rate <= 30) return C.green
-  if (rate <= 60) return C.orange
-  return C.red
+// 封禁来源完整文案（下钻弹窗表格用；与封禁工作台 _BAN_SOURCE_LABELS 口径一致）
+const BAN_SOURCE_LABELS = {
+  auto: '自动封禁', approval: '审批封禁', manual: '手动封禁', chat: '聊天封禁',
+  ticket: '工单同步', import: '导入封禁',
 }
 
-// 底部小型指标条：图标 + 指标名 + 数值
-function SlaMetric({ icon: Icon, name, value, color }) {
+// 封禁等级文案（与封禁工作台口径一致：critical 最高）
+const BAN_LEVEL_LABELS = { low: '低', medium: '中', high: '高', critical: '严重' }
+
+// 底部来源指标卡：图标 + 来源名 + 数量大字 + 占比进度条（可点击下钻该来源封禁 IP 列表）
+function BanSourceCard({ icon: Icon, name, value, pct, color, onClick }) {
   return (
-    <div className="flex flex-col justify-center rounded-md border px-3"
+    <div onClick={onClick}
+      title={onClick ? `点击查看「${name}」的封禁 IP 列表` : undefined}
+      className={`flex flex-col justify-center gap-1.5 rounded-md border px-3 transition ${onClick ? 'cursor-pointer hover:brightness-125' : ''}`}
       style={{ borderColor: 'rgba(96,138,188,0.28)', background: C.innerBg }}>
       <div className="flex items-center gap-1.5">
         <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
         <span className="truncate text-[12px]" style={{ color: C.subText }}>{name}</span>
       </div>
-      <div className="mt-1 truncate font-mono text-[18px] font-bold tabular-nums" style={{ color }}>{value}</div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-mono text-[22px] font-bold leading-none tabular-nums" style={{ color }}>{value}</span>
+        <span className="text-[11px] tabular-nums" style={{ color: C.subText }}>{pct}%</span>
+      </div>
+      <div className="h-[3px] w-full overflow-hidden rounded" style={{ background: 'rgba(96,138,188,0.16)' }}>
+        <div className="h-full rounded transition-all"
+          style={{ width: `${Math.max(pct > 0 ? 4 : 0, Math.round(pct))}%`, background: `linear-gradient(90deg, ${color}, ${C.cyan})` }} />
+      </div>
     </div>
   )
 }
 
-function SlaPanel({ sla, onDrill }) {
-  const targets = sla?.targets || {}
-  const timeoutRate = sla?.timeout_rate ?? 0
-  const ringColor = slaRingColor(timeoutRate)
-  // 主环：只保留一个核心指标（SLA 超时率），环中央大号百分比，阈值变色
-  const gaugeOption = useMemo(() => ({
-    ...CHART_BASE,
-    series: [{
-      type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100,
-      radius: '94%', center: ['50%', '56%'],
-      progress: { show: true, width: 13, itemStyle: { color: ringColor, shadowColor: `${ringColor}90`, shadowBlur: 10 } },
-      axisLine: { lineStyle: { width: 13, color: [[1, 'rgba(96,138,188,0.16)']] } },
-      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-      pointer: { show: false }, anchor: { show: false },
-      title: { show: true, offsetCenter: [0, '42%'], color: C.subText, fontSize: 13 },
-      detail: {
-        valueAnimation: true, offsetCenter: [0, '-6%'], formatter: '{value}%',
-        color: ringColor, fontSize: 34, fontWeight: 'bold', fontFamily: 'monospace',
+function BanPanel({ ban, onDrill }) {
+  const total = ban?.total ?? 0
+  const manual = ban?.manual ?? 0
+  const ticket = ban?.ticket ?? 0
+  const other = Math.max(0, total - manual - ticket)
+  const pct = (v) => (total > 0 ? Math.round((v / total) * 1000) / 10 : 0)
+  // 下钻入口：构成环 → 全部生效中封禁；来源卡 → 该来源封禁 IP 列表；其他来源注 → 其他来源列表
+  const drillBans = (source, title, subtitle) => onDrill
+    ? () => onDrill({ kind: 'bans', source, title, subtitle })
+    : undefined
+  // 来源构成环：手动（蓝）/ 工单同步（橙）/ 其余来源（灰），环心大号总数
+  const donutOption = useMemo(() => {
+    const data = BAN_SOURCE_META.map((s) => ({
+      value: ban?.[s.key] ?? 0, name: s.label, itemStyle: { color: s.color },
+    }))
+    if (other > 0) data.push({ value: other, name: '其他来源', itemStyle: { color: C.subText } })
+    return {
+      ...CHART_BASE,
+      title: {
+        text: String(total), subtext: '当前封禁 IP', left: 'center', top: '36%',
+        textStyle: { color: C.text, fontSize: 32, fontWeight: 'bold', fontFamily: 'monospace' },
+        subtextStyle: { color: C.subText, fontSize: 12 },
       },
-      data: [{ value: timeoutRate, name: 'SLA 超时率' }],
-    }],
-  }), [timeoutRate, ringColor])
-  const fmtAvg = (m) => (m === null || m === undefined ? '—' : fmtDur(m))
+      tooltip: {
+        trigger: 'item', confine: true,
+        formatter: '{b}：{c} 条（{d}%）',
+        backgroundColor: 'rgba(13,24,36,0.92)', borderColor: 'rgba(96,138,188,0.4)',
+        textStyle: { color: C.text, fontSize: 12 },
+      },
+      series: [{
+        type: 'pie', radius: ['58%', '80%'], center: ['50%', '50%'],
+        avoidLabelOverlap: true, minAngle: 6,
+        itemStyle: { borderColor: 'rgba(13,24,36,0.9)', borderWidth: 2 },
+        label: { show: false }, labelLine: { show: false },
+        emphasis: { scaleSize: 4, itemStyle: { shadowBlur: 12, shadowColor: 'rgba(69,184,205,0.4)' } },
+        data: total > 0 ? data : [{ value: 1, name: '暂无封禁', itemStyle: { color: 'rgba(96,138,188,0.14)' } }],
+      }],
+    }
+  }, [total, manual, ticket, other])
   return (
-    <Panel title="SLA 时效分析" subtitle="SLA ANALYSIS" icon={TimerReset} alert={timeoutRate > 0}
+    <Panel title="封禁IP统计" subtitle="BANNED IP" icon={ShieldBan}
       className="h-[400px]" bodyClassName="flex flex-col px-3 py-1">
-      <div className="flex h-[212px] shrink-0">
-        <div className="flex-[1.15] cursor-pointer" title={onDrill ? '点击下钻查看 SLA 超时工单列表' : undefined}>
-          <ReactECharts option={gaugeOption} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }}
-            onEvents={onDrill ? { click: () => onDrill({ kind: 'tickets', title: 'SLA 超时工单列表', subtitle: '超时率下钻 · 含已完结超时', filters: { slaTimeout: true } }) } : undefined} />
+      {/* 上：来源构成环（环心 = 生效中封禁 IP 总数；点击下钻全部生效中封禁 IP 列表） */}
+      <div className="flex h-[224px] shrink-0 flex-col">
+        <div className={`min-h-0 flex-1 ${onDrill ? 'cursor-pointer' : ''}`}
+          title={onDrill ? '点击下钻查看全部生效中封禁 IP 列表' : undefined}
+          onClick={drillBans(null, '封禁IP列表 · 全部生效中', '封禁统计下钻')}>
+          <ReactECharts option={donutOption} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }} />
         </div>
-        <div className="flex flex-1 flex-col justify-center gap-1.5 px-2">
-          <div className="text-[12px]" style={{ color: C.subText }}>
-            响应超时 {sla?.response_overdue_count ?? 0} 件 · 解决超时 {sla?.resolve_overdue_count ?? 0} 件
+        {other > 0 && (
+          <div onClick={drillBans('other', '封禁IP列表 · 其他来源', '封禁统计下钻 · 自动 / 审批 / 导入')}
+            title={onDrill ? '点击查看其他来源（自动 / 审批 / 导入）封禁 IP 列表' : undefined}
+            className={`shrink-0 text-center text-[11px] transition ${onDrill ? 'cursor-pointer hover:brightness-125' : ''}`}
+            style={{ color: C.subText }}>
+            另有其他来源（自动 / 审批 / 导入）封禁 {other} 条
           </div>
-          <div className="my-1 h-px" style={{ background: 'rgba(96,138,188,0.22)' }} />
-          <div className="text-[12px] font-medium" style={{ color: C.cyan }}>SLA 目标（响应 / 解决）</div>
-          {SLA_PRIORITY_ROWS.map(([key, label]) => {
-            const t = targets[key] || {}
-            return (
-              <div key={key} className="flex items-center gap-2 text-[12px] leading-[16px]">
-                <span className="w-[30px] shrink-0" style={{ color: C.text }}>{label}</span>
-                <span className="min-w-0 flex-1 truncate font-mono" style={{ color: C.subText }}>
-                  {fmtDur(t.response)} / {fmtDur(t.resolve)}
-                </span>
-              </div>
-            )
-          })}
-        </div>
+        )}
       </div>
-      {/* 按时完成达标率 / 平均响应时长 / 平均解决时长：降级为底部并排小型指标条（图标 + 指标名 + 数值） */}
-      <div className="mt-1.5 grid h-[96px] shrink-0 grid-cols-3 gap-2">
-        <SlaMetric icon={CheckCircle2} name="按时完成达标率"
-          value={sla?.on_time_rate == null ? '—' : `${sla.on_time_rate}%`} color={C.green} />
-        <SlaMetric icon={Timer} name="平均响应时长" value={fmtAvg(sla?.avg_response_minutes)} color={C.lightBlue} />
-        <SlaMetric icon={Clock} name="平均解决时长" value={fmtAvg(sla?.avg_resolve_minutes)} color={C.paleBlue} />
+      {/* 下：手动封禁 / 工单同步封禁两张来源指标卡（数量 + 占比；点击下钻该来源列表） */}
+      <div className="mt-1.5 grid h-[96px] shrink-0 grid-cols-2 gap-2">
+        {BAN_SOURCE_META.map((s) => (
+          <BanSourceCard key={s.key} icon={s.icon} name={s.label}
+            value={ban?.[s.key] ?? 0} pct={pct(ban?.[s.key] ?? 0)} color={s.color}
+            onClick={drillBans(s.key, `封禁IP列表 · ${s.label}`, '封禁统计下钻')} />
+        ))}
       </div>
     </Panel>
   )
 }
 
 // ============ ⑥ 右下：来源平台统计（状态构成堆叠条形图，柱端直接标注工单总量） ============
-// 颜色语义与全屏一致：待处理=橙、处理中=蓝、已解决=绿；口径与顶部 KPI 相同。
-// 悬停提示框保留原统计表全部指标（总量/今日新增/待处理/处理中/已解决）。
+// 颜色语义与全屏一致：待处理=橙、处理中=蓝、已解决=绿、已取消=灰蓝；口径与顶部 KPI 相同。
+// 悬停提示框保留原统计表全部指标（总量/今日新增/待处理/处理中/已解决/已取消）。
 // 提示框指标元数据：字段 / 名称 / 数值颜色
 const PLATFORM_TIP_COLS = [
   ['total', '工单总量', C.lightBlue],
@@ -1476,6 +1495,7 @@ const PLATFORM_TIP_COLS = [
   ['pending', '待处理', C.orange],
   ['processing_active', '处理中', C.techBlue],
   ['completed', '已解决', C.green],
+  ['cancelled', '已取消', C.grayBlue],
 ]
 
 // 数值千位分隔；null/undefined 显示 --
@@ -1494,6 +1514,7 @@ function platformBarOption(rows) {
     stack('待处理', 'pending', C.orange),
     stack('处理中', 'processing_active', C.techBlue),
     stack('已解决', 'completed', C.green),
+    stack('已取消', 'cancelled', C.grayBlue),
   ]
   // 柱端总量标注挂在堆叠末段（取整行 total），消除视线在坐标轴与柱体之间的往返
   series[series.length - 1].label = {
@@ -1539,6 +1560,9 @@ function PlatformPanel({ rows, onDrill }) {
     if (p.seriesName === '已解决') {
       f = { platform: p.name, status: 'completed' }
       seg = '已解决'
+    } else if (p.seriesName === '已取消') {
+      f = { platform: p.name, status: 'cancelled' }
+      seg = '已取消'
     } else if (p.seriesName === '处理中') {
       f = { platform: p.name, status: 'processing', activeToday: true }
       seg = '处理中（今日活跃）'
@@ -1620,7 +1644,9 @@ function MarqueeBar({ latest }) {
 // ============ ⑧ 弹窗下钻体系（大屏内多级弹窗，不跳转路由） ============
 // 交互模型：各统计区块点击 → openDrill(view) 压入弹窗栈逐级覆盖显示；面包屑回跳任意上级，
 // × / ESC / 遮罩点击关闭当前层。弹窗内表格行可继续下钻（最深可达四级）。
-// 视图配置 view：{ kind: 'teams' | 'tickets' | 'detail', title, subtitle?, filters?, ticket? }
+// 视图配置 view：{ kind: 'teams' | 'tickets' | 'bans' | 'detail', title, subtitle?, filters?, ticket? }
+// bans 视图另带 source（null=全部生效中 / manual / ticket / other=非手动非工单同步），
+// 数据源为后端 monitor 下钻封禁记录集 ban_records（演示模式为内置演示记录，口径一致）。
 // filters 字段口径与大屏各分区一致（详见 matchDrill），工单数据源由页面主体统一注入
 // （演示阶段为内置演示工单集，后端接入后为聚合接口返回的 tickets）。
 
@@ -2177,13 +2203,91 @@ function TicketDetail({ t, demo = false }) {
   )
 }
 
+// 封禁IP列表（封禁统计卡下钻一级）：生效中封禁记录，分页 + 每页条数可调；
+// 工单同步来源且能匹配到下钻工单集的行可继续下钻来源工单详情（封禁 → 工单，最多再深一级）
+// 封禁剩余时长：永久 → 永久；有到期时间 → 剩余 xx（负数/缺失 → --）
+function banRemainingText(r) {
+  if (r.is_permanent) return '永久'
+  if (!r.expire_time) return '--'
+  const mins = Math.floor((new Date(r.expire_time).getTime() - Date.now()) / 60000)
+  if (Number.isNaN(mins)) return '--'
+  return mins > 0 ? `剩余 ${fmtDur(mins)}` : '即将到期'
+}
+
+function BanTable({ rows, onRowClick }) {
+  const [page, setPage] = useState(1)
+  const [size, setSize] = useState(20)
+  useEffect(() => { setPage(1) }, [rows, size])
+  const pages = Math.max(1, Math.ceil(rows.length / size))
+  const safe = Math.min(page, pages)
+  const view = rows.slice((safe - 1) * size, safe * size)
+  // 来源 pill 配色：手动=蓝、工单同步=橙、其他来源=灰蓝（与面板环/卡颜色语义一致）
+  const sourceStyle = (s) => (
+    s === 'manual' ? { color: C.lightBlue, background: 'rgba(78,138,212,0.15)', border: 'rgba(78,138,212,0.42)' }
+      : s === 'ticket' ? { color: C.orange, background: 'rgba(255,169,64,0.13)', border: 'rgba(255,169,64,0.42)' }
+        : { color: C.subText, background: 'rgba(147,166,184,0.14)', border: 'rgba(147,166,184,0.35)' }
+  )
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* 列头 */}
+      <div className="flex shrink-0 items-center px-3 pb-1.5 text-[13px]" style={{ color: C.subText }}>
+        <span className="w-[150px] shrink-0">封禁 IP</span>
+        <span className="w-[110px] shrink-0 text-center">封禁来源</span>
+        <span className="w-[64px] shrink-0 text-center">级别</span>
+        <span className="w-[130px] shrink-0 text-right">剩余时长</span>
+        <span className="w-[128px] shrink-0 text-right">封禁时间</span>
+        <span className="min-w-0 flex-1 truncate text-right">来源工单</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-1">
+        {view.length === 0 && (
+          <div className="py-10 text-center text-[13px]" style={{ color: C.subText }}>暂无生效中的封禁记录</div>
+        )}
+        {view.map((r) => {
+          const st = sourceStyle(r.ban_source)
+          const linked = r.ticket_id && onRowClick
+          return (
+            <div key={r.id}
+              onClick={linked ? () => onRowClick(r) : undefined}
+              title={linked ? `点击查看来源工单详情（${r.ticket_no || r.ticket_id}）` : undefined}
+              className={`mb-1 flex min-h-[42px] items-center rounded border px-2 text-[14px] transition ${linked ? 'cursor-pointer hover:brightness-125' : ''}`}
+              style={{ borderColor: 'rgba(96,138,188,0.18)', background: C.innerBg }}>
+              <span className="w-[150px] shrink-0 truncate font-mono" style={{ color: C.text }}>{r.ip}</span>
+              <span className="w-[110px] shrink-0 text-center">
+                <span className="inline-flex items-center rounded-full border px-1.5 py-px text-[12px]"
+                  style={{ color: st.color, background: st.background, borderColor: st.border }}>
+                  {BAN_SOURCE_LABELS[r.ban_source] || r.ban_source || '--'}
+                </span>
+              </span>
+              <span className="w-[64px] shrink-0 text-center" style={{ color: C.paleBlue }}>
+                {BAN_LEVEL_LABELS[r.ban_level] || r.ban_level || '--'}
+              </span>
+              <span className="w-[130px] shrink-0 truncate text-right font-mono text-[13px] tabular-nums" style={{ color: C.subText }}>
+                {banRemainingText(r)}
+              </span>
+              <span className="w-[128px] shrink-0 text-right font-mono tabular-nums" style={{ color: C.subText }}>
+                {r.created_at ? r.created_at.slice(5, 16).replace('T', ' ') : '--'}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-right font-mono" style={{ color: linked ? C.cyan : C.subText }}>
+                {r.ticket_no || '--'}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      <Pager total={rows.length} page={page} size={size} unit="条" onChange={setPage}
+        sizes={[10, 20, 50]} onSizeChange={setSize} />
+    </div>
+  )
+}
+
 // 弹窗壳：层级标记 + 面包屑（可点回跳）+ 关闭；主体按 view.kind 分发
 // teams → 全部团队数据（由当前数据源实时聚合，保证与排名条/各级下钻列表口径一致）；
-// tickets → 筛选后的工单列表；detail → 单工单详情
-// truncated：后端下钻工单集超上限截断时弹窗内提示（仅真实数据模式）
+// tickets → 筛选后的工单列表；bans → 封禁IP列表（view.source 限定来源，null=全部 /
+// manual / ticket / other=非手动非工单同步）；detail → 单工单详情
+// truncated：后端下钻工单集超上限截断时弹窗内提示（仅真实数据模式；封禁集截断用 bansTruncated）
 // loading：下钻工单集按需拉取中（大屏轮询不再携带全量下钻集）
 // demo：演示数据兜底（详情内时间线跳过 /tickets/{id}，按工单字段降级展示）
-function DrillModal({ level, view, stack, tickets, truncated = false, loading = false, demo = false, onJump, onClose, onDrill }) {
+function DrillModal({ level, view, stack, tickets, bans = [], bansTruncated = false, truncated = false, loading = false, demo = false, onJump, onClose, onDrill }) {
   const teams = useMemo(() => {
     if (view.kind !== 'teams') return []
     const m = new Map()
@@ -2194,6 +2298,15 @@ function DrillModal({ level, view, stack, tickets, truncated = false, loading = 
     () => (view.kind === 'tickets' ? tickets.filter((t) => matchDrill(t, view.filters)) : []),
     [view.kind, view.filters, tickets],
   )
+  // 封禁IP列表：按 view.source 过滤（null=全部生效中；other=手动/工单同步之外的来源）
+  const banRows = useMemo(() => {
+    if (view.kind !== 'bans') return []
+    if (!view.source) return bans
+    if (view.source === 'other') {
+      return bans.filter((r) => r.ban_source !== 'manual' && r.ban_source !== 'ticket')
+    }
+    return bans.filter((r) => r.ban_source === view.source)
+  }, [view.kind, view.source, bans])
   const crumbs = stack.slice(0, level + 1).map((v) => v.title)
   const close = () => onClose(level)
   const wide = view.kind !== 'detail'
@@ -2240,9 +2353,14 @@ function DrillModal({ level, view, stack, tickets, truncated = false, loading = 
             下钻工单集加载中…
           </div>
         )}
-        {truncated && view.kind !== 'detail' && (
+        {truncated && view.kind !== 'detail' && view.kind !== 'bans' && (
           <div className="shrink-0 px-4 pt-2 text-[12px]" style={{ color: C.orange }}>
             工单量较大，弹窗仅基于最近一批工单展示（面板统计数字为全量口径）
+          </div>
+        )}
+        {view.kind === 'bans' && bansTruncated && (
+          <div className="shrink-0 px-4 pt-2 text-[12px]" style={{ color: C.orange }}>
+            封禁记录较多，弹窗仅基于最近一批记录展示（面板统计数字为全量口径）
           </div>
         )}
         {view.kind === 'teams' && (
@@ -2261,6 +2379,18 @@ function DrillModal({ level, view, stack, tickets, truncated = false, loading = 
               title: `工单详情 · ${r.ticket_no}`, subtitle: '工单下钻',
             })} />
         )}
+        {view.kind === 'bans' && (
+          <BanTable rows={banRows}
+            onRowClick={(r) => {
+              // 工单同步封禁 → 来源工单详情（下钻集内按 id 匹配；截断/演示缺失时不响应）
+              const t = tickets.find((x) => x.id === r.ticket_id)
+              if (!t) return
+              onDrill({
+                kind: 'detail', ticket: t,
+                title: `工单详情 · ${t.ticket_no}`, subtitle: '封禁下钻 · 来源工单',
+              })
+            }} />
+        )}
         {view.kind === 'detail' && <TicketDetail t={view.ticket} demo={demo} />}
       </div>
     </div>
@@ -2272,7 +2402,7 @@ function DrillModal({ level, view, stack, tickets, truncated = false, loading = 
 // 后端 /tickets/monitor 已返回 team_stats（团队排名）与 tickets（下钻工单集），大屏默认走真实数据；
 // 当响应缺少 team_stats（旧版后端未升级）时全屏回退到本演示数据，保证任何环境下大屏可预览。
 // 以 DEMO_TEAM_ROWS 的团队件数为基数，固定种子伪随机（mulberry32）生成确定性演示工单集，
-// 再派生 KPI / 趋势 / 分布 / 平台 / SLA / 流转 / 团队排名等全部分区统计，
+// 再派生 KPI / 趋势 / 分布 / 平台 / 封禁 / 流转 / 团队排名等全部分区统计，
 // 保证「面板数字 = 弹窗下钻列表条数」的口径一致（演示工单含 flow_id，与真实接口字段对齐）。
 // 演示工单字段口径与后端下钻工单集一致：team / platform / alert_type / current_node_key /
 // active_today / timeout / closed_at / response_minutes / resolve_minutes 等。
@@ -2375,6 +2505,47 @@ function buildDemoTickets() {
   return tickets
 }
 
+// 演示封禁记录（降级预览层）：生效中封禁按来源区分（手动 17 / 工单同步 24 / 其他 5），
+// 固定种子确定性生成；工单同步记录从演示工单集取来源工单（ticket_id/ticket_no），
+// 弹窗内可继续下钻工单详情。字段口径与后端 monitor 下钻封禁记录集一致。
+function buildDemoBans(tickets) {
+  const rand = mulberry32(0x20261102)
+  const pick = (arr) => arr[Math.floor(rand() * arr.length)]
+  const between = (a, b) => a + Math.floor(rand() * (b - a + 1))
+  const now = new Date()
+  const records = []
+  let seq = 0
+  const add = (source) => {
+    seq += 1
+    const created = new Date(now)
+    created.setDate(created.getDate() - between(0, 29))
+    created.setHours(between(0, 23), between(0, 59), between(0, 59), 0)
+    const permanent = rand() < (source === 'manual' ? 0.24 : 0.12)
+    // 非永久：剩余 1 小时 ~ 15 天（保证演示态全部处于生效中）
+    const expire = new Date(now.getTime() + between(60, 60 * 24 * 15) * 60000)
+    const lv = rand() < 0.15 ? 'critical' : rand() < 0.45 ? 'high' : rand() < 0.8 ? 'medium' : 'low'
+    const srcTicket = source === 'ticket' ? pick(tickets) : null
+    records.push({
+      id: seq,
+      ip: `${between(1, 223)}.${between(0, 255)}.${between(0, 255)}.${between(1, 254)}`,
+      ban_source: source,
+      ban_level: lv,
+      is_permanent: permanent,
+      ban_duration: permanent ? 0 : between(3600, 3600 * 24 * 30),
+      expire_time: permanent ? null : isoLocal(expire),
+      ticket_id: srcTicket ? srcTicket.id : null,
+      ticket_no: srcTicket ? srcTicket.ticket_no : null,
+      created_at: isoLocal(created),
+    })
+  }
+  for (let i = 0; i < 17; i += 1) add('manual')
+  for (let i = 0; i < 24; i += 1) add('ticket')
+  const OTHER_SOURCES = ['auto', 'approval', 'import']
+  for (let i = 0; i < 5; i += 1) add(pick(OTHER_SOURCES))
+  // 最新在前（与后端下钻封禁记录集排序一致）
+  return records.sort((a, b) => b.created_at.localeCompare(a.created_at))
+}
+
 // 由演示工单集派生大屏全部分区统计（字段结构与后端 monitor 聚合返回一致）
 function buildDemoStats(tickets) {
   const now = new Date()
@@ -2383,7 +2554,6 @@ function buildDemoStats(tickets) {
   const processing = tickets.filter((t) => t.status === 'processing')
   const completed = tickets.filter((t) => t.status === 'completed')
   const cancelled = tickets.filter((t) => t.status === 'cancelled')
-  const avg = (xs) => (xs.length ? Math.round((xs.reduce((s, v) => s + v, 0) / xs.length) * 10) / 10 : null)
   const inRange = (v, from, to) => !!v && v >= from && v < to
 
   const kpi = {
@@ -2438,13 +2608,14 @@ function buildDemoStats(tickets) {
   // 来源平台 × 状态构成
   const pm = {}
   tickets.forEach((t) => {
-    const row = pm[t.platform] || (pm[t.platform] = { name: t.platform, total: 0, today_new: 0, pending: 0, processing_active: 0, completed: 0 })
+    const row = pm[t.platform] || (pm[t.platform] = { name: t.platform, total: 0, today_new: 0, pending: 0, processing_active: 0, completed: 0, cancelled: 0 })
     row.total += 1
     if (t.created_at >= todayIso) row.today_new += 1
     if (t.status === 'processing') {
       row.pending += 1
       if (t.active_today) row.processing_active += 1
     } else if (t.status === 'completed') row.completed += 1
+    else if (t.status === 'cancelled') row.cancelled += 1
   })
 
   // 提交团队排名（与生成基数一致）
@@ -2466,26 +2637,19 @@ function buildDemoStats(tickets) {
     flows: [{ id: 1, name: '安全告警处置流程', enabled: true, is_draft: false }],
     flow: { id: 1, name: '安全告警处置流程', auto: true },
     latest: [...tickets].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 8),
-    sla: {
-      avg_response_minutes: avg(tickets.map((t) => t.response_minutes)),
-      avg_resolve_minutes: avg(tickets.filter((t) => t.resolve_minutes != null).map((t) => t.resolve_minutes)),
-      timeout_rate: processing.length ? Math.round((kpi.timeout_warning / processing.length) * 1000) / 10 : 0,
-      on_time_rate: completed.length
-        ? Math.round(((completed.length - completed.filter((t) => t.resolve_overdue).length) / completed.length) * 1000) / 10
-        : null,
-      responded_count: tickets.length,
-      resolved_count: completed.length + cancelled.length,
-      timeout_count: kpi.timeout_warning,
-      response_overdue_count: processing.filter((t) => t.response_overdue).length,
-      resolve_overdue_count: completed.filter((t) => t.resolve_overdue).length,
-      in_scope_count: tickets.length,
-      targets: {
-        critical: { response: 15, resolve: 240 },
-        high: { response: 30, resolve: 480 },
-        medium: { response: 60, resolve: 1440 },
-        low: { response: 120, resolve: 2880 },
-      },
-    },
+    // 封禁 IP 统计与下钻记录集：由演示封禁记录聚合（口径一致：manual/ticket 单列，
+    // 其余来源计入 total；面板数字 = 弹窗下钻列表条数）
+    ...(() => {
+      const banRecords = buildDemoBans(tickets)
+      return {
+        ban_stats: {
+          total: banRecords.length,
+          manual: banRecords.filter((r) => r.ban_source === 'manual').length,
+          ticket: banRecords.filter((r) => r.ban_source === 'ticket').length,
+        },
+        ban_records: banRecords,
+      }
+    })(),
     tickets,
   }
 }
@@ -2507,8 +2671,9 @@ export default function TicketMonitorScreen() {
   // 弹窗下钻栈：各区块点击 → openDrill(view) 逐级压栈覆盖显示；
   // ESC / 遮罩 / × 关闭当前层，面包屑可回跳任意上级（全程不跳转路由）
   const [drillStack, setDrillStack] = useState([])
-  // 下钻工单集：不再随高频轮询下发（响应体从 2000 条降到 KPI+最新），首次全量与打开弹窗时按需拉取
-  const [drillSet, setDrillSet] = useState({ tickets: [], truncated: false, total: 0, at: 0 })
+  // 下钻工单集 / 封禁记录集：不再随高频轮询下发（响应体从 2000 条降到 KPI+最新），
+  // 首次全量与打开弹窗时按需拉取
+  const [drillSet, setDrillSet] = useState({ tickets: [], bans: [], truncated: false, bansTruncated: false, total: 0, at: 0 })
   const [drillLoading, setDrillLoading] = useState(false)
   // 实时列表状态筛选提升到父组件：快捷键 1-4 与 URL ?status= 联动
   const [liveStatus, setLiveStatus] = useState(() => initialParams.status || 'all')
@@ -2559,6 +2724,9 @@ export default function TicketMonitorScreen() {
   // 下钻工单集：演示模式用内置数据；真实数据按下钻集（不再随高频轮询下发）
   const drillTickets = isDemo ? DEMO_STATS.tickets : drillSet.tickets
   const drillTruncated = !isDemo && drillSet.truncated
+  // 下钻封禁记录集：演示模式用内置数据（与演示 ban_stats 同源聚合，口径一致）
+  const drillBans = isDemo ? DEMO_STATS.ban_records : drillSet.bans
+  const drillBansTruncated = !isDemo && drillSet.bansTruncated
   const kpi = data?.kpi
 
   useEffect(() => {
@@ -2627,7 +2795,7 @@ export default function TicketMonitorScreen() {
     setError(msg)
   }, [])
 
-  // 全量加载：各面板全量（趋势/分布/团队/流转/SLA/平台）+ 可选下钻工单集
+  // 全量加载：各面板全量（趋势/分布/团队/流转/封禁/平台）+ 可选下钻工单集
   const loadFull = useCallback(async ({ withDrill = false } = {}) => {
     const seq = (reqRef.current.full += 1)
     const t0 = performance.now()
@@ -2644,7 +2812,9 @@ export default function TicketMonitorScreen() {
       if (withDrill && Array.isArray(data?.tickets)) {
         setDrillSet({
           tickets: data.tickets,
+          bans: Array.isArray(data?.ban_records) ? data.ban_records : [],
           truncated: !!data.tickets_truncated,
+          bansTruncated: !!data.ban_records_truncated,
           total: data.tickets_total ?? data.tickets.length,
           at: Date.now(),
         })
@@ -2686,7 +2856,9 @@ export default function TicketMonitorScreen() {
       if (Array.isArray(data?.tickets)) {
         setDrillSet({
           tickets: data.tickets,
+          bans: Array.isArray(data?.ban_records) ? data.ban_records : [],
           truncated: !!data.tickets_truncated,
+          bansTruncated: !!data.ban_records_truncated,
           total: data.tickets_total ?? data.tickets.length,
           at: Date.now(),
         })
@@ -3115,8 +3287,8 @@ export default function TicketMonitorScreen() {
 
           {/* 右栏 */}
           <div className="flex w-[470px] shrink-0 flex-col gap-3">
-            {/* ⑤ SLA 时效分析（主环点击下钻超时工单） */}
-            <SlaPanel sla={data?.sla} onDrill={openDrill} />
+            {/* ⑤ 封禁IP统计（生效中封禁按来源区分：手动 / 工单同步；环/来源卡/其他来源注均可下钻 IP 列表） */}
+            <BanPanel ban={data?.ban_stats} onDrill={openDrill} />
             {/* ⑥ 来源平台统计（点击堆叠段下钻平台×状态工单） */}
             <PlatformPanel rows={data?.platform_stats} onDrill={openDrill} />
           </div>
@@ -3130,6 +3302,7 @@ export default function TicketMonitorScreen() {
         {/* ⑧ 弹窗下钻层（按栈逐级覆盖显示，全程不离开大屏；数据源与面板同源保证口径一致） */}
         {drillStack.map((view, i) => (
           <DrillModal key={i} level={i} view={view} stack={drillStack} tickets={drillTickets}
+            bans={drillBans} bansTruncated={drillBansTruncated}
             truncated={drillTruncated} loading={drillLoading} demo={isDemo}
             onJump={jumpDrill} onClose={closeDrill} onDrill={openDrill} />
         ))}

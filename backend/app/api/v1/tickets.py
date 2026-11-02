@@ -1135,10 +1135,10 @@ def ticket_monitor_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_monitor", "view")),
 ):
-    """工单监控大屏聚合数据（KPI / 趋势 / 分布 / 团队排名 / 来源平台 / SLA / 流转节点 / 最新工单）。
+    """工单监控大屏聚合数据（KPI / 趋势 / 分布 / 团队排名 / 来源平台 / 封禁IP / 流转节点 / 最新工单）。
 
     数据均来自真实工单（排除归档），按大屏七个分区一次返回；大屏按「轻量 → 全景」分层轮询：
-    ``light=1`` 只算 KPI + 最新工单（高频），全景（趋势/分布/团队/平台/SLA/流转/下钻集）低频刷新。
+    ``light=1`` 只算 KPI + 最新工单（高频），全景（趋势/分布/团队/平台/封禁/流转/下钻集）低频刷新。
     ``include_drill=0`` 不下发下钻工单集（默认轮询用），大屏打开下钻弹窗时再按需请求。
     需要独立权限 ticket_monitor:view（叠加 router 级 ticket:view）。
     提交团队排名 ``team_stats``：按各流程模板首节点「提交团队」字段聚合（按 label 定位，
@@ -1146,6 +1146,9 @@ def ticket_monitor_stats(
     下钻工单集 ``tickets``：大屏各分区点击弹窗逐级下钻的数据源，字段口径与各分区统计
     严格一致（team/platform/alert_type/active_today/timeout 等）；极端存量下仅返回最近
     2000 件并以 ``tickets_truncated`` 标记。
+    下钻封禁记录集 ``ban_records``：大屏「封禁IP统计」卡点击弹窗的数据源（与 ``ban_stats``
+    同口径 status=active，最新在前）；同样仅在 ``include_drill=1`` 时下发，极端存量下仅返回
+    最近 2000 条并以 ``ban_records_truncated`` 标记。
     处置状态流转：``flow_id`` 可指定展示的流程模板；节点序列始终读取模板**当前定义**，
     修改并重新发布模板后大屏在下次轮询自动更新。响应附 ``flows``（可选流程列表）与
     ``flow``（当前生效流程及是否自动选取）。末位「已完结」节点的件数为全流程已解决
@@ -1296,7 +1299,7 @@ def ticket_monitor_stats(
     priority_dist = _count_by(tickets, lambda t: t.priority)
     type_dist = _count_by(tickets, lambda t: _start_value(t, "alert_type"))
 
-    # —— 来源平台统计：工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决（口径与顶部 KPI 一致）——
+    # —— 来源平台统计：工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决 / 已取消（口径与顶部 KPI 一致）——
     platform_rows: dict[str, dict] = {}
     for t in tickets:
         platform = _start_value(t, "platform")
@@ -1309,6 +1312,7 @@ def ticket_monitor_stats(
             "pending": 0,
             "processing_active": 0,
             "completed": 0,
+            "cancelled": 0,
         })
         row["total"] += 1
         if t.created_at and t.created_at >= today_start:
@@ -1319,6 +1323,8 @@ def ticket_monitor_stats(
                 row["processing_active"] += 1
         elif t.status == "completed":
             row["completed"] += 1
+        elif t.status == "cancelled":
+            row["cancelled"] += 1
     platform_stats = sorted(platform_rows.values(), key=lambda r: -r["total"])
     # —— 提交团队排名（大屏团队排名条）：按各流程首节点「提交团队」字段聚合，全流程口径 ——
     team_stats = _count_by(tickets, lambda t: _start_value(t, "team"))
@@ -1330,31 +1336,19 @@ def ticket_monitor_stats(
                 row[t.status] = row.get(t.status, 0) + 1
         severity_status.append(row)
 
-    # —— SLA：按优先级目标统计（平均响应/解决 + 达标率/超时率 + 细分计数 + 目标值） ——
-    in_scope = [t for t in tickets if sla_eval[t.id]["has_target"]]
-    resp_minutes = [sla_eval[t.id]["response_minutes"] for t in in_scope if sla_eval[t.id]["response_minutes"] is not None]
-    resolve_minutes = [sla_eval[t.id]["resolve_minutes"] for t in in_scope if sla_eval[t.id]["resolve_minutes"] is not None]
-    sla_timeout = [t for t in in_scope if sla_eval[t.id]["timeout"]]
-
-    def _avg(xs):
-        return round(sum(xs) / len(xs), 1) if xs else None
-
-    completed_in_scope = [t for t in in_scope if t.status == "completed"]
-    on_time = [t for t in completed_in_scope if not sla_eval[t.id]["timeout"]]
-    sla = {
-        "avg_response_minutes": _avg(resp_minutes),
-        "avg_resolve_minutes": _avg(resolve_minutes),
-        # 超时率 = SLA 超时工单 / 纳入目标统计的工单
-        "timeout_rate": round(len(sla_timeout) / len(in_scope) * 100, 1) if in_scope else 0,
-        # 达标率 = 已完结工单中未超目标的占比
-        "on_time_rate": round(len(on_time) / len(completed_in_scope) * 100, 1) if completed_in_scope else None,
-        "responded_count": len(resp_minutes),
-        "resolved_count": len(resolve_minutes),
-        "timeout_count": len(sla_timeout),
-        "response_overdue_count": sum(1 for t in in_scope if sla_eval[t.id]["response_breach"]),
-        "resolve_overdue_count": sum(1 for t in in_scope if sla_eval[t.id]["resolve_breach"]),
-        "in_scope_count": len(in_scope),
-        "targets": sla_config,
+    # —— 封禁 IP 统计（大屏右栏「封禁IP统计」卡）：生效中封禁记录按来源区分 ——
+    # 口径与封禁工作台列表一致（status=active 的记录数）；区分手动封禁（manual）与
+    # 工单同步封禁（ticket），其余来源（auto/approval/import）计入 total 不单列。
+    ban_source_counts: dict[str, int] = dict(
+        db.query(BanRecord.ban_source, func.count())
+        .filter(BanRecord.status == "active")
+        .group_by(BanRecord.ban_source)
+        .all()
+    )
+    ban_stats = {
+        "total": sum(ban_source_counts.values()),
+        "manual": ban_source_counts.get("manual", 0),
+        "ticket": ban_source_counts.get("ticket", 0),
     }
 
     # 分组名映射（用于流转节点显示处理分组）
@@ -1437,6 +1431,37 @@ def ticket_monitor_stats(
                 "resolve_minutes": ev["resolve_minutes"],
             })
 
+    # —— 下钻封禁记录集（大屏「封禁IP统计」卡点击弹窗数据源）——
+    # 与 ban_stats 同口径（status=active，生效中）；仅 include_drill=True 时构造
+    # （与下钻工单集同策略，常规轮询不下发）；最新在前，极端存量下仅返回最近
+    # drill_limit 条并以 ban_records_truncated 标记。工单同步来源附 ticket_id/ticket_no，
+    # 供前端弹窗内继续下钻来源工单详情。
+    ban_records: list[dict] = []
+    ban_records_truncated = False
+    if include_drill:
+        active_bans = (
+            db.query(BanRecord)
+            .filter(BanRecord.status == "active")
+            .order_by(BanRecord.id.desc())
+            .limit(drill_limit)
+            .all()
+        )
+        ban_records_truncated = ban_stats["total"] > drill_limit
+        for r in active_bans:
+            ban_records.append({
+                "id": r.id,
+                "ip": r.ip,
+                "ban_source": r.ban_source or "auto",
+                "ban_level": r.ban_level,
+                "is_permanent": r.is_permanent,
+                "ban_duration": r.ban_duration,
+                "expire_time": r.expire_time.isoformat() if r.expire_time else None,
+                # 工单同步来源信息（ban_source=ticket 时有值）
+                "ticket_id": r.ticket_id,
+                "ticket_no": r.ticket_no,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+
     return {
         "generated_at": now.isoformat(),
         "light": False,
@@ -1444,7 +1469,7 @@ def ticket_monitor_stats(
         "latest": latest,
         "trend": trend,
         "dist": {"priority": priority_dist, "type": type_dist},
-        # 来源平台统计表：各平台 工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决
+        # 来源平台统计表：各平台 工单总量 / 今日新增 / 待处理 / 处理中(今日活跃) / 已解决 / 已取消
         "platform_stats": platform_stats,
         # 提交团队排名：各流程首节点「提交团队」字段聚合（降序 [{name, value}]）
         "team_stats": team_stats,
@@ -1453,8 +1478,12 @@ def ticket_monitor_stats(
         "tickets": drill_tickets,
         "tickets_truncated": drill_truncated,
         "tickets_total": drill_total,
+        # 下钻封禁记录集：封禁IP统计卡弹窗数据源（ban_records_truncated=True 时仅最近 drill_limit 条）
+        "ban_records": ban_records,
+        "ban_records_truncated": ban_records_truncated,
         "severity_status": severity_status,
-        "sla": sla,
+        # 封禁 IP 统计：生效中封禁记录数（total/manual=手动封禁/ticket=工单同步封禁）
+        "ban_stats": ban_stats,
         # 大屏流程切换器数据：全部流程模板（含草稿/停用标记）
         "flows": [
             {
