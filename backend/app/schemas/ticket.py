@@ -79,11 +79,22 @@ class TicketCcAdd(BaseModel):
     targets: list[CcTarget] = Field(default_factory=list)
 
 
+class DeviceRunChoice(BaseModel):
+    """处理人是否调用该设备动作。index 对应当前节点动作列表下标。"""
+    index: int = 0
+    action_id: int
+    run: bool = False
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class TicketAdvance(BaseModel):
     """流转工单：当前节点处理人提交字段值并选择去向。"""
     field_values: dict[str, Any] = Field(default_factory=dict)
     route_to: Optional[str] = None
     comment: Optional[str] = None
+    run_device_action: bool = False
+    device_params: dict[str, Any] = Field(default_factory=dict)
+    device_runs: list[DeviceRunChoice] = Field(default_factory=list)
 
 
 class TicketCancel(BaseModel):

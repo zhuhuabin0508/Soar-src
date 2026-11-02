@@ -20,6 +20,7 @@ from app.core.ticket_flow import validate_flow_structure
 from app.core.timezone import to_beijing_iso
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
+from app.models.device import Device, DeviceAction
 from app.models.ticket import Ticket, TicketFlow, TicketFlowVersion, TicketGroup
 from app.models.user import User
 from app.schemas.ticket import FlowCreate, FlowUpdate
@@ -194,7 +195,27 @@ def publish_flow(
     发布成功同时写入版本存档（ticket_flow_versions），供版本历史查看与回滚。
     """
     flow = _get_flow_or_404(db, flow_id)
-    errors = validate_flow_structure(flow.nodes, group_ok=_group_ok_factory(db))
+
+    def _device_ok(device_id: int, action_id: int) -> str | None:
+        device = db.query(Device).filter(Device.id == device_id).first()
+        if device is None or not device.enabled:
+            return "设备不存在或已禁用"
+        action = (
+            db.query(DeviceAction)
+            .filter(
+                DeviceAction.id == action_id,
+                DeviceAction.device_id == device_id,
+                DeviceAction.enabled.is_(True),
+            )
+            .first()
+        )
+        if action is None:
+            return "动作不存在、未启用或不属于该设备"
+        return None
+
+    errors = validate_flow_structure(
+        flow.nodes, group_ok=_group_ok_factory(db), device_ok=_device_ok,
+    )
     if errors:
         raise HTTPException(status_code=422, detail="；".join(errors))
 

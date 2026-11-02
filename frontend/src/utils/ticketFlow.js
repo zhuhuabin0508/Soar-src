@@ -135,6 +135,15 @@ function evalCond(cond, fieldValues) {
   return false
 }
 
+export function matchWhen(when, fieldValues) {
+  if (!when) return true
+  const { logic, conds } = normWhen(when)
+  if (!conds.length) return true
+  return logic === 'or'
+    ? conds.some((c) => evalCond(c, fieldValues))
+    : conds.every((c) => evalCond(c, fieldValues))
+}
+
 // 返回 { options: [{to, label, when}], suggested: 命中条件的建议去向 key }
 export function evalRoutes(routes, fieldValues) {
   const options = (routes || []).filter((r) => r && r.to).map((r) => ({ ...r }))

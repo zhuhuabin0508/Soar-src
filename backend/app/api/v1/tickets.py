@@ -42,6 +42,13 @@ from app.core.ticket_enrichment import (
     start_agent_analysis_bg,
 )
 from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config
+from app.core.ticket_device_action import (
+    append_device_call_log,
+    annotate_device_form,
+    build_device_action_form,
+    run_ticket_device_action,
+    sync_block_ip_record,
+)
 from app.core.ticket_flow import (
     collect_ref_options,
     get_node,
@@ -699,6 +706,7 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         ),
         # 并行会签进度（非会签节点为 null）
         "sign_progress": sign_progress,
+        "device_action_form": annotate_device_form(build_device_action_form(db, current_node), records),
         # 抄送：列表 + 管理权限（发起人 / 当前处理人 / admin；仅进行中可增减）
         "cc_targets": [r.to_dict() for r in _cc_rows(db, ticket.id)],
         "can_manage_cc": (
@@ -2063,6 +2071,64 @@ def advance_ticket(
     if target is None:
         raise HTTPException(status_code=400, detail=f"流转目标节点 {route_to} 不存在")
 
+    device_result = None
+    device_outcomes = []
+    device_form = annotate_device_form(build_device_action_form(db, current_node), submitted)
+    items = device_form.get("items") or [] if device_form.get("bound") else []
+    if not items:
+        if body.run_device_action or body.device_params or body.device_runs:
+            raise HTTPException(status_code=400, detail="当前节点未绑定设备动作")
+    else:
+        choices = {}
+        for choice in body.device_runs or []:
+            if choice.index in choices:
+                raise HTTPException(status_code=400, detail="重复提交了设备动作参数")
+            matched = next((it for it in items if it.get("index") == choice.index), None)
+            if matched is None or choice.action_id != matched.get("action_id"):
+                raise HTTPException(status_code=400, detail="设备动作与当前节点配置不一致")
+            choices[choice.index] = choice
+        results = []
+        for item in items:
+            label = f"{item.get('device_name') or '设备'} / {item.get('action_name') or '动作'}"
+            choice = choices.get(item.get("index"))
+            if not item.get("execute"):
+                if choice and choice.params:
+                    raise HTTPException(status_code=400, detail=f"判断组未建议执行「{label}」，不能提交设备参数")
+                results.append({
+                    "skipped": True,
+                    "by": "judge",
+                    "judge_actual": item.get("judge_actual") or "",
+                    "device_name": item.get("device_name") or "",
+                    "action_name": item.get("action_name") or "",
+                    "action_id": item.get("action_id"),
+                })
+                continue
+            if choice is None:
+                raise HTTPException(status_code=400, detail=f"判断组已建议执行「{label}」，请填写参数")
+            fake_node = {
+                "key": current_node.get("key"),
+                "device_action": {"device_id": item.get("device_id"), "action_id": item.get("action_id")},
+            }
+            outcome = run_ticket_device_action(
+                db, fake_node, choice.params, user_id=current_user.id,
+            )
+            if not outcome.get("ok"):
+                raise HTTPException(
+                    status_code=outcome.get("status") or 400,
+                    detail=outcome.get("detail") or f"「{label}」执行失败",
+                )
+            append_device_call_log(
+                db,
+                outcome["device"],
+                outcome["action"],
+                outcome["params"],
+                outcome["call"],
+                current_user.id,
+            )
+            device_outcomes.append(outcome)
+            results.append(outcome["record"])
+        device_result = results[0] if len(results) == 1 else {"items": results}
+
     db.add(TicketNodeRecord(
         ticket_id=ticket.id,
         node_key=current_node.get("key") or "",
@@ -2072,9 +2138,22 @@ def advance_ticket(
         handler_name=current_user.display_name or current_user.username,
         action="submit",
         field_values=values,
+        device_result=device_result,
         route_to=route_to,
         comment=sanitize_text(body.comment) if body.comment else None,
     ))
+
+    for device_outcome in device_outcomes:
+        if not device_outcome.get("ok") or device_outcome["action"].action_type != "block_ip":
+            continue
+        try:
+            with db.begin_nested():
+                sync_block_ip_record(
+                    db, ticket, current_node,
+                    device_outcome["device"], device_outcome["params"],
+                )
+        except Exception:
+            logger.exception("工单设备封禁台账写入失败（不阻塞流转）: ticket=%s", ticket.ticket_no)
 
     # 封禁同步动作：节点配置了 ban_sync 且命中开关条件时，写入工作台已封禁 IP 列表
     # （附加动作在独立 SAVEPOINT 中执行：任何失败——含提交阶段的约束错误如 IP 超长——

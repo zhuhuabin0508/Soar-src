@@ -1411,6 +1411,11 @@ def run_lightweight_migrations(engine) -> None:
                 "current_group_ids": "VARCHAR(255)",
             },
         )
+        ensure_columns(
+            engine,
+            "ticket_node_records",
+            {"device_result": "JSON"},
+        )
         # 存量工单回填 current_group_ids（幂等：仅补 NULL 行），
         # 使旧工单的"待我处理"筛选走 CSV 条件
         try:

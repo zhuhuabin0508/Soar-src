@@ -157,6 +157,7 @@ def validate_flow_structure(
     nodes_json: Any,
     *,
     group_ok: Optional[Callable[[int], bool]] = None,
+    device_ok: Optional[Callable[[int, int], Optional[str]]] = None,
 ) -> list[str]:
     """发布前校验流程结构，返回错误列表（空=通过）。
 
@@ -187,6 +188,8 @@ def validate_flow_structure(
             keys.add(str(key))
 
         if n.get("type") == "end":
+            if n.get("device_action") not in (None, {}, "") or n.get("device_actions") not in (None, [], ""):
+                errors.append(f"{pos}：结束节点不能绑定设备动作")
             continue
         non_end += 1
         name = n.get("name") or key
@@ -357,6 +360,60 @@ def validate_flow_structure(
                 devf = ban_sync.get("device_field")
                 if devf and str(devf) not in fdefs:
                     errors.append(f"{pos}（{name}）：封禁同步设备字段 {devf} 不在本节点字段中")
+
+        def _check_device_cfg(device_action: Any, label: str) -> None:
+            if ntype == "parallel":
+                errors.append(f"{pos}（{name}）：会签节点不能绑定设备动作")
+                return
+            if not isinstance(device_action, dict):
+                errors.append(f"{pos}（{name}）：{label}必须为对象")
+                return
+            device_id = device_action.get("device_id")
+            action_id = device_action.get("action_id")
+            if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id <= 0:
+                errors.append(f"{pos}（{name}）：{label}未选择设备")
+            elif isinstance(action_id, bool) or not isinstance(action_id, int) or action_id <= 0:
+                errors.append(f"{pos}（{name}）：{label}未选择动作")
+            elif device_ok is not None:
+                device_err = device_ok(device_id, action_id)
+                if device_err:
+                    errors.append(f"{pos}（{name}）：{label}{device_err}")
+            judge_field = str(device_action.get("judge_field") or "").strip()
+            if not judge_field:
+                errors.append(f"{pos}（{name}）：{label}未选择判断组的是否字段")
+            else:
+                src = None
+                for other in nodes:
+                    if not isinstance(other, dict) or str(other.get("key") or "") == str(key) or other.get("type") == "end":
+                        continue
+                    for f in other.get("fields") or []:
+                        if not isinstance(f, dict) or str(f.get("key") or "") != judge_field:
+                            continue
+                        if f.get("type") in ("select", "switch"):
+                            src = f
+                            break
+                    if src is not None:
+                        break
+                if src is None:
+                    errors.append(f"{pos}（{name}）：{label}的判断字段须是前面节点的下拉选择或是否开关")
+                else:
+                    allowed = ["是", "否"] if src.get("type") == "switch" else [str(o) for o in (src.get("options") or [])]
+                    judge_value = device_action.get("judge_value")
+                    if judge_value in (None, ""):
+                        judge_value = "是"
+                    if str(judge_value) not in allowed:
+                        errors.append(f"{pos}（{name}）：{label}的建议执行取值 {judge_value} 不是判断字段的可选项")
+
+        device_action = n.get("device_action")
+        if device_action not in (None, {}, ""):
+            _check_device_cfg(device_action, "设备动作")
+        device_actions = n.get("device_actions")
+        if device_actions not in (None, [], ""):
+            if not isinstance(device_actions, list):
+                errors.append(f"{pos}（{name}）：设备动作列表必须为数组")
+            else:
+                for ai, item in enumerate(device_actions):
+                    _check_device_cfg(item, f"第 {ai + 1} 个设备动作")
 
         # 路由
         routes = n.get("routes")
@@ -724,6 +781,16 @@ def _eval_cond(cond: dict, values: dict) -> bool:
             return s_actual > s_expected if op == "gt" else s_actual < s_expected
         return a > b if op == "gt" else a < b
     return False
+
+
+def when_matches(when: Any, field_values: dict) -> bool:
+    if when in (None, {}, ""):
+        return True
+    logic, conds = _iter_conds(when)
+    if not conds:
+        return True
+    results = [_eval_cond(c, field_values or {}) for c in conds]
+    return any(results) if logic == "or" else all(results)
 
 
 def suggest_route(routes: Any, field_values: dict) -> tuple[Optional[str], Optional[str]]:

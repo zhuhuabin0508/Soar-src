@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   GitGraph, Plus, Trash2, ArrowUp, ArrowDown, Save, Rocket, ArrowLeft,
-  Flag, ChevronRight, GripVertical, AlertTriangle, UsersRound, CheckCircle2, List, History, ShieldBan,
+  Flag, ChevronRight, GripVertical, AlertTriangle, UsersRound, CheckCircle2, List, History, ShieldBan, Zap,
 } from 'lucide-react'
 import ReactFlow, { Background, Controls, MiniMap, Handle, Position, MarkerType } from 'reactflow'
 import { toast } from '../store/toastStore'
@@ -21,6 +21,7 @@ import { Button, PageContainer, CompactSelect } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import { condText, normWhen, COND_OP_OPTIONS, isCondOp } from '../utils/ticketFlow'
 import ticketApi from '../api/tickets'
+import { devices as devicesApi } from '../api/client'
 
 // 字段类型定义
 const FIELD_TYPES = [
@@ -99,12 +100,37 @@ function RefFieldsPicker({ value, onChange, excludeKey, allFields, disabled }) {
 }
 
 // 节点路由条件归一化：旧单条件 when 结构统一转为 {logic, conds}（保存原样入库，后端两种都兼容）
-const normNodeRoutes = (ns) => (ns || []).map((n) => ({
-  ...n,
-  routes: (n.routes || []).map((r) => (r.when ? { ...r, when: normWhen(r.when) } : r)),
-  // 并行会签节点：补齐 sign_groups / finish_policy（旧模板无该类型，兼容防御）
-  ...(n.type === 'parallel' ? { sign_groups: n.sign_groups || [], finish_policy: n.finish_policy || 'all' } : {}),
-}))
+const normNodeRoutes = (ns) => (ns || []).map((n) => {
+  const rest = { ...(n || {}) }
+  const actions = (Array.isArray(rest.device_actions) ? rest.device_actions : [])
+    .filter((x) => x && typeof x === 'object')
+    .map((x) => ({
+      device_id: x.device_id,
+      action_id: x.action_id,
+      judge_field: x.judge_field || '',
+      judge_value: x.judge_value || '是',
+    }))
+  if (!actions.length && rest.device_action && typeof rest.device_action === 'object' && Object.keys(rest.device_action).length) {
+    actions.push(rest.device_action)
+  }
+  delete rest.device_action
+  const fields = (rest.fields || []).map((f) => ({
+    ...f,
+    rules: (f.rules || []).map((r) => {
+      if (!r || typeof r !== 'object' || !('device_action' in r)) return r
+      const next = { ...r }
+      delete next.device_action
+      return next
+    }),
+  }))
+  return {
+    ...rest,
+    fields,
+    device_actions: actions,
+    routes: (rest.routes || []).map((r) => (r.when ? { ...r, when: normWhen(r.when) } : r)),
+    ...(rest.type === 'parallel' ? { sign_groups: rest.sign_groups || [], finish_policy: rest.finish_policy || 'all' } : {}),
+  }
+})
 
 // 下拉选项编辑器：本地暂存原始文本，失焦时才提交为选项数组。
 // 直接受控（split → trim → filter → join 回填）会在按回车时立即清除尾部
@@ -137,6 +163,19 @@ function FieldOptionsInput({ value, disabled, onCommit }) {
   )
 }
 
+function collectDeviceCfgs(n) {
+  const list = Array.isArray(n?.device_actions) ? n.device_actions : []
+  const cfgs = list.filter((c) => c?.device_id)
+  if (!cfgs.length && n?.device_action?.device_id) cfgs.push(n.device_action)
+  return cfgs
+}
+
+function firstDeviceName(n, actionMap) {
+  const cfg = collectDeviceCfgs(n)[0]
+  if (!cfg) return ''
+  return (actionMap?.[cfg.device_id] || []).find((a) => a.id === cfg.action_id)?.name || ''
+}
+
 // ===== 画布模式（reactflow 拓扑视图） =====
 // 节点卡片：名称 / 绑定分组 / 字段数 / 校验徽标；左右连接桩用于拖拽连线路由
 function TicketFlowNodeCard({ data, selected }) {
@@ -151,6 +190,9 @@ function TicketFlowNodeCard({ data, selected }) {
           {n.type === 'end' ? '✓' : index + 1}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{n.name || n.key}</span>
+        {collectDeviceCfgs(n).length > 0 && (
+          <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-[10px] font-medium text-cyan-600">设备</span>
+        )}
         {(invalid || warn) && (
           <span className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white ${invalid ? 'bg-destructive' : 'bg-amber-500'}`}>
             {invalid ? errCount : warnCount}
@@ -167,6 +209,11 @@ function TicketFlowNodeCard({ data, selected }) {
           {n.finish_policy === 'any' ? '任一分组提交即流转' : '全部会签完成才流转'}
         </div>
       )}
+      {collectDeviceCfgs(n).length > 0 && (
+        <div className="mt-1 truncate text-[10px] font-medium text-cyan-600">
+          {data.actionName ? `设备 · ${data.actionName}` : '设备动作'}
+        </div>
+      )}
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-2 !border-background !bg-primary" />
     </div>
   )
@@ -175,7 +222,7 @@ function TicketFlowNodeCard({ data, selected }) {
 const ticketFlowNodeTypes = { ticketNode: TicketFlowNodeCard }
 
 // 画布：按路由依赖分层自动布局（默认路由实线 / 条件路由虚线）；拖拽位置仅本地暂存不入库
-function TicketFlowCanvas({ flowNodes, validation, selectedKey, groups, canEdit, onSelect, onConnectRoute }) {
+function TicketFlowCanvas({ flowNodes, validation, selectedKey, groups, actionMap, canEdit, onSelect, onConnectRoute }) {
   const [posOverride, setPosOverride] = useState({})
 
   const rfNodes = useMemo(() => {
@@ -208,10 +255,11 @@ function TicketFlowCanvas({ flowNodes, validation, selectedKey, groups, canEdit,
         out.push({
           id: n.key,
           type: 'ticketNode',
-          position: posOverride[n.key] || { x: l * 340, y: i * 150 },
+          position: posOverride[n.key] || { x: l * 340, y: i * 172 },
           data: {
             n,
             index: i,
+            actionName: firstDeviceName(n, actionMap),
             gname: n.type === 'parallel'
               ? (n.sign_groups || []).map((gid) => groups.find((g) => g.id === gid)?.name).filter(Boolean).join('、')
               : groups.find((g) => g.id === n.group_id)?.name,
@@ -223,7 +271,7 @@ function TicketFlowCanvas({ flowNodes, validation, selectedKey, groups, canEdit,
       })
     })
     return out
-  }, [flowNodes, groups, validation, posOverride])
+  }, [flowNodes, groups, actionMap, validation, posOverride])
 
   const rfEdges = useMemo(() => {
     const keySet = new Set(flowNodes.map((n) => n.key))
@@ -325,6 +373,8 @@ export default function TicketFlowEdit() {
   const [publishing, setPublishing] = useState(false)
   const [initial, setInitial] = useState('')
   const [groups, setGroups] = useState([])
+  const [deviceList, setDeviceList] = useState([])
+  const [actionMap, setActionMap] = useState({})
   // 模板发布状态（版本历史抽屉展示用）：version / is_draft
   const [flowState, setFlowState] = useState({ version: 0, is_draft: true })
   // 版本历史抽屉
@@ -338,7 +388,18 @@ export default function TicketFlowEdit() {
 
   useEffect(() => {
     ticketApi.listGroups().then((res) => setGroups(res.items || [])).catch(() => {})
+    devicesApi.list().then((list) => setDeviceList(Array.isArray(list) ? list : [])).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    const ids = [...new Set(nodes.flatMap((n) => collectDeviceCfgs(n).map((c) => c.device_id)).filter(Boolean))]
+    ids.forEach((deviceId) => {
+      if (Object.prototype.hasOwnProperty.call(actionMap, deviceId)) return
+      devicesApi.listActions(deviceId)
+        .then((list) => setActionMap((m) => ({ ...m, [deviceId]: Array.isArray(list) ? list : [] })))
+        .catch(() => setActionMap((m) => (m[deviceId] ? m : { ...m, [deviceId]: [] })))
+    })
+  }, [nodes, actionMap])
 
   useEffect(() => { localStorage.setItem('ticketFlowView', viewMode) }, [viewMode])
 
@@ -860,6 +921,40 @@ export default function TicketFlowEdit() {
             addWarn(n.key, `${name}：发起节点（首处理节点）提交不走流转，封禁同步不会触发`)
           }
         }
+        const actions = Array.isArray(n.device_actions) ? n.device_actions : []
+        const checkDa = (da, label) => {
+          if (!da || typeof da !== 'object' || !Object.keys(da).length) return
+          if (n.type === 'parallel' || n.type === 'end') {
+            addErr(n.key, `${name}：会签节点与结束节点不能绑定设备动作`)
+          } else if (!da.device_id || !da.action_id) {
+            addErr(n.key, `${name}：${label}未选择设备或动作`)
+          } else if (deviceList.length) {
+            const dev = deviceList.find((d) => d.id === da.device_id)
+            if (!dev || !dev.enabled) addErr(n.key, `${name}：${label}绑定的设备不存在或已禁用`)
+            else if (actionMap[da.device_id]) {
+              const act = actionMap[da.device_id].find((a) => a.id === da.action_id)
+              if (!act || !act.enabled) addErr(n.key, `${name}：${label}绑定的动作不存在、未启用或不属于该设备`)
+            }
+          }
+          if (!da.judge_field) {
+            addErr(n.key, `${name}：${label}未选择判断组的是否字段`)
+          } else {
+            const prior = nodes
+              .filter((x) => x.key !== n.key && x.type !== 'end')
+              .flatMap((x) => flatFields(x.fields || []))
+            const jf = prior.find((f) => f.key === da.judge_field && ['select', 'switch'].includes(f.type))
+            if (!jf) addErr(n.key, `${name}：${label}的判断字段须是前面节点的下拉选择或是否开关`)
+            else {
+              const allowed = jf.type === 'switch' ? ['是', '否'] : (jf.options || []).map(String)
+              const jv = da.judge_value || '是'
+              if (allowed.length && !allowed.includes(String(jv))) addErr(n.key, `${name}：${label}的建议执行取值不是判断字段的可选项`)
+            }
+          }
+        }
+        actions.forEach((da, i) => checkDa(da, `第 ${i + 1} 个设备动作`))
+        if (actions.length && n.type !== 'parallel' && n.type !== 'end' && nodes.find((x) => x.type !== 'end')?.key === n.key) {
+          addWarn(n.key, `${name}：发起节点（首处理节点）提交不走流转，设备动作不会在发起时执行`)
+        }
       })
     }
 
@@ -875,7 +970,7 @@ export default function TicketFlowEdit() {
     }
 
     return { errors, warnings, nodeErrors, nodeWarnings }
-  }, [nodes, startGroups, groups])
+  }, [nodes, startGroups, groups, deviceList, actionMap])
 
   // 存在问题的节点 key（错误优先，其次提醒）：顶部摘要点击跳转用
   const issueKeys = useMemo(
@@ -1064,11 +1159,14 @@ export default function TicketFlowEdit() {
                         {n.type === 'parallel' && (
                           <span className="shrink-0 rounded bg-violet-500/15 px-1 py-0.5 text-[10px] font-medium text-violet-500">会签</span>
                         )}
+                        {collectDeviceCfgs(n).length > 0 && (
+                          <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-[10px] font-medium text-cyan-600">设备</span>
+                        )}
                       </span>
                       <span className="block truncate text-[11px] text-muted-foreground">
                         {n.type === 'end' ? '结束节点'
                           : n.type === 'parallel' ? `${(n.sign_groups || []).map((gid) => groupName(gid)).filter(Boolean).join('、') || '未绑定分组'} · 会签`
-                          : `${groupName(n.group_id) || '未绑定分组'} · ${(n.fields || []).length} 字段`}
+                          : `${groupName(n.group_id) || '未绑定分组'} · ${(n.fields || []).length} 字段${(() => { const an = firstDeviceName(n, actionMap); return an ? ` · ${an}` : '' })()}`}
                       </span>
                     </span>
                     {(invalid || warn) && (
@@ -1105,6 +1203,7 @@ export default function TicketFlowEdit() {
               validation={validation}
               selectedKey={selectedKey}
               groups={groups}
+              actionMap={actionMap}
               canEdit={canEdit}
               onSelect={setSelectedKey}
               onConnectRoute={connectRoute}
@@ -1180,7 +1279,7 @@ export default function TicketFlowEdit() {
                       value={selected.type === 'parallel' ? 'parallel' : 'task'}
                       onChange={(e) => {
                         if (e.target.value === 'parallel') {
-                          patchNode(selected.key, { type: 'parallel', group_id: '', sign_groups: [], finish_policy: 'all' })
+                          patchNode(selected.key, { type: 'parallel', group_id: '', sign_groups: [], finish_policy: 'all', device_actions: [] })
                         } else {
                           patchNode(selected.key, { type: 'task', sign_groups: undefined, finish_policy: undefined })
                         }
@@ -1614,6 +1713,110 @@ export default function TicketFlowEdit() {
                     )}
                   </div>
 
+                  {selected.type !== 'end' && selected.type !== 'parallel' && (
+                    <div className="mt-6">
+                      <div className="mb-3 flex items-center justify-between border-t border-border pt-5">
+                        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                          <Zap className="h-4 w-4 text-muted-foreground" />设备动作（{(selected.device_actions || []).length}）
+                        </div>
+                        {canEdit && (
+                          <Button size="sm" variant="secondary" onClick={() => patchNode(selected.key, {
+                            device_actions: [...(selected.device_actions || []), { device_id: '', action_id: '', judge_field: '', judge_value: '是' }],
+                          })}>
+                            <Plus className="mr-1 h-3.5 w-3.5" />添加动作
+                          </Button>
+                        )}
+                      </div>
+                      {!(selected.device_actions || []).length ? (
+                        <div className="rounded-md border border-dashed border-border py-4 text-center text-sm text-muted-foreground">
+                          未添加设备动作
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {(selected.device_actions || []).map((da, di) => {
+                            const enabledDevices = deviceList.filter((d) => d.enabled)
+                            const actions = (da.device_id && actionMap[da.device_id]) || []
+                            const enabledActions = actions.filter((a) => a.enabled)
+                            const picked = enabledActions.find((a) => a.id === da.action_id) || actions.find((a) => a.id === da.action_id)
+                            let schema = []
+                            if (picked) {
+                              try { schema = JSON.parse(picked.params_schema || '[]') } catch { schema = [] }
+                              if (!Array.isArray(schema)) schema = []
+                            }
+                            const patchDa = (patch) => patchNode(selected.key, {
+                              device_actions: (selected.device_actions || []).map((x, i) => (i === di ? { ...x, ...patch } : x)),
+                            })
+                            return (
+                              <div key={di} className="rounded-md border border-border p-4">
+                                <div className="mb-3 flex items-center gap-2">
+                                  <span className="text-xs font-medium text-muted-foreground">动作 {di + 1}</span>
+                                  <div className="flex-1" />
+                                  {canEdit && (
+                                    <button type="button" className="flex items-center gap-1 text-xs font-medium text-destructive"
+                                      onClick={() => patchNode(selected.key, {
+                                        device_actions: (selected.device_actions || []).filter((_, i) => i !== di),
+                                      })}>
+                                      <Trash2 className="h-3.5 w-3.5" />删除
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div>
+                                    <label className={labelCls}>设备<span className="text-red-500">*</span></label>
+                                    <CompactSelect size="lg" block disabled={!canEdit} value={da.device_id || ''}
+                                      onChange={(e) => patchDa({ device_id: e.target.value ? Number(e.target.value) : '', action_id: '' })}>
+                                      <option value="">选择已启用的设备</option>
+                                      {enabledDevices.map((d) => (
+                                        <option key={d.id} value={d.id}>{d.name}（{d.type}{d.vendor ? ` · ${d.vendor}` : ''}）</option>
+                                      ))}
+                                    </CompactSelect>
+                                  </div>
+                                  <div>
+                                    <label className={labelCls}>动作<span className="text-red-500">*</span></label>
+                                    <CompactSelect size="lg" block disabled={!canEdit || !da.device_id} value={da.action_id || ''}
+                                      onChange={(e) => patchDa({ action_id: e.target.value ? Number(e.target.value) : '' })}>
+                                      <option value="">{da.device_id ? '选择已启用的动作' : '请先选择设备'}</option>
+                                      {enabledActions.map((a) => (
+                                        <option key={a.id} value={a.id}>{a.name}（{a.action_type}）</option>
+                                      ))}
+                                    </CompactSelect>
+                                  </div>
+                                </div>
+                                {(() => {
+                                  const judgeFields = nodes
+                                    .filter((x) => x.key !== selected.key && x.type !== 'end')
+                                    .flatMap((x) => flatFields(x.fields || [])
+                                      .filter((f) => f.type === 'switch')
+                                      .map((f) => ({ ...f, nodeName: x.name || x.key })))
+                                  return (
+                                    <div className="mt-3">
+                                      <label className={labelCls}>判断组的是否字段<span className="text-red-500">*</span></label>
+                                      <CompactSelect size="lg" block disabled={!canEdit} value={da.judge_field || ''}
+                                        onChange={(e) => patchDa({ judge_field: e.target.value, judge_value: '是' })}>
+                                        <option value="">选择前面节点的是否开关</option>
+                                        {judgeFields.map((f) => (
+                                          <option key={`${f.nodeName}-${f.key}`} value={f.key}>{f.nodeName} · {f.label || f.key}</option>
+                                        ))}
+                                        {da.judge_field && !judgeFields.some((f) => f.key === da.judge_field) && (
+                                          <option value={da.judge_field}>{da.judge_field}（已失效）</option>
+                                        )}
+                                      </CompactSelect>
+                                    </div>
+                                  )
+                                })()}
+                                <p className={`${hintCls} mt-2`}>
+                                  {schema.length
+                                    ? `判断组选「是」后，执行组填写：${schema.map((p) => `${p.description || p.name}${p.required ? '' : '（选填）'}`).join('、')}`
+                                    : (picked ? '判断组选「是」后直接调用，无需填写参数。选「否」则不调用。' : '判断组选「是」后执行组填写参数并调用；选「否」则不调用。')}
+                                </p>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* 流转路由 */}
                   <div>
                     <div className="mb-3 flex items-center justify-between border-t border-border pt-5">
@@ -1765,6 +1968,7 @@ export default function TicketFlowEdit() {
                       </div>
                     )}
                   </div>
+
 
                   {/* 节点动作 · 封禁同步（可选）：提交时命中触发条件，把封禁信息同步到工作台已封禁 IP 列表 */}
                   {selected.type !== 'parallel' && (() => {
