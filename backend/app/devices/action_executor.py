@@ -74,13 +74,34 @@ def record_device_call(
 
 def _build_request(device: Device, action: DeviceAction, params: dict[str, Any]):
     """统一构造设备调用的 (method, url, headers, auth, body)，供各链路复用。"""
+    # schema 默认值 / 取值映射：路径占位符与请求体模板共用
+    # （调用方未传参时用默认值回填，避免占位符原样下发导致设备 4xx）
+    defaults: dict[str, Any] = {}
+    value_maps: dict[str, dict] = {}
+    try:
+        for _p in json.loads(action.params_schema or "[]"):
+            if not isinstance(_p, dict):
+                continue
+            _name = _p.get("name")
+            if not _name:
+                continue
+            if _p.get("default") not in (None, ""):
+                defaults[_name] = _p["default"]
+            if isinstance(_p.get("map_values"), dict):
+                value_maps[_name] = _p["map_values"]
+    except Exception:  # noqa: BLE001
+        logger.warning("解析动作 params_schema 默认值失败，忽略: action_id=%s", action.id)
+
     # 1) 拼接 URL（支持 {param} 路径参数占位符：从 params 取值替换并剔除，
-    #    剩余参数继续按 GET query / POST body 传递；无占位符的动作行为不变）
+    #    调用方未传时回填 schema 默认值；剩余参数继续按 GET query / POST body
+    #    传递；无占位符的动作行为不变）
     base_url = (device.api_url or "").rstrip("/")
     api_path = (action.api_path or "").lstrip("/")
     if "{" in api_path:
         for _k in re.findall(r"\{(\w+)\}", api_path):
             _v = params.pop(_k, None)
+            if _v is None or str(_v) == "":
+                _v = defaults.get(_k)
             if _v is not None and str(_v) != "":
                 api_path = api_path.replace(f"{{{_k}}}", _quote(str(_v), safe=""))
     url = f"{base_url}/{api_path}" if api_path else base_url
@@ -121,21 +142,6 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
         # 避免残留字面量导致 JSON 解析失败、退化成字符串请求体。
         # map_values 用于设备语义与平台约定不一致时的取值映射，
         # 例如平台用 duration=0 表示永久，而安博通要求 -1，则声明 {"0": "-1"}。
-        defaults: dict[str, Any] = {}
-        value_maps: dict[str, dict] = {}
-        try:
-            for _p in json.loads(action.params_schema or "[]"):
-                if not isinstance(_p, dict):
-                    continue
-                _name = _p.get("name")
-                if not _name:
-                    continue
-                if _p.get("default") not in (None, ""):
-                    defaults[_name] = _p["default"]
-                if isinstance(_p.get("map_values"), dict):
-                    value_maps[_name] = _p["map_values"]
-        except Exception:  # noqa: BLE001
-            logger.warning("解析动作 params_schema 默认值失败，忽略: action_id=%s", action.id)
         merged = dict(defaults)
         for k, v in params.items():
             # 空值视为「未填写」：有默认值时保留默认值，避免把默认值覆盖成空串；

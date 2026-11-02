@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Ban,
+  ShieldBan,
   ScrollText,
   User,
   ChevronDown,
@@ -32,6 +33,7 @@ import { workflows as workflowsApi } from '../api/client'
 import banWorkflowApi from '../api/banWorkflow'
 import BanApprovals from './ban/BanApprovals'
 import BanWorkbench from './ban/BanWorkbench'
+import AnbotongBlacklist from './ban/AnbotongBlacklist'
 import BanWorkflowInstances from './ban/BanWorkflowInstances'
 import { inputBaseCls } from '../components/property/FormControls'
 import { isAdmin } from '../utils/permissions'
@@ -429,12 +431,13 @@ function ApprovalCard({ item, onApprove, onReject, onDelete, busy }) {
 // ============ 工作台主组件 ============
 function ApprovalCenter() {
   const [searchParams, setSearchParams] = useSearchParams()
-  // 支持 URL ?tab=banned / all 直达；默认为统一审批中心。
-  // 「已封禁 IP」为仅管理员功能：非 admin 强制落到审批中心，避免其访问管理员专属数据。
+  // 支持 URL ?tab=banned / blacklist / all 直达；默认为统一审批中心。
+  // 「已封禁 IP」「安博通黑名单」为仅管理员功能：非 admin 强制落到审批中心，避免其访问管理员专属数据。
   const isAdminUser = isAdmin()
   const requestedTab = searchParams.get('tab') === 'banned' ? 'banned'
-    : searchParams.get('tab') === 'all' ? 'all' : 'approval'
-  const initialTab = (requestedTab === 'banned' && !isAdminUser) ? 'approval' : requestedTab
+    : searchParams.get('tab') === 'blacklist' ? 'blacklist'
+      : searchParams.get('tab') === 'all' ? 'all' : 'approval'
+  const initialTab = ((requestedTab === 'banned' || requestedTab === 'blacklist') && !isAdminUser) ? 'approval' : requestedTab
 
   const [items, setItems] = useState([])
   const [stats, setStats] = useState(null)
@@ -461,6 +464,7 @@ function ApprovalCenter() {
     setQuickFilter('')
     const params = {}
     if (newTab === 'banned') params.tab = 'banned'
+    else if (newTab === 'blacklist') params.tab = 'blacklist'
     else if (newTab === 'all') params.tab = 'all'
     setSearchParams(params, { replace: true })
   }, [setSearchParams])
@@ -724,6 +728,20 @@ function ApprovalCenter() {
               )}
             </button>
           )}
+          {isAdmin() && (
+            <button
+              type="button"
+              onClick={() => switchTab('blacklist')}
+              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
+                tab === 'blacklist'
+                  ? 'border-primary text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <ShieldBan className="h-4 w-4" />
+              安博通黑名单
+            </button>
+          )}
           <button
             type="button"
             onClick={() => switchTab('all')}
@@ -739,11 +757,14 @@ function ApprovalCenter() {
         </div>
 
         {/* ====== 审批中心 Tab：统一审批（封禁工单 + 工作流人工审批） ====== */}
-        {tab === 'approval' || (tab === 'banned' && !isAdmin()) ? (
+        {tab === 'approval' || ((tab === 'banned' || tab === 'blacklist') && !isAdmin()) ? (
           <BanApprovals embedded />
         ) : tab === 'banned' ? (
           /* ====== 已封禁 IP Tab：嵌入封禁工作台（新封禁工作流数据，仅管理员） ====== */
           <BanWorkbench embedded />
+        ) : tab === 'blacklist' ? (
+          /* ====== 安博通黑名单 Tab：设备侧实时黑名单（分页 + IP 精确查询，仅管理员） ====== */
+          <AnbotongBlacklist embedded />
         ) : (
           <>
             {/* ====== 全部历史 Tab：统一历史（封禁实例 + 审批历史） ====== */}

@@ -351,16 +351,21 @@ function DeviceManagement() {
     }
   }
 
-  const handleActionDelete = async (action) => {
+  const handleActionDelete = async (action, deviceId) => {
     const ok = await confirm({
       message: `确定删除动作「${action.name}」吗？`,
       variant: 'danger',
       confirmText: '确定删除',
     })
     if (!ok) return
+    const did = deviceId || actDeviceId
+    if (!did) {
+      toast.error('未找到动作所属设备，请刷新页面后重试')
+      return
+    }
     try {
-      await devicesApi.removeAction(actDeviceId, action.id)
-      await loadActions(actDeviceId)
+      await devicesApi.removeAction(did, action.id)
+      await loadActions(did)
       await loadDevices()
       toast.success('动作已删除')
     } catch (err) {
@@ -368,12 +373,19 @@ function DeviceManagement() {
     }
   }
 
-  // 切换动作启用
-  const handleToggleAction = async (action) => {
+  // 切换动作启用：deviceId 由调用方显式传入（分栏/卡片视图的动作列表不经过
+  // actDeviceId，否则未打开过动作弹窗时 actDeviceId 为 null，会拼出
+  // /devices/null/actions/{id}/toggle 导致「device_id：必须是整数」）
+  const handleToggleAction = async (action, deviceId) => {
+    const did = deviceId || actDeviceId
+    if (!did) {
+      toast.error('未找到动作所属设备，请刷新页面后重试')
+      return
+    }
     setTogglingActionId(action.id)
     try {
-      await devicesApi.toggleAction(actDeviceId, action.id)
-      await loadActions(actDeviceId)
+      await devicesApi.toggleAction(did, action.id)
+      await loadActions(did)
       toast.success(`动作「${action.name}」已${action.enabled ? '禁用' : '启用'}`)
     } catch (err) {
       toast.error(`切换失败：${err.message || err}`)
@@ -411,10 +423,10 @@ function DeviceManagement() {
     setTestDrawerOpen(true)
   }
 
-  // 动作历史
-  const openActionHistory = (action) => {
+  // 动作历史：deviceId 由调用方显式传入（同 handleToggleAction，不依赖 actDeviceId）
+  const openActionHistory = (action, deviceId) => {
     setHistoryAction(action)
-    setHistoryDeviceId(actDeviceId)
+    setHistoryDeviceId(deviceId || actDeviceId)
     setHistoryOpen(true)
   }
 
@@ -1063,10 +1075,10 @@ function DeviceManagement() {
                             actions={actionsMap[selectedDevice.id] || []}
                             loading={loadingActions}
                             onEdit={(a) => handleEditAction(a, selectedDevice.id)}
-                            onDelete={handleActionDelete}
+                            onDelete={(a) => handleActionDelete(a, selectedDevice.id)}
                             onTest={(a) => openActionTestDrawer(a, selectedDevice.id)}
-                            onToggle={handleToggleAction}
-                            onHistory={openActionHistory}
+                            onToggle={(a) => handleToggleAction(a, selectedDevice.id)}
+                            onHistory={(a) => openActionHistory(a, selectedDevice.id)}
                             togglingActionId={togglingActionId}
                           />
                         </div>
@@ -1199,11 +1211,11 @@ function DeviceManagement() {
                           setActDeviceId(dev.id)
                           handleEditAction(a, dev.id)
                         }}
-                        onDeleteAction={handleActionDelete}
+                        onDeleteAction={(a) => handleActionDelete(a, dev.id)}
                         onTestAction={(a) => openActionTestDrawer(a, dev.id)}
-                        onToggleAction={handleToggleAction}
+                        onToggleAction={(a) => handleToggleAction(a, dev.id)}
                         onNewAction={() => handleNewAction(dev.id)}
-                        onActionHistory={openActionHistory}
+                        onActionHistory={(a) => openActionHistory(a, dev.id)}
                         togglingActionId={togglingActionId}
                         checked={checkIds.includes(dev.id)}
                         onToggleCheck={toggleCheck}

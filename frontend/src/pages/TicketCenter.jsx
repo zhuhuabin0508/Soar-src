@@ -232,11 +232,10 @@ export default function TicketCenter() {
   )
   // 条件路由锁定（与工单详情页一致）：字段值命中路由条件时去向强制为条件路由
   //（按钮禁用不可改选，后端 _resolve_route 同步强制校验）；
-  // 条件不再命中时清空残留（多路由回到手动选择）
+  // 无建议时一律清空：切换模板后残留旧模板的去向会被后端白名单拒绝
   useEffect(() => {
-    if (routeSuggested) setRouteTo(routeSuggested)
-    else if (routeOptions.length > 1) setRouteTo('')
-  }, [routeSuggested, routeOptions.length])
+    setRouteTo(routeSuggested || '')
+  }, [currentFlow?.id, routeSuggested]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // 引用联动字段选项：发起表单仅有本次填写值（与后端 create_ticket 口径一致）
   const refOpts = useMemo(
@@ -325,7 +324,7 @@ export default function TicketCenter() {
       priority: ticketPriority,
       field_values: submitValues,
       // 条件路由命中 → 强制走条件去向（与后端 _resolve_route 一致，发起人不可改选）
-      route_to: routeSuggested || routeTo || '',
+      route_to: routeSuggested || (routeOptions.length > 1 ? routeTo : '') || '',
       comment: comment.trim() || null,
       related_alert_id: alertPrefill?.alert?.id || null,
       related_alert_uuid: alertPrefill?.alert?.uuid || null,
@@ -862,7 +861,9 @@ export default function TicketCenter() {
                             </span>
                           ) : (
                             <>
-                              <input type="number" min="0" className={fieldCls(f)} placeholder="如：30"
+                              <input type="number" min="0"
+                                className={`${inputBaseCls} min-w-0 flex-1 ${missingKeys.includes(f.key) ? '!border-destructive ring-1 !ring-destructive' : ''}`}
+                                placeholder="如：30"
                                 value={parts.num}
                                 onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, num: e.target.value }))} />
                               <div className="w-24 shrink-0">

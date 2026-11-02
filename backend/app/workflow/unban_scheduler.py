@@ -25,15 +25,16 @@ _SCAN_INTERVAL_SECONDS = 60
 def _unban_device_best_effort(db, record: BanRecord) -> tuple[str, bool]:
     """到期解封时联动设备解封（best-effort，失败只告警不影响平台解封）。
 
-    仅处理「导入封禁 / 手动封禁」且已记录封堵设备的记录（本平台真实下发过），
-    工单/自动审批记录只落平台数据，不对设备发无效解封请求。
+    仅处理「导入封禁 / 手动封禁 / 工单同步」且已记录封堵设备的记录
+    （本平台真实下发过；工单封禁同步自联动安博通下发后，设备下发成功才落生效中
+    记录并记录实际设备名），自动/审批记录只落平台数据，不对设备发无效解封请求。
 
     Returns:
         ``(device_name, unblocked)``；未联动设备时返回 ``("", False)``。
     """
     if not (record.ban_device or "").strip():
         return "", False
-    if (record.ban_source or "") not in ("import", "manual"):
+    if (record.ban_source or "") not in ("import", "manual", "ticket"):
         return "", False
     from app.devices import ban_target
 

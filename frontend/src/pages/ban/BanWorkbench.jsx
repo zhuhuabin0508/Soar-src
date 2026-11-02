@@ -1,4 +1,4 @@
-// 封禁工作台（已封禁 IP 模块）：状态筛选 + 来源标识 + 手动封禁 + 解封 + 删除（admin）
+// 封禁工作台（已封禁 IP 模块）：状态筛选 + 来源标识 + 手动封禁 + 解封 + 删除/批量删除（admin）
 // + CSV/Excel 导入（仅入库待同步）+ 同步安博通封禁（单条/批量，资产匹配预览后确认）
 // + 导出（全部/当前筛选/选中 + 字段选择）
 // 详情含封禁方案、智能体研判结论、审批记录、关联告警（点击跳转告警列表按 IP 过滤）
@@ -11,7 +11,7 @@ import {
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
 import { Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect } from '../../components/ui'
-import { Modal } from '../../components/Dialog'
+import { Modal, Drawer } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission, isAdmin, guardNavPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
@@ -33,7 +33,10 @@ const SOURCE_VARIANT = {
   auto: 'danger', approval: 'warning', manual: 'info', chat: 'neutral', ticket: 'primary', import: 'info',
 }
 // 封禁时长快捷天数（天；也支持小数自定义输入，如 0.5 = 12 小时）
-const DURATION_PRESETS = [1, 7, 30, 90, 365]
+// 注意：安博通黑名单生命周期上限 30 天（2592000 秒），超限会被设备静默丢弃，
+// 因此快捷项最高只提供 30 天，更长周期请勾选「永久」。
+const MAX_BAN_DAYS = 30
+const DURATION_PRESETS = [1, 7, 14, 30]
 // 导出可选字段（与后端 _WB_EXPORT_FIELDS 对应）
 const EXPORT_FIELDS = [
   { key: 'ip', label: 'IP地址' }, { key: 'ban_level', label: '封禁等级' },
@@ -71,6 +74,8 @@ const fmtRemaining = (ms) => {
   if (h > 0) return `${h}小时${m}分`
   return `${m}分钟`
 }
+// 安博通黑名单面板已拆分为独立 Tab 页（pages/ban/AnbotongBlacklist.jsx）：
+// 常量、分页/自动刷新/精确查询逻辑随组件整体迁移，本文件不再保留。
 const riskVariant = (level) => (
   { 严重: 'danger', 高危: 'danger', 中危: 'warning', 低危: 'info' }[level] || 'neutral'
 )
@@ -163,11 +168,23 @@ export default function BanWorkbench({ embedded = false }) {
   })
   const [manualSubmitting, setManualSubmitting] = useState(false)
   const [manualIpTouched, setManualIpTouched] = useState(false)
+  const [manualReasonTouched, setManualReasonTouched] = useState(false)
   // 即时校验：封禁目标（单 IP / CIDR / 范围 / 多值，不允许通配）
   const manualIpError = validateBanTarget(manualForm.ip, '封禁目标')
+  // 即时校验：封禁原因必填
+  const manualReasonError = manualForm.reason.trim() ? '' : '请填写封禁原因'
+  // 打开手动封禁弹窗：重置校验状态，避免上次残留的报错提示
+  const openManualBan = () => {
+    setManualIpTouched(false)
+    setManualReasonTouched(false)
+    setManualOpen(true)
+  }
 
   // 选择（批量同步）
   const [selected, setSelected] = useState([])
+  // 批量删除（仅 admin）
+  const [batchDeleteBusy, setBatchDeleteBusy] = useState(false)
+  const [batchDeleteResult, setBatchDeleteResult] = useState(null)
   // 同步安博通封禁：预览 / 结果
   const [syncPreview, setSyncPreview] = useState(null)
   const [syncPreviewLoading, setSyncPreviewLoading] = useState(false)
@@ -187,6 +204,9 @@ export default function BanWorkbench({ embedded = false }) {
   const [exporting, setExporting] = useState(false)
   const [exportScope, setExportScope] = useState('filtered')
   const [exportFields, setExportFields] = useState([])
+
+  // 安博通黑名单面板已拆分为独立 Tab 页（pages/ban/AnbotongBlacklist.jsx）：
+  // 状态、分页/自动刷新/精确查询逻辑随组件整体迁移，本文件不再保留。
 
   const load = useCallback(() => {
     setLoading(true)
@@ -218,9 +238,10 @@ export default function BanWorkbench({ embedded = false }) {
     setSubmitting(true)
     banWorkflowApi.unbanIp(unbanTarget.id, unbanReason.trim())
       .then(() => {
-        toast.success(`IP ${unbanTarget.ip} 已解封`)
+        toast.success(`IP ${unbanTarget.ip} 已解封（已同步安博通阻断器）`)
         setUnbanTarget(null); setUnbanReason('')
         load()
+        // 设备侧黑名单展示在独立 Tab 页（AnbotongBlacklist），进入该 Tab 时自行拉取
         if (detail && detail.id === unbanTarget.id) openDetail(detail.id)
       })
       .catch((e) => toast.error(e.message || '解封失败'))
@@ -229,14 +250,19 @@ export default function BanWorkbench({ embedded = false }) {
 
   // 手动发起封禁
   const doManualBan = () => {
-    if (!manualForm.ip.trim()) { toast.error('请填写目标 IP'); return }
+    if (!manualForm.ip.trim()) { setManualIpTouched(true); toast.error('请填写目标 IP'); return }
     const ipMsg = validateBanTarget(manualForm.ip, '封禁目标')
     if (ipMsg) { setManualIpTouched(true); toast.error(ipMsg); return }
-    if (!manualForm.reason.trim()) { toast.error('请填写封禁原因'); return }
+    if (!manualForm.reason.trim()) { setManualReasonTouched(true); toast.error('请填写封禁原因'); return }
     // Ban duration in days (decimals allowed, e.g. 0.5 = 12h); permanent bans skip duration
     const days = Number(manualForm.ban_duration_days)
     if (!manualForm.is_permanent && (!Number.isFinite(days) || days <= 0)) {
       toast.error('请填写有效的封禁时长（天）')
+      return
+    }
+    // 安博通黑名单生命周期上限 30 天，超限设备会静默丢弃（不实际建条目）
+    if (!manualForm.is_permanent && days > MAX_BAN_DAYS) {
+      toast.error(`封禁时长不能超过 ${MAX_BAN_DAYS} 天（安博通黑名单上限），更长周期请勾选「永久封禁」`)
       return
     }
     setManualSubmitting(true)
@@ -249,11 +275,13 @@ export default function BanWorkbench({ embedded = false }) {
       region: manualForm.region.trim(),
     })
       .then((rec) => {
-        toast.success(`IP ${rec.ip} 已下发封禁（手动封禁）`)
+        toast.success(`IP ${rec.ip} 已下发封禁（已同步安博通阻断器）`)
         setManualOpen(false)
         setManualIpTouched(false)
+        setManualReasonTouched(false)
         setManualForm({ ip: '', ban_level: 'medium', ban_duration_days: '1', is_permanent: false, reason: '', region: '' })
         load()
+        // 设备侧黑名单展示在独立 Tab 页（AnbotongBlacklist），进入该 Tab 时自行拉取
       })
       .catch((e) => toast.error(e.message || '手动封禁失败'))
       .finally(() => setManualSubmitting(false))
@@ -274,6 +302,32 @@ export default function BanWorkbench({ embedded = false }) {
       if (detail && detail.id === r.id) setDetail(null)
     } catch (e) {
       toast.error(e.message || '删除失败')
+    }
+  }
+
+  // 批量删除封禁记录（仅 admin）：逐条独立处理，结果弹窗展示成功/失败明细
+  const doBatchDelete = async () => {
+    const ids = Array.from(new Set(selected))
+    if (!ids.length) return
+    const ok = await confirm({
+      title: `批量删除 ${ids.length} 条封禁记录`,
+      message: '生效中且已下发设备的记录会先联动设备解封，解封失败将保留该记录（避免设备侧黑名单残留）；操作将记录审计日志。确定批量删除？',
+      variant: 'danger',
+      confirmText: '批量删除',
+    })
+    if (!ok) return
+    setBatchDeleteBusy(true)
+    try {
+      const res = await banWorkflowApi.batchDeleteBannedIps(ids)
+      setBatchDeleteResult(res)
+      setSelected([])
+      load()
+      if (res.failed > 0) toast.warning(`成功 ${res.success} 条，失败 ${res.failed} 条（失败记录已保留）`)
+      else toast.success(`批量删除成功 ${res.success} 条`)
+    } catch (e) {
+      toast.error(e.message || '批量删除失败')
+    } finally {
+      setBatchDeleteBusy(false)
     }
   }
 
@@ -414,7 +468,9 @@ export default function BanWorkbench({ embedded = false }) {
 
   const columns = [
     {
+      // 主键识别列冻结在左侧：超宽表格横向滚动时 IP 始终可见（勾选列宽 44px）
       key: 'ip', header: 'IP', width: '150px',
+      sticky: 'left', stickyOffset: canEdit || admin ? 44 : 0,
       render: (r) => (
         <button className="font-mono text-[13px] font-medium text-foreground transition hover:text-primary" onClick={(e) => { e.stopPropagation(); openDetail(r.id) }}>
           {r.ip}
@@ -433,7 +489,7 @@ export default function BanWorkbench({ embedded = false }) {
     { key: 'status', header: '当前状态', width: '95px', render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status_label}</Badge> },
     { key: 'ban_level', header: '封禁等级', width: '85px', render: (r) => <span>{LEVEL_LABELS[r.ban_level] || r.ban_level || '--'}</span> },
     {
-      key: 'ban_duration', header: '封禁时长', width: '100px',
+      key: 'ban_duration', header: '封禁时长', width: '100px', numeric: true,
       render: (r) => (
         <span className="font-mono text-[13px] text-muted-foreground">
           {fmtDuration(r.ban_duration, r.is_permanent)}
@@ -444,19 +500,22 @@ export default function BanWorkbench({ embedded = false }) {
       key: 'reason', header: '封禁原因', width: '210px',
       render: (r) => <span className="block max-w-[200px] truncate text-muted-foreground" title={r.reason}>{r.reason || '--'}</span>,
     },
-    { key: 'created_at', header: '开始封禁时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
-    { key: 'expire_time', header: '解封时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
+    // 时间戳 / 数值列统一右对齐 + 等宽数字，便于垂直扫读比较
+    { key: 'created_at', header: '开始封禁时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
+    { key: 'expire_time', header: '解封时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
     {
-      key: 'remaining', header: '剩余时长', width: '100px',
+      key: 'remaining', header: '剩余时长', width: '100px', numeric: true,
       render: (r) => (
         r.status === 'active'
           ? <span className={`font-mono text-[13px] ${r.remaining_ms != null && r.remaining_ms < 3600000 ? 'text-warning' : ''}`}>{r.is_permanent ? '永久' : fmtRemaining(r.remaining_ms)}</span>
           : <span className="text-muted-foreground">--</span>
       ),
     },
-    { key: 'alert_count', header: '关联告警', width: '85px', render: (r) => <span className="tabular-nums">{r.alert_count}</span> },
+    { key: 'alert_count', header: '关联告警', width: '85px', numeric: true, render: (r) => <span className="tabular-nums">{r.alert_count}</span> },
     {
+      // 操作列冻结在右侧：滚动浏览长行时操作按钮不被挤出视野
       key: 'actions', header: '操作', width: canEdit && admin ? '180px' : (canEdit || admin ? '150px' : '70px'),
+      sticky: 'right',
       render: (r) => (
         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-primary" title="详情" onClick={() => openDetail(r.id)}>
@@ -486,6 +545,8 @@ export default function BanWorkbench({ embedded = false }) {
     },
   ]
 
+  // 安博通黑名单面板列已随组件迁移至 pages/ban/AnbotongBlacklist.jsx
+
   const t = detail && detail.id ? detail : null
 
   // 主体内容（embedded 模式下直接渲染，不套页面容器）
@@ -498,15 +559,29 @@ export default function BanWorkbench({ embedded = false }) {
             <option value="">全部状态</option>
             {STATUS_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
           </CompactSelect>
-          <input
-            className={`${inputBaseCls} h-[34px] w-[220px]`}
-            placeholder="IP 关键词"
-            value={ip}
-            onChange={(e) => { setIp(e.target.value); setPage(1) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') load() }}
-          />
+          {/* IP 搜索框：输入即实时过滤（后端模糊匹配 IP/标识/原因），Enter/清空均可 */}
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              className={`${inputBaseCls} h-[34px] w-[220px] pl-8 ${ip ? 'pr-8' : ''}`}
+              placeholder="搜索 IP / 标识 / 原因"
+              value={ip}
+              onChange={(e) => { setIp(e.target.value); setPage(1) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') load() }}
+            />
+            {ip && (
+              <button
+                type="button"
+                title="清空搜索"
+                onClick={() => { setIp(''); setPage(1) }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+              >
+                <XCircle className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           {canEdit && (
-            <Button size="sm" variant="primary" onClick={() => { setManualIpTouched(false); setManualOpen(true) }}>
+            <Button size="sm" variant="primary" onClick={openManualBan}>
               <Plus className="h-3.5 w-3.5" /> 手动封禁
             </Button>
           )}
@@ -525,16 +600,30 @@ export default function BanWorkbench({ embedded = false }) {
               <RotateCw className="h-3.5 w-3.5" /> 刷新
             </Button>
           )}
-          {canEdit && pendingSelected.length > 0 && (
-            <div className="ml-auto flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-1.5">
+          {selected.length > 0 ? (
+            <div className="ml-auto flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-1.5">
               <span className="text-xs text-muted-foreground">
-                已选 {selected.length} 项，其中待同步 <span className="font-medium text-warning">{pendingSelected.length}</span> 条
+                已选 {selected.length} 项
+                {pendingSelected.length > 0 && (
+                  <>，其中待同步 <span className="font-medium text-warning">{pendingSelected.length}</span> 条</>
+                )}
               </span>
-              <Button size="sm" variant="primary" onClick={() => openSyncPreview(pendingSelected.map((r) => r.id))}>
-                <ShieldCheck className="h-3.5 w-3.5" /> 同步安博通封禁（{pendingSelected.length}）
-              </Button>
+              {canEdit && pendingSelected.length > 0 && (
+                <Button size="sm" variant="primary" onClick={() => openSyncPreview(pendingSelected.map((r) => r.id))}>
+                  <ShieldCheck className="h-3.5 w-3.5" /> 同步安博通封禁（{pendingSelected.length}）
+                </Button>
+              )}
+              {admin && (
+                <Button size="sm" variant="danger" loading={batchDeleteBusy} onClick={doBatchDelete}>
+                  <Trash2 className="h-3.5 w-3.5" /> 批量删除（{selected.length}）
+                </Button>
+              )}
               <Button size="sm" variant="ghost" onClick={() => setSelected([])}>取消选择</Button>
             </div>
+          ) : (
+            <span className="ml-auto text-xs text-muted-foreground">
+              共 <span className="font-medium tabular-nums text-foreground">{list.total}</span> 条记录
+            </span>
           )}
         </div>
       </Card>
@@ -553,6 +642,13 @@ export default function BanWorkbench({ embedded = false }) {
           emptyText="暂无封禁记录"
           emptyDescription="工作流自动封禁、审批通过或导入的 IP 将出现在这里；导入记录需手动同步安博通封禁"
           emptyIcon={Inbox}
+          emptyAction={status || ip ? (
+            <Button size="sm" variant="ghost" onClick={() => { setStatus(''); setIp(''); setPage(1) }}>清除筛选条件</Button>
+          ) : canEdit ? (
+            <Button size="sm" variant="primary" onClick={openManualBan}>
+              <Plus className="h-3.5 w-3.5" /> 手动发起封禁
+            </Button>
+          ) : undefined}
         />
         <div className="px-4">
           <Pagination page={page} pageSize={pageSize} total={list.total} onPageChange={setPage}
@@ -560,11 +656,10 @@ export default function BanWorkbench({ embedded = false }) {
         </div>
       </Card>
 
-      {/* 详情抽屉 */}
-      <Modal
+      {/* 详情抽屉：侧边滑出保留列表上下文（筛选/翻页状态不丢失），内容按信息亲密度分区 */}
+      <Drawer
         open={!!detail}
-        size="lg"
-        maxWidth="max-w-3xl"
+        width="w-[680px]"
         title={t ? `封禁记录 #${t.id} · ${t.ip}` : '封禁详情'}
         onClose={() => setDetail(null)}
         footer={(
@@ -581,61 +676,78 @@ export default function BanWorkbench({ embedded = false }) {
         {detailLoading || !t ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…</div>
         ) : (
-          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
-            <div className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-lg border border-border bg-muted p-3 text-sm lg:grid-cols-3">
-              <div><span className="text-muted-foreground">状态：</span><Badge variant={STATUS_VARIANT[t.status] || 'neutral'}>{t.status_label}</Badge></div>
-              <div><span className="text-muted-foreground">封禁方式：</span><Badge variant={SOURCE_VARIANT[t.ban_source] || 'neutral'}>{t.ban_source_label || t.ban_source || '--'}</Badge></div>
-              <div><span className="text-muted-foreground">风险等级：</span><Badge variant={riskVariant(t.risk_level)}>{t.risk_level || '未知'}</Badge></div>
-              <div><span className="text-muted-foreground">封禁等级：</span>{LEVEL_LABELS[t.ban_level] || t.ban_level || '--'}</div>
-              <div><span className="text-muted-foreground">封禁时长：</span>{fmtDuration(t.ban_duration, t.is_permanent)}</div>
-              <div><span className="text-muted-foreground">开始封禁时间：</span><span className="font-mono text-xs">{fmtTime(t.created_at)}</span></div>
-              <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs">{t.is_permanent ? '永久' : fmtTime(t.expire_time)}</span></div>
-              <div><span className="text-muted-foreground">封禁设备：</span>{t.ban_device || '--'}</div>
-              {t.ticket_id && (
-                <div>
-                  <span className="text-muted-foreground">来源工单：</span>
-                  <button
-                    className="inline-flex items-center gap-1 text-primary transition hover:underline"
-                    onClick={() => {
-                      if (!guardNavPermission('ticket', 'view', '工单详情')) return
-                      setDetail(null) // 先关详情弹窗再跳转，保证点击必有反馈
-                      navigate(`/tickets/${t.ticket_id}`)
-                    }}
-                  >
-                    <ExternalLink className="h-3 w-3" /> {t.ticket_no || `#${t.ticket_id}`}
-                  </button>
-                </div>
-              )}
-              <div><span className="text-muted-foreground">剩余时长：</span>{t.is_permanent ? '永久' : fmtRemaining(t.remaining_ms)}</div>
-              <div><span className="text-muted-foreground">封禁工具记录：</span><span className="font-mono text-xs">{t.record_id || '--'}</span></div>
-              {t.unban_time && <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs">{fmtTime(t.unban_time)}</span></div>}
-              {t.unban_operator && <div><span className="text-muted-foreground">解封操作人：</span>{t.unban_operator}</div>}
-            </div>
-            {t.reason && (
-              <div className="rounded-lg border border-border bg-muted px-3 py-2 text-sm">
-                <span className="text-muted-foreground">封禁原因：</span>{t.reason}
+          <div className="space-y-5">
+            {/* 基本信息：Label 弱化 / Value 强化，3 列自适应栅格 */}
+            <section>
+              <div className="mb-2 text-xs font-semibold text-muted-foreground">基本信息</div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 rounded-lg border border-border bg-muted/50 p-3.5 text-sm lg:grid-cols-3">
+                <div><span className="text-muted-foreground">状态：</span><Badge variant={STATUS_VARIANT[t.status] || 'neutral'}>{t.status_label}</Badge></div>
+                <div><span className="text-muted-foreground">封禁方式：</span><Badge variant={SOURCE_VARIANT[t.ban_source] || 'neutral'}>{t.ban_source_label || t.ban_source || '--'}</Badge></div>
+                <div><span className="text-muted-foreground">风险等级：</span><Badge variant={riskVariant(t.risk_level)}>{t.risk_level || '未知'}</Badge></div>
+                <div><span className="text-muted-foreground">封禁等级：</span><span className="font-medium text-foreground">{LEVEL_LABELS[t.ban_level] || t.ban_level || '--'}</span></div>
+                <div><span className="text-muted-foreground">封禁时长：</span><span className="font-medium text-foreground">{fmtDuration(t.ban_duration, t.is_permanent)}</span></div>
+                <div><span className="text-muted-foreground">剩余时长：</span><span className="font-medium text-foreground">{t.is_permanent ? '永久' : fmtRemaining(t.remaining_ms)}</span></div>
+                <div><span className="text-muted-foreground">开始封禁时间：</span><span className="font-mono text-xs text-foreground">{fmtTime(t.created_at)}</span></div>
+                <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs text-foreground">{t.is_permanent ? '永久' : fmtTime(t.expire_time)}</span></div>
+                <div><span className="text-muted-foreground">封禁设备：</span><span className="font-medium text-foreground">{t.ban_device || '--'}</span></div>
+                {t.ticket_id && (
+                  <div>
+                    <span className="text-muted-foreground">来源工单：</span>
+                    <button
+                      className="inline-flex items-center gap-1 text-primary transition hover:underline"
+                      onClick={() => {
+                        if (!guardNavPermission('ticket', 'view', '工单详情')) return
+                        setDetail(null) // 先关详情抽屉再跳转，保证点击必有反馈
+                        navigate(`/tickets/${t.ticket_id}`)
+                      }}
+                    >
+                      <ExternalLink className="h-3 w-3" /> {t.ticket_no || `#${t.ticket_id}`}
+                    </button>
+                  </div>
+                )}
+                <div><span className="text-muted-foreground">封禁工具记录：</span><span className="font-mono text-xs text-foreground">{t.record_id || '--'}</span></div>
+                {t.unban_time && <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs text-foreground">{fmtTime(t.unban_time)}</span></div>}
+                {t.unban_operator && <div><span className="text-muted-foreground">解封操作人：</span><span className="font-medium text-foreground">{t.unban_operator}</span></div>}
               </div>
-            )}
-            {t.unban_reason && (
-              <div className="rounded-lg border border-border bg-muted px-3 py-2 text-sm">
-                <span className="text-muted-foreground">解封原因：</span>{t.unban_reason}
-              </div>
-            )}
-            <div className="grid gap-3 lg:grid-cols-2">
-              <DetailSection title="智能体研判结论" data={t.agent_decision} />
-              <DetailSection title="审批记录" data={t.approval_ticket ? {
-                状态: t.approval_ticket.status_label,
-                审批人: t.approval_ticket.approver || '--',
-                意见: t.approval_ticket.approval_comment || '--',
-                时间: fmtTime(t.approval_ticket.approved_at),
-                建议方案: t.approval_ticket.ban_plan,
-              } : null} />
-            </div>
+            </section>
 
-            {/* 关联告警列表 */}
-            <div>
-              <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">关联告警（{t.related_alerts?.length || 0}）</span>
+            {/* 封禁 / 解封原因 */}
+            {(t.reason || t.unban_reason) && (
+              <section className="space-y-2">
+                {t.reason && (
+                  <div className="rounded-lg border border-border bg-muted/50 px-3 py-2 text-sm">
+                    <span className="text-muted-foreground">封禁原因：</span><span className="text-foreground">{t.reason}</span>
+                  </div>
+                )}
+                {t.unban_reason && (
+                  <div className="rounded-lg border border-border bg-muted/50 px-3 py-2 text-sm">
+                    <span className="text-muted-foreground">解封原因：</span><span className="text-foreground">{t.unban_reason}</span>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* 研判与审批 */}
+            {(t.agent_decision || t.approval_ticket) && (
+              <section>
+                <div className="mb-2 text-xs font-semibold text-muted-foreground">研判与审批</div>
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <DetailSection title="智能体研判结论" data={t.agent_decision} />
+                  <DetailSection title="审批记录" data={t.approval_ticket ? {
+                    状态: t.approval_ticket.status_label,
+                    审批人: t.approval_ticket.approver || '--',
+                    意见: t.approval_ticket.approval_comment || '--',
+                    时间: fmtTime(t.approval_ticket.approved_at),
+                    建议方案: t.approval_ticket.ban_plan,
+                  } : null} />
+                </div>
+              </section>
+            )}
+
+            {/* 关联告警 */}
+            <section>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold text-muted-foreground">关联告警（{t.related_alerts?.length || 0}）</span>
                 <button
                   className="flex items-center gap-1 text-xs text-primary transition hover:underline"
                   onClick={() => { if (!guardNavPermission('alert', 'view', '告警列表')) return; navigate(`/alerts?keyword=${encodeURIComponent(t.ip)}`) }}
@@ -644,11 +756,11 @@ export default function BanWorkbench({ embedded = false }) {
                 </button>
               </div>
               {(t.related_alerts || []).length === 0 ? (
-                <div className="rounded-lg border border-border bg-muted py-6 text-center text-sm text-muted-foreground">暂无关联告警</div>
+                <div className="rounded-lg border border-border bg-muted/50 py-6 text-center text-sm text-muted-foreground">暂无关联告警</div>
               ) : (
                 <div className="max-h-56 space-y-1.5 overflow-y-auto">
                   {t.related_alerts.map((a) => (
-                    <div key={a.id} className="flex items-center gap-3 rounded-lg border border-border bg-muted px-3 py-2 text-sm">
+                    <div key={a.id} className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 text-sm">
                       <Badge variant={riskVariant(a.risk_level_name)}>{a.risk_level_name || '未知'}</Badge>
                       <span className="min-w-0 flex-1 truncate" title={a.alert_name}>{a.alert_name || '--'}</span>
                       <span className="shrink-0 font-mono text-xs text-muted-foreground">{fmtTime(a.occur_timestamp)}</span>
@@ -656,10 +768,10 @@ export default function BanWorkbench({ embedded = false }) {
                   ))}
                 </div>
               )}
-            </div>
+            </section>
           </div>
         )}
-      </Modal>
+      </Drawer>
 
       {/* 解封二次确认 */}
       <Modal
@@ -686,23 +798,28 @@ export default function BanWorkbench({ embedded = false }) {
         </div>
       </Modal>
 
-      {/* 手动封禁表单 */}
+      {/* 手动封禁表单：按「封禁目标 → 封禁策略 → 原因与备注」分区；必填项红 * 标识；提交中锁死取消出口 */}
       <Modal
         open={manualOpen}
         title="手动发起封禁"
-        onClose={() => setManualOpen(false)}
+        maxWidth="max-w-xl"
+        onClose={() => { if (!manualSubmitting) setManualOpen(false) }}
         footer={(
           <>
-            <Button variant="ghost" onClick={() => setManualOpen(false)}>取消</Button>
+            <Button variant="ghost" onClick={() => setManualOpen(false)} disabled={manualSubmitting}>取消</Button>
             <Button variant="primary" loading={manualSubmitting} onClick={doManualBan}>
               <ShieldBan className="h-4 w-4" /> 下发封禁
             </Button>
           </>
         )}
       >
-        <div className="space-y-3 text-sm">
+        <div className="space-y-4 text-sm">
+          {/* 封禁目标 */}
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">目标 IP / CIDR / 范围（必填，可多值）</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              目标 IP / CIDR / 范围 <span className="text-destructive">*</span>
+              <span className="ml-1.5 font-normal text-muted-foreground/70">可多值</span>
+            </label>
             <input
               className={`${inputBaseCls} h-[38px] w-full font-mono${manualIpTouched && manualIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
               placeholder="如 203.0.113.50 / 10.0.0.0/8 / 1.2.3.4-1.2.3.20"
@@ -714,69 +831,92 @@ export default function BanWorkbench({ embedded = false }) {
               <div className="mt-1 text-[11px] text-destructive">{manualIpError}</div>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">封禁等级</label>
-              <CompactSelect
-                block
-                size="lg"
-                value={manualForm.ban_level}
-                onChange={(e) => setManualForm((f) => ({ ...f, ban_level: e.target.value }))}
-              >
-                {Object.entries(LEVEL_LABELS).map(([v, label]) => (
-                  <option key={v} value={v}>{label}</option>
-                ))}
-              </CompactSelect>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-muted-foreground">封禁时长（天）</label>
-              <input
-                type="number"
-                min="0.0001"
-                step="0.5"
-                className={`${inputBaseCls} h-[38px] w-full ${manualForm.is_permanent ? 'opacity-50' : ''}`}
-                disabled={manualForm.is_permanent}
-                value={manualForm.ban_duration_days}
-                onChange={(e) => setManualForm((f) => ({ ...f, ban_duration_days: e.target.value }))}
-              />
-              {/* 快捷天数（点击填入，仍可手动输入任意天数/小数） */}
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {DURATION_PRESETS.map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    disabled={manualForm.is_permanent}
-                    onClick={() => setManualForm((f) => ({ ...f, ban_duration_days: String(d) }))}
-                    className={`rounded border px-1.5 py-0.5 text-[11px] transition disabled:opacity-50 ${
-                      Number(manualForm.ban_duration_days) === d
-                        ? 'border-primary/50 bg-primary/10 text-primary'
-                        : 'border-border text-muted-foreground hover:bg-accent'
-                    }`}
-                  >
-                    {d}天
-                  </button>
-                ))}
+
+          {/* 封禁策略：等级 + 时长 + 永久开关 */}
+          <div className="space-y-3 rounded-lg border border-border p-3.5">
+            <div className="text-xs font-semibold text-muted-foreground">封禁策略</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">封禁等级</label>
+                <CompactSelect
+                  block
+                  size="lg"
+                  value={manualForm.ban_level}
+                  onChange={(e) => setManualForm((f) => ({ ...f, ban_level: e.target.value }))}
+                >
+                  {Object.entries(LEVEL_LABELS).map(([v, label]) => (
+                    <option key={v} value={v}>{label}</option>
+                  ))}
+                </CompactSelect>
               </div>
-              <div className="mt-1 text-[11px] text-muted-foreground">支持小数：0.5 天 = 12 小时</div>
+              <div>
+                <label className={`mb-1 block text-xs ${manualForm.is_permanent ? 'text-muted-foreground/50' : 'text-muted-foreground'}`}>封禁时长（天）</label>
+                <input
+                  type="number"
+                  min="0.0001"
+                  max={MAX_BAN_DAYS}
+                  step="0.5"
+                  className={`${inputBaseCls} h-[38px] w-full ${manualForm.is_permanent ? 'opacity-50' : ''}`}
+                  disabled={manualForm.is_permanent}
+                  value={manualForm.ban_duration_days}
+                  onChange={(e) => setManualForm((f) => ({ ...f, ban_duration_days: e.target.value }))}
+                />
+                {/* 快捷天数（点击填入，仍可手动输入任意天数/小数） */}
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {DURATION_PRESETS.map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      disabled={manualForm.is_permanent}
+                      onClick={() => setManualForm((f) => ({ ...f, ban_duration_days: String(d) }))}
+                      className={`rounded-md border px-2 py-1 text-[11px] transition disabled:opacity-50 ${
+                        Number(manualForm.ban_duration_days) === d
+                          ? 'border-primary/60 bg-primary/10 font-medium text-primary'
+                          : 'border-border text-muted-foreground hover:bg-accent'
+                      }`}
+                    >
+                      {d}天
+                    </button>
+                  ))}
+                </div>
+                {!manualForm.is_permanent && (
+                  <div className="mt-1 text-[11px] text-muted-foreground">支持小数：0.5 天 = 12 小时；最长 30 天，更长请选永久</div>
+                )}
+              </div>
             </div>
+            <label
+              className={`flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 transition ${
+                manualForm.is_permanent ? 'border-primary/50 bg-primary/5' : 'border-border hover:bg-accent'
+              }`}
+            >
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-primary"
+                checked={manualForm.is_permanent}
+                onChange={(e) => setManualForm((f) => ({ ...f, is_permanent: e.target.checked }))}
+              />
+              <span className="text-foreground">
+                永久封禁
+                <span className="ml-1.5 text-xs text-muted-foreground">不自动解封，后续需手动解封并填写原因</span>
+              </span>
+            </label>
           </div>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-primary"
-              checked={manualForm.is_permanent}
-              onChange={(e) => setManualForm((f) => ({ ...f, is_permanent: e.target.checked }))}
-            />
-            永久封禁（不自动解封）
-          </label>
+
+          {/* 原因与备注 */}
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">封禁原因（必填）</label>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              封禁原因 <span className="text-destructive">*</span>
+            </label>
             <textarea
-              className={`${inputBaseCls} min-h-[72px] w-full`}
+              className={`${inputBaseCls} min-h-[72px] w-full${manualReasonTouched && manualReasonError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
               placeholder="如：威胁情报确认恶意IP、人工研判攻击源等"
               value={manualForm.reason}
               onChange={(e) => setManualForm((f) => ({ ...f, reason: e.target.value }))}
+              onBlur={() => setManualReasonTouched(true)}
             />
+            {manualReasonTouched && manualReasonError && (
+              <div className="mt-1 text-[11px] text-destructive">{manualReasonError}</div>
+            )}
           </div>
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">归属地区（可选）</label>
@@ -787,8 +927,9 @@ export default function BanWorkbench({ embedded = false }) {
               onChange={(e) => setManualForm((f) => ({ ...f, region: e.target.value }))}
             />
           </div>
-          <div className="rounded-lg border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
-            将通过默认「安博通阻断器」下发设备封禁，记录标记为「手动封禁」，到期由定时任务联动设备自动解封。
+          <div className="flex items-start gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>提交后立即通过默认「安博通阻断器」下发设备封禁，记录标记为「手动封禁」；非永久封禁到期由定时任务联动设备自动解封。</span>
           </div>
         </div>
       </Modal>
@@ -1121,6 +1262,58 @@ export default function BanWorkbench({ embedded = false }) {
                   {it.success && <span className="shrink-0 text-success">已下发</span>}
                   {!it.success && !it.skipped && <span className="shrink-0 text-destructive">失败</span>}
                   {it.skipped && <span className="shrink-0 text-warning">跳过</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* 批量删除结果：成功 / 失败及原因（失败记录已保留） */}
+      <Modal
+        open={!!batchDeleteResult}
+        title="批量删除封禁记录结果"
+        maxWidth="max-w-2xl"
+        onClose={() => setBatchDeleteResult(null)}
+        footer={<Button variant="primary" onClick={() => setBatchDeleteResult(null)}>确定</Button>}
+      >
+        {batchDeleteResult && (
+          <div className="space-y-3 text-sm">
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: '总计', value: batchDeleteResult.total ?? 0, tone: 'text-foreground' },
+                { label: '成功', value: batchDeleteResult.success ?? 0, tone: 'text-success' },
+                { label: '失败', value: batchDeleteResult.failed ?? 0, tone: 'text-destructive' },
+              ].map((s) => (
+                <div key={s.label} className="rounded-lg border border-border bg-muted px-2 py-1.5 text-center">
+                  <div className={`text-base font-semibold ${s.tone}`}>{s.value}</div>
+                  <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {batchDeleteResult.failed > 0 && (
+              <div className="flex items-start gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>失败的记录已保留（生效中记录需先联动设备解封成功后才会删除），可稍后重试。</span>
+              </div>
+            )}
+
+            <div className="max-h-[46vh] space-y-1.5 overflow-y-auto pr-1">
+              {(batchDeleteResult.items || []).map((it) => (
+                <div
+                  key={it.id}
+                  className="flex items-start gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs"
+                >
+                  {it.success ? (
+                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+                  ) : (
+                    <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
+                  )}
+                  <span className="w-32 shrink-0 font-mono text-foreground">{it.ip || `#${it.id}`}</span>
+                  <span className="min-w-0 flex-1 break-all text-muted-foreground">{it.message || '--'}</span>
+                  {it.success && <span className="shrink-0 text-success">已删除</span>}
+                  {!it.success && <span className="shrink-0 text-destructive">失败</span>}
                 </div>
               ))}
             </div>

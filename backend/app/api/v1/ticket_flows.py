@@ -60,6 +60,39 @@ def _group_ok_factory(db: Session):
     return _ok
 
 
+def _device_action_ok_factory(db: Session):
+    """节点设备动作存在性校验回调（设备与动作均存在且启用）。
+
+    供发布校验 validate_flow_structure 检查 device_actions 指向的
+    设备/动作（如安博通阻断器的封禁/解封动作）是否仍可用。
+    """
+    from app.models.device import Device, DeviceAction
+
+    cache: dict[tuple[int, int], bool] = {}
+
+    def _ok(device_id: int, action_id: int) -> bool:
+        key = (int(device_id), int(action_id))
+        if key not in cache:
+            dev = (
+                db.query(Device)
+                .filter(Device.id == device_id, Device.enabled.is_(True))
+                .first()
+            )
+            act = (
+                db.query(DeviceAction)
+                .filter(
+                    DeviceAction.id == action_id,
+                    DeviceAction.device_id == device_id,
+                    DeviceAction.enabled.is_(True),
+                )
+                .first()
+            )
+            cache[key] = bool(dev and act)
+        return cache[key]
+
+    return _ok
+
+
 def _flow_payload(flow: TicketFlow, ticket_count: int | None = None) -> dict:
     data = flow.to_dict()
     data["node_count"] = len(flow.nodes.get("nodes") or []) if isinstance(flow.nodes, dict) else 0
@@ -194,7 +227,11 @@ def publish_flow(
     发布成功同时写入版本存档（ticket_flow_versions），供版本历史查看与回滚。
     """
     flow = _get_flow_or_404(db, flow_id)
-    errors = validate_flow_structure(flow.nodes, group_ok=_group_ok_factory(db))
+    errors = validate_flow_structure(
+        flow.nodes,
+        group_ok=_group_ok_factory(db),
+        device_action_ok=_device_action_ok_factory(db),
+    )
     if errors:
         raise HTTPException(status_code=422, detail="；".join(errors))
 

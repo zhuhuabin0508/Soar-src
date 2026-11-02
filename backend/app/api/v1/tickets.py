@@ -23,6 +23,7 @@
 import csv
 import ipaddress
 import io
+import json
 import logging
 import os
 import re
@@ -36,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.sanitizer import sanitize_text
+from app.core.audit import get_client_ip
 from app.core.ticket_enrichment import (
     build_ticket_enrichment,
     decorate_asset_source_labels,
@@ -44,6 +46,7 @@ from app.core.ticket_enrichment import (
 from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config
 from app.core.ticket_flow import (
     collect_ref_options,
+    eval_when,
     get_node,
     get_node_pending_groups,
     get_start_node,
@@ -58,7 +61,8 @@ from datetime import timedelta
 from app.core.timezone import beijing_now
 from app.database import get_db
 from app.dependencies import get_current_user, is_admin, require_permission
-from app.models.banned_ip import BannedIP
+from app.devices.action_executor import execute_device_action
+from app.models.device import Device, DeviceAction
 from app.models.notification import Notification
 from app.models.ticket import (
     Ticket, TicketCc, TicketFlow, TicketGroup, TicketGroupMember, TicketNodeRecord,
@@ -67,7 +71,7 @@ from app.models.user import User
 from app.models.workflow_ban import BanRecord
 from app.schemas.ticket import (
     TicketAdvance, TicketCancel, TicketCcAdd, TicketComment, TicketCreate,
-    TicketRollback, TicketSimilar, TicketTransfer,
+    TicketDeviceActionExecute, TicketRollback, TicketSimilar, TicketTransfer,
 )
 from app.workflow.audit import write_audit
 
@@ -1799,13 +1803,6 @@ def similar_tickets(
 
 # ============ 封禁状态查询 ============
 
-# 封禁来源/等级中文（与工作台展示一致）
-_BAN_SOURCE_LABELS = {
-    "auto": "自动封禁", "approval": "审批封禁", "manual": "手动封禁",
-    "chat": "聊天封禁", "ticket": "工单同步",
-}
-_BAN_LEVEL_LABELS = {"low": "低", "medium": "中", "high": "高", "serious": "严重", "critical": "严重"}
-
 
 @router.get("/ban-status")
 def get_ban_status(
@@ -1813,68 +1810,56 @@ def get_ban_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """批量查询 IP 是否处于封禁期间（安全上下文封禁查询）。
+    """批量查询 IP 封禁状态：改为通过安博通阻断器「查询指定黑名单」动作实时查询。
 
-    同时检查工作台封禁记录（ban_records，含工单同步）与旧版已封禁列表
-    （banned_ips），返回每个 IP 的全部生效中封禁详情；未封禁则 banned=false。
+    - 设备/动作不可用时返回 device=None + device_error（HTTP 200），前端展示引导信息；
+    - 每个 IP 返回 {banned, entry(设备返回的全部字段), raw(原始响应), error}；
+    - 并发查询（每 IP 一次设备调用，超时收敛，避免页面久等）。
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.devices.anbotong import (
+        QUERY_TIMEOUT_CAP_SECONDS, find_anbotong_action, query_blacklist_entry,
+    )
+
     ip_list = list(dict.fromkeys(x.strip() for x in ips.split(",") if x.strip()))
     if not ip_list:
         raise HTTPException(status_code=400, detail="请提供至少一个 IP 地址")
     if len(ip_list) > 20:
         raise HTTPException(status_code=400, detail="单次最多查询 20 个 IP")
-    now = beijing_now()
-    result: dict[str, dict] = {ip: {"banned": False, "items": []} for ip in ip_list}
 
-    # 工作台封禁记录（永久封禁 expire_time 为空，视为生效中）
-    for r in (
-        db.query(BanRecord)
-        .filter(BanRecord.ip.in_(ip_list), BanRecord.status == "active")
-        .all()
-    ):
-        if not r.is_permanent and (r.expire_time is None or r.expire_time <= now):
-            continue
-        result[r.ip]["banned"] = True
-        result[r.ip]["items"].append({
-            "source": r.ban_source,
-            "source_label": _BAN_SOURCE_LABELS.get(r.ban_source or "", r.ban_source or "未知"),
-            "ban_level": r.ban_level,
-            "ban_level_label": _BAN_LEVEL_LABELS.get(r.ban_level or "", r.ban_level or "-"),
-            "started_at": r.created_at.isoformat() if r.created_at else None,
-            "expire_time": r.expire_time.isoformat() if r.expire_time else None,
-            "is_permanent": bool(r.is_permanent),
-            "remaining_ms": int((r.expire_time - now).total_seconds() * 1000)
-            if (r.expire_time and not r.is_permanent) else None,
-            "reason": r.reason or "",
-            "ban_device": r.ban_device,
-            "ticket_id": r.ticket_id,
-            "ticket_no": r.ticket_no,
-        })
+    device, action, dev_err = find_anbotong_action(db, "query")
+    if dev_err:
+        # 设备未接入/动作未配置：不抛 5xx，带说明返回，前端可给出配置引导
+        logger.warning("工单封禁查询不可用: %s", dev_err)
+        return {
+            "device": None,
+            "device_error": dev_err,
+            "results": {ip: {"banned": False, "entry": None, "raw": None, "error": dev_err}
+                        for ip in ip_list},
+        }
 
-    # 旧版 banned_ips（补充历史手动/智能体封禁，防遗漏）
-    for b in (
-        db.query(BannedIP)
-        .filter(BannedIP.ip.in_(ip_list), BannedIP.status == "active")
-        .all()
-    ):
-        if b.expired_at and b.expired_at <= now:
-            continue
-        result[b.ip]["banned"] = True
-        result[b.ip]["items"].append({
-            "source": b.source,
-            "source_label": "手动封禁" if b.source == "manual" else "旧版封禁记录",
-            "ban_level": b.ban_level,
-            "ban_level_label": _BAN_LEVEL_LABELS.get(b.ban_level or "", b.ban_level or "-"),
-            "started_at": b.created_at.isoformat() if b.created_at else None,
-            "expire_time": b.expired_at.isoformat() if b.expired_at else None,
-            "is_permanent": False,
-            "remaining_ms": int((b.expired_at - now).total_seconds() * 1000) if b.expired_at else None,
-            "reason": b.reason or "",
-            "ban_device": b.device_name or None,
-            "ticket_id": None,
-            "ticket_no": None,
-        })
-    return result
+    timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(len(ip_list), 8)) as pool:
+        futures = {
+            ip: pool.submit(query_blacklist_entry, device, action, ip, timeout=timeout)
+            for ip in ip_list
+        }
+        for ip, fut in futures.items():
+            r = fut.result()
+            results[ip] = {
+                "banned": bool(r.get("found")),
+                "entry": r.get("entry"),
+                "raw": r.get("response_body"),
+                "error": r.get("error"),
+                "note": r.get("note"),
+            }
+    return {
+        "device": {"id": device.id, "name": device.name},
+        "device_error": None,
+        "results": results,
+    }
 
 
 # ============ 详情 ============
@@ -1892,21 +1877,22 @@ def get_ticket(
 
 # ============ 封禁同步 ============
 
-def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict, user: User) -> None:
-    """封禁同步动作：节点配置 ban_sync 且开关字段命中时写入工作台已封禁 IP 列表。
+def _plan_ban_sync(db: Session, ticket: Ticket, node: dict, values: dict) -> dict | None:
+    """解析节点 ban_sync 配置并完成去重检查，返回封禁计划（纯只读，不落库不调设备）。
 
-    - 仅写 BanRecord（ban_source=ticket 工单同步），不同步 legacy banned_ips
-    - 按 (ticket_id, ticket_node) 去重，回退后重新提交不会重复产生封禁记录
-    - 时长字段用 parse_duration 解析（"永久" 或 "30天"/"12小时"/"45分钟"）
+    返回 None 表示本次流转无需封禁同步（未配置 / 开关未命中 / 字段缺失 /
+    目标非法 / 该节点已同步过）。设备下发与记录落库由调用方分别执行：
+    - 设备下发必须在事务/savepoint 外先行（record_device_call 内部 commit 会释放 SAVEPOINT）；
+    - 落库在独立 SAVEPOINT 内执行，失败仅回滚封禁记录自身。
     """
     cfg = node.get("ban_sync") if isinstance(node, dict) else None
     if not isinstance(cfg, dict) or not cfg:
-        return
+        return None
     sv = values.get(cfg.get("switch_field"))
     if isinstance(sv, bool):
         sv = "是" if sv else "否"
     if str(sv if sv is not None else "") != str(cfg.get("switch_value") or "是"):
-        return
+        return None
     raw_ip = values.get(cfg.get("ip_field"))
     # 非字符串值（如多值控件传入的列表）先归一化，防止 str() 后写入脏数据
     if isinstance(raw_ip, (list, tuple)):
@@ -1916,7 +1902,7 @@ def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict,
     device = str(values.get(cfg.get("device_field")) or "").strip() if cfg.get("device_field") else ""
     if not ip or duration_raw in (None, ""):
         logger.warning("封禁同步跳过（IP/时长未填）: ticket=%s node=%s", ticket.ticket_no, node.get("key"))
-        return
+        return None
     # 封禁目标硬拦截：单 IP / CIDR / 范围 / 多值（与人工封禁同一套规则）
     from app.core.ip_validation import IPValidationError, validate_ban_target
 
@@ -1927,37 +1913,54 @@ def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict,
             "封禁同步跳过（封禁目标非法: %s）: ticket=%s node=%s",
             exc, ticket.ticket_no, node.get("key"),
         )
-        return
+        return None
     permanent, seconds = parse_duration(duration_raw)
     if not permanent and seconds < 0:
         logger.warning("封禁同步跳过（时长格式非法: %r）: ticket=%s", duration_raw, ticket.ticket_no)
-        return
+        return None
+    # 按 (ticket_id, ticket_node) 去重，回退后重新提交不会重复产生封禁记录
+    node_key = str(node.get("key") or "")
     dup = (
         db.query(BanRecord)
-        .filter(BanRecord.ticket_id == ticket.id, BanRecord.ticket_node == str(node.get("key") or ""))
+        .filter(BanRecord.ticket_id == ticket.id, BanRecord.ticket_node == node_key)
         .first()
     )
     if dup is not None:
-        return
+        return None
+    return {
+        "ip": ip,
+        "permanent": permanent,
+        "seconds": 0 if permanent else seconds,
+        "device": device or None,
+        "node_key": node_key,
+    }
+
+
+def _save_ban_from_ticket(db: Session, ticket: Ticket, plan: dict, user: User, *, device_name: str | None) -> None:
+    """设备下发成功后写入工作台封禁记录（BanRecord，ban_source=ticket 工单同步）。
+
+    ban_device 优先记录实际执行设备（安博通阻断器），表单填写的设备名兜底。
+    """
     now = beijing_now()
     record = BanRecord(
-        ip=ip,
+        ip=plan["ip"],
         ban_level="medium",
-        ban_duration=0 if permanent else seconds,
-        is_permanent=permanent,
-        expire_time=None if permanent else now + timedelta(seconds=seconds),
-        reason=f"工单同步：{ticket.title}",
+        ban_duration=plan["seconds"],
+        is_permanent=plan["permanent"],
+        expire_time=None if plan["permanent"] else now + timedelta(seconds=plan["seconds"]),
+        reason=f"工单同步：{ticket.ticket_no}",
         ban_source="ticket",
         status="active",
         ticket_id=ticket.id,
         ticket_no=ticket.ticket_no,
-        ticket_node=str(node.get("key") or ""),
-        ban_device=device or None,
+        ticket_node=plan["node_key"],
+        ban_device=device_name or plan["device"],
     )
     db.add(record)
     logger.info(
         "封禁同步: ticket=%s ip=%s permanent=%s duration=%ss device=%s, operator=%s",
-        ticket.ticket_no, ip, permanent, 0 if permanent else seconds, device or "-", user.username,
+        ticket.ticket_no, plan["ip"], plan["permanent"], plan["seconds"],
+        device_name or plan["device"] or "-", user.username,
     )
 
 
@@ -2063,6 +2066,59 @@ def advance_ticket(
     if target is None:
         raise HTTPException(status_code=400, detail=f"流转目标节点 {route_to} 不存在")
 
+    # —— 封禁同步：节点配置 ban_sync 且命中开关条件时，联动安博通阻断器下发封禁 ——
+    # 设备调用必须在下方 db.add(TicketNodeRecord) 与 SAVEPOINT 之前执行：
+    # record_device_call 内部 commit 会释放 SAVEPOINT，且此时事务内无未提交变更，
+    # commit 只落设备调用日志，不会把流转记录提前提交。
+    # 设备下发失败遵循既有“不阻塞工单流转”语义：仅记日志 + 通知运营，不写生效中记录。
+    ban_plan = None
+    try:
+        ban_plan = _plan_ban_sync(db, ticket, current_node, values)
+    except Exception:  # noqa: BLE001
+        logger.exception("封禁同步解析失败（不阻塞工单流转）: ticket=%s", ticket.ticket_no)
+    ban_synced = False
+    ban_device_name: str | None = None
+    if ban_plan is not None:
+        ban_result = None
+        try:
+            from app.devices.anbotong import block_ip_on_anbotong
+
+            ban_result = block_ip_on_anbotong(
+                db, ban_plan["ip"],
+                duration_seconds=ban_plan["seconds"],
+                reason=f"工单同步：{ticket.ticket_no}",
+                source="ticket",
+                user_id=current_user.id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("安博通封禁下发异常: ticket=%s ip=%s", ticket.ticket_no, ban_plan["ip"])
+        ban_device_name = ((ban_result or {}).get("device") or {}).get("name")
+        if ban_result and ban_result.get("success"):
+            ban_synced = True
+            logger.info(
+                "封禁同步已下发安博通: ticket=%s ip=%s permanent=%s duration=%ss, operator=%s",
+                ticket.ticket_no, ban_plan["ip"], ban_plan["permanent"], ban_plan["seconds"],
+                current_user.username,
+            )
+        else:
+            ban_err = (ban_result or {}).get("error") or "未知错误"
+            logger.error(
+                "封禁同步设备下发失败（不阻塞工单流转）: ticket=%s ip=%s error=%s",
+                ticket.ticket_no, ban_plan["ip"], ban_err,
+            )
+            try:
+                from app.workflow.notify import notify_ops
+
+                notify_ops(
+                    db,
+                    f"工单封禁下发失败：{ticket.ticket_no}",
+                    f"工单「{ticket.title}」节点「{node_label}」封禁 IP {ban_plan['ip']} "
+                    f"下发安博通阻断器失败：{ban_err}",
+                    ntype="workflow_alert",
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("封禁下发失败通知写入异常: ticket=%s", ticket.ticket_no)
+
     db.add(TicketNodeRecord(
         ticket_id=ticket.id,
         node_key=current_node.get("key") or "",
@@ -2076,14 +2132,17 @@ def advance_ticket(
         comment=sanitize_text(body.comment) if body.comment else None,
     ))
 
-    # 封禁同步动作：节点配置了 ban_sync 且命中开关条件时，写入工作台已封禁 IP 列表
-    # （附加动作在独立 SAVEPOINT 中执行：任何失败——含提交阶段的约束错误如 IP 超长——
-    #   仅回滚封禁记录自身，不阻塞工单流转主流程）
-    try:
-        with db.begin_nested():
-            _sync_ban_from_ticket(db, ticket, current_node, values, current_user)
-    except Exception:  # noqa: BLE001
-        logger.exception("封禁同步失败（不阻塞工单流转）: ticket=%s", ticket.ticket_no)
+    # 封禁记录落库：仅在设备下发成功后写入生效中记录
+    # （独立 SAVEPOINT：任何失败——含提交阶段的约束错误如 IP 超长——仅回滚封禁记录自身，
+    #   不阻塞工单流转主流程）
+    if ban_plan is not None and ban_synced:
+        try:
+            with db.begin_nested():
+                _save_ban_from_ticket(
+                    db, ticket, ban_plan, current_user, device_name=ban_device_name,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("封禁同步落库失败（不阻塞工单流转）: ticket=%s", ticket.ticket_no)
 
     end = is_end_node(target)
     ticket.current_node_key = route_to
@@ -2113,6 +2172,138 @@ def advance_ticket(
     logger.info("工单流转: id=%s no=%s %s → %s, operator=%s",
                 ticket.id, ticket.ticket_no, current_node.get("key"), route_to, current_user.username)
     return _ticket_detail(db, ticket, current_user)
+
+
+# ============ 节点设备动作（如安博通阻断器封禁/解封） ============
+
+@router.post("/{ticket_id}/device-actions/execute")
+def execute_ticket_device_action(
+    ticket_id: int,
+    body: TicketDeviceActionExecute,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "edit")),
+) -> dict:
+    """执行当前节点配置的设备动作（如安博通阻断器的封禁/解封/查询）。
+
+    - 权限与流转一致：admin / 当前节点待处理分组成员 / 认领人
+    - 仅进行中工单、且动作配置在当前停留节点上时可执行
+    - 触发条件按提交的表单值快照服务端复检（与前端展示面板同口径），
+      未命中时拒绝执行，防止绕过前端直调设备
+    - 实际调用走统一执行引擎 execute_device_action（写 DeviceCallLog，source=ticket），
+      结果写入工单时间线（action=device_action）留痕，可在流转历史中查看
+    - 查询类动作（GET）设备返回 404 归一为业务结果（success=true + note 说明
+      未查询到目标），与封禁状态查询的 404=未封禁语义一致，不误报"执行失败"
+    """
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    if ticket.status != "processing":
+        raise HTTPException(status_code=400, detail="工单已完结，不能再执行设备动作")
+
+    snapshot = ticket.flow_snapshot if isinstance(ticket.flow_snapshot, dict) else {}
+    current_node = get_node(snapshot, ticket.current_node_key) if ticket.current_node_key else None
+    if not current_node:
+        raise HTTPException(status_code=400, detail="当前节点定义缺失（快照损坏）")
+
+    # 处理权限：admin / 属于当前节点任一待处理分组 / 认领人（与 advance 同口径）
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    pending = _csv_group_ids(ticket)
+    if not admin and ticket.claimed_by_id != current_user.id and not (pending & my_groups):
+        raise HTTPException(status_code=403, detail="您不属于当前节点的待处理分组，无法执行设备动作")
+    if ticket.claimed_by_id and ticket.claimed_by_id != current_user.id and not admin:
+        raise HTTPException(status_code=403, detail="工单已被其他成员认领，仅认领人或管理员可执行设备动作")
+
+    # 定位节点上的动作配置（按配置项 id，非设备动作表 ID）
+    cfg = None
+    for da in current_node.get("device_actions") or []:
+        if isinstance(da, dict) and str(da.get("id") or "") == str(body.action_id):
+            cfg = da
+            break
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="当前节点不存在该设备动作配置")
+
+    # 触发条件服务端复检：未命中说明面板本不该出现（或表单值已变化），拒绝执行
+    values = _clean_field_values(body.field_values)
+    if not eval_when(cfg.get("when"), values):
+        raise HTTPException(status_code=400, detail="当前表单值未命中该设备动作的触发条件")
+
+    # 按配置指向定位设备与动作（执行按 ID 定位，冗余名称仅用于展示）
+    device = db.query(Device).filter(Device.id == cfg.get("device_id")).first()
+    if device is None or not device.enabled:
+        raise HTTPException(status_code=400, detail=f"设备「{cfg.get('device_name') or cfg.get('device_id')}」不存在或已停用")
+    action = (
+        db.query(DeviceAction)
+        .filter(
+            DeviceAction.id == cfg.get("action_id"),
+            DeviceAction.device_id == device.id,
+            DeviceAction.enabled.is_(True),
+        )
+        .first()
+    )
+    if action is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"设备「{device.name}」上的动作「{cfg.get('action_name') or cfg.get('action_id')}」不存在或已停用",
+        )
+
+    params = {k: v for k, v in (body.params or {}).items() if v is not None and str(v).strip() != ""}
+    result = execute_device_action(
+        device,
+        action,
+        params,
+        db=db,
+        source="ticket",
+        user_id=current_user.id,
+        source_ip=get_client_ip(request) if request else None,
+    )
+    success = bool(result.get("success"))
+    note = ""
+    if not success and result.get("status_code") == 404 and (action.http_method or "").upper() == "GET":
+        # 查询类动作（GET）404 = 查无数据（如「查询指定黑名单」该 IP 未封禁）：
+        # 归一为业务结果而非执行失败，与工单封禁状态查询 404 语义保持一致
+        success = True
+        note = "设备返回 404：未查询到目标（如该 IP 未封禁）"
+    # 时间线留痕：动作执行卡片（设备/动作/参数/结果摘要），不产生流转副作用
+    summary = json.dumps({
+        "device": device.name,
+        "action": action.name,
+        "params": params,
+        "success": success,
+        "status_code": result.get("status_code"),
+        "error": result.get("error") if not success else None,
+        "note": note or None,
+    }, ensure_ascii=False)
+    db.add(TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=str(current_node.get("key") or ""),
+        node_name=str(current_node.get("name") or current_node.get("key") or ""),
+        group_id=None,
+        handler_id=current_user.id,
+        handler_name=current_user.display_name or current_user.username,
+        action="device_action",
+        field_values={},
+        route_to=None,
+        comment=summary,
+    ))
+    db.commit()
+    write_audit(
+        db, action="ticket_device_action", resource_type="ticket", resource_id=ticket.id,
+        detail={"ticket_no": ticket.ticket_no, "node": current_node.get("key"),
+                "device": device.name, "action": action.name, "success": success},
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info(
+        "工单设备动作执行: ticket=%s node=%s device=%s action=%s success=%s, operator=%s",
+        ticket.ticket_no, current_node.get("key"), device.name, action.name, success, current_user.username,
+    )
+    return {
+        "success": success,
+        "status_code": result.get("status_code"),
+        "response_body": result.get("response_body"),
+        "error": result.get("error") if not success else None,
+        "note": note or None,
+        "latency_ms": result.get("latency_ms"),
+    }
 
 
 # ============ 回退 ============

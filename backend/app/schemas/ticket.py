@@ -126,6 +126,18 @@ class TicketComment(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000, description="评论内容（必填）")
 
 
+class TicketDeviceActionExecute(BaseModel):
+    """执行节点设备动作（如安博通阻断器封禁/解封）：当前节点处理人触发实际设备调用。
+
+    - ``action_id``：流程节点 device_actions 配置项的标识（id），非设备动作表 ID
+    - ``params``：动作参数键值对（前端按字段映射预填、处理人可改）
+    - ``field_values``：触发条件复检用的当前表单值快照（与提交面板同口径）
+    """
+    action_id: str = Field(..., min_length=1, max_length=64, description="节点设备动作配置项标识")
+    params: dict[str, Any] = Field(default_factory=dict)
+    field_values: dict[str, Any] = Field(default_factory=dict)
+
+
 class TicketSimilar(BaseModel):
     """相似工单推荐查询：按首节点 源/目的 IP 匹配同流程历史工单（处置中/已完成）。
 

@@ -28,6 +28,11 @@ DEFAULT_BAN_DEVICE_NAME = "安博通阻断器"
 BLOCK_ACTION_TYPE = "block_ip"
 UNBLOCK_ACTION_TYPE = "unblock_ip"
 
+# 安博通黑名单生命周期上限：文档约定 age 有效范围 -1~2592000 秒（-1 表示永久）。
+# 超上限的时长设备不会报错，而是静默丢弃（返回 code=1 + 空 blist_entry），
+# 平台必须在下发前拦截，避免落「生效中」记录但设备上无条目。
+MAX_BAN_DURATION_SECONDS = 2592000
+
 
 def _find_action(db: Session, device: Device, action_type: str):
     """在设备上查找启用的指定类型动作。"""
@@ -157,9 +162,22 @@ def run_block(
     source_ip: Optional[str] = None,
 ) -> dict[str, Any]:
     """下发封禁（时长 0 表示永久，由动作 ``map_values`` 转换）。"""
+    duration_seconds = int(duration_seconds or 0)
+    # 时长超设备上限直接拦截：安博通对超限 age 静默丢弃（code=1 但不建条目），
+    # 提前校验把问题暴露给调用方，而不是落一条设备上不存在的「生效中」记录。
+    if 0 < duration_seconds > MAX_BAN_DURATION_SECONDS:
+        days = MAX_BAN_DURATION_SECONDS // 86400
+        over_days = -(-duration_seconds // 86400)  # 向上取整，避免 30 天+1 秒显示成 30 天
+        return {
+            "success": False,
+            "error": (
+                f"封禁时长 {over_days} 天超过设备上限 {days} 天"
+                f"（安博通黑名单生命周期最长 {MAX_BAN_DURATION_SECONDS} 秒），请缩短时长或改为永久封禁"
+            ),
+        }
     params: dict[str, Any] = {
         "ip": str(ip or "").strip(),
-        "duration": "0" if not duration_seconds else str(int(duration_seconds)),
+        "duration": "0" if not duration_seconds else str(duration_seconds),
     }
     if reason:
         params["reason"] = str(reason)
@@ -209,6 +227,13 @@ def check_block_result(result: dict[str, Any]) -> tuple[bool, str]:
             if msg:
                 detail = f"{detail}，msg={msg}"
             return False, detail
+        # 安博通对部分非法参数（如 age 超上限）不报错而是静默丢弃：
+        # 返回 code=1 且 data.blist_entry 为空串，此时设备并未真正建条目，
+        # 必须判定为失败，否则平台会落一条设备上不存在的「生效中」记录。
+        data = body.get("data")
+        if isinstance(data, dict) and "blist_entry" in data:
+            if data.get("blist_entry") in ("", None):
+                return False, "设备返回了空黑名单条目（未实际创建，请检查参数是否超出设备允许范围）"
     return True, ""
 
 

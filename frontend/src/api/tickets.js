@@ -59,6 +59,8 @@ export const ticketApi = {
     return request(`/tickets/monitor${_qs(params)}`)
   },
   advanceTicket: (id, body) => request(`/tickets/${id}/advance`, { method: 'POST', body }),
+  // 执行当前节点设备动作（如安博通阻断器封禁/解封）：body={action_id, params, field_values}
+  executeDeviceAction: (id, body) => request(`/tickets/${id}/device-actions/execute`, { method: 'POST', body }),
   // 回退工单：当前节点退回上一节点，comment 必填（回退原因）
   rollbackTicket: (id, body) => request(`/tickets/${id}/rollback`, { method: 'POST', body }),
   cancelTicket: (id, body) => request(`/tickets/${id}/cancel`, { method: 'POST', body }),

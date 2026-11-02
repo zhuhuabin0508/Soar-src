@@ -53,6 +53,24 @@
           #   "device_field": "ban_device",      # 封禁设备字段 key（可选）
           #   "duration_field": "ban_duration"   # 封禁时长字段 key（须为时长类型）
           # }
+          #
+          # 节点动作 · 设备动作（可选）：工单停留本节点期间，表单值命中触发条件时
+          # 在当前节点操作面板展示动作执行卡片（如安博通阻断器的封禁/解封/查询动作），
+          # 处理人确认后实际调用设备 API 下发
+          # "device_actions": [
+          #   {
+          #     "id": "da1",                   # 节点内唯一标识（执行时按此定位）
+          #     "device_id": 3,                # 设备 ID（设备管理）
+          #     "device_name": "安博通阻断器",   # 冗余显示名（执行按 device_id 定位）
+          #     "action_id": 12,               # 设备动作 ID
+          #     "action_name": "封禁IP",        # 冗余显示名
+          #     "params_schema": [...],        # 动作参数定义快照（设备动作 params_schema）
+          #     "params": {"ip": "src_ip"},    # 参数名 → 本节点字段 key 映射（预填，可改）
+          #     "when": {                      # 触发条件（与路由 when 同结构；null=始终显示）
+          #       "field": "need_ban", "op": "eq", "value": "是"
+          #     }
+          #   }
+          # ]
         },
         {"key": "end", "name": "结束", "type": "end", "fields": [], "routes": []}
       ]
@@ -157,12 +175,15 @@ def validate_flow_structure(
     nodes_json: Any,
     *,
     group_ok: Optional[Callable[[int], bool]] = None,
+    device_action_ok: Optional[Callable[[int, int], bool]] = None,
 ) -> list[str]:
     """发布前校验流程结构，返回错误列表（空=通过）。
 
     Args:
         nodes_json: 流程模板 nodes 字段（完整 JSON 对象）。
         group_ok: 分组存在性校验回调（存在且启用返回 True）。
+        device_action_ok: 设备动作存在性校验回调 ``(device_id, action_id) -> bool``
+            （设备与动作均存在且启用返回 True；用于节点设备动作配置校验）。
     """
     errors: list[str] = []
     if not isinstance(nodes_json, dict):
@@ -357,6 +378,74 @@ def validate_flow_structure(
                 devf = ban_sync.get("device_field")
                 if devf and str(devf) not in fdefs:
                     errors.append(f"{pos}（{name}）：封禁同步设备字段 {devf} 不在本节点字段中")
+
+        # 节点动作 · 设备动作配置校验（设备/动作指向、触发条件、参数映射均须有效）
+        device_actions = n.get("device_actions")
+        if device_actions not in (None, [], ""):
+            if not isinstance(device_actions, list):
+                errors.append(f"{pos}（{name}）：设备动作配置必须为数组")
+            else:
+                seen_da: set[str] = set()
+                for di, da in enumerate(device_actions):
+                    dpos = f"第 {di + 1} 个设备动作"
+                    if not isinstance(da, dict):
+                        errors.append(f"{pos}（{name}）：{dpos}结构非法")
+                        continue
+                    da_id = da.get("id")
+                    if not da_id or not str(da_id).strip():
+                        errors.append(f"{pos}（{name}）：{dpos}缺少标识（id）")
+                    elif str(da_id) in seen_da:
+                        errors.append(f"{pos}（{name}）：{dpos}标识 {da_id} 重复")
+                    else:
+                        seen_da.add(str(da_id))
+                    dev_id = da.get("device_id")
+                    act_id = da.get("action_id")
+                    if isinstance(dev_id, bool) or not isinstance(dev_id, int):
+                        errors.append(f"{pos}（{name}）：{dpos}未选择执行设备")
+                    elif isinstance(act_id, bool) or not isinstance(act_id, int):
+                        errors.append(f"{pos}（{name}）：{dpos}未选择设备动作")
+                    elif device_action_ok is not None and not device_action_ok(dev_id, act_id):
+                        errors.append(
+                            f"{pos}（{name}）：{dpos}指向的设备动作不存在或已停用"
+                            f"（设备 ID={dev_id}，动作 ID={act_id}）"
+                        )
+                    # 触发条件：与路由条件同结构校验（field 指向 / 操作符 / gt-lt 类型）
+                    when = da.get("when")
+                    if when not in (None, {}, ""):
+                        _, conds = _iter_conds(when)
+                        if not conds:
+                            errors.append(f"{pos}（{name}）：{dpos}触发条件缺少判断条件")
+                        for c in conds:
+                            cf = str(c.get("field") or "")
+                            if not cf:
+                                errors.append(f"{pos}（{name}）：{dpos}触发条件存在未选择判断字段的条件")
+                                continue
+                            if cf not in fkeys:
+                                errors.append(f"{pos}（{name}）：{dpos}触发条件的判断字段 {cf} 不在节点字段中")
+                                continue
+                            cop = c.get("op") or "eq"
+                            if cop not in COND_OPS:
+                                errors.append(
+                                    f"{pos}（{name}）：{dpos}判断字段 {cf} 的操作符 {cop} 不合法"
+                                    f"（仅支持 eq/ne/gt/lt/in/contains）"
+                                )
+                            elif cop in ("gt", "lt") and ftypes.get(cf) not in ("number", "datetime"):
+                                errors.append(
+                                    f"{pos}（{name}）：{dpos}判断字段 {cf} 需为数字或日期时间类型才能使用大于/小于"
+                                )
+                    # 参数映射：参数名 → 节点平铺字段 key
+                    params = da.get("params")
+                    if params not in (None, {}, ""):
+                        if not isinstance(params, dict):
+                            errors.append(f"{pos}（{name}）：{dpos}参数映射必须为对象")
+                        else:
+                            for pname, pfield in params.items():
+                                if pfield in (None, ""):
+                                    continue
+                                if not isinstance(pfield, str) or pfield not in fkeys:
+                                    errors.append(
+                                        f"{pos}（{name}）：{dpos}参数 {pname} 映射的字段 {pfield} 不在节点字段中"
+                                    )
 
         # 路由
         routes = n.get("routes")
@@ -759,3 +848,19 @@ def suggest_route(routes: Any, field_values: dict) -> tuple[Optional[str], Optio
         if matched and suggested is None:
             suggested = to
     return suggested, (default if default is not None else first)
+
+
+def eval_when(when: Any, field_values: dict) -> bool:
+    """评估条件（与路由 when 同结构同口径），用于节点设备动作触发条件等服务端复检。
+
+    - when 为 None / 空结构：视为无条件命中（始终 True）
+    - 多条件按 logic（and/or）聚合；单条件结构归一化后评估
+    - 字段未填/空值视为不命中（与 _eval_cond 一致）
+    """
+    if when is None:
+        return True
+    logic, conds = _iter_conds(when)
+    if not conds:
+        return True
+    results = (_eval_cond(c, field_values) for c in conds)
+    return all(results) if logic == "and" else any(results)

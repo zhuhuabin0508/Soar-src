@@ -60,8 +60,18 @@ export const banWorkflowApi = {
   createManualBan: (data) => request('/ban-workflow/banned-ips', { method: 'POST', body: data }),
   // 删除封禁记录（仅 admin）
   deleteBannedIp: (id) => request(`/ban-workflow/banned-ips/${id}`, { method: 'DELETE' }),
+  // 批量删除封禁记录（仅 admin；生效中且已下发设备的记录先联动设备解封，失败记录保留）
+  batchDeleteBannedIps: (ids) => request('/ban-workflow/banned-ips/batch-delete', {
+    method: 'POST', body: { ids },
+  }),
   // 删除审批工单（仅 admin）
   deleteApproval: (id) => request(`/ban-workflow/approvals/${id}`, { method: 'DELETE' }),
+  // 安博通阻断器黑名单列表（仅 admin）：设备侧实时黑名单，分页拉取
+  anbotongBlacklist: (page = 1, count = 50) =>
+    request(`/ban-workflow/anbotong/blacklist?page=${page}&count=${count}`),
+  // 安博通黑名单单个 IP 精确查询（仅 admin）：404=未封禁属业务结果，异常按 502 报错
+  anbotongBlacklistQuery: (ip) =>
+    request(`/ban-workflow/anbotong/blacklist/query?ip=${encodeURIComponent(ip)}`),
   // 同步安博通封禁：下发前的资产匹配预览（不产生设备调用）
   syncPreview: (ids, deviceId = null) => request('/ban-workflow/banned-ips/sync-preview', {
     method: 'POST', body: { ids, device_id: deviceId },

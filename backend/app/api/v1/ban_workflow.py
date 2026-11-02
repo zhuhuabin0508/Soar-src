@@ -4,7 +4,10 @@
   审批与封禁记录）/取消
 - ``GET/POST/PUT/DELETE /ban-workflow/rules``：触发规则 CRUD（修改实时生效）
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
+- ``GET /ban-workflow/anbotong/blacklist`` + ``GET .../blacklist/query``：安博通黑名单
+  分页拉取与单个 IP 精确查询（仅 admin）
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
+- ``POST /ban-workflow/banned-ips/batch-delete``：封禁记录批量删除（仅 admin）
 - ``GET /ban-workflow/banned-ips/export/csv`` / ``GET .../import/template`` /
   ``POST .../import/csv``：封禁工作台 CSV/Excel 导入导出（导入仅入库待同步）
 - ``POST /ban-workflow/banned-ips/sync-preview`` / ``POST .../sync``：同步安博通封禁前
@@ -14,6 +17,7 @@
 """
 import csv
 import io
+import ipaddress
 import json
 import logging
 from datetime import datetime, timedelta
@@ -833,6 +837,79 @@ def escalate_ticket(
                            comment=str(body.get("comment") or "升级转人工调查"))
 
 
+@router.get("/anbotong/blacklist", dependencies=[Depends(require_role("admin"))])
+def get_anbotong_blacklist(
+    request: Request,
+    page: int = Query(1, ge=1, description="页码（1 起）"),
+    count: int = Query(50, ge=1, le=1000, description="每页条数（1-1000）"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """分页拉取安博通阻断器当前黑名单列表（封禁工作台数据源）。
+
+    调用设备「查询黑名单列表」动作，原样返回设备侧每条黑名单的全部字段
+    （blist / age / leftTime / effectTime / reason / policy_group_name /
+    state / enable / hit_num / node_id 等），供工作台与平台台账对照。
+    设备响应不含总条数：page_full（本页是否满页）用于判定是否还有下一页；
+    页码翻过末页返回空 items + note 提示。
+    """
+    from app.devices.anbotong import list_blacklist_on_anbotong
+
+    result = list_blacklist_on_anbotong(
+        db,
+        page=page,
+        count=count,
+        source="workbench",
+        user_id=user.id,
+        source_ip=request.client.host if request.client else "",
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail=result.get("error") or "安博通阻断器黑名单拉取失败")
+    return {
+        "device": result.get("device"),
+        "page": result.get("page", page),
+        "count": result.get("count", count),
+        "page_full": result.get("page_full", False),
+        "paginated": result.get("paginated", True),
+        "items": result.get("items", []),
+        "note": result.get("note"),
+        "fetched_at": result.get("fetched_at"),
+    }
+
+
+@router.get("/anbotong/blacklist/query", dependencies=[Depends(require_role("admin"))])
+def query_anbotong_blacklist_entry(
+    ip: str = Query(..., min_length=1, max_length=64, description="要查询的 IP 地址"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """在安博通阻断器黑名单中查询单个 IP 是否封禁（工作台「安博通黑名单」IP 查询）。
+
+    调用设备「查询指定黑名单」动作精确查询单个 IP：条目不存在时设备返回
+    HTTP 404，已在设备侧归一为业务结果（found=False，note 说明），不视为
+    查询失败；其余异常（超时/网络/5xx）按 502 报错，与「未封禁」区分。
+    """
+    target = ip.strip()
+    try:
+        ipaddress.ip_address(target)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="IP 地址格式不合法")
+
+    from app.devices.anbotong import query_blacklist_on_anbotong
+
+    result = query_blacklist_on_anbotong(db, target, source="workbench", user_id=user.id)
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail=result.get("error") or "安博通阻断器黑名单查询失败")
+    return {
+        "device": result.get("device"),
+        "ip": target,
+        "found": bool(result.get("found")),
+        "entry": result.get("entry"),
+        "note": result.get("note"),
+        "fetched_at": beijing_now().isoformat(),
+    }
+
+
 # ======================================================================
 # 封禁工作台（已封禁 IP 模块，数据源 ban_records）
 # ======================================================================
@@ -1226,6 +1303,84 @@ def list_banned_ips(
     return {"total": total, "items": [_record_item(db, r) for r in rows], "page": page, "page_size": page_size}
 
 
+class BannedIpBatchDeleteBody(BaseModel):
+    ids: list[int] = Field(..., min_length=1, max_length=200, description="待删除的封禁记录 ID")
+
+
+@router.post("/banned-ips/batch-delete", dependencies=[Depends(require_role("admin"))])
+def batch_delete_banned_ips(
+    body: BannedIpBatchDeleteBody, request: Request,
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+) -> dict:
+    """批量删除封禁记录（仅 admin）。
+
+    与单条删除逻辑一致：「生效中」且由本平台下发设备的记录先联动设备解封，
+    解封失败的记录保留并计入失败（避免设备侧黑名单残留），其余记录删除并记录审计日志。
+    逐条独立处理，单条失败不影响其他记录。
+
+    注意：本路由必须注册在 ``/banned-ips/{record_id}`` 之前，
+    否则 Starlette 会先匹配到参数路由导致 POST 405。
+    """
+    client_ip = request.client.host if request.client else ""
+    ids = list(dict.fromkeys(body.ids))  # 去重且保持顺序
+    success_n = failed_n = 0
+    items: list[dict] = []
+    for rid in ids:
+        record = db.query(BanRecord).filter(BanRecord.id == rid).first()
+        if record is None:
+            failed_n += 1
+            items.append({"id": rid, "ip": "", "success": False, "message": "封禁记录不存在"})
+            continue
+        device = None
+        unban_result: dict = {}
+        err_msg = ""
+        if record.status == "active" and _record_issued_to_device(record):
+            device, action, device_err = ban_target.resolve_unblock_device(db, record.ban_device)
+            if device_err or device is None or action is None:
+                err_msg = f"{device_err or '未找到可用的解封设备'}，已保留记录（设备侧封禁仍生效）"
+            else:
+                unban_result = ban_target.run_unblock(
+                    db, device, action, ip=record.ip, source="ban_workbench",
+                    user_id=user.id, source_ip=client_ip,
+                )
+                ok, err = ban_target.check_unblock_result(unban_result)
+                if not ok:
+                    logger.error(
+                        "批量删除前解封设备失败 ip=%s device=%s: %s", record.ip, device.name, err,
+                    )
+                    err_msg = f"设备「{device.name}」解封失败：{err}，已保留记录（设备侧封禁仍生效）"
+        if err_msg:
+            failed_n += 1
+            items.append({
+                "id": rid, "ip": record.ip, "success": False, "message": err_msg,
+                "status_code": unban_result.get("status_code"),
+            })
+            continue
+        snapshot = {"id": record.id, "ip": record.ip, "status": record.status, "record_id": record.record_id}
+        db.delete(record)
+        db.commit()
+        write_audit(
+            db, action="delete", resource_type="ban_record", resource_id=rid,
+            detail={"snapshot": snapshot, "device": device.name if device else "",
+                    "unblocked": bool(device),
+                    "status_code": unban_result.get("status_code"),
+                    "batch": True},
+            operator=user.username, ip_address=client_ip,
+            user_id=user.id,
+        )
+        success_n += 1
+        items.append({"id": rid, "ip": record.ip, "success": True, "message": "已删除"})
+    return {
+        "ok": True,
+        "total": len(ids),
+        "success": success_n,
+        "failed": failed_n,
+        "items": items,
+        "message": "批量删除完成" if failed_n == 0
+        else f"成功 {success_n} 条，失败 {failed_n} 条（失败记录已保留）",
+    }
+
+
 @router.get("/banned-ips/{record_id}", dependencies=[Depends(require_role("admin"))])
 def get_banned_ip(record_id: int, db: Session = Depends(get_db)) -> dict:
     """封禁记录详情：封禁方案 + 研判结论 + 决策依据 + 审批记录 + 关联告警列表。"""
@@ -1297,11 +1452,12 @@ def get_banned_ip(record_id: int, db: Session = Depends(get_db)) -> dict:
 def _record_issued_to_device(record: BanRecord) -> bool:
     """记录是否由本平台真实下发到封禁设备。
 
-    仅「导入封禁 / 手动封禁」且已记录封堵设备名的记录会真正调用设备；
-    工单同步、自动/审批封禁只落平台记录（设备下发由各自链路负责），
-    解封时不能对其调用设备，否则会对不存在的条目发无效请求。
+    仅「导入封禁 / 手动封禁 / 工单同步」且已记录封堵设备名的记录会真正调用设备
+    （工单封禁同步自联动安博通下发后，设备下发成功才落生效中记录并记录实际设备名）；
+    自动/审批封禁只落平台记录（设备下发由各自链路负责），解封时不能对其调用设备，
+    否则会对不存在的条目发无效请求。
     """
-    return bool((record.ban_device or "").strip()) and (record.ban_source or "") in ("import", "manual")
+    return bool((record.ban_device or "").strip()) and (record.ban_source or "") in ("import", "manual", "ticket")
 
 
 class UnbanBody(BaseModel):

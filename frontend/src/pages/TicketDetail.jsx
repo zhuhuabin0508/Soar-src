@@ -8,16 +8,16 @@ import {
   ArrowLeft, CheckCircle2, XCircle, Clock, Paperclip, X,
   SendHorizonal, Ban, UserRound, ChevronRight, Flag, Link2, Archive, ArchiveRestore,
   ShieldCheck, ShieldBan, Database, AlertTriangle, ClipboardList, Plus, UsersRound, Users,
-  Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2,
+  Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2, Info,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
-import { inputCls, labelCls, hintCls } from '../components/property/FormControls'
+import { inputBaseCls, inputCls, labelCls, hintCls } from '../components/property/FormControls'
 import { Button, PageContainer, CompactSelect, DatePicker } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
-import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
+import { evalRoutes, evalWhen, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, durationToSeconds, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
 import { validateIPExpression } from '../utils/ipValidation'
@@ -42,6 +42,7 @@ const ACTION_META = {
   transfer: { label: '转办', cls: 'bg-sky-500/10 text-sky-500', dot: 'border-sky-500' },
   claim: { label: '认领', cls: 'bg-violet-500/10 text-violet-500', dot: 'border-violet-500' },
   comment: { label: '评论', cls: 'bg-muted text-muted-foreground', dot: 'border-muted-foreground/50' },
+  device_action: { label: '设备动作', cls: 'bg-cyan-500/10 text-cyan-500', dot: 'border-cyan-500' },
 }
 // 流转记录 comment 的显示标题（按动作区分语义）
 const ACTION_COMMENT_LABELS = {
@@ -491,10 +492,27 @@ function fmtBanRemaining(ms) {
   return `${mm}分钟`
 }
 
-// 安全上下文 · 封禁查询：进入 Tab 自动查询工单涉及的 IP，支持手动输入任意 IP 查询
+// 安博通黑名单条目字段中文标签（未列出的键原样展示键名，保证设备新字段也能看到）
+const ANBOTONG_ENTRY_LABELS = {
+  blist: '黑名单条目', age: '封禁时长', leftTime: '剩余时长', effectTime: '生效时间',
+  reason: '封禁原因', policy_group_name: '策略组', state: '状态', enable: '启用',
+  hit_num: '命中次数', node_id: '节点 ID',
+}
+
+// 安博通条目字段值格式化：age/leftTime 秒值转中文时长（-1 为永久）；enable 0/1 转启用/停用
+function fmtBanEntryVal(key, v) {
+  if (v == null || v === '') return <span className="text-muted-foreground">--</span>
+  if (key === 'age' || key === 'leftTime') {
+    const n = Number(v)
+    if (!Number.isNaN(n)) return n < 0 ? '永久' : fmtBanRemaining(n * 1000)
+  }
+  if (key === 'enable') return v === 1 || v === '1' || v === true ? '启用' : '停用'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
+// 安全上下文 · 封禁查询：进入 Tab 自动查询工单涉及的 IP（安博通阻断器「查询指定黑名单」实时查询）
 function BanStatusView({ autoIps }) {
-  const navigate = useNavigate()
-  const { id: currentTicketId } = useParams()
   const [query, setQuery] = useState(autoIps.join('，'))
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -515,14 +533,30 @@ function BanStatusView({ autoIps }) {
       .finally(() => { if (ok()) setLoading(false) })
   }, [])
   useEffect(() => { if (autoIps.length) doQuery(autoIps.join(',')) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const entries = result ? Object.entries(result) : []
+  const results = result && result.results ? Object.entries(result.results) : []
   return (
     <div className="rounded-md border border-border bg-card p-5">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <ShieldBan className="h-4 w-4 text-primary" />
-        <span className="font-semibold text-foreground">已封禁 IP 查询</span>
-        <span className="text-xs text-muted-foreground">查询 IP 地址是否正处于封禁期间（工作台封禁记录 / 工单同步 / 旧版封禁列表）</span>
+        <span className="font-semibold text-foreground">封禁状态查询（安博通阻断器）</span>
+        <span className="text-xs text-muted-foreground">通过安博通阻断器「查询指定黑名单」动作实时查询设备侧黑名单信息</span>
       </div>
+      {result?.device && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 font-medium text-foreground">
+            <ShieldCheck className="h-3.5 w-3.5 text-primary" />{result.device.name}
+          </span>
+          <span>共查询 {results.length} 个 IP，封禁中 {results.filter(([, st]) => st.banned).length} 个</span>
+        </div>
+      )}
+      {result?.device_error && (
+        <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-[13px] text-amber-600">
+          <div className="flex items-center gap-1.5 font-medium">
+            <AlertTriangle className="h-4 w-4 shrink-0" />安博通阻断器不可用
+          </div>
+          <p className="mt-1 break-all">{result.device_error}</p>
+        </div>
+      )}
       <div className="mb-3 flex gap-2">
         <input className={inputCls} placeholder="输入 IP 地址，多个 IP 用逗号分隔"
           value={query} onChange={(e) => setQuery(e.target.value)}
@@ -534,9 +568,9 @@ function BanStatusView({ autoIps }) {
       {!result && !loading && (
         <p className={hintCls}>{autoIps.length ? '正在自动查询工单涉及的 IP…' : '暂无自动查询的 IP，可手动输入 IP 查询封禁状态'}</p>
       )}
-      {!!entries.length && (
+      {!!results.length && (
         <div className="space-y-2">
-          {entries.map(([ip, st]) => (
+          {results.map(([ip, st]) => (
             <div key={ip} className="rounded-md border border-border p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-sm font-medium text-foreground">{ip}</span>
@@ -545,42 +579,28 @@ function BanStatusView({ autoIps }) {
                 ) : (
                   <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">未封禁</span>
                 )}
+                {st.error && <span className="text-xs text-red-500">查询失败：{st.error}</span>}
+                {!st.error && st.note && <span className="text-xs text-amber-600">{st.note}</span>}
               </div>
-              {st.banned ? (
-                <div className="mt-2 space-y-2">
-                  {st.items.map((it, i) => (
-                    <div key={i} className="rounded-md bg-muted p-2.5 text-[13px]">
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="font-medium text-foreground">{it.source_label}</span>
-                        <span className="text-muted-foreground">等级：{it.ban_level_label}</span>
-                        <span className="text-muted-foreground">
-                          {it.is_permanent ? '永久封禁' : `解封时间：${it.expire_time ? new Date(it.expire_time).toLocaleString('zh-CN', { hour12: false }) : '--'}`}
-                        </span>
-                        {!it.is_permanent && it.remaining_ms != null && (
-                          <span className="text-muted-foreground">剩余：{fmtBanRemaining(it.remaining_ms)}</span>
-                        )}
+              {st.entry ? (
+                <div className="mt-2 rounded-md bg-muted p-2.5 text-[13px]">
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+                    {Object.entries(st.entry).map(([k, v]) => (
+                      <div key={k} className="flex min-w-0 items-start gap-2">
+                        <span className="shrink-0 text-muted-foreground">{ANBOTONG_ENTRY_LABELS[k] || k}：</span>
+                        <span className="min-w-0 break-all text-foreground">{fmtBanEntryVal(k, v)}</span>
                       </div>
-                      <div className="mt-1 text-muted-foreground">开始封禁时间：{it.started_at ? new Date(it.started_at).toLocaleString('zh-CN', { hour12: false }) : '--'}</div>
-                      {it.ban_device && <div className="mt-1 text-muted-foreground">封禁设备：{it.ban_device}</div>}
-                      {it.reason && <div className="mt-1 break-all text-muted-foreground">原因：{it.reason}</div>}
-                      {it.ticket_id && (
-                        // 来源即当前工单时 navigate 同路由无任何变化，改为静态标识避免“点击无响应”
-                        Number(it.ticket_id) === Number(currentTicketId) ? (
-                          <span className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-muted-foreground">
-                            <Link2 className="h-3.5 w-3.5" />封禁来源：当前工单 {it.ticket_no}
-                          </span>
-                        ) : (
-                          <button onClick={() => navigate(`/tickets/${it.ticket_id}`)}
-                            className="mt-1.5 inline-flex items-center gap-1 text-[13px] text-primary hover:underline">
-                            <Link2 className="h-3.5 w-3.5" />查看来源工单 {it.ticket_no}
-                          </button>
-                        )
-                      )}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              ) : (
-                <p className="mt-1.5 text-[13px] text-muted-foreground">该 IP 暂未封禁</p>
+              ) : (!st.error && (
+                <p className="mt-1.5 text-[13px] text-muted-foreground">设备上未找到该 IP 的黑名单条目</p>
+              ))}
+              {st.raw != null && (
+                <details className="mt-1.5">
+                  <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">设备原始响应</summary>
+                  <pre className="mt-1 max-h-56 overflow-auto rounded bg-muted p-2 text-xs leading-relaxed text-foreground">{JSON.stringify(st.raw, null, 2)}</pre>
+                </details>
               )}
             </div>
           ))}
@@ -627,6 +647,12 @@ export default function TicketDetail() {
   // 时间线内部评论（区别于处置意见）
   const [commentDraft, setCommentDraft] = useState('')
   const [commenting, setCommenting] = useState(false)
+  // 节点设备动作执行：参数草稿（配置项 id → {参数名: 值}，未编辑时按字段映射实时预填）
+  const [deviceParams, setDeviceParams] = useState({})
+  const [deviceExecuting, setDeviceExecuting] = useState('')
+  const [deviceResults, setDeviceResults] = useState({})
+  // 执行成功标记（配置项 id → true）：本节点停留期间按钮置"已执行 ✓"防重复下发，可点"再次执行"解除
+  const [deviceDone, setDeviceDone] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -678,12 +704,14 @@ export default function TicketDetail() {
   )
   // 条件路由锁定：填写的字段值命中路由条件时（如「是否需要处置=是」→ 应急处置），
   // 去向强制为该条件路由（按钮禁用不可改选，后端 _resolve_route 同步强制校验）；
-  // 条件不再命中时清空残留（多路由回到手动选择，避免沿用旧值导致误流转）
+  // 无建议时一律清空（含单路由节点）：跨节点流转后残留上一个节点的选择
+  // （如研判分析的 n_emergency）会把本节点不存在/自身 key 当作去向提交，被后端白名单拒绝
   useEffect(() => {
-    if (routeSuggested) setRouteTo(routeSuggested)
-    else if (routeOptions.length > 1) setRouteTo('')
-  }, [routeSuggested, routeOptions.length])
+    setRouteTo(routeSuggested || '')
+  }, [currentNode?.key, routeSuggested]) // eslint-disable-line react-hooks/exhaustive-deps
   const currentFields = currentNode?.fields || []
+  // 字段定义索引（含匹配规则展开的扩展字段）：设备动作参数映射按字段类型做值归一
+  const fieldDefsByKey = useMemo(() => fieldDefMap(currentFields), [currentFields])
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
     const out = []
@@ -693,6 +721,28 @@ export default function TicketDetail() {
     }
     return out
   }, [currentFields, values]) // eslint-disable-line react-hooks/exhaustive-deps
+  // 命中触发条件的设备动作（如安博通阻断器封禁/解封）：按当前表单值实时过滤，未配置触发条件=始终展示
+  const visibleDeviceActions = useMemo(
+    () => (currentNode?.device_actions || []).filter((a) => a && a.id && evalWhen(a.when, values)),
+    [currentNode, values],
+  )
+  // 设备动作参数取值：手动编辑值优先，其次按映射字段的当前表单值预填；
+  // 被映射字段为时长类型时按设备口径换算为秒（"永久"→0），避免把 "30天" 原样传给设备
+  const deviceParamValue = (a, p) => {
+    const draft = deviceParams[a.id]
+    if (draft && p.name in draft) return draft[p.name]
+    const fk = a.params?.[p.name]
+    if (!fk) return ''
+    const fv = values[fk]
+    if (fv === undefined || fv === null) return ''
+    if (fieldDefsByKey[fk]?.type === 'duration') return durationToSeconds(fv)
+    return String(fv)
+  }
+  // 时长字段映射提示：预填值已换算，说明单位口径避免处理人误改
+  const isDurationMapped = (a, p) => {
+    const fk = a.params?.[p.name]
+    return !!(fk && fieldDefsByKey[fk]?.type === 'duration' && !(deviceParams[a.id] && p.name in deviceParams[a.id]))
+  }
 
   // 联动字段刚展开时自动定位并聚焦：如「是否需要处置」选「是」后出现必填的「处置建议」，
   // 避免处理人仍按原位置点击提交、实际漏填被拦截却以为"没有反应"
@@ -822,8 +872,9 @@ export default function TicketDetail() {
     // 未命中规则的扩展字段的值不提交
     const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
     if (routeOptions.length > 1 && !routeTo && !routeSuggested) return toast.error('请选择流转去向')
-    // 条件路由命中 → 强制走条件去向（与后端 _resolve_route 一致，处理人不可改选）
-    const targetKey = routeSuggested || routeTo || ''
+    // 条件路由命中 → 强制走条件去向（与后端 _resolve_route 一致，处理人不可改选）；
+    // 单路由节点忽略 routeTo（防跨节点残留值），留空由后端按默认路由流转
+    const targetKey = routeSuggested || (routeOptions.length > 1 ? routeTo : '') || ''
     const target = nodes.find((n) => n.key === targetKey)
     // 会签感知的确认文案：当前并行节点中间提交 / 目标并行节点 / 目标结束 / 普通流转
     const sp = ticket?.sign_progress
@@ -981,6 +1032,43 @@ export default function TicketDetail() {
         .then((res) => { setTicket(res); toast.success('认领成功，本节点已锁定为您处理') })
         .catch((e) => toast.error(e.message || '认领失败'))
         .finally(() => setClaiming(false))
+    })
+  }
+
+  // 执行节点设备动作：参数按映射预填可改，服务端按触发条件复检后调用设备 API，时间线留痕
+  const handleExecuteDeviceAction = (a) => {
+    const params = {}
+    const missing = []
+    ;(a.params_schema || []).forEach((p) => {
+      if (!p?.name) return
+      const v = String(deviceParamValue(a, p) ?? '').trim()
+      if (!v) { if (p.required) missing.push(p.description || p.name); return }
+      params[p.name] = v
+    })
+    if (missing.length) return toast.error(`请填写动作参数：${missing.join('、')}`)
+    const paramText = Object.entries(params).map(([k, v]) => `${k}=${v}`).join('，')
+    confirm({
+      title: `执行设备动作「${a.action_name || ''}」`,
+      message: `将对设备「${a.device_name || '--'}」执行「${a.action_name || '--'}」${paramText ? `，参数：${paramText}` : ''}。请确认后执行。`,
+      confirmText: '确认执行',
+    }).then((ok) => {
+      if (!ok) return
+      setDeviceExecuting(a.id)
+      ticketApi.executeDeviceAction(id, { action_id: a.id, params, field_values: values })
+        .then((res) => {
+          setDeviceResults((s) => ({ ...s, [a.id]: res }))
+          if (res.success) {
+            toast.success(`「${a.action_name || '设备动作'}」执行成功，已写入流转历史`)
+            // 防重：成功后置"已执行"，节点停留期间不可重复下发（需点"再次执行"解除）
+            setDeviceDone((s) => ({ ...s, [a.id]: true }))
+            // 静默刷新时间线（不重置当前节点表单，与智能体研判轮询同口径）
+            ticketApi.getTicket(id).then((t) => setTicket(t)).catch(() => {})
+          } else {
+            toast.error(res.note || res.error || `设备返回 HTTP ${res.status_code ?? '--'}，执行失败`)
+          }
+        })
+        .catch((e) => toast.error(e.message || '设备动作执行失败'))
+        .finally(() => setDeviceExecuting(''))
     })
   }
 
@@ -1241,7 +1329,35 @@ export default function TicketDetail() {
                             ))}
                           </div>
                         )}
-                        {r.comment && (
+                        {r.comment && (r.action === 'device_action' ? (() => {
+                          // 设备动作留痕：comment 为 JSON 摘要（设备/动作/参数/结果），解析为结果卡片展示
+                          let sum = null
+                          try { sum = JSON.parse(r.comment) } catch { sum = null }
+                          if (!sum || typeof sum !== 'object') {
+                            return (
+                              <div className="mt-2 rounded-r-md border-l-2 border-cyan-500/60 bg-cyan-500/5 px-3 py-2 text-sm leading-relaxed text-foreground">
+                                <RichTextView text={r.comment} />
+                              </div>
+                            )
+                          }
+                          return (
+                            <div className={`mt-2 rounded-r-md border-l-2 px-3 py-2 ${sum.success ? 'border-emerald-500/60 bg-emerald-500/5' : 'border-red-500/60 bg-red-500/5'}`}>
+                              <div className={`mb-1 flex items-center gap-1.5 text-[11px] font-medium ${sum.success ? 'text-emerald-500' : 'text-red-500'}`}>
+                                {sum.success
+                                  ? <><CheckCircle2 className="h-3.5 w-3.5" />执行成功{sum.status_code ? `（HTTP ${sum.status_code}）` : ''}</>
+                                  : <><AlertTriangle className="h-3.5 w-3.5" />执行失败{sum.status_code ? `（HTTP ${sum.status_code}）` : ''}</>}
+                              </div>
+                              <div className="space-y-1 text-xs text-muted-foreground">
+                                <div>设备：<span className="text-foreground">{sum.device || '--'}</span>　动作：<span className="text-foreground">{sum.action || '--'}</span></div>
+                                {Object.keys(sum.params || {}).length > 0 && (
+                                  <div className="break-all">参数：{Object.entries(sum.params).map(([k, v]) => `${k}=${v}`).join('，')}</div>
+                                )}
+                                {sum.note && <div className="text-amber-500">{String(sum.note)}</div>}
+                                {sum.error && <div className="break-all">错误：{String(sum.error)}</div>}
+                              </div>
+                            </div>
+                          )
+                        })() : (
                           <div className={`mt-2 rounded-r-md border-l-2 px-3 py-2 ${
                             r.action === 'rollback' ? 'border-amber-500/60 bg-amber-500/5' : 'border-primary/60 bg-primary/5'
                           }`}>
@@ -1250,7 +1366,7 @@ export default function TicketDetail() {
                             </div>
                             <div className="text-sm leading-relaxed text-foreground"><RichTextView text={r.comment} /></div>
                           </div>
-                        )}
+                        ))}
                         {routeTarget && (
                           <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
                             {r.action === 'rollback'
@@ -1456,7 +1572,9 @@ export default function TicketDetail() {
                             </span>
                           ) : (
                             <>
-                              <input type="number" min="0" className={fieldCls(f)} placeholder="如：30"
+                              <input type="number" min="0"
+                                className={`${inputBaseCls} min-w-0 flex-1 ${missingKeys.includes(f.key) ? '!border-destructive ring-1 !ring-destructive' : ''}`}
+                                placeholder="如：30"
                                 value={parts.num}
                                 onChange={(e) => setFieldValue(f.key, durationFromParts({ ...parts, num: e.target.value }))} />
                               <div className="w-24 shrink-0">
@@ -1492,6 +1610,93 @@ export default function TicketDetail() {
                 )
                 })}
                 {!currentFields.length && <div className="rounded-md border border-dashed border-border py-4 text-center text-sm text-muted-foreground">本节点无需填写字段</div>}
+
+                {/* 设备动作：按节点触发条件命中才展示（如「是否封禁=是」出现封禁执行卡片） */}
+                {visibleDeviceActions.map((a) => {
+                  const result = deviceResults[a.id]
+                  const executing = deviceExecuting === a.id
+                  return (
+                    <div key={a.id} className="rounded-md border border-cyan-500/40 bg-cyan-500/[0.03] p-3.5">
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <Zap className="h-4 w-4 shrink-0 text-cyan-500" />
+                        <span className="text-sm font-semibold text-foreground">
+                          {a.device_name || '设备'} · {a.action_name || '动作'}
+                        </span>
+                        <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-500">设备动作</span>
+                        <span className="text-xs text-muted-foreground">填写内容命中触发条件后展示</span>
+                      </div>
+                      {(a.params_schema || []).filter((p) => p?.name).map((p) => (
+                        <div key={p.name} className="mb-2">
+                          <label className={labelCls}>
+                            {p.description || p.name}
+                            {p.required && <span className="text-red-500">*</span>}
+                            {a.params?.[p.name] && (
+                              <span className="ml-1.5 font-normal text-muted-foreground">（预填自表单字段）</span>
+                            )}
+                          </label>
+                          <input className={inputCls}
+                            placeholder={p.placeholder || (p.type === 'number' ? '数字' : '')}
+                            type={p.type === 'number' ? 'number' : 'text'}
+                            value={deviceParamValue(a, p)}
+                            disabled={executing}
+                            onChange={(e) => setDeviceParams((s) => ({
+                              ...s, [a.id]: { ...(s[a.id] || {}), [p.name]: e.target.value },
+                            }))} />
+                          {isDurationMapped(a, p) && (
+                            <p className={hintCls}>已按设备要求换算为秒（永久封禁 = 0），可直接修改</p>
+                          )}
+                        </div>
+                      ))}
+                      <div className="flex items-center gap-2">
+                        <Button variant="secondary" size="sm" className="flex-1"
+                          loading={executing} disabled={submitting || (!!deviceDone[a.id] && !executing)}
+                          onClick={() => handleExecuteDeviceAction(a)}>
+                          {deviceDone[a.id]
+                            ? <>已执行 ✓</>
+                            : <><Zap className="mr-1 h-3.5 w-3.5" />执行{a.action_name ? `「${a.action_name}」` : '动作'}</>}
+                        </Button>
+                        {deviceDone[a.id] && !executing && (
+                          <button type="button"
+                            onClick={() => setDeviceDone((s) => ({ ...s, [a.id]: false }))}
+                            className="shrink-0 rounded px-2 py-1 text-[11px] text-muted-foreground underline underline-offset-2 transition hover:text-foreground">
+                            再次执行
+                          </button>
+                        )}
+                      </div>
+                      {result && (
+                        <div className="mt-2 space-y-1.5">
+                          {result.success ? (
+                            <p className="flex items-center gap-1.5 text-xs text-emerald-500">
+                              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                              执行成功（HTTP {result.status_code ?? '--'} / {result.latency_ms ?? '--'}ms），已写入流转历史
+                            </p>
+                          ) : (
+                            <p className="flex items-start gap-1.5 text-xs text-destructive">
+                              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              执行失败：{result.error || `HTTP ${result.status_code ?? '--'}`}
+                            </p>
+                          )}
+                          {result.note && (
+                            <p className="flex items-start gap-1.5 text-xs text-amber-500">
+                              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              {result.note}
+                            </p>
+                          )}
+                          {result.response_body != null && String(result.response_body).trim() !== '' && (
+                            <details className="rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
+                              <summary className="cursor-pointer select-none text-muted-foreground">查看设备原始返回</summary>
+                              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-background/60 p-2 text-[11px] leading-relaxed text-muted-foreground">
+                                {typeof result.response_body === 'string'
+                                  ? result.response_body
+                                  : JSON.stringify(result.response_body, null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
 
                 {routeOptions.length > 1 && (
                   <div>

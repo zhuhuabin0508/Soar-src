@@ -34,6 +34,20 @@ export function durationFromParts({ permanent, num, unit }) {
   return `${num}${unit || '天'}`
 }
 
+// 时长字段存储值（"5分钟"/"2小时"/"30天"/"永久"）→ 设备参数秒数；
+// "永久"→"0"（安博通 duration=0 即永久），无法解析返回空串（不预填，交由必填校验拦截）
+export function durationToSeconds(value) {
+  const s = String(value ?? '').trim()
+  if (!s) return ''
+  if (s === '永久') return '0'
+  const m = s.match(/^(\d+(?:\.\d+)?)(分钟|小时|天)$/)
+  if (!m) return ''
+  const n = Number(m[1])
+  const sec = m[2] === '分钟' ? n * 60 : m[2] === '小时' ? n * 3600 : n * 86400
+  const r = Math.round(sec)
+  return r > 0 ? String(r) : ''
+}
+
 // ===== 引用联动字段选项收集（与后端 collect_ref_options 一致） =====
 // 从已提交记录（TicketNodeRecord 或 {field_values} 对象）按顺序去重收集被引用字段的值；
 // nodes 接受快照对象 {nodes:[...]} 或节点数组
@@ -149,6 +163,16 @@ export function evalRoutes(routes, fieldValues) {
     if (matched) { suggested = r.to; break }
   }
   return { options, suggested }
+}
+
+// 评估单个 when 条件（与后端 eval_when 同口径）：null/空结构=无条件命中；
+// 用于节点设备动作触发条件等服务端复检同口径的前端判断
+export function evalWhen(when, fieldValues) {
+  const { logic, conds } = normWhen(when)
+  if (!conds.length) return true
+  return logic === 'or'
+    ? conds.some((c) => evalCond(c, fieldValues))
+    : conds.every((c) => evalCond(c, fieldValues))
 }
 
 // 字段值展示格式化：布尔 → 是/否；空 → '--'；附件 → 文件名
