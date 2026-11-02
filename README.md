@@ -50,7 +50,7 @@
 | 组件 | 运行形态 | 说明 |
 |------|---------|------|
 | Nginx | 宿主机 systemd（`nginx.service`） | 8080 HTTPS 终止 + 80 跳转；安全响应头；CSP nonce + strict-dynamic |
-| 后端 API | 容器 `soar-backend-dev` | 源码挂载 + `uvicorn --reload`，改 `.py` 自动重启；端口仅绑 `127.0.0.1:8001` |
+| 后端 API | 容器 `soar-backend-dev` | 源码挂载，uvicorn 直跑（带 healthcheck；改 `.py` 需 `docker restart soar-backend-dev`）；端口仅绑 `127.0.0.1:8001` |
 | 异步任务 | 容器 `soar-worker-dev` | 源码挂载 + Celery（改代码需手动重启容器） |
 | 定时调度 | 容器 `soar-beat-dev` | 源码挂载 + Celery Beat |
 | 数据库 | 容器 `soar-postgres` | PostgreSQL 15，端口仅绑 `127.0.0.1:5432` |
@@ -110,7 +110,7 @@ bash deploy/deploy.sh
 
 | 改动 | 生效方式 |
 |------|---------|
-| 后端 `.py` | `git pull` 后 uvicorn `--reload` 自动生效，无需重启 |
+| 后端 `.py` | `docker restart soar-backend-dev`（uvicorn 已禁用 `--reload`，防 reloader 竞态卡死） |
 | Celery 相关 `.py` | `docker restart soar-worker-dev soar-beat-dev` |
 | 前端源码 | `cd frontend && npm run build`（Nginx 直接读 dist，改完浏览器强刷） |
 | `deploy/nginx.conf` | 拷贝到 `/etc/nginx/conf.d/secops.conf` 后 `nginx -t && systemctl reload nginx`（deploy.sh 第 5 步会自动做） |

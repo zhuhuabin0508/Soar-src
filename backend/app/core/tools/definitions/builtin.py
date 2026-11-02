@@ -362,6 +362,37 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "enabled": True,
     },
     {
+        "name": "generate_document",
+        "description": (
+            "生成文档文件并保存到智能体文件库，供用户下载。支持 Word(.docx)、Excel(.xlsx)、Markdown(.md) 三种格式。"
+            "正文用 Markdown 语法书写并自动转换为目标格式：#/##/### 标题、- 与 1. 列表、**粗体**、|竖线|表格、```围栏```代码块；"
+            "xlsx 中每个表格转为独立工作表（表头加粗+冻结），文字写入「文档」表。"
+            "当用户要求『生成/导出文档、写一份报告、整理成 Word/Excel/Markdown 文件』时调用本工具，"
+            "把要写入文档的数据、分析结论直接填充到 content 中（支持结合工具查询结果与上下文动态生成）。"
+            "返回 {ok, file_name, file_id, file_type, file_size, download_url}，用户可在对话工具卡片或智能体文件库下载。"
+            "调用示例：generate_document(file_name='资产风险分析报告', format='docx', content='# 概况\\n本期共发现 3 个风险。\\n\\n## 风险清单\\n| IP | 等级 |\\n| --- | --- |\\n| 1.1.1.1 | 高 |', options={'title': '周报', 'font_size': 12})"
+        ),
+        "parameters_schema": [
+            {"name": "file_name", "type": "String", "required": True, "description": "文件名（可不含扩展名，如 '资产分析报告'；非法字符会被自动清洗）"},
+            {"name": "content", "type": "String", "required": True, "description": "文档正文（Markdown 语法）：把要写入文档的数据、结论、表格直接填充进来"},
+            {"name": "format", "type": "String", "required": False, "description": "目标格式：docx（默认）/ xlsx / md"},
+            {"name": "options", "type": "Object", "required": False, "description": "可选格式配置对象：{title: 文档大标题, body_font: 正文字体（docx，默认微软雅黑）, font_size: 正文字号（docx，默认11）, header_bold: 表头加粗（xlsx，默认true）, freeze_header: 冻结表头（xlsx，默认true）}"},
+        ],
+        "code": (
+            "async def run(**kwargs):\n"
+            "    file_name = kwargs.get('file_name') or ''\n"
+            "    content = kwargs.get('content') or ''\n"
+            "    fmt = kwargs.get('format') or 'docx'\n"
+            "    options = kwargs.get('options') or None\n"
+            "    if not file_name:\n"
+            "        return {'error': '请提供 file_name 参数（文档文件名）'}\n"
+            "    return save_document_as_agent_file(content, file_name, fmt, options)\n"
+        ),
+        "tool_type": "code",
+        "category": "file_operations",
+        "enabled": True,
+    },
+    {
         "name": "save_memory",
         "description": (
             "将一条键值对信息保存到智能体长期记忆中，供后续对话或 recall_memory 工具检索。"

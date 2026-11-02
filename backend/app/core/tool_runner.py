@@ -519,6 +519,388 @@ def save_json_as_agent_file(
         db.close()
 
 
+# ============ 文档生成（generate_document 工具宿主能力） ============
+# 支持 Word(.docx) / Excel(.xlsx) / Markdown(.md) 三种格式：
+# 工具代码传入 Markdown 正文，宿主解析块结构（标题/列表/表格/代码块）后
+# 转换为目标格式，落盘并注册 AgentFile（与上传文件同库，自动获得下载能力）。
+
+_GENERATE_DOC_FORMATS = ("docx", "xlsx", "md")
+
+# 文档内容长度上限（字符）：超出直接拒绝，防止模型超长输出拖垮内存与落盘
+_GENERATE_DOC_MAX_CHARS = 400_000
+
+# 文件名非法字符（Windows/Linux 保留符号 + 控制字符）
+_UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t\x00-\x1f]')
+
+# 行内粗体标记 **text**
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _sanitize_doc_name(suggested_name: str, fmt: str) -> str:
+    """清洗建议文件名并规范扩展名，返回可入库的 original_name。
+
+    - 去掉路径分隔符与非法字符（防目录穿越/异常文件名）；
+    - 剥离调用方可能携带的任意扩展名，统一追加规范扩展；
+    - 空名给默认值、超长截断（上限 80 字符）。
+    """
+    base = _UNSAFE_FILENAME_RE.sub("", (suggested_name or "").strip()).strip(". ")
+    if not base:
+        base = f"agent文档_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if len(base) > 80:
+        base = base[:80]
+    stem = os.path.splitext(base)[0].strip(". ") or "agent文档"
+    return stem + f".{fmt}"
+
+
+def _parse_markdown_blocks(content: str) -> list[dict]:
+    """把 Markdown 文本解析为块序列，供 docx/xlsx 生成器消费（纯函数，便于单测）。
+
+    支持的块类型：
+    - ``{"kind": "heading", "level": 1-4, "text": ...}``
+    - ``{"kind": "paragraph", "text": ...}``（连续非空行合并）
+    - ``{"kind": "list", "ordered": bool, "items": [str, ...]}``
+    - ``{"kind": "table", "rows": [[cell, ...], ...]}``（首行为表头，分隔行已剔除）
+    - ``{"kind": "code", "text": ...}``（``` 围栏代码块）
+    """
+    lines = content.splitlines()
+    blocks: list[dict] = []
+    i, n = 0, len(lines)
+    while i < n:
+        stripped = lines[i].strip()
+        if not stripped:
+            i += 1
+            continue
+        # 围栏代码块
+        if stripped.startswith("```"):
+            code_lines: list[str] = []
+            i += 1
+            while i < n and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # 跳过结尾围栏
+            blocks.append({"kind": "code", "text": "\n".join(code_lines)})
+            continue
+        # 表格：| 开头且下一行是 |---| 分隔行
+        if (
+            stripped.startswith("|")
+            and i + 1 < n
+            and re.match(r"^\s*\|[\s:\-|]+\|?\s*$", lines[i + 1])
+        ):
+            rows: list[list[str]] = []
+            while i < n and lines[i].strip().startswith("|"):
+                inner = lines[i].strip().strip("|")
+                if not re.match(r"^[\s:\-|]+$", inner):  # 跳过分隔行
+                    rows.append([c.strip() for c in inner.split("|")])
+                i += 1
+            if rows:
+                blocks.append({"kind": "table", "rows": rows})
+            continue
+        # 标题（1-4 级）
+        m = re.match(r"^(#{1,4})\s+(.*)$", stripped)
+        if m:
+            blocks.append({"kind": "heading", "level": len(m.group(1)), "text": m.group(2).strip()})
+            i += 1
+            continue
+        # 无序列表
+        if re.match(r"^[-*]\s+", stripped):
+            items = []
+            while i < n and re.match(r"^[-*]\s+", lines[i].strip()):
+                items.append(re.sub(r"^[-*]\s+", "", lines[i].strip()))
+                i += 1
+            blocks.append({"kind": "list", "ordered": False, "items": items})
+            continue
+        # 有序列表（兼容 "1. " 与 "1、"）
+        if re.match(r"^\d+[.、]\s*", stripped):
+            items = []
+            while i < n and re.match(r"^\d+[.、]\s*", lines[i].strip()):
+                items.append(re.sub(r"^\d+[.、]\s*", "", lines[i].strip()))
+                i += 1
+            blocks.append({"kind": "list", "ordered": True, "items": items})
+            continue
+        # 普通段落：连续普通行合并
+        para = [stripped]
+        i += 1
+        while i < n:
+            nxt = lines[i].strip()
+            if (
+                not nxt
+                or nxt.startswith(("#", "|", "```"))
+                or re.match(r"^[-*]\s+", nxt)
+                or re.match(r"^\d+[.、]\s*", nxt)
+            ):
+                break
+            para.append(nxt)
+            i += 1
+        blocks.append({"kind": "paragraph", "text": "\n".join(para)})
+    return blocks
+
+
+def _add_docx_runs(paragraph, text: str) -> None:
+    """按 ``**粗体**`` 行内标记把文本拆为多个 run 写入 docx 段落。"""
+    pos = 0
+    for m in _BOLD_RE.finditer(text):
+        if m.start() > pos:
+            paragraph.add_run(text[pos:m.start()])
+        paragraph.add_run(m.group(1)).bold = True
+        pos = m.end()
+    if pos < len(text):
+        paragraph.add_run(text[pos:])
+
+
+def _build_docx(content: str, options: dict | None):
+    """Markdown 块序列 -> python-docx 文档对象。
+
+    格式配置（options，均可选）：
+    - ``title``：文档大标题（写入首行 Title 样式）；
+    - ``body_font``：正文字体，默认微软雅黑（同时设置 eastAsia，保证中文生效）；
+    - ``font_size``：正文字号，默认 11。
+    """
+    import docx
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    opts = options or {}
+    body_font = str(opts.get("body_font") or "微软雅黑")
+    try:
+        font_size = float(opts.get("font_size") or 11)
+    except (TypeError, ValueError):
+        font_size = 11.0
+
+    doc = docx.Document()
+    # Normal 样式全局字体（含中文 eastAsia 属性）
+    normal = doc.styles["Normal"]
+    normal.font.name = body_font
+    normal.font.size = Pt(font_size)
+    normal.element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), body_font)
+
+    title = str(opts.get("title") or "").strip()
+    if title:
+        doc.add_heading(title, level=0)
+
+    for block in _parse_markdown_blocks(content):
+        kind = block["kind"]
+        if kind == "heading":
+            doc.add_heading(block["text"], level=min(block["level"], 4))
+        elif kind == "paragraph":
+            _add_docx_runs(doc.add_paragraph(), block["text"])
+        elif kind == "list":
+            ordered = block["ordered"]
+            for idx, item in enumerate(block["items"], start=1):
+                prefix = f"{idx}. " if ordered else "• "
+                _add_docx_runs(doc.add_paragraph(), prefix + item)
+        elif kind == "table":
+            rows = block["rows"]
+            width = max(len(r) for r in rows)
+            table = doc.add_table(rows=len(rows), cols=width)
+            table.style = "Table Grid"
+            for r, row in enumerate(rows):
+                for c in range(width):
+                    cell = table.cell(r, c)
+                    para = cell.paragraphs[0]
+                    run = para.add_run(row[c] if c < len(row) else "")
+                    if r == 0:
+                        run.bold = True  # 表头加粗
+        elif kind == "code":
+            for line in (block["text"].splitlines() or [""]):
+                run = doc.add_paragraph().add_run(line)
+                run.font.name = "Courier New"
+                run.font.size = Pt(max(font_size - 1, 9))
+    return doc
+
+
+def _coerce_cell(value: str):
+    """xlsx 单元格值转换：规范数字串转数值类型，其余原样保留。
+
+    - 排除前导零（"007"、编号）与超长数字（≥15 位，如 IMEI），保留字符串
+      避免精度丢失或前导零消失；
+    - "8080" -> int、"3.14" -> float、"1.1.1.1"/"高" 原样。
+    """
+    if (
+        isinstance(value, str)
+        and len(value) < 15
+        and re.fullmatch(r"-?(0|[1-9]\d*)(\.\d+)?", value)
+    ):
+        return float(value) if "." in value else int(value)
+    return value
+
+
+def _build_workbook(content: str, options: dict | None):
+    """Markdown 块序列 -> openpyxl 工作簿。
+
+    组织规则：
+    - 每个表格块转为独立工作表，表名取就近的上方标题（无则「表格N」）；
+    - 非表格文本（标题/段落/列表/代码）依次写入「文档」工作表，标题加粗；
+    - 若全文没有任何文本块，则删除空的「文档」表（工作簿至少保留一个表格表）。
+
+    格式配置（options，均可选）：
+    - ``header_bold``：表头加粗 + 浅灰底纹，默认 True；
+    - ``freeze_header``：冻结表头行，默认 True。
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    opts = options or {}
+    header_bold = bool(opts.get("header_bold", True))
+    freeze_header = bool(opts.get("freeze_header", True))
+
+    wb = Workbook()
+    text_ws = wb.active
+    text_ws.title = "文档"
+    text_row = 1
+    last_heading: str | None = None
+    table_count = 0
+
+    for block in _parse_markdown_blocks(content):
+        kind = block["kind"]
+        if kind == "table":
+            rows = block["rows"]
+            table_count += 1
+            # 表格永远独立工作表：避免与已写入「文档」表的文本行互相覆盖
+            target = wb.create_sheet(title=(last_heading or f"表格{table_count}")[:31])
+            for r, row in enumerate(rows, start=1):
+                for c in range(max(len(x) for x in rows)):
+                    cell = target.cell(row=r, column=c + 1)
+                    cell.value = _coerce_cell(row[c]) if c < len(row) else ""
+                    if r == 1 and header_bold:
+                        cell.font = Font(bold=True)
+                        cell.fill = PatternFill("solid", fgColor="F3F4F6")
+            if freeze_header:
+                target.freeze_panes = "A2"
+            # 近似列宽：按列内最长内容估算，限制在 [8, 50]
+            for c in range(1, max(len(x) for x in rows) + 1):
+                widest = max(len(str(rows[r][c - 1])) for r in range(len(rows)) if c - 1 < len(rows[r]))
+                target.column_dimensions[get_column_letter(c)].width = min(max(widest * 1.8 + 2, 8), 50)
+            last_heading = None
+            continue
+        # 非表格文本写入「文档」表
+        if kind == "heading":
+            text = block["text"]
+            last_heading = text
+        elif kind == "list":
+            text = ("\n".join(
+                (f"{i}. {it}" if block["ordered"] else f"• {it}")
+                for i, it in enumerate(block["items"], start=1)
+            ))
+        elif kind == "code":
+            text = block["text"]
+        else:
+            text = block["text"]
+        cell = text_ws.cell(row=text_row, column=1, value=text)
+        if kind == "heading":
+            cell.font = Font(bold=True)
+        text_row += 1
+
+    # 全文没有文本块时移除空的「文档」表（首个表格已是活动表之外的新建表）
+    if text_row == 1 and table_count >= 1:
+        wb.remove(text_ws)
+    return wb
+
+
+def save_document_as_agent_file(
+    content: str,
+    suggested_name: str,
+    fmt: str = "docx",
+    options: dict | None = None,
+    agent_id: int | None = None,
+    user_id: int | None = None,
+) -> dict:
+    """生成文档（docx/xlsx/md）并保存到上传文件库，返回文件元数据与下载路径。
+
+    供 ``generate_document`` 内置工具调用：Agent 运行时把上下文数据组织成
+    Markdown 正文传入，本函数负责格式转换、落盘与 AgentFile 注册
+    （归属当前智能体与对话用户，自动获得双层权限隔离与下载能力）。
+
+    Args:
+        content: Markdown 语法的文档正文（运行时上下文/用户数据由调用方填充）。
+        suggested_name: 建议文件名（自动清洗非法字符并规范扩展名）。
+        fmt: 目标格式 ``docx`` / ``xlsx`` / ``md``（默认 docx，markdown 别名 md）。
+        options: 可选格式配置，见 ``_build_docx`` / ``_build_workbook`` 文档。
+        agent_id: 归属智能体 id（沙箱注入）。
+        user_id: 归属上传用户 id（沙箱注入）。
+
+    Returns:
+        成功 ``{"ok": True, "file_id", "file_name", "file_type", "file_size", "download_url"}``；
+        失败 ``{"error": "明确的原因"}``（不抛异常，保证对话流不中断）。
+    """
+    import io
+    import uuid
+
+    from app.database import SessionLocal
+    from app.models.agent_file import AgentFile
+
+    # ---- 参数校验：空内容 / 非法格式 / 超长 / options 类型，全部给出明确提示 ----
+    if not isinstance(content, str) or not content.strip():
+        return {"error": "文档内容不能为空：请通过 content 参数提供 Markdown 格式的正文"}
+    fmt = (fmt or "docx").strip().lower()
+    if fmt == "markdown":
+        fmt = "md"
+    if fmt == "word":
+        fmt = "docx"
+    if fmt not in _GENERATE_DOC_FORMATS:
+        return {"error": f"不支持的文档格式: {fmt}，仅支持 docx / xlsx / md"}
+    if len(content) > _GENERATE_DOC_MAX_CHARS:
+        return {"error": f"文档内容过长（{len(content)} 字符，上限 {_GENERATE_DOC_MAX_CHARS}），请精简后重试"}
+    if options is not None and not isinstance(options, dict):
+        return {"error": 'options 参数必须是对象，如 {"title": "分析报告", "font_size": 12}'}
+
+    original = _sanitize_doc_name(suggested_name, fmt)
+
+    # ---- 生成文件体（内存中完成转换） ----
+    try:
+        if fmt == "md":
+            title = str((options or {}).get("title") or "").strip()
+            payload = (f"# {title}\n\n{content}") if title else content
+            data = payload.encode("utf-8")
+        elif fmt == "docx":
+            buf = io.BytesIO()
+            _build_docx(content, options).save(buf)
+            data = buf.getvalue()
+        else:  # xlsx
+            buf = io.BytesIO()
+            _build_workbook(content, options).save(buf)
+            data = buf.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("生成 %s 文档失败: %s", fmt, original)
+        return {"error": f"生成文档失败: {exc}"}
+
+    # ---- 落盘 + 注册 AgentFile（复用上传文件库，自动获得下载接口与权限隔离） ----
+    upload_dir = _agent_upload_dir()
+    os.makedirs(upload_dir, exist_ok=True)
+    stored = f"{uuid.uuid4().hex}.{fmt}"
+    abs_path = os.path.join(upload_dir, stored)
+    with open(abs_path, "wb") as f:
+        f.write(data)
+    db = SessionLocal()
+    try:
+        rec = AgentFile(
+            original_name=original,
+            stored_name=stored,
+            file_path=abs_path,
+            file_type=fmt,
+            file_size=len(data),
+            agent_id=agent_id,
+            created_by=user_id,
+        )
+        db.add(rec)
+        db.commit()
+        db.refresh(rec)
+        return {
+            "ok": True,
+            "file_id": rec.id,
+            "file_name": rec.original_name,
+            "file_type": fmt,
+            "file_size": rec.file_size,
+            "download_url": f"/api/v1/agent-files/{rec.id}/download",
+        }
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("保存文档到上传文件库失败: %s", original)
+        return {"error": f"保存文档失败: {exc}"}
+    finally:
+        db.close()
+
+
 # 智能体记忆存储路径（JSON 文件，持久化在 uploads 卷中）
 _AGENT_MEMORY_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
@@ -695,12 +1077,17 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["save_json_as_agent_file"] = _partial(
             save_json_as_agent_file, agent_id=agent_id, user_id=user_id
         )
+        # 文档生成（generate_document 工具）：Markdown -> docx/xlsx/md 并写回文件库
+        namespace["save_document_as_agent_file"] = _partial(
+            save_document_as_agent_file, agent_id=agent_id, user_id=user_id
+        )
     except Exception:  # pragma: no cover
         logger.debug("文件助手作用域注入失败，回退直接注入")
         namespace["read_uploaded_file"] = read_uploaded_file
         namespace["load_excel_workbook"] = load_excel_workbook
         namespace["save_workbook_as_agent_file"] = save_workbook_as_agent_file
         namespace["save_json_as_agent_file"] = save_json_as_agent_file
+        namespace["save_document_as_agent_file"] = save_document_as_agent_file
     # 模板驱动改造新增：按表头名称定位列（含模糊匹配）+ JSON 写回上传库（save_template）
     namespace["find_col"] = find_col
     # expand_risk_detail 未传模板时的标准 22 列白名单（与技能文档一致）
