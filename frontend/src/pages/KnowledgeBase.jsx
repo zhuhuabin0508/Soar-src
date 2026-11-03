@@ -18,7 +18,7 @@ import ShareDialog from '../components/ShareDialog'
 import BatchShareDialog from '../components/BatchShareDialog'
 import { useSelection } from '../hooks/useSelection'
 import BatchActions from '../components/BatchActions'
-import { CompactSelect, DatePicker } from '../components/ui'
+import {CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
 
 // 格式化时间
 function fmtTime(t) {
@@ -622,7 +622,7 @@ function DocEditModal({ open, initial, onClose, onSubmit, saving, canEdit = true
         </div>
         <label>
           <div className="mb-1 text-xs font-medium text-muted-foreground">文档内容</div>
-          <textarea
+          <AutoGrowTextarea
             className={`${textareaCls} resize-y font-mono`}
             rows={12}
             value={form.content}
@@ -775,7 +775,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
           </div>
 
           {sourceTab === 'text' && (
-            <textarea
+            <AutoGrowTextarea
               className={`${textareaCls} resize-y font-mono`}
               rows={8}
               placeholder="直接粘贴文档内容…"

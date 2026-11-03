@@ -17,6 +17,7 @@ import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { inputCls } from './property/FormControls'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
+import { AutoGrowTextarea } from './ui'
 
 // size 预设映射到 Tailwind max-width 类
 const SIZE_MAP = {
@@ -311,7 +312,7 @@ export function JsonInputDialog({
         </>
       }
     >
-      <textarea
+      <AutoGrowTextarea
         className={`${inputCls} resize-y font-mono`}
         rows={12}
         value={text}

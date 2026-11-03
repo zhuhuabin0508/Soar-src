@@ -8,7 +8,7 @@ import {
 import { backupApi } from '../api/backup'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
-import { DataTable, Pagination, CompactSelect, DatePicker } from '../components/ui'
+import {DataTable, Pagination, CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
 import FilterBar from '../components/FilterBar'
 import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
@@ -755,7 +755,7 @@ function CreateBackupModal({ onClose, onConfirm, onCompleted }) {
             )}
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">备注说明</label>
-              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="记录备份原因..." className="w-full rounded-md border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none focus:border-primary" />
+              <AutoGrowTextarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="记录备份原因..." className="w-full rounded-md border border-border bg-secondary px-2.5 py-1.5 text-sm outline-none focus:border-primary" />
             </div>
             <div className="flex items-center justify-between rounded-md border border-border bg-secondary p-2.5">
               <div className="flex items-center gap-2">

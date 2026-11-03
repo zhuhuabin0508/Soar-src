@@ -709,13 +709,20 @@ export function CompactSelect({
       ? 'border-border bg-background text-foreground hover:border-primary/45 focus:border-primary'
       : 'border-border bg-secondary text-secondary-foreground hover:bg-accent focus:border-primary'
 
-  const triggerSizeCls = size === 'xs'
-    ? 'h-7 min-w-[3.5rem] py-0 pl-2 pr-6 text-xs'
+  // 尺寸令牌：min-w / max-w 仅在非 block 模式生效——block 时宽度完全由容器决定，
+  // 若容器窄于 min-w（如封禁时长单位列 w-24 < lg 的 8rem），按钮会溢出遮挡右侧控件
+  const sizeMinW = size === 'xs' ? 'min-w-[3.5rem]'
+    : size === 'sm' ? 'min-w-[6.25rem] max-w-[8rem]'
+    : size === 'lg' ? 'min-w-[8rem]'
+    : 'min-w-[7.5rem]'
+  const triggerSizeCls = (size === 'xs'
+    ? 'h-7 py-0 pl-2 pr-6 text-xs'
     : size === 'sm'
-      ? 'h-7 min-w-[6.25rem] max-w-[8rem] py-0 pl-2 pr-7 text-xs'
+      ? 'h-7 py-0 pl-2 pr-7 text-xs'
       : size === 'lg'
-        ? 'h-9 min-w-[8rem] py-0 pl-2.5 pr-9 text-sm'
-        : 'h-8 min-w-[7.5rem] py-0 pl-2.5 pr-8 text-sm'
+        ? 'h-9 py-0 pl-2.5 pr-9 text-sm'
+        : 'h-8 py-0 pl-2.5 pr-8 text-sm'
+  ) + (block ? '' : ` ${sizeMinW}`)
   const chevCls = size === 'xs'
     ? 'right-1 h-3 w-3'
     : size === 'sm'
@@ -835,6 +842,125 @@ export function CompactSelect({
               </Fragment>
             )
           })}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
+// ===== ComboInput：可输入下拉（组合框，替代原生 datalist） =====
+// 背景：原生 datalist 弹层由系统渲染——深色主题下样式失控且无法定制，与站内
+// 主题化下拉（CompactSelect portal 菜单）视觉割裂。用于允许填写选项之外值的场景：
+// 直接输入自由文本，或点击右侧箭头展开主题化候选列表快速选择（按输入值过滤）
+export function ComboInput({ value, onChange, options = [], placeholder, disabled, error }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0, minWidth: 0 })
+  const rootRef = useRef(null)
+
+  const kw = String(value ?? '').trim().toLowerCase()
+  const filtered = useMemo(
+    () => (kw ? options.filter((o) => String(o).toLowerCase().includes(kw)) : options),
+    [options, kw],
+  )
+
+  const toggle = (e) => {
+    e.stopPropagation()
+    if (disabled) return
+    if (!open && rootRef.current) {
+      const rect = rootRef.current.getBoundingClientRect()
+      const menuH = Math.min(filtered.length * 32 + 8, 280)
+      let top = rect.bottom + 4
+      if (top + menuH > window.innerHeight - 8) top = Math.max(8, rect.top - menuH - 4)
+      let left = rect.left
+      const minWidth = Math.max(rect.width, 148)
+      if (left + minWidth > window.innerWidth - 8) left = Math.max(8, window.innerWidth - minWidth - 8)
+      setPos({ top, left, minWidth })
+    }
+    setOpen((v) => !v)
+  }
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onDoc = (e) => {
+      if (rootRef.current?.contains(e.target)) return
+      if (e.target.closest?.('[data-combo-menu]')) return
+      setOpen(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    const onScroll = (e) => {
+      if (e.target?.closest?.('[data-combo-menu]')) return
+      setOpen(false)
+    }
+    const close = () => setOpen(false)
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [open])
+
+  // 与 CompactSelect 的 onChange 事件签名一致（e.target.value），调用方零改动
+  const pick = (o) => {
+    setOpen(false)
+    if (String(o) !== String(value ?? '')) onChange?.({ target: { value: String(o) }, stopPropagation: () => {} })
+  }
+
+  return (
+    <div className="relative w-full" ref={rootRef}>
+      <input
+        className={`h-9 w-full rounded-md border border-input bg-background pr-10 pl-2.5 text-sm text-foreground outline-none transition placeholder:text-muted-foreground hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary ${
+          error ? '!border-destructive ring-1 !ring-destructive' : ''
+        }`}
+        placeholder={placeholder}
+        value={value ?? ''}
+        disabled={disabled}
+        onChange={(e) => onChange?.(e)}
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        disabled={disabled}
+        onClick={toggle}
+        aria-label="展开候选选项"
+        className="absolute right-0 top-0 flex h-9 w-10 items-center justify-center text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <ChevronDown className={`h-3.5 w-3.5 transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && createPortal(
+        <div
+          data-combo-menu
+          data-allow-scroll
+          className="fixed z-[10000] max-h-[280px] overflow-y-auto overscroll-contain rounded-md border border-border bg-card py-1 text-foreground shadow-2xl"
+          style={{ top: pos.top, left: pos.left, minWidth: pos.minWidth }}
+          role="listbox"
+        >
+          {filtered.map((o) => (
+            <button
+              key={String(o)}
+              type="button"
+              role="option"
+              aria-selected={String(o) === String(value ?? '')}
+              onClick={() => pick(o)}
+              className={`flex w-full items-center px-3 py-1.5 text-left text-xs transition ${
+                String(o) === String(value ?? '')
+                  ? 'bg-primary/20 text-primary'
+                  : 'text-foreground hover:bg-accent'
+              }`}
+            >
+              <span className="truncate">{String(o)}</span>
+            </button>
+          ))}
+          {filtered.length === 0 && (
+            <div className="px-3 py-1.5 text-xs text-muted-foreground">
+              {options.length === 0 ? '暂无可选项（被引用字段尚未填写）' : '无匹配选项，将保留输入值'}
+            </div>
+          )}
         </div>,
         document.body,
       )}
@@ -1171,4 +1297,66 @@ export function DatePicker({
   )
 }
 
-export default { Button, Card, PageContainer, PageHeader, Badge, StatusBadge, Skeleton, LoadingState, EmptyState, ErrorState, DataTable, Pagination, CompactSelect, DatePicker }
+// ===== AutoGrowTextarea：自适应高度 + 自动换行的多行输入框（原生 textarea 的直接替代品） =====
+// 内容增多时框体自动撑高、文本自动换行；超长无空格串（IP 列表 / URL / JSON）也能
+// 在任意字符处断行。API 与原生 <textarea> 完全兼容：onChange 直传事件（e.target.value）、
+// rows 作为最小行数、ref / style / maxLength / onKeyDown 等通过 rest 透传，
+// 因此可以无脑把任意 <textarea> 替换为本组件获得自适应能力。
+export function AutoGrowTextarea({
+  value,
+  onChange,
+  onBlur,
+  onFocus,
+  placeholder,
+  rows,
+  minRows,
+  maxRows = 24,
+  className = '',
+  invalid = false,
+  mono = false,
+  style,
+  ...rest
+}) {
+  const ref = useRef(null)
+  // rows 属性作为最小行数（兼容原生用法），minRows 可显式覆盖
+  const minR = Math.max(minRows ?? rows ?? 1, 1)
+
+  // 内容变化 / 首次挂载时重算高度：先 auto 还原再取 scrollHeight，
+  // 行高与上下 padding 从计算样式读取，min/max 行数折算成像素上下限。
+  useEffect(() => {
+    const ta = ref.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    const cs = getComputedStyle(ta)
+    const lineH = parseFloat(cs.lineHeight) || 20
+    const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) || 0
+    const minH = minR * lineH + padY
+    const maxH = maxRows * lineH + padY
+    const h = Math.min(Math.max(ta.scrollHeight, minH), maxH)
+    ta.style.height = `${h}px`
+    ta.style.overflowY = ta.scrollHeight > maxH ? 'auto' : 'hidden'
+  }, [value, minR, maxRows])
+
+  // 行为关键样式用内联（优先级最高，外部 className/style 覆盖不了）：
+  // resize:none 由 JS 接管高度；overflow-wrap:anywhere 让长 IP 列表/URL 等无空格长串也能换行
+  return (
+    <textarea
+      ref={ref}
+      value={value ?? ''}
+      onChange={onChange}
+      onBlur={onBlur}
+      onFocus={onFocus}
+      placeholder={placeholder}
+      rows={rows || minR}
+      className={`w-full rounded-md border bg-background px-2.5 py-1.5 text-sm leading-normal text-foreground outline-none transition placeholder:text-muted-foreground hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary ${
+        mono ? 'font-mono' : ''
+      } ${
+        invalid ? 'border-destructive ring-1 ring-destructive' : 'border-input'
+      } ${className}`}
+      style={{ resize: 'none', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', ...style }}
+      {...rest}
+    />
+  )
+}
+
+export default { Button, Card, PageContainer, PageHeader, Badge, StatusBadge, Skeleton, LoadingState, EmptyState, ErrorState, DataTable, Pagination, CompactSelect, ComboInput, DatePicker, AutoGrowTextarea }

@@ -6,7 +6,7 @@ import { Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { inputCls, inputBaseCls } from '../components/property/FormControls'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { validateIPExpression, looksLikeIPKey } from '../utils/ipValidation'
 
 // 重要性配色
@@ -237,7 +237,7 @@ function AssetFormModal({ open, form, setForm, onSubmit, onClose, submitting, is
         </div>
         <div className="col-span-2 flex flex-col">
           <label className="mb-1 text-xs text-muted-foreground">灵活字段（JSON，可选）</label>
-          <textarea
+          <AutoGrowTextarea
             className={`${inputCls} h-20 font-mono${touched.extra && extraErrors.length ? ' border-destructive ring-1 ring-destructive' : ''}`}
             value={form.extra_fields_text || ''}
             onChange={(e) => set('extra_fields_text', e.target.value)}
@@ -963,7 +963,7 @@ function Assets() {
               {cfForm.field_type === 'select' && (
                 <div>
                   <label className="mb-1 block text-xs text-muted-foreground">选项（每行一个）*</label>
-                  <textarea
+                  <AutoGrowTextarea
                     className={`${inputCls} h-20`}
                     value={cfForm.options}
                     onChange={(e) => setCfForm({ ...cfForm, options: e.target.value })}

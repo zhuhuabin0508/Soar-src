@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { deliverablesApi } from '../api/client'
 import { toast } from '../store/toastStore'
-import { PageContainer, Button, EmptyState, Pagination, CompactSelect } from '../components/ui'
+import {PageContainer, Button, EmptyState, Pagination, CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { confirm } from '../components/ConfirmDialog'
 import { hasPermission } from '../utils/permissions'
 import { TutorialButton, TutorialDrawer } from '../components/TutorialDrawer'
@@ -2289,7 +2289,7 @@ export default function DeliverableManagement() {
                   </Button>
                 </div>
               ) : (
-                <textarea
+                <AutoGrowTextarea
                   value={previewModal.content}
                   onChange={(e) =>
                     setPreviewModal((prev) => ({
@@ -2576,7 +2576,7 @@ export default function DeliverableManagement() {
             />
           </Field>
           <Field label="描述（可选）">
-            <textarea
+            <AutoGrowTextarea
               value={catModal.description}
               onChange={(e) => setCatModal({ ...catModal, description: e.target.value })}
               maxLength={500}
@@ -2823,7 +2823,7 @@ export default function DeliverableManagement() {
             </Field>
           </div>
           <Field label="描述（可选，应用于全部）">
-            <textarea
+            <AutoGrowTextarea
               value={uploadModal.description}
               onChange={(e) => setUploadModal({ ...uploadModal, description: e.target.value })}
               rows={2}
@@ -2863,7 +2863,7 @@ export default function DeliverableManagement() {
             />
           </Field>
           <Field label="描述（可选）">
-            <textarea
+            <AutoGrowTextarea
               value={editModal.description}
               onChange={(e) => setEditModal({ ...editModal, description: e.target.value })}
               rows={2}

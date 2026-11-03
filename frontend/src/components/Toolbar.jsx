@@ -14,6 +14,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from './ConfirmDialog'
 import TestRunDrawer from './TestRunDrawer'
 import { WORKFLOW_TEMPLATES } from '../constants/workflowTemplates'
+import { AutoGrowTextarea } from './ui'
 
 // 简易 JSON → YAML 转换（手写，避免引入新依赖）
 // 支持对象/数组/基本类型，缩进 2 空格
@@ -793,7 +794,7 @@ function Toolbar({ isFullscreen = false, onToggleFullscreen }) {
       >
         <div className="flex flex-col gap-2">
           <label className="text-xs text-muted-foreground">版本说明（change_note）</label>
-          <textarea
+          <AutoGrowTextarea
             className={`${inputCls} resize-y`}
             rows={4}
             placeholder="例如：新增告警分流节点，优化封禁逻辑"
@@ -854,7 +855,7 @@ function PasteImportDialog({ open, onClose, onSubmit }) {
       <p className="mb-2 text-xs text-muted-foreground">
         粘贴工作流 JSON 文本（支持导出文件格式或纯 graph_config），导入后加载到画布。
       </p>
-      <textarea
+      <AutoGrowTextarea
         className={`${inputCls} resize-y font-mono`}
         rows={12}
         value={text}

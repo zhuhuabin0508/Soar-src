@@ -14,7 +14,7 @@ import { inputCls } from '../../components/property/FormControls'
 import { devices as devicesApi } from '../../api/client'
 import { strategyApi } from '../../api/strategy'
 import { Section, Switch } from '../devices/Badges'
-import { DataTable, CompactSelect } from '../../components/ui'
+import {DataTable, CompactSelect, AutoGrowTextarea } from '../../components/ui'
 import {
   LISTEN_PROTOCOLS, SOURCE_TYPE_META, PROTOCOL_TAG_CLS, RECEIVER_STATUS_META,
   parseAdapterConfig, getCfg, setCfgValue, receiverAccessInfo, receiverEndpoint, receiverToBody,
@@ -47,7 +47,7 @@ function AdapterConfigSection({ meta, cfg, onChange }) {
                   {(f.options || []).map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
                 </CompactSelect>
               ) : f.type === 'textarea' ? (
-                <textarea className={inputCls} rows={2} value={display} placeholder={f.placeholder} onChange={(e) => setCfg(f.key, e.target.value)} />
+                <AutoGrowTextarea className={inputCls} rows={2} value={display} placeholder={f.placeholder} onChange={(e) => setCfg(f.key, e.target.value)} />
               ) : f.type === 'json' ? (
                 <input
                   className={inputCls} value={display} placeholder={f.placeholder}

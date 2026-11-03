@@ -12,7 +12,7 @@ import { X, Copy, Download, FileJson, Info, ArrowLeftRight, Server, FileText, Br
 import { toast } from '../store/toastStore'
 import { alertApi } from '../api/alert'
 import { inputBaseCls } from '../components/property/FormControls'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import usersApi from '../api/users'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
@@ -440,7 +440,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                         </div>
                         <div>
                           <label className="mb-1 block text-xs text-muted-foreground">处置备注</label>
-                          <textarea
+                          <AutoGrowTextarea
                             className={`${inputBaseCls} min-h-[60px] w-full resize-none`}
                             placeholder="输入处置备注..."
                             value={handleForm.comment}

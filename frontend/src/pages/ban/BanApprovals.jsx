@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import { Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination } from '../../components/ui'
+import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, AutoGrowTextarea } from '../../components/ui'
 import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
@@ -431,7 +431,7 @@ export default function BanApprovals({ embedded = false }) {
           {action?.ticket?.source !== 'workflow' && action?.type === 'approve' && <div>同意后将按智能体建议的封禁方案下发封禁，该 IP 将出现在已封禁 IP 列表。</div>}
           {action?.ticket?.source !== 'workflow' && action?.type === 'reject' && <div>驳回后实例转持续监控（<span className="text-destructive">原因必填</span>），该 IP 加入监控名单。</div>}
           {action?.type === 'escalate' && <div>升级后实例终止，转人工调查处理。</div>}
-          <textarea
+          <AutoGrowTextarea
             className={`${inputBaseCls} min-h-[72px] w-full`}
             placeholder={action?.type === 'reject' ? '驳回原因（必填）' : '备注（可选）'}
             value={comment}

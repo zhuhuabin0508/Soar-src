@@ -17,7 +17,7 @@ import { alertRuleApi, alertRuleGroupApi } from '../api/alert'
 import { devices as devicesApi } from '../api/client'
 import { confirm } from '../components/ConfirmDialog'
 import { inputBaseCls } from '../components/property/FormControls'
-import { Badge, Button, PageContainer, CompactSelect } from '../components/ui'
+import {Badge, Button, PageContainer, CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { hasPermission } from '../utils/permissions'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
@@ -908,7 +908,7 @@ export default function AlertRuleEditPage() {
               </FormItem>
             </div>
             <FormItem label="描述" className="mt-4">
-              <textarea className={`${inputBaseCls} h-20 resize-none`} value={form.description} maxLength={255}
+              <AutoGrowTextarea className={`${inputBaseCls} h-20 resize-none`} value={form.description} maxLength={255}
                 onChange={(e) => setF({ description: e.target.value })} placeholder="选填，说明规则用途与排查思路" />
               <div className="text-right text-[11px] text-muted-foreground">{form.description.length}/255</div>
             </FormItem>
@@ -1315,7 +1315,7 @@ export default function AlertRuleEditPage() {
                 只读预览：不落库、不产生真实告警与通知。当前编辑中的规则作为草稿按优先级参与匹配；
                 {form.type === 'stats' && ' 统计规则多条样例默认视为同窗口事件（可用 occur_timestamp 标记时间）。'}
               </p>
-              <textarea
+              <AutoGrowTextarea
                 className={`${inputBaseCls} h-36 resize-none font-mono text-[12px] leading-relaxed`}
                 value={testText} onChange={(e) => { setTestText(e.target.value); setTestResult(null) }} spellCheck={false}
               />

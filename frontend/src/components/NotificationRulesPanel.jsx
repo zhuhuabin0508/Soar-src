@@ -20,7 +20,7 @@ import { rolesApi } from '../api/roles'
 import { toast } from '../store/toastStore'
 import { confirm } from './ConfirmDialog'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
-import { EmptyState, Skeleton, CompactSelect } from './ui'
+import {EmptyState, Skeleton, CompactSelect, AutoGrowTextarea } from './ui'
 
 const EMPTY_FORM = {
   name: '',
@@ -466,7 +466,7 @@ export default function NotificationRulesPanel() {
               </div>
               <div>
                 <label className={labelCls}>说明（可选）</label>
-                <textarea
+                <AutoGrowTextarea
                   value={form.description}
                   onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
                   placeholder="规则用途说明"

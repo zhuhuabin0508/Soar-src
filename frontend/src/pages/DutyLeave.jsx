@@ -5,7 +5,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, labelCls } from '../components/property/FormControls'
-import { Button, PageContainer, DataTable, Pagination, StatusBadge, CompactSelect, DatePicker } from '../components/ui'
+import {Button, PageContainer, DataTable, Pagination, StatusBadge, CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
 
@@ -316,7 +316,7 @@ export default function DutyLeave() {
           </div>
           <div className="col-span-2">
             <label className={labelCls}>请假原因</label>
-            <textarea className={`${inputCls} resize-y`} rows={3} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
+            <AutoGrowTextarea className={`${inputCls} resize-y`} rows={3} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
           </div>
         </div>
       </Modal>
@@ -356,7 +356,7 @@ export default function DutyLeave() {
             )}
             <div>
               <label className={labelCls}>审批意见</label>
-              <textarea
+              <AutoGrowTextarea
                 className={`${inputCls} resize-y`}
                 rows={3}
                 placeholder={approveTarget.status === 'approved' ? '可填写批准说明（选填）' : '请填写拒绝理由'}

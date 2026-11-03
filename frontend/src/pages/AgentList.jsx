@@ -6,7 +6,7 @@ import { Modal } from '../components/Dialog'
 import { inputCls } from '../components/property/FormControls'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import { DataTable, Pagination } from '../components/ui'
+import {DataTable, Pagination, AutoGrowTextarea } from '../components/ui'
 import FilterBar from '../components/FilterBar'
 import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
@@ -326,7 +326,7 @@ function AgentList() {
         }
       >
         <label className="mb-1 block text-xs text-muted-foreground">输入文本（input）</label>
-        <textarea
+        <AutoGrowTextarea
           className={`${inputCls} resize-y`}
           rows={5}
           value={testInput}

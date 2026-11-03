@@ -6,7 +6,7 @@ import {
   CheckCircle2, XCircle, MinusCircle, Loader2, ShieldAlert, Inbox, Activity,
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
-import { Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, EmptyState, CompactSelect, DatePicker } from '../../components/ui'
+import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, EmptyState, CompactSelect, DatePicker, AutoGrowTextarea } from '../../components/ui'
 import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
@@ -430,7 +430,7 @@ export default function BanWorkflowInstances({ embedded = false }) {
       >
         <div className="space-y-3 text-sm">
           <div>取消后该实例终止执行，关联的待审批工单将一并关闭。已下发封禁的实例不可取消，请前往封禁工作台解封。</div>
-          <textarea
+          <AutoGrowTextarea
             className={`${inputBaseCls} min-h-[72px] w-full`}
             placeholder="取消原因（可选）"
             value={cancelReason}

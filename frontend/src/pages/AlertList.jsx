@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { Modal } from '../components/Dialog'
-import { Button, Card, DataTable, Badge, Pagination, Sparkline, CompactSelect, DatePicker } from '../components/ui'
+import {Button, Card, DataTable, Badge, Pagination, Sparkline, CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
 import { inputBaseCls } from '../components/property/FormControls'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import { alertApi } from '../api/alert'
@@ -1189,7 +1189,7 @@ export default function AlertList() {
               </div>
               <div>
                 <label className="mb-1 block text-xs text-muted-foreground">处置备注</label>
-                <textarea
+                <AutoGrowTextarea
                   className={`${inputBaseCls} min-h-[60px] w-full resize-none`}
                   placeholder="输入处置备注..."
                   value={batchForm.comment}

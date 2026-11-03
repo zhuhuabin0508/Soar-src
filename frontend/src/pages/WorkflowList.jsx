@@ -12,7 +12,7 @@ import { workflows as workflowsApi } from '../api/client'
 import { JsonInputDialog, Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
-import { DataTable, Pagination, CompactSelect } from '../components/ui'
+import {DataTable, Pagination, CompactSelect, AutoGrowTextarea } from '../components/ui'
 import FilterBar from '../components/FilterBar'
 import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
@@ -1075,7 +1075,7 @@ function WorkflowList() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">graph_config（JSON）</label>
-            <textarea
+            <AutoGrowTextarea
               className={`${inputCls} resize-y font-mono`}
               rows={8}
               placeholder='{\n  "nodes": [],\n  "edges": []\n}'
@@ -1137,7 +1137,7 @@ function WorkflowList() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">描述</label>
-            <textarea
+            <AutoGrowTextarea
               className={`${inputCls} resize-y`}
               rows={2}
               placeholder="可选"
@@ -1160,7 +1160,7 @@ function WorkflowList() {
             <MessageSquare className="h-4 w-4 text-primary" />
             用一句话描述流程（AI 草稿 PoC）
           </div>
-          <textarea
+          <AutoGrowTextarea
             className={`${inputCls} resize-y`}
             rows={2}
             placeholder="例如：收到告警后研判源 IP，若高风险则封禁并通知值班"

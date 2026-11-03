@@ -15,6 +15,7 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import { ChevronDown, ChevronRight, FileText, RotateCcw, Info } from 'lucide-react'
+import { AutoGrowTextarea } from '../ui'
 
 export default function SystemPromptEditor({
   value = '',
@@ -90,7 +91,7 @@ export default function SystemPromptEditor({
           </div>
 
           {/* textarea */}
-          <textarea
+          <AutoGrowTextarea
             ref={textareaRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

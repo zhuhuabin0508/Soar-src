@@ -16,7 +16,7 @@ import { TOOL_TUTORIAL } from '../components/tutorialContent'
 import { CATEGORY_META, UNCATEGORIZED } from '../constants/toolCategories'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import { DataTable, Pagination, CompactSelect } from '../components/ui'
+import {DataTable, Pagination, CompactSelect, AutoGrowTextarea } from '../components/ui'
 import FilterBar from '../components/FilterBar'
 import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
@@ -234,7 +234,7 @@ function ToolTestModal({ open, tool, onClose, onSubmit, running }) {
                   <option value="true">true</option>
                 </CompactSelect>
               ) : p.type === 'Object' || p.type === 'Array' ? (
-                <textarea
+                <AutoGrowTextarea
                   className={`${inputCls} resize-y font-mono`}
                   rows={3}
                   value={params[p.name] ?? ''}

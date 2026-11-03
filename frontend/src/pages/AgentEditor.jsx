@@ -31,7 +31,7 @@ import { inputCls, textareaCls } from '../components/property/FormControls'
 import MiddlewareConfig from '../components/MiddlewareConfig'
 import ToolSearchStatus from '../components/ToolSearchStatus'
 import InfoTip from '../components/InfoTip'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { CATEGORY_META, UNCATEGORIZED, groupToolsByCategory } from '../constants/toolCategories'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { toast } from '../store/toastStore'
@@ -1985,7 +1985,7 @@ function AgentEditor() {
                           value={skillDraftName}
                           onChange={(e) => setSkillDraftName(e.target.value)}
                         />
-                        <textarea
+                        <AutoGrowTextarea
                           className={`${textareaCls} mb-1.5 min-h-[88px]`}
                           placeholder="粘贴 SOP / 角色设定等纯文本"
                           value={skillDraftContent}
@@ -2285,7 +2285,7 @@ function AgentEditor() {
                   )
                 )}
               </div>
-              <textarea
+              <AutoGrowTextarea
                 value={testInput}
                 onChange={(e) => setTestInput(e.target.value)}
                 rows={6}

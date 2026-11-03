@@ -10,7 +10,7 @@ import {
   fileExt,
   fmtSize,
 } from '../utils/feedback'
-import { CompactSelect } from './ui'
+import {CompactSelect, AutoGrowTextarea } from './ui'
 
 // 提交反馈抽屉：右侧滑入，宽 560px（小屏撑满）
 // 供 AppShell（悬浮按钮 / 用户菜单）与 MyFeedback 页复用
@@ -333,7 +333,7 @@ function FeedbackDrawer({ open, onClose, onSubmitted }) {
             <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
               详细描述 <span className="text-destructive">*</span>
             </label>
-            <textarea
+            <AutoGrowTextarea
               rows={4}
               value={form.description}
               maxLength={5000}
@@ -352,7 +352,7 @@ function FeedbackDrawer({ open, onClose, onSubmitted }) {
                 <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
                   复现步骤 <span className="text-destructive">*</span>
                 </label>
-                <textarea
+                <AutoGrowTextarea
                   rows={3}
                   value={form.reproduce_steps}
                   onChange={(e) => setField('reproduce_steps', e.target.value)}
@@ -366,7 +366,7 @@ function FeedbackDrawer({ open, onClose, onSubmitted }) {
                 <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
                   期望结果 <span className="text-destructive">*</span>
                 </label>
-                <textarea
+                <AutoGrowTextarea
                   rows={2}
                   value={form.expected_result}
                   onChange={(e) => setField('expected_result', e.target.value)}
@@ -380,7 +380,7 @@ function FeedbackDrawer({ open, onClose, onSubmitted }) {
                 <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
                   实际结果 <span className="text-destructive">*</span>
                 </label>
-                <textarea
+                <AutoGrowTextarea
                   rows={2}
                   value={form.actual_result}
                   onChange={(e) => setField('actual_result', e.target.value)}

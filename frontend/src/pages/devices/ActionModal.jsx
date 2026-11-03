@@ -7,7 +7,7 @@ import { toast } from '../../store/toastStore'
 import { inputCls, textareaCls } from '../../components/property/FormControls'
 import { useUnsavedChanges } from '../../hooks/useUnsavedChanges'
 import useLockBackgroundScroll from '../../hooks/useLockBackgroundScroll'
-import { CompactSelect } from '../../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../../components/ui'
 import { devices as devicesApi } from '../../api/client'
 import { validateIPExpression, validateCidrList, validateSingleIP } from '../../utils/ipValidation'
 import {
@@ -274,7 +274,7 @@ export function ActionFormModal({ open, initial, onClose, onSubmit, saving }) {
                 </div>
               )}
             </div>
-            <textarea
+            <AutoGrowTextarea
               className={`${textareaCls} text-xs`}
               rows={5}
               value={form.body_template}
@@ -288,7 +288,7 @@ export function ActionFormModal({ open, initial, onClose, onSubmit, saving }) {
         <Section title="示例与返回" defaultOpen={false}>
           <label className="mb-3 block">
             <div className="mb-1 text-xs font-medium text-muted-foreground">示例 Payload</div>
-            <textarea
+            <AutoGrowTextarea
               className={`${textareaCls} text-xs`}
               rows={3}
               value={form.example_payload}
@@ -298,7 +298,7 @@ export function ActionFormModal({ open, initial, onClose, onSubmit, saving }) {
           </label>
           <label className="block">
             <div className="mb-1 text-xs font-medium text-muted-foreground">示例返回结果</div>
-            <textarea
+            <AutoGrowTextarea
               className={`${textareaCls} text-xs`}
               rows={3}
               value={form.example_response}

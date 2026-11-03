@@ -11,6 +11,7 @@ import { textareaCls } from './property/FormControls'
 import { useWorkflowStore } from '../store/workflowStore'
 import { workflows as workflowsApi } from '../api/client'
 import { toast } from '../store/toastStore'
+import { AutoGrowTextarea } from './ui'
 
 // 计算单节点轨迹耗时（秒）
 function traceDuration(tr) {
@@ -519,7 +520,7 @@ function TestRunDrawer({ open, onClose }) {
         <label className="mb-1 block text-xs font-medium text-muted-foreground">
           测试数据（模拟触发器入参 payload，JSON）
         </label>
-        <textarea
+        <AutoGrowTextarea
           className={textareaCls}
           rows={5}
           value={payload}

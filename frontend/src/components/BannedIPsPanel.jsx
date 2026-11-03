@@ -28,7 +28,7 @@ import { Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { inputCls, inputBaseCls } from '../components/property/FormControls'
-import { CompactSelect } from './ui'
+import {CompactSelect, AutoGrowTextarea } from './ui'
 import { validateBanTarget } from '../utils/ipValidation'
 
 // 封禁等级中文映射 + 配色
@@ -704,7 +704,7 @@ function BannedIPsPanel() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">封禁原因</label>
-            <textarea className={`${inputCls} min-h-[72px] resize-y`} placeholder="说明封禁原因..." value={createForm.reason} onChange={(e) => setCreateForm({ ...createForm, reason: e.target.value })} />
+            <AutoGrowTextarea className={`${inputCls} min-h-[72px] resize-y`} placeholder="说明封禁原因..." value={createForm.reason} onChange={(e) => setCreateForm({ ...createForm, reason: e.target.value })} />
           </div>
           <div className="flex items-start gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-4 py-3 text-xs text-primary">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />

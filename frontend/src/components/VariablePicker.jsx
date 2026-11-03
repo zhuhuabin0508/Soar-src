@@ -17,6 +17,7 @@ import { useMemo, useState, useRef, useEffect } from 'react'
 import { Braces, Search, ChevronRight, Variable as VariableIcon } from 'lucide-react'
 import { useWorkflowStore } from '../store/workflowStore'
 import { inputBaseCls } from './property/FormControls'
+import { AutoGrowTextarea } from './ui'
 
 // 上游节点常用输出字段映射（与 PropertyPanel 中保持一致）
 const NODE_OUTPUT_FIELDS = {
@@ -397,7 +398,7 @@ export function VariableField({
       <div className="flex items-start gap-1.5">
         <div className="min-w-0 flex-1">
           {isMultiline ? (
-            <textarea
+            <AutoGrowTextarea
               ref={inputRef}
               className={`${inputBaseCls} w-full resize-y font-mono`}
               rows={rows || 4}

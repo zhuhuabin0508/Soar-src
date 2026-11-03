@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import { Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect } from '../../components/ui'
+import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect, AutoGrowTextarea } from '../../components/ui'
 import { Modal, Drawer } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission, guardNavPermission } from '../../utils/permissions'
@@ -871,7 +871,7 @@ export default function BanWorkbench({ embedded = false }) {
       >
         <div className="space-y-3 text-sm">
           <div>解封后该 IP 恢复访问；已下发设备的记录会先联动设备移除黑名单条目（失败则保留生效中），操作将记录操作人与时间（<span className="text-destructive">原因必填</span>）。</div>
-          <textarea
+          <AutoGrowTextarea
             className={`${inputBaseCls} min-h-[72px] w-full`}
             placeholder="解封原因（必填，如：误报、业务需要、白名单申请等）"
             value={unbanReason}
@@ -1018,7 +1018,7 @@ export default function BanWorkbench({ embedded = false }) {
             <label className="mb-1 block text-xs font-medium text-muted-foreground">
               封禁原因 <span className="text-destructive">*</span>
             </label>
-            <textarea
+            <AutoGrowTextarea
               className={`${inputBaseCls} min-h-[72px] w-full${manualReasonTouched && manualReasonError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
               placeholder="如：威胁情报确认恶意IP、人工研判攻击源等"
               value={manualForm.reason}

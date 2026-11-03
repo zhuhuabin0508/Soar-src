@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { Drawer } from '../components/Dialog'
 import { inputCls, textareaCls, labelCls, hintCls } from '../components/property/FormControls'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { skills as skillsApi, agents as agentsApi } from '../api/client'
 import { toast } from '../store/toastStore'
 import { HoverTip } from '../components/InfoTip'
@@ -429,7 +429,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
                   <div key={i}>{i + 1}</div>
                 ))}
               </div>
-              <textarea
+              <AutoGrowTextarea
                 ref={textareaRef}
                 onScroll={handleScroll}
                 className="flex-1 resize-none bg-transparent px-3 py-2 font-mono text-[12px] leading-[1.6] text-foreground outline-none"
@@ -525,7 +525,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
               <Play className="h-3 w-3" /> {testing ? '运行中…' : '运行测试'}
             </button>
           </div>
-          <textarea
+          <AutoGrowTextarea
             className={`${textareaCls} mt-2`} rows={2}
             value={testMessage} onChange={(e) => setTestMessage(e.target.value)}
             placeholder="输入测试问题，如：收到 1.2.3.4 的暴力破解告警，应如何处置？"

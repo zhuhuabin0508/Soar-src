@@ -3,6 +3,7 @@ import { Copy, Download, Upload, FileCode2 } from 'lucide-react'
 import { agents as agentsApi } from '../api/client'
 import { toast } from '../store/toastStore'
 import { textareaCls } from './property/FormControls'
+import { AutoGrowTextarea } from './ui'
 
 /** 开发者 DSL 面板：导出 / 导入 / 从 DSL 创建 */
 export default function AgentDslPanel({ agentId, form, onApplyDsl, canEdit = true }) {
@@ -111,7 +112,7 @@ export default function AgentDslPanel({ agentId, form, onApplyDsl, canEdit = tru
       <p className="mb-2 text-[11px] text-muted-foreground">
         可导出为 JSON 做版本管理；粘贴 DSL 后点「应用到表单」或「另存为新智能体」。
       </p>
-      <textarea
+      <AutoGrowTextarea
         className={`${textareaCls} min-h-[200px] font-mono text-[11px]`}
         value={dslText}
         onChange={(e) => setDslText(e.target.value)}

@@ -29,7 +29,7 @@ import {
 import { JsonInputDialog, Modal } from './Dialog'
 import { VariablePicker, VariableField } from './VariablePicker'
 import ExpressionEditor from './ExpressionEditor'
-import { CompactSelect } from './ui'
+import {CompactSelect, AutoGrowTextarea } from './ui'
 
 // 节点图标名 → lucide 组件映射（nodeCatalog.icon 存的是组件名字符串）
 const ICON_MAP = {
@@ -821,7 +821,7 @@ function CodeExecuteForm({ node, update }) {
                 ))}
                 {'\n'}
               </pre>
-              <textarea
+              <AutoGrowTextarea
                 ref={codeRef}
                 onScroll={handleScroll}
                 className="relative w-full resize-y bg-transparent px-2.5 py-2 font-mono text-[11px] leading-[1.5] text-transparent caret-foreground outline-none"

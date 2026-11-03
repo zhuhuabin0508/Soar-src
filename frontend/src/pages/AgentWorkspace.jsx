@@ -31,7 +31,7 @@ import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { toast } from '../store/toastStore'
 import { canEditResource } from '../utils/permissions'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 
 const NAV_ITEMS = [
   { id: 'config', label: '配置', icon: Settings },
@@ -238,7 +238,7 @@ function AddPicker({ title, options, value, onChange, onClose, kind, onCreateSki
               placeholder="技能名称"
               className="h-8 w-full rounded-md border border-border bg-secondary px-2 text-xs focus:border-primary focus:outline-none"
             />
-            <textarea
+            <AutoGrowTextarea
               value={skillContent}
               onChange={(e) => setSkillContent(e.target.value)}
               placeholder="粘贴说明、SOP、角色设定等纯文本。不会作为脚本执行。"
@@ -650,7 +650,7 @@ function AgentPreviewPane({ agentId, engine, ensureSaved }) {
       </div>
       <div className="shrink-0 border-t border-border p-3">
         <div className="flex items-end gap-2 rounded-xl border border-border bg-secondary px-3 py-2">
-          <textarea
+          <AutoGrowTextarea
             value={previewInput}
             onChange={(e) => setPreviewInput(e.target.value)}
             placeholder="输入调试内容，Enter 发送"
@@ -1117,7 +1117,7 @@ export default function AgentWorkspace() {
               </div>
               <div className="mb-6">
                 <div className="mb-1.5 text-xs font-medium text-muted-foreground">提示词</div>
-                <textarea
+                <AutoGrowTextarea
                   value={form.system_prompt}
                   onChange={(e) => setField('system_prompt')(e.target.value)}
                   disabled={!canEdit}
@@ -1291,7 +1291,7 @@ export default function AgentWorkspace() {
                   </div>
                   <div className="border-t border-border p-4">
                     <div className="flex items-end gap-2 rounded-xl border border-border bg-secondary px-3 py-2">
-                      <textarea
+                      <AutoGrowTextarea
                         value={buildInput}
                         onChange={(e) => setBuildInput(e.target.value)}
                         placeholder="描述你的 Agent 应该做什么"

@@ -35,7 +35,7 @@ import {
 } from '../components/property/FormControls'
 import { Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { canEditResource } from '../utils/permissions'
@@ -272,7 +272,7 @@ function CodeEditor({ value, onChange }) {
           <div key={i}>{i + 1}</div>
         ))}
       </div>
-      <textarea
+      <AutoGrowTextarea
         className="flex-1 resize-y bg-card px-3 py-2 font-mono text-[12px] leading-6 text-foreground outline-none placeholder:text-muted-foreground"
         rows={Math.max(lineCount, 12)}
         value={value}
@@ -367,7 +367,7 @@ function OpenAPIImportModal({ open, onClose, onPick }) {
             </button>
           </div>
           {tab === 'json' ? (
-            <textarea
+            <AutoGrowTextarea
               className={`${inputCls} resize-y font-mono`}
               rows={10}
               placeholder={'粘贴 OpenAPI 3.0 / Swagger JSON\n例如：\n{"openapi":"3.0.0","info":{"title":"..."},"paths":{...}}'}
@@ -576,7 +576,7 @@ const DebugPanel = forwardRef(function DebugPanel({ toolId, parametersSchema, to
                         <option value="true">true</option>
                       </CompactSelect>
                     ) : p.type === 'Object' || p.type === 'Array' ? (
-                      <textarea
+                      <AutoGrowTextarea
                         className={`${inputCls} resize-y font-mono`}
                         rows={2}
                         value={testParams[p.name] ?? ''}
@@ -1032,7 +1032,7 @@ function ToolEditor() {
                 {optimizing ? '优化中…' : 'AI 优化提示词'}
               </button>
             </div>
-            <textarea
+            <AutoGrowTextarea
               className={`${inputCls} resize-y`}
               rows={3}
               value={form.description}
@@ -1196,7 +1196,7 @@ function ToolEditor() {
                     </button>
                   ))}
                 </div>
-                <textarea
+                <AutoGrowTextarea
                   className={`${inputCls} resize-y font-mono`}
                   rows={5}
                   value={form.http_config.body_content}

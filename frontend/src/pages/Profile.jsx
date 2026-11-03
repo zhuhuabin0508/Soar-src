@@ -8,7 +8,7 @@ import { authApi } from '../api/auth'
 import { useAuthStore } from '../store/authStore'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import { CompactSelect } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 
 // ============ 工具函数 ============
@@ -357,7 +357,7 @@ function ProfileTab({ user, onSaved }) {
       </div>
       <div>
         <label className="mb-1.5 block text-xs font-normal text-muted-foreground">个人简介</label>
-        <textarea
+        <AutoGrowTextarea
           value={profile.bio}
           onChange={(e) => setProfile((p) => ({ ...p, bio: e.target.value }))}
           placeholder="一句话介绍自己（可选）"

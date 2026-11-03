@@ -11,7 +11,7 @@ import { inputCls } from '../../components/property/FormControls'
 import { devices as devicesApi } from '../../api/client'
 import { strategyApi } from '../../api/strategy'
 import { Section, Switch } from '../devices/Badges'
-import { Button, EmptyState, CompactSelect } from '../../components/ui'
+import {Button, EmptyState, CompactSelect, AutoGrowTextarea } from '../../components/ui'
 import {
   SOURCE_TYPE_META, PROTOCOL_TAG_CLS, ENTRY_STATUS_META, DEVICE_TYPE_LABELS,
   PARSE_STATUS_META, parseAdapterConfig,
@@ -472,7 +472,7 @@ function StrategyTab({ entry, strategies, onSaved }) {
       </Section>
 
       <Section title="词表翻译覆盖（高级）" hint='translator 覆盖 JSON，如 {"maps": {"risk_level_name": {"0": "严重"}}, "sources": {"risk_level_name": "risk_level"}}'>
-        <textarea
+        <AutoGrowTextarea
           className={`${inputCls} resize-y font-mono text-xs`} rows={5} spellCheck={false}
           placeholder='留空则跟随接收器；填写则覆盖该来源的词表翻译'
           value={translatorJson} onChange={(e) => { setTranslatorJson(e.target.value); setTranslatorErr('') }}

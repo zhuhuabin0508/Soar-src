@@ -17,7 +17,7 @@ import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
 import TicketFlowVersionsDrawer from '../components/TicketFlowVersionsDrawer'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { inputCls, inputBaseCls, labelCls, hintCls } from '../components/property/FormControls'
-import { Button, PageContainer, CompactSelect } from '../components/ui'
+import {Button, PageContainer, CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import { condText, normWhen, COND_OP_OPTIONS, isCondOp } from '../utils/ticketFlow'
 import ticketApi from '../api/tickets'
@@ -346,7 +346,7 @@ function FieldOptionsInput({ value, disabled, onCommit }) {
   }, [value])
 
   return (
-    <textarea
+    <AutoGrowTextarea
       className={`${inputCls} resize-y`}
       rows={2}
       disabled={disabled}

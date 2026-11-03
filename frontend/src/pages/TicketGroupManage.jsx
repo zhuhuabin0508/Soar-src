@@ -7,7 +7,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls } from '../components/property/FormControls'
-import { Button, PageContainer, EmptyState } from '../components/ui'
+import {Button, PageContainer, EmptyState, AutoGrowTextarea } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
 import { usersApi } from '../api/users'
@@ -251,7 +251,7 @@ export default function TicketGroupManage() {
           </div>
           <div>
             <label className={labelCls}>描述</label>
-            <textarea className={`${inputCls} resize-y`} rows={2} placeholder="分组职责说明（选填）"
+            <AutoGrowTextarea className={`${inputCls} resize-y`} rows={2} placeholder="分组职责说明（选填）"
               value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
           <div>

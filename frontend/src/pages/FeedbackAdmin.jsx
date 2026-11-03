@@ -8,10 +8,8 @@ import {
 } from 'lucide-react'
 import { feedbackApi } from '../api/client'
 import { toast } from '../store/toastStore'
-import {
-  PageContainer, PageHeader, DataTable, Pagination, Button,
-  CompactSelect, DatePicker,
-} from '../components/ui'
+import {PageContainer, PageHeader, DataTable, Pagination, Button,
+  CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
 import {
   FEEDBACK_TYPES,
   FEEDBACK_STATUSES,
@@ -614,7 +612,7 @@ function AdminDetailDrawer({ open, onClose, feedbackId, onChanged }) {
                     )}
                   </div>
 
-                  <textarea
+                  <AutoGrowTextarea
                     rows={3}
                     value={replyContent}
                     onChange={(e) => setReplyContent(e.target.value)}

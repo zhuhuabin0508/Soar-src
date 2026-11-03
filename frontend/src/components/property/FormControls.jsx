@@ -5,7 +5,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 import { Paperclip, X } from 'lucide-react'
 import { useWorkflowStore } from '../../store/workflowStore'
 import InfoTip from '../InfoTip'
-import { CompactSelect } from '../ui'
+import {CompactSelect, AutoGrowTextarea } from '../ui'
 
 // 基础样式（不含宽度），用于 flex 行内需要自定义宽度的元素
 // 避免 w-full 与 flex-1 / w-24 同行时产生宽度冲突导致溢出
@@ -241,7 +241,7 @@ export function TextArea({ label, value, onChange, rows = 4, placeholder, hint, 
   return (
     <div>
       <LabelWithTip label={label} hint={hint} required={required} />
-      <textarea
+      <AutoGrowTextarea
         className={textareaCls}
         rows={rows}
         placeholder={placeholder}

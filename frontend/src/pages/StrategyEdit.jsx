@@ -14,7 +14,7 @@ import {
 import { toast } from '../store/toastStore'
 import { Modal, Drawer } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
-import { Button, PageContainer, Card, Badge, EmptyState, CompactSelect } from '../components/ui'
+import {Button, PageContainer, Card, Badge, EmptyState, CompactSelect, AutoGrowTextarea } from '../components/ui'
 import { inputCls, inputBaseCls, labelCls } from '../components/property/FormControls'
 import { hasPermission } from '../utils/permissions'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
@@ -1637,7 +1637,7 @@ export default function StrategyEdit() {
                   <FileJson className="h-4 w-4 text-primary" />
                   <span className="text-sm font-semibold text-foreground">扩展字段归档（该规则）</span>
                 </div>
-                <textarea
+                <AutoGrowTextarea
                   className={`${inputCls} min-h-[72px] font-mono`}
                   value={ruleExtFields.join('\n')}
                   placeholder={'containerName\ncontainerId'}
@@ -1659,7 +1659,7 @@ export default function StrategyEdit() {
         // JSON 模式
         <Card>
           <SectionTitle icon={Braces} desc="直接编辑模板 JSON 全文；保存前会做结构与正则校验">模板 JSON</SectionTitle>
-          <textarea
+          <AutoGrowTextarea
             className="w-full rounded-md border border-input bg-background p-4 font-mono text-[13px] leading-relaxed text-foreground outline-none transition hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary"
             style={{ minHeight: 520 }}
             spellCheck={false}
@@ -1688,7 +1688,7 @@ export default function StrategyEdit() {
               {/* 新建：单条 JSON 样例 */}
               <div className="lg:col-span-2">
                 <label className={labelCls}>样例原始日志 JSON</label>
-                <textarea
+                <AutoGrowTextarea
                   className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs leading-relaxed text-foreground outline-none transition hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary"
                   style={{ minHeight: 240 }}
                   spellCheck={false}
@@ -1812,7 +1812,7 @@ export default function StrategyEdit() {
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
               <div className="lg:col-span-2">
                 <label className={labelCls}>原始日志（每行一条）</label>
-                <textarea
+                <AutoGrowTextarea
                   className="w-full rounded-md border border-input bg-background p-3 font-mono text-xs leading-relaxed text-foreground outline-none transition hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary"
                   style={{ minHeight: 220 }}
                   spellCheck={false}
@@ -1925,7 +1925,7 @@ export default function StrategyEdit() {
           </p>
           <div>
             <label className={labelCls}>发布备注（写入版本历史与审计日志）</label>
-            <textarea
+            <AutoGrowTextarea
               className={`${inputCls} min-h-[72px]`}
               placeholder="如：新增 login_logout 规则、修复 severity 映射"
               value={publishRemark}
