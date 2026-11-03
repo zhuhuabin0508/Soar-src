@@ -288,6 +288,7 @@ class TicketNodeRecord(Base):
     handler_name = Column(String(64), nullable=False, default="")
     action = Column(String(20), nullable=False, default="submit")
     field_values = Column(JSON, nullable=False, default=dict)
+    device_result = Column(JSON, nullable=True)
     route_to = Column(String(64), nullable=True)
     comment = Column(Text, nullable=True)
     attachments = Column(JSON, nullable=True)

@@ -175,15 +175,15 @@ def validate_flow_structure(
     nodes_json: Any,
     *,
     group_ok: Optional[Callable[[int], bool]] = None,
-    device_action_ok: Optional[Callable[[int, int], bool]] = None,
+    device_ok: Optional[Callable[[int, int], Optional[str]]] = None,
 ) -> list[str]:
     """发布前校验流程结构，返回错误列表（空=通过）。
 
     Args:
         nodes_json: 流程模板 nodes 字段（完整 JSON 对象）。
         group_ok: 分组存在性校验回调（存在且启用返回 True）。
-        device_action_ok: 设备动作存在性校验回调 ``(device_id, action_id) -> bool``
-            （设备与动作均存在且启用返回 True；用于节点设备动作配置校验）。
+        device_ok: 设备动作存在性校验回调 ``(device_id, action_id) -> Optional[str]``
+            （设备与动作均存在且启用返回 None，否则返回错误说明；用于节点设备动作配置校验）。
     """
     errors: list[str] = []
     if not isinstance(nodes_json, dict):
@@ -208,6 +208,8 @@ def validate_flow_structure(
             keys.add(str(key))
 
         if n.get("type") == "end":
+            if n.get("device_action") not in (None, {}, "") or n.get("device_actions") not in (None, [], ""):
+                errors.append(f"{pos}：结束节点不能绑定设备动作")
             continue
         non_end += 1
         name = n.get("name") or key
@@ -347,105 +349,87 @@ def validate_flow_structure(
                                 if rf.get("rules"):
                                     errors.append(f"{pos}（{name}）：{rpos}的扩展字段 {rlabel} 不支持再嵌套匹配规则")
 
-        # 节点动作 · 封禁同步配置校验（触发字段/值、IP/设备/时长字段映射均须有效）
-        ban_sync = n.get("ban_sync")
-        if ban_sync not in (None, {}, ""):
-            if not isinstance(ban_sync, dict):
-                errors.append(f"{pos}（{name}）：封禁同步配置必须为对象")
-            else:
-                sw = ban_sync.get("switch_field")
-                sw_def = fdefs.get(str(sw)) if sw else None
-                if not sw or sw_def is None:
-                    errors.append(f"{pos}（{name}）：封禁同步未配置触发字段，或触发字段不在本节点字段中")
-                elif sw_def.get("type") not in ("select", "switch"):
-                    errors.append(f"{pos}（{name}）：封禁同步触发字段 {sw} 需为下拉选择/是否开关类型")
-                else:
-                    allowed_sw = ["是", "否"] if sw_def.get("type") == "switch" else [str(o) for o in (sw_def.get("options") or [])]
-                    swv = ban_sync.get("switch_value")
-                    if swv in (None, ""):
-                        swv = "是"
-                    if str(swv) not in allowed_sw:
-                        errors.append(f"{pos}（{name}）：封禁同步触发值 {swv} 必须是字段 {sw} 的可选项之一")
-                ipf = ban_sync.get("ip_field")
-                if not ipf or str(ipf) not in fdefs:
-                    errors.append(f"{pos}（{name}）：封禁同步未配置封禁 IP 字段，或该字段不在本节点字段中")
-                durf = ban_sync.get("duration_field")
-                dur_def = fdefs.get(str(durf)) if durf else None
-                if not durf or dur_def is None:
-                    errors.append(f"{pos}（{name}）：封禁同步未配置封禁时长字段，或该字段不在本节点字段中")
-                elif dur_def.get("type") != "duration":
-                    errors.append(f"{pos}（{name}）：封禁同步时长字段 {durf} 需为时长类型")
-                devf = ban_sync.get("device_field")
-                if devf and str(devf) not in fdefs:
-                    errors.append(f"{pos}（{name}）：封禁同步设备字段 {devf} 不在本节点字段中")
+        # 旧版封禁同步（ban_sync 字段映射）配置入口已下线，能力由设备动作的工作台同步覆盖；
+        # 残留配置在保存模板时由 _strip_legacy_ban_sync 剥离，此处不再校验（存量已发布模板的执行兼容在流转侧保留）
 
-        # 节点动作 · 设备动作配置校验（设备/动作指向、触发条件、参数映射均须有效）
+        def _check_device_cfg(device_action: Any, label: str) -> None:
+            if ntype == "parallel":
+                errors.append(f"{pos}（{name}）：会签节点不能绑定设备动作")
+                return
+            if not isinstance(device_action, dict):
+                errors.append(f"{pos}（{name}）：{label}必须为对象")
+                return
+            device_id = device_action.get("device_id")
+            action_id = device_action.get("action_id")
+            if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id <= 0:
+                errors.append(f"{pos}（{name}）：{label}未选择设备")
+            elif isinstance(action_id, bool) or not isinstance(action_id, int) or action_id <= 0:
+                errors.append(f"{pos}（{name}）：{label}未选择动作")
+            elif device_ok is not None:
+                device_err = device_ok(device_id, action_id)
+                if device_err:
+                    errors.append(f"{pos}（{name}）：{label}{device_err}")
+            judge_field = str(device_action.get("judge_field") or "").strip()
+            if not judge_field:
+                # 手动模式：不绑定判断字段，处理人在工单详情页通过内置开关决定是否调用
+                pass
+            else:
+                # 判断字段候选：本节点字段优先（处理人填写实时联动），
+                # 也允许前面节点的字段（存量模板兼容，按历史记录判断）
+                src = None
+                for f in n.get("fields") or []:
+                    if isinstance(f, dict) and str(f.get("key") or "") == judge_field and f.get("type") in ("select", "switch"):
+                        src = f
+                        break
+                if src is None:
+                    for other in nodes:
+                        if not isinstance(other, dict) or str(other.get("key") or "") == str(key) or other.get("type") == "end":
+                            continue
+                        for f in other.get("fields") or []:
+                            if not isinstance(f, dict) or str(f.get("key") or "") != judge_field:
+                                continue
+                            if f.get("type") in ("select", "switch"):
+                                src = f
+                                break
+                        if src is not None:
+                            break
+                if src is None:
+                    errors.append(f"{pos}（{name}）：{label}的判断字段须是本节点或前面节点的下拉选择/是否开关")
+                else:
+                    allowed = ["是", "否"] if src.get("type") == "switch" else [str(o) for o in (src.get("options") or [])]
+                    judge_value = device_action.get("judge_value")
+                    if judge_value in (None, ""):
+                        judge_value = "是"
+                    if str(judge_value) not in allowed:
+                        errors.append(f"{pos}（{name}）：{label}的建议执行取值 {judge_value} 不是判断字段的可选项")
+            # 参数快捷选项：{参数名: [{label, value}]}，宽松结构校验（值支持数字/表达式/文本，运行时由前端映射）
+            param_presets = device_action.get("param_presets")
+            if param_presets not in (None, {}, ""):
+                if not isinstance(param_presets, dict):
+                    errors.append(f"{pos}（{name}）：{label}的参数快捷选项必须为对象")
+                else:
+                    for pname, plist in param_presets.items():
+                        if not str(pname or "").strip():
+                            errors.append(f"{pos}（{name}）：{label}的参数快捷选项存在空参数名")
+                        elif not isinstance(plist, list) or not plist:
+                            errors.append(f"{pos}（{name}）：{label}的参数「{pname}」快捷选项必须为非空数组")
+                        else:
+                            for it in plist:
+                                if not isinstance(it, dict) or not str(it.get("label") or "").strip():
+                                    errors.append(f"{pos}（{name}）：{label}的参数「{pname}」存在未命名快捷选项")
+                                elif it.get("value") in (None, ""):
+                                    errors.append(f"{pos}（{name}）：{label}的参数「{pname}」快捷选项「{it.get('label')}」未配置实际值")
+
+        device_action = n.get("device_action")
+        if device_action not in (None, {}, ""):
+            _check_device_cfg(device_action, "设备动作")
         device_actions = n.get("device_actions")
         if device_actions not in (None, [], ""):
             if not isinstance(device_actions, list):
-                errors.append(f"{pos}（{name}）：设备动作配置必须为数组")
+                errors.append(f"{pos}（{name}）：设备动作列表必须为数组")
             else:
-                seen_da: set[str] = set()
-                for di, da in enumerate(device_actions):
-                    dpos = f"第 {di + 1} 个设备动作"
-                    if not isinstance(da, dict):
-                        errors.append(f"{pos}（{name}）：{dpos}结构非法")
-                        continue
-                    da_id = da.get("id")
-                    if not da_id or not str(da_id).strip():
-                        errors.append(f"{pos}（{name}）：{dpos}缺少标识（id）")
-                    elif str(da_id) in seen_da:
-                        errors.append(f"{pos}（{name}）：{dpos}标识 {da_id} 重复")
-                    else:
-                        seen_da.add(str(da_id))
-                    dev_id = da.get("device_id")
-                    act_id = da.get("action_id")
-                    if isinstance(dev_id, bool) or not isinstance(dev_id, int):
-                        errors.append(f"{pos}（{name}）：{dpos}未选择执行设备")
-                    elif isinstance(act_id, bool) or not isinstance(act_id, int):
-                        errors.append(f"{pos}（{name}）：{dpos}未选择设备动作")
-                    elif device_action_ok is not None and not device_action_ok(dev_id, act_id):
-                        errors.append(
-                            f"{pos}（{name}）：{dpos}指向的设备动作不存在或已停用"
-                            f"（设备 ID={dev_id}，动作 ID={act_id}）"
-                        )
-                    # 触发条件：与路由条件同结构校验（field 指向 / 操作符 / gt-lt 类型）
-                    when = da.get("when")
-                    if when not in (None, {}, ""):
-                        _, conds = _iter_conds(when)
-                        if not conds:
-                            errors.append(f"{pos}（{name}）：{dpos}触发条件缺少判断条件")
-                        for c in conds:
-                            cf = str(c.get("field") or "")
-                            if not cf:
-                                errors.append(f"{pos}（{name}）：{dpos}触发条件存在未选择判断字段的条件")
-                                continue
-                            if cf not in fkeys:
-                                errors.append(f"{pos}（{name}）：{dpos}触发条件的判断字段 {cf} 不在节点字段中")
-                                continue
-                            cop = c.get("op") or "eq"
-                            if cop not in COND_OPS:
-                                errors.append(
-                                    f"{pos}（{name}）：{dpos}判断字段 {cf} 的操作符 {cop} 不合法"
-                                    f"（仅支持 eq/ne/gt/lt/in/contains）"
-                                )
-                            elif cop in ("gt", "lt") and ftypes.get(cf) not in ("number", "datetime"):
-                                errors.append(
-                                    f"{pos}（{name}）：{dpos}判断字段 {cf} 需为数字或日期时间类型才能使用大于/小于"
-                                )
-                    # 参数映射：参数名 → 节点平铺字段 key
-                    params = da.get("params")
-                    if params not in (None, {}, ""):
-                        if not isinstance(params, dict):
-                            errors.append(f"{pos}（{name}）：{dpos}参数映射必须为对象")
-                        else:
-                            for pname, pfield in params.items():
-                                if pfield in (None, ""):
-                                    continue
-                                if not isinstance(pfield, str) or pfield not in fkeys:
-                                    errors.append(
-                                        f"{pos}（{name}）：{dpos}参数 {pname} 映射的字段 {pfield} 不在节点字段中"
-                                    )
+                for ai, item in enumerate(device_actions):
+                    _check_device_cfg(item, f"第 {ai + 1} 个设备动作")
 
         # 路由
         routes = n.get("routes")
@@ -813,6 +797,16 @@ def _eval_cond(cond: dict, values: dict) -> bool:
             return s_actual > s_expected if op == "gt" else s_actual < s_expected
         return a > b if op == "gt" else a < b
     return False
+
+
+def when_matches(when: Any, field_values: dict) -> bool:
+    if when in (None, {}, ""):
+        return True
+    logic, conds = _iter_conds(when)
+    if not conds:
+        return True
+    results = [_eval_cond(c, field_values or {}) for c in conds]
+    return any(results) if logic == "or" else all(results)
 
 
 def suggest_route(routes: Any, field_values: dict) -> tuple[Optional[str], Optional[str]]:

@@ -34,18 +34,63 @@ export function durationFromParts({ permanent, num, unit }) {
   return `${num}${unit || '天'}`
 }
 
-// 时长字段存储值（"5分钟"/"2小时"/"30天"/"永久"）→ 设备参数秒数；
-// "永久"→"0"（安博通 duration=0 即永久），无法解析返回空串（不预填，交由必填校验拦截）
-export function durationToSeconds(value) {
+// ===== 设备动作 duration 参数（人类可读时长 ↔ 设备侧秒数/-1） =====
+// 快捷预设：工单详情页 / 动作测试抽屉共用的下拉选项
+export const DURATION_PRESETS = ['永久', '30分钟', '1小时', '6小时', '12小时', '1天', '3天', '7天', '30天']
+
+// 任意时长值 → 显示值：-1/0/永久 → "永久"；纯秒数自动换算最合适的单位（259200 → "3天"）；
+// 已是 "3天"/"45分钟" 形式原样返回。后端 prepare_device_params 负责反向转换为设备侧取值。
+export function deviceDurationLabel(value) {
   const s = String(value ?? '').trim()
   if (!s) return ''
-  if (s === '永久') return '0'
-  const m = s.match(/^(\d+(?:\.\d+)?)(分钟|小时|天)$/)
-  if (!m) return ''
-  const n = Number(m[1])
-  const sec = m[2] === '分钟' ? n * 60 : m[2] === '小时' ? n * 3600 : n * 86400
-  const r = Math.round(sec)
-  return r > 0 ? String(r) : ''
+  if (s === '永久' || s === '-1' || s === '0') return '永久'
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const sec = Number(s)
+    if (sec <= 0) return '永久'
+    if (sec % 86400 === 0) return `${sec / 86400}天`
+    if (sec % 3600 === 0) return `${sec / 3600}小时`
+    if (sec % 60 === 0) return `${sec / 60}分钟`
+    return s
+  }
+  return s
+}
+
+// ===== 设备动作参数快捷选项（param_presets）=====
+// 模板设计者为动作参数自定义快捷填写选项，配置持久化在节点 device_actions 的
+// param_presets 字段：{ 参数名: [{label, value}, ...] }。处理人选择选项后由前端
+// 映射为 value 提交（后端流转零改动，收到即为真实参数值）。
+
+// 求值快捷选项的 value 表达式：支持纯数字与乘法表达式（"3*24*3600" → 259200）。
+// 非数值表达式按原样字符串返回（如 reason 类文本参数）；解析失败返回 null。
+export function evalParamExpr(input) {
+  const s = String(input ?? '').trim()
+  if (!s) return null
+  // 纯数字（含负数/小数）
+  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s)
+  // 乘法表达式：数字 * 数字 * ...
+  if (/^-?\d+(\.\d+)?(\s*\*\s*-?\d+(\.\d+)?)+$/.test(s)) {
+    const n = s.split('*').reduce((acc, part) => acc * Number(part.trim()), 1)
+    return Number.isFinite(n) ? n : null
+  }
+  // 其他：按文本参数原样返回（去首尾引号）
+  const quoted = s.match(/^"(.*)"$/)
+  return quoted ? quoted[1] : s
+}
+
+// 参数快捷选项归一化（保存/展示共用）：过滤 label/value 重复或缺失项，value 表达式已求值
+export function normParamPresets(presets) {
+  if (!presets || typeof presets !== 'object' || Array.isArray(presets)) return null
+  const out = {}
+  Object.entries(presets).forEach(([name, list]) => {
+    if (!name || !Array.isArray(list)) return
+    const items = list
+      .map((it) => (it && typeof it === 'object'
+        ? { label: String(it.label ?? '').trim(), value: it.value }
+        : null))
+      .filter((it) => it && it.label && it.value !== '' && it.value != null)
+    if (items.length) out[name] = items
+  })
+  return Object.keys(out).length ? out : null
 }
 
 // ===== 引用联动字段选项收集（与后端 collect_ref_options 一致） =====
@@ -147,6 +192,15 @@ function evalCond(cond, fieldValues) {
     return op === 'gt' ? sa > se : sa < se
   }
   return false
+}
+
+export function matchWhen(when, fieldValues) {
+  if (!when) return true
+  const { logic, conds } = normWhen(when)
+  if (!conds.length) return true
+  return logic === 'or'
+    ? conds.some((c) => evalCond(c, fieldValues))
+    : conds.every((c) => evalCond(c, fieldValues))
 }
 
 // 返回 { options: [{to, label, when}], suggested: 命中条件的建议去向 key }

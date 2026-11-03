@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import get_client_ip, log_audit
 from app.core.device_templates import get_device_template, get_device_templates
 from app.core.security import decrypt_device_secret, encrypt_device_secret, validate_outbound_url
+from app.core.ticket_device_action import parse_params_schema, prepare_device_params
 from app.core.timezone import beijing_now, beijing_now_iso
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
@@ -1121,7 +1122,10 @@ def test_device_action(
     if action is None:
         raise HTTPException(status_code=404, detail="DeviceAction not found")
 
-    params = body.params or {}
+    # 与工单流转同口径：参数先经统一转换/校验（时长"3天"→秒数、IP 合法性、必填补默认值），再送执行器
+    params, param_errors = prepare_device_params(parse_params_schema(action), body.params or {})
+    if param_errors:
+        raise HTTPException(status_code=422, detail="；".join(param_errors))
 
     # 统一执行引擎（复用 devices/action_executor：超时/TLS/重试 + 写 DeviceCallLog）
     result = execute_device_action(

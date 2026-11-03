@@ -10,6 +10,7 @@
 """
 import copy
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
@@ -20,6 +21,7 @@ from app.core.ticket_flow import validate_flow_structure
 from app.core.timezone import to_beijing_iso
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
+from app.models.device import Device, DeviceAction
 from app.models.ticket import Ticket, TicketFlow, TicketFlowVersion, TicketGroup
 from app.models.user import User
 from app.schemas.ticket import FlowCreate, FlowUpdate
@@ -60,39 +62,6 @@ def _group_ok_factory(db: Session):
     return _ok
 
 
-def _device_action_ok_factory(db: Session):
-    """节点设备动作存在性校验回调（设备与动作均存在且启用）。
-
-    供发布校验 validate_flow_structure 检查 device_actions 指向的
-    设备/动作（如安博通阻断器的封禁/解封动作）是否仍可用。
-    """
-    from app.models.device import Device, DeviceAction
-
-    cache: dict[tuple[int, int], bool] = {}
-
-    def _ok(device_id: int, action_id: int) -> bool:
-        key = (int(device_id), int(action_id))
-        if key not in cache:
-            dev = (
-                db.query(Device)
-                .filter(Device.id == device_id, Device.enabled.is_(True))
-                .first()
-            )
-            act = (
-                db.query(DeviceAction)
-                .filter(
-                    DeviceAction.id == action_id,
-                    DeviceAction.device_id == device_id,
-                    DeviceAction.enabled.is_(True),
-                )
-                .first()
-            )
-            cache[key] = bool(dev and act)
-        return cache[key]
-
-    return _ok
-
-
 def _flow_payload(flow: TicketFlow, ticket_count: int | None = None) -> dict:
     data = flow.to_dict()
     data["node_count"] = len(flow.nodes.get("nodes") or []) if isinstance(flow.nodes, dict) else 0
@@ -115,6 +84,24 @@ def _version_payload(v: TicketFlowVersion, with_nodes: bool = False) -> dict:
     if with_nodes:
         data["nodes"] = v.nodes
     return data
+
+
+def _strip_legacy_ban_sync(nodes: Any) -> Any:
+    """剥离节点里旧版封禁同步（ban_sync 字段映射）残留配置。
+
+    该机制配置入口已下线（能力由设备动作的工作台同步覆盖）。存量模板重新编辑保存时
+    静默清理残留键，避免发布校验误报；已发布模板未经重存前，流转侧仍按原逻辑兼容执行。
+    """
+    if not isinstance(nodes, dict):
+        return nodes
+    removed = False
+    for n in nodes.values():
+        if isinstance(n, dict) and n.get("ban_sync") not in (None, {}, ""):
+            n.pop("ban_sync", None)
+            removed = True
+    if removed:
+        logger.info("已剥离旧版封禁同步残留配置: flow nodes 中的 ban_sync 键")
+    return nodes
 
 
 # ============ 接口 ============
@@ -155,7 +142,7 @@ def create_flow(
     flow = TicketFlow(
         name=name,
         description=sanitize_text(body.description) if body.description else None,
-        nodes=body.nodes or {},
+        nodes=_strip_legacy_ban_sync(body.nodes or {}),
         is_draft=True,
         created_by=current_user.username,
     )
@@ -199,9 +186,10 @@ def update_flow(
     if body.nodes is not None:
         if not isinstance(body.nodes, dict):
             raise HTTPException(status_code=400, detail="nodes 必须为 JSON 对象")
-        if body.nodes != flow.nodes:
+        clean_nodes = _strip_legacy_ban_sync(body.nodes)
+        if clean_nodes != flow.nodes:
             content_changed = True
-            flow.nodes = body.nodes
+            flow.nodes = clean_nodes
     if body.enabled is not None:
         flow.enabled = body.enabled
     if content_changed:
@@ -227,10 +215,26 @@ def publish_flow(
     发布成功同时写入版本存档（ticket_flow_versions），供版本历史查看与回滚。
     """
     flow = _get_flow_or_404(db, flow_id)
+
+    def _device_ok(device_id: int, action_id: int) -> str | None:
+        device = db.query(Device).filter(Device.id == device_id).first()
+        if device is None or not device.enabled:
+            return "设备不存在或已禁用"
+        action = (
+            db.query(DeviceAction)
+            .filter(
+                DeviceAction.id == action_id,
+                DeviceAction.device_id == device_id,
+                DeviceAction.enabled.is_(True),
+            )
+            .first()
+        )
+        if action is None:
+            return "动作不存在、未启用或不属于该设备"
+        return None
+
     errors = validate_flow_structure(
-        flow.nodes,
-        group_ok=_group_ok_factory(db),
-        device_action_ok=_device_action_ok_factory(db),
+        flow.nodes, group_ok=_group_ok_factory(db), device_ok=_device_ok,
     )
     if errors:
         raise HTTPException(status_code=422, detail="；".join(errors))

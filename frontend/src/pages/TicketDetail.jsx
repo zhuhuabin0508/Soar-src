@@ -17,9 +17,10 @@ import { inputBaseCls, inputCls, labelCls, hintCls } from '../components/propert
 import {Button, PageContainer, CompactSelect, ComboInput, DatePicker, AutoGrowTextarea } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
-import { evalRoutes, evalWhen, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, durationToSeconds, DURATION_UNITS } from '../utils/ticketFlow'
+import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS, evalParamExpr, deviceDurationLabel } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
+import DeviceDurationInput from '../components/DeviceDurationInput'
 import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
@@ -45,6 +46,22 @@ const ACTION_META = {
   device_action: { label: '设备动作', cls: 'bg-cyan-500/10 text-cyan-500', dot: 'border-cyan-500' },
 }
 // 流转记录 comment 的显示标题（按动作区分语义）
+const initialDeviceParams = (form, records) => {
+  const prior = {}
+  ;(records || []).forEach((r) => {
+    Object.entries(r.field_values || {}).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && String(v) !== '') prior[k] = v
+    })
+  })
+  const init = {}
+  ;(form?.params || []).forEach((p) => {
+    if (prior[p.name] !== undefined) init[p.name] = prior[p.name]
+    else if (p.default !== undefined && p.default !== null && String(p.default) !== '') init[p.name] = p.default
+    else init[p.name] = ''
+  })
+  return init
+}
+
 const ACTION_COMMENT_LABELS = {
   create: '发起备注', submit: '处置意见', cancel: '取消原因', rollback: '回退原因',
   transfer: '转办原因', comment: '评论内容',
@@ -647,12 +664,11 @@ export default function TicketDetail() {
   // 时间线内部评论（区别于处置意见）
   const [commentDraft, setCommentDraft] = useState('')
   const [commenting, setCommenting] = useState(false)
-  // 节点设备动作执行：参数草稿（配置项 id → {参数名: 值}，未编辑时按字段映射实时预填）
-  const [deviceParams, setDeviceParams] = useState({})
-  const [deviceExecuting, setDeviceExecuting] = useState('')
-  const [deviceResults, setDeviceResults] = useState({})
-  // 执行成功标记（配置项 id → true）：本节点停留期间按钮置"已执行 ✓"防重复下发，可点"再次执行"解除
-  const [deviceDone, setDeviceDone] = useState({})
+  const [actionParams, setActionParams] = useState({})
+  const [deviceMissing, setDeviceMissing] = useState([])
+  const [deviceIpErrors, setDeviceIpErrors] = useState({})
+  // 设备参数"自定义"模式（token = `${item.index}:${param.name}`）：点开自定义后保持原输入控件可见
+  const [deviceCustom, setDeviceCustom] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -671,6 +687,10 @@ export default function TicketDetail() {
           const { options, suggested } = evalRoutes(res.current_node.routes, init)
           setRouteTo(suggested || (options.length === 1 ? options[0].to : '') || '')
           setComment('')
+          setActionParams({})
+          setDeviceMissing([])
+          setDeviceIpErrors({})
+          setDeviceCustom({})
         }
       })
       .catch((e) => toast.error(e.message || '加载工单失败'))
@@ -707,11 +727,16 @@ export default function TicketDetail() {
   // 无建议时一律清空（含单路由节点）：跨节点流转后残留上一个节点的选择
   // （如研判分析的 n_emergency）会把本节点不存在/自身 key 当作去向提交，被后端白名单拒绝
   useEffect(() => {
-    setRouteTo(routeSuggested || '')
-  }, [currentNode?.key, routeSuggested]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (routeSuggested) {
+      setRouteTo(routeSuggested)
+      return
+    }
+    // 残留的 routeTo 不在当前节点可选项内（节点切换后的旧值）时清空，避免误流转：
+    // 上一节点条件路由锁定的去向（如 n_emergency）流转后残留，单路由节点不清空会被
+    // 直接提交，后端白名单校验拒绝（"流转去向 X 不在节点的路由白名单内"）
+    setRouteTo((cur) => (cur && routeOptions.some((r) => r.to === cur) ? cur : ''))
+  }, [routeSuggested, routeOptions])
   const currentFields = currentNode?.fields || []
-  // 字段定义索引（含匹配规则展开的扩展字段）：设备动作参数映射按字段类型做值归一
-  const fieldDefsByKey = useMemo(() => fieldDefMap(currentFields), [currentFields])
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
     const out = []
@@ -721,27 +746,29 @@ export default function TicketDetail() {
     }
     return out
   }, [currentFields, values]) // eslint-disable-line react-hooks/exhaustive-deps
-  // 命中触发条件的设备动作（如安博通阻断器封禁/解封）：按当前表单值实时过滤，未配置触发条件=始终展示
-  const visibleDeviceActions = useMemo(
-    () => (currentNode?.device_actions || []).filter((a) => a && a.id && evalWhen(a.when, values)),
-    [currentNode, values],
-  )
-  // 设备动作参数取值：手动编辑值优先，其次按映射字段的当前表单值预填；
-  // 被映射字段为时长类型时按设备口径换算为秒（"永久"→0），避免把 "30天" 原样传给设备
-  const deviceParamValue = (a, p) => {
-    const draft = deviceParams[a.id]
-    if (draft && p.name in draft) return draft[p.name]
-    const fk = a.params?.[p.name]
-    if (!fk) return ''
-    const fv = values[fk]
-    if (fv === undefined || fv === null) return ''
-    if (fieldDefsByKey[fk]?.type === 'duration') return durationToSeconds(fv)
-    return String(fv)
+
+  // 设备动作判断字段实时联动：判断字段为本节点字段时，按处理人当前填写值决定是否调用设备
+  // （填了「是」→ 立即出现参数表单；改回「否」→ 收起）；判断字段引用前面节点（存量模板）
+  // 时，当前表单没有该字段，回退后端按历史记录计算的结果
+  // 开关字段在表单里是布尔值（true/false），与后端 _normalize_cond_value 同口径归一化为 是/否 再比较
+  const normDeviceVal = (v) => {
+    if (v === true || String(v) === 'true' || String(v) === 'True') return '是'
+    if (v === false || String(v) === 'false' || String(v) === 'False') return '否'
+    return v
   }
-  // 时长字段映射提示：预填值已换算，说明单位口径避免处理人误改
-  const isDurationMapped = (a, p) => {
-    const fk = a.params?.[p.name]
-    return !!(fk && fieldDefsByKey[fk]?.type === 'duration' && !(deviceParams[a.id] && p.name in deviceParams[a.id]))
+  const liveDeviceExecute = (it) => {
+    if (!it) return false
+    if (!it.judge_field) return !!it.execute
+    const cur = values[it.judge_field]
+    if (cur !== undefined && cur !== null && String(cur).trim() !== '') {
+      return String(normDeviceVal(cur)) === String(it.judge_value || '是')
+    }
+    return !!it.execute
+  }
+  const liveDeviceActual = (it) => {
+    const cur = it?.judge_field ? values[it.judge_field] : undefined
+    if (cur !== undefined && cur !== null && String(cur).trim() !== '') return String(normDeviceVal(cur))
+    return it?.judge_actual || ''
   }
 
   // 联动字段刚展开时自动定位并聚焦：如「是否需要处置」选「是」后出现必填的「处置建议」，
@@ -869,6 +896,41 @@ export default function TicketDetail() {
       return
     }
     setIpErrors({})
+    const deviceForm = ticket?.device_action_form
+    const actionItems = deviceForm?.mode === 'actions' ? (deviceForm.items || []) : []
+    const deviceRuns = []
+    if (actionItems.length) {
+      const miss = []
+      const nextIp = {}
+      for (const it of actionItems) {
+        if (!liveDeviceExecute(it)) continue
+        if (it.error) {
+          toast.error(it.error)
+          return
+        }
+        const params = actionParams[it.index] || initialDeviceParams(it, ticket.records)
+        for (const p of it.params || []) {
+          const v = params[p.name]
+          const empty = v === undefined || v === null || String(v).trim() === ''
+          const token = `${it.index}:${p.name}`
+          if (p.required && empty) miss.push(token)
+          if (!empty && ['ip', 'cidr'].includes(String(p.type || '').toLowerCase())) {
+            const msg = validateIPExpression(v, p.description || p.name)
+            if (msg) nextIp[token] = msg
+          }
+        }
+        deviceRuns.push({ index: it.index, action_id: it.action_id, run: true, params })
+      }
+      if (miss.length || Object.keys(nextIp).length) {
+        setDeviceMissing(miss)
+        setDeviceIpErrors(nextIp)
+        toast.error(miss.length ? '请填写设备动作必填参数' : Object.values(nextIp)[0])
+        document.querySelector('[data-device-choice]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
+    }
+    setDeviceMissing([])
+    setDeviceIpErrors({})
     // 未命中规则的扩展字段的值不提交
     const submitValues = Object.fromEntries(renderFields.map(({ field: f }) => [f.key, values[f.key]]))
     if (routeOptions.length > 1 && !routeTo && !routeSuggested) return toast.error('请选择流转去向')
@@ -889,6 +951,13 @@ export default function TicketDetail() {
     } else {
       message = `提交后工单将流转至「${target?.name || targetKey}」（由${ticket.group_names?.[String(target?.group_id)] || '对应分组'}处理），组内任一成员提交即代表全组。确认提交？`
     }
+    const willRun = actionItems.filter((it) => liveDeviceExecute(it))
+    if (willRun.length) {
+      const names = willRun.map((it) => `${it.device_name || '设备'} / ${it.action_name || '动作'}`).join('、')
+      message = `命中建议执行值，本次将调用：${names}。设备调用失败时工单留在本节点。${message}`
+    } else if (actionItems.length) {
+      message = `未命中建议执行值，本次不调用设备，工单按去向继续。${message}`
+    }
     confirm({ title: '确认提交流转', message, confirmText: '提交流转' }).then((ok) => {
       if (!ok) return
       setSubmitting(true)
@@ -896,6 +965,7 @@ export default function TicketDetail() {
         field_values: submitValues,
         route_to: targetKey,
         comment: comment.trim() || null,
+        device_runs: deviceRuns,
       })
         .then((res) => {
           toast.success(target?.type === 'end' ? '工单已完成' : `已流转至「${target?.name}」`)
@@ -903,6 +973,8 @@ export default function TicketDetail() {
           setValues({})
           setComment('')
           setMissingKeys([])
+          setActionParams({})
+          setDeviceCustom({})
         })
         .catch((e) => toast.error(e.message || '流转失败'))
         .finally(() => setSubmitting(false))
@@ -1035,44 +1107,6 @@ export default function TicketDetail() {
     })
   }
 
-  // 执行节点设备动作：参数按映射预填可改，服务端按触发条件复检后调用设备 API，时间线留痕
-  const handleExecuteDeviceAction = (a) => {
-    const params = {}
-    const missing = []
-    ;(a.params_schema || []).forEach((p) => {
-      if (!p?.name) return
-      const v = String(deviceParamValue(a, p) ?? '').trim()
-      if (!v) { if (p.required) missing.push(p.description || p.name); return }
-      params[p.name] = v
-    })
-    if (missing.length) return toast.error(`请填写动作参数：${missing.join('、')}`)
-    const paramText = Object.entries(params).map(([k, v]) => `${k}=${v}`).join('，')
-    confirm({
-      title: `执行设备动作「${a.action_name || ''}」`,
-      message: `将对设备「${a.device_name || '--'}」执行「${a.action_name || '--'}」${paramText ? `，参数：${paramText}` : ''}。请确认后执行。`,
-      confirmText: '确认执行',
-    }).then((ok) => {
-      if (!ok) return
-      setDeviceExecuting(a.id)
-      ticketApi.executeDeviceAction(id, { action_id: a.id, params, field_values: values })
-        .then((res) => {
-          setDeviceResults((s) => ({ ...s, [a.id]: res }))
-          if (res.success) {
-            toast.success(`「${a.action_name || '设备动作'}」执行成功，已写入流转历史`)
-            // 防重：成功后置"已执行"，节点停留期间不可重复下发（需点"再次执行"解除）
-            setDeviceDone((s) => ({ ...s, [a.id]: true }))
-            // 静默刷新时间线（不重置当前节点表单，与智能体研判轮询同口径）
-            ticketApi.getTicket(id).then((t) => setTicket(t)).catch(() => {})
-          } else {
-            toast.error(res.note || res.error || `设备返回 HTTP ${res.status_code ?? '--'}，执行失败`)
-          }
-        })
-        .catch((e) => toast.error(e.message || '设备动作执行失败'))
-        .finally(() => setDeviceExecuting(''))
-    })
-  }
-
-  // 打开转办弹窗：加载启用用户 + 启用分组（复用抄送候选数据源）
   const openTransfer = () => {
     setTransferTarget('')
     setTransferReason('')
@@ -1329,35 +1363,38 @@ export default function TicketDetail() {
                             ))}
                           </div>
                         )}
-                        {r.comment && (r.action === 'device_action' ? (() => {
-                          // 设备动作留痕：comment 为 JSON 摘要（设备/动作/参数/结果），解析为结果卡片展示
-                          let sum = null
-                          try { sum = JSON.parse(r.comment) } catch { sum = null }
-                          if (!sum || typeof sum !== 'object') {
-                            return (
-                              <div className="mt-2 rounded-r-md border-l-2 border-cyan-500/60 bg-cyan-500/5 px-3 py-2 text-sm leading-relaxed text-foreground">
-                                <RichTextView text={r.comment} />
-                              </div>
-                            )
-                          }
-                          return (
-                            <div className={`mt-2 rounded-r-md border-l-2 px-3 py-2 ${sum.success ? 'border-emerald-500/60 bg-emerald-500/5' : 'border-red-500/60 bg-red-500/5'}`}>
-                              <div className={`mb-1 flex items-center gap-1.5 text-[11px] font-medium ${sum.success ? 'text-emerald-500' : 'text-red-500'}`}>
-                                {sum.success
-                                  ? <><CheckCircle2 className="h-3.5 w-3.5" />执行成功{sum.status_code ? `（HTTP ${sum.status_code}）` : ''}</>
-                                  : <><AlertTriangle className="h-3.5 w-3.5" />执行失败{sum.status_code ? `（HTTP ${sum.status_code}）` : ''}</>}
-                              </div>
-                              <div className="space-y-1 text-xs text-muted-foreground">
-                                <div>设备：<span className="text-foreground">{sum.device || '--'}</span>　动作：<span className="text-foreground">{sum.action || '--'}</span></div>
-                                {Object.keys(sum.params || {}).length > 0 && (
-                                  <div className="break-all">参数：{Object.entries(sum.params).map(([k, v]) => `${k}=${v}`).join('，')}</div>
-                                )}
-                                {sum.note && <div className="text-amber-500">{String(sum.note)}</div>}
-                                {sum.error && <div className="break-all">错误：{String(sum.error)}</div>}
-                              </div>
+                        {(r.device_result?.items || (r.device_result ? [r.device_result] : [])).map((dr, di) => (
+                          dr?.skipped ? (
+                            <div key={di} className="mt-2 text-xs text-muted-foreground">
+                              {dr.by === 'judge'
+                                ? `判断组建议不执行，未调用「${dr.device_name || '设备'} / ${dr.action_name || '动作'}」`
+                                : dr.by === 'condition'
+                                ? '判断条件未命中，未下发设备'
+                                : (dr.action_name ? `本次未执行「${dr.device_name || '设备'} / ${dr.action_name}」` : '本次未下发设备')}
                             </div>
-                          )
-                        })() : (
+                          ) : (dr && (dr.skipped === false || dr.action_name || dr.device_name)) ? (
+                            <div key={di} className="mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                              <div className="text-foreground">
+                                已下发 {dr.device_name || '设备'} / {dr.action_name || '动作'}
+                                {dr.status_code ? ` · HTTP ${dr.status_code}` : ''}
+                              </div>
+                              {dr.params && Object.keys(dr.params).length > 0 && (
+                                <div className="mt-1 break-all">
+                                  {Object.entries(dr.params).map(([k, v]) => {
+                                    let disp = `${k}=${v}`
+                                    // 时长类参数附加友好显示（如 duration=259200（3天）、-1（永久））
+                                    if (/duration|expire|ttl/i.test(k)) {
+                                      const lab = deviceDurationLabel(v)
+                                      if (lab && lab !== String(v)) disp = `${k}=${v}（${lab}）`
+                                    }
+                                    return disp
+                                  }).join('，')}
+                                </div>
+                              )}
+                            </div>
+                          ) : null
+                        ))}
+                        {r.comment && (
                           <div className={`mt-2 rounded-r-md border-l-2 px-3 py-2 ${
                             r.action === 'rollback' ? 'border-amber-500/60 bg-amber-500/5' : 'border-primary/60 bg-primary/5'
                           }`}>
@@ -1366,7 +1403,7 @@ export default function TicketDetail() {
                             </div>
                             <div className="text-sm leading-relaxed text-foreground"><RichTextView text={r.comment} /></div>
                           </div>
-                        ))}
+                        )}
                         {routeTarget && (
                           <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
                             {r.action === 'rollback'
@@ -1611,93 +1648,6 @@ export default function TicketDetail() {
                 })}
                 {!currentFields.length && <div className="rounded-md border border-dashed border-border py-4 text-center text-sm text-muted-foreground">本节点无需填写字段</div>}
 
-                {/* 设备动作：按节点触发条件命中才展示（如「是否封禁=是」出现封禁执行卡片） */}
-                {visibleDeviceActions.map((a) => {
-                  const result = deviceResults[a.id]
-                  const executing = deviceExecuting === a.id
-                  return (
-                    <div key={a.id} className="rounded-md border border-cyan-500/40 bg-cyan-500/[0.03] p-3.5">
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <Zap className="h-4 w-4 shrink-0 text-cyan-500" />
-                        <span className="text-sm font-semibold text-foreground">
-                          {a.device_name || '设备'} · {a.action_name || '动作'}
-                        </span>
-                        <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-500">设备动作</span>
-                        <span className="text-xs text-muted-foreground">填写内容命中触发条件后展示</span>
-                      </div>
-                      {(a.params_schema || []).filter((p) => p?.name).map((p) => (
-                        <div key={p.name} className="mb-2">
-                          <label className={labelCls}>
-                            {p.description || p.name}
-                            {p.required && <span className="text-red-500">*</span>}
-                            {a.params?.[p.name] && (
-                              <span className="ml-1.5 font-normal text-muted-foreground">（预填自表单字段）</span>
-                            )}
-                          </label>
-                          <input className={inputCls}
-                            placeholder={p.placeholder || (p.type === 'number' ? '数字' : '')}
-                            type={p.type === 'number' ? 'number' : 'text'}
-                            value={deviceParamValue(a, p)}
-                            disabled={executing}
-                            onChange={(e) => setDeviceParams((s) => ({
-                              ...s, [a.id]: { ...(s[a.id] || {}), [p.name]: e.target.value },
-                            }))} />
-                          {isDurationMapped(a, p) && (
-                            <p className={hintCls}>已按设备要求换算为秒（永久封禁 = 0），可直接修改</p>
-                          )}
-                        </div>
-                      ))}
-                      <div className="flex items-center gap-2">
-                        <Button variant="secondary" size="sm" className="flex-1"
-                          loading={executing} disabled={submitting || (!!deviceDone[a.id] && !executing)}
-                          onClick={() => handleExecuteDeviceAction(a)}>
-                          {deviceDone[a.id]
-                            ? <>已执行 ✓</>
-                            : <><Zap className="mr-1 h-3.5 w-3.5" />执行{a.action_name ? `「${a.action_name}」` : '动作'}</>}
-                        </Button>
-                        {deviceDone[a.id] && !executing && (
-                          <button type="button"
-                            onClick={() => setDeviceDone((s) => ({ ...s, [a.id]: false }))}
-                            className="shrink-0 rounded px-2 py-1 text-[11px] text-muted-foreground underline underline-offset-2 transition hover:text-foreground">
-                            再次执行
-                          </button>
-                        )}
-                      </div>
-                      {result && (
-                        <div className="mt-2 space-y-1.5">
-                          {result.success ? (
-                            <p className="flex items-center gap-1.5 text-xs text-emerald-500">
-                              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                              执行成功（HTTP {result.status_code ?? '--'} / {result.latency_ms ?? '--'}ms），已写入流转历史
-                            </p>
-                          ) : (
-                            <p className="flex items-start gap-1.5 text-xs text-destructive">
-                              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                              执行失败：{result.error || `HTTP ${result.status_code ?? '--'}`}
-                            </p>
-                          )}
-                          {result.note && (
-                            <p className="flex items-start gap-1.5 text-xs text-amber-500">
-                              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                              {result.note}
-                            </p>
-                          )}
-                          {result.response_body != null && String(result.response_body).trim() !== '' && (
-                            <details className="rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
-                              <summary className="cursor-pointer select-none text-muted-foreground">查看设备原始返回</summary>
-                              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-background/60 p-2 text-[11px] leading-relaxed text-muted-foreground">
-                                {typeof result.response_body === 'string'
-                                  ? result.response_body
-                                  : JSON.stringify(result.response_body, null, 2)}
-                              </pre>
-                            </details>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-
                 {routeOptions.length > 1 && (
                   <div>
                     <label className={labelCls}>流转去向{routeSuggested ? null : <span className="text-red-500">*</span>}</label>
@@ -1730,6 +1680,128 @@ export default function TicketDetail() {
                     提交后流转至「{nodes.find((n) => n.key === routeOptions[0].to)?.name || routeOptions[0].to}」
                   </div>
                 )}
+
+                {(ticket.device_action_form?.items || []).map((it) => {
+                  if (!liveDeviceExecute(it)) {
+                    const actual = liveDeviceActual(it)
+                    return (
+                      <div key={it.index} className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
+                        {actual
+                          ? `判断为「${actual}」，本次不调用设备。`
+                          : `填写判断字段并命中建议执行值后，将调用 ${it.device_name || '设备'} / ${it.action_name || '动作'}。`}
+                      </div>
+                    )
+                  }
+                  const params = actionParams[it.index] || initialDeviceParams(it, ticket.records)
+                  const setP = (name, v) => {
+                    const base = actionParams[it.index] || initialDeviceParams(it, ticket.records)
+                    setActionParams((s) => ({ ...s, [it.index]: { ...base, [name]: v } }))
+                    const token = `${it.index}:${name}`
+                    if (deviceMissing.includes(token)) setDeviceMissing((ks) => ks.filter((k) => k !== token))
+                    if (deviceIpErrors[token]) setDeviceIpErrors((e) => ({ ...e, [token]: '' }))
+                  }
+                  return (
+                    <div key={it.index} data-device-choice className="rounded-md border border-border p-3">
+                      <div className="text-sm font-semibold text-foreground">{it.device_name || '设备'} / {it.action_name || '动作'}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">命中建议执行值，请填写设备参数</div>
+                      {it.error && <div className="mt-2 text-xs text-destructive">{it.error}</div>}
+                      <div className="mt-3 space-y-3">
+                          {(it.params || []).map((p) => {
+                            const token = `${it.index}:${p.name}`
+                            const bad = deviceMissing.includes(token) || deviceIpErrors[token]
+                            const cls = bad ? `${inputCls} !border-destructive ring-1 !ring-destructive` : inputCls
+                            // 参数快捷选项（模板设计者配置）：选择即映射为实际参数值；可切"自定义"手动填写
+                            const presets = (p.presets || [])
+                              .map((x) => ({ ...x, resolved: evalParamExpr(x.value) }))
+                              .filter((x) => String(x.label || '').trim() && x.resolved !== null && x.resolved !== '')
+                            const cur = params[p.name]
+                            const hasCur = cur !== undefined && cur !== null && String(cur) !== ''
+                            const matched = presets.find((x) => String(x.resolved) === String(cur))
+                            const customMode = (hasCur && !matched) || !!deviceCustom[token]
+                            const isDur = String(p.type || '').toLowerCase() === 'duration'
+                            const renderCustom = () => (isDur ? (
+                              <DeviceDurationInput value={cur ?? ''} disabled={false} onChange={(v) => setP(p.name, v)} />
+                            ) : p.options?.length ? (
+                              <CompactSelect size="lg" block value={cur ?? ''} onChange={(e) => setP(p.name, e.target.value)}>
+                                <option value="">请选择</option>
+                                {p.options.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                              </CompactSelect>
+                            ) : (
+                              <input className={cls} value={cur ?? ''}
+                                onChange={(e) => setP(p.name, e.target.value)}
+                                onBlur={() => {
+                                  if (!['ip', 'cidr'].includes(String(p.type || '').toLowerCase())) return
+                                  const v = params[p.name]
+                                  if (v === undefined || v === null || String(v).trim() === '') return
+                                  const msg = validateIPExpression(v, p.description || p.name)
+                                  setDeviceIpErrors((e) => ({ ...e, [token]: msg || '' }))
+                                }} />
+                            ))
+                            const defVal = (p.default !== undefined && p.default !== null && String(p.default) !== '') ? p.default : null
+                            const defText = defVal === null ? '' : (isDur ? (deviceDurationLabel(defVal) || String(defVal)) : String(defVal))
+                            const changed = defVal !== null && String(cur ?? '') !== String(defVal)
+                            return (
+                              <div key={p.name}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <label className={labelCls}>
+                                    {p.description || p.name}
+                                    {p.required && <span className="text-red-500">*</span>}
+                                    <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">{p.name}</span>
+                                  </label>
+                                  {defVal !== null && (
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                      {changed && (
+                                        <button type="button"
+                                          onClick={() => {
+                                            setP(p.name, defVal)
+                                            setDeviceCustom((m) => ({ ...m, [token]: false }))
+                                          }}
+                                          className="rounded px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10"
+                                          title="恢复为该参数的默认值">
+                                          恢复默认
+                                        </button>
+                                      )}
+                                      <span className="text-[10px] text-muted-foreground" title="未修改时按该默认值提交">
+                                        默认 {defText}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                {presets.length ? (
+                                  <div>
+                                    <CompactSelect size="lg" block
+                                      value={matched ? matched.label : (customMode ? '__custom' : '')}
+                                      onChange={(e) => {
+                                        const v = e.target.value
+                                        if (v === '__custom') {
+                                          setDeviceCustom((m) => ({ ...m, [token]: true }))
+                                        } else {
+                                          setDeviceCustom((m) => ({ ...m, [token]: false }))
+                                          const sel = presets.find((x) => x.label === v)
+                                          setP(p.name, sel ? sel.resolved : '')
+                                        }
+                                      }}>
+                                      <option value="">请选择</option>
+                                      {presets.map((x) => (
+                                        <option key={x.label} value={x.label}>{x.label}</option>
+                                      ))}
+                                      <option value="__custom">自定义…</option>
+                                    </CompactSelect>
+                                    {customMode && <div className="mt-1.5">{renderCustom()}</div>}
+                                  </div>
+                                ) : renderCustom()}
+                                {deviceIpErrors[token] && <div className="mt-1 text-[11px] text-destructive">{deviceIpErrors[token]}</div>}
+                              </div>
+                            )
+                          })}
+                          {!(it.params || []).length && (
+                            <p className="text-xs text-muted-foreground">该动作无需参数，提交后直接调用</p>
+                          )}
+                        </div>
+                    </div>
+                  )
+                })}
+
 
                 <div>
                   <label className={labelCls}>处理意见（选填）</label>
