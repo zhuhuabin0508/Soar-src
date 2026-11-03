@@ -719,18 +719,24 @@ export default function TicketDetail() {
   // 设备动作判断字段实时联动：判断字段为本节点字段时，按处理人当前填写值决定是否调用设备
   // （填了「是」→ 立即出现参数表单；改回「否」→ 收起）；判断字段引用前面节点（存量模板）
   // 时，当前表单没有该字段，回退后端按历史记录计算的结果
+  // 开关字段在表单里是布尔值（true/false），与后端 _normalize_cond_value 同口径归一化为 是/否 再比较
+  const normDeviceVal = (v) => {
+    if (v === true || String(v) === 'true' || String(v) === 'True') return '是'
+    if (v === false || String(v) === 'false' || String(v) === 'False') return '否'
+    return v
+  }
   const liveDeviceExecute = (it) => {
     if (!it) return false
     if (!it.judge_field) return !!it.execute
     const cur = values[it.judge_field]
     if (cur !== undefined && cur !== null && String(cur).trim() !== '') {
-      return String(cur) === String(it.judge_value || '是')
+      return String(normDeviceVal(cur)) === String(it.judge_value || '是')
     }
     return !!it.execute
   }
   const liveDeviceActual = (it) => {
     const cur = it?.judge_field ? values[it.judge_field] : undefined
-    if (cur !== undefined && cur !== null && String(cur).trim() !== '') return String(cur)
+    if (cur !== undefined && cur !== null && String(cur).trim() !== '') return String(normDeviceVal(cur))
     return it?.judge_actual || ''
   }
 
