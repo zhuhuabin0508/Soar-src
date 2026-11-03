@@ -76,8 +76,7 @@ const SORT_OPTIONS = [
   { value: 'name:desc', label: '名称 Z→A' },
 ]
 
-// 推荐技能：按分类优先展示（处置流程 / SOP）
-const RECOMMENDED_SKILL_CATEGORIES = ['处置流程', 'SOP']
+// 推荐技能区块已按需求移除（原为按分类优先展示处置流程 / SOP）
 
 // 技能列表页
 function SkillList() {
@@ -187,14 +186,6 @@ function SkillList() {
   // 分页 / 批量选择
   const { selectedKeys, setSelectedKeys, clear } = useSelection()
   const { page, pageSize, paged, setPage, setPageSize } = usePagination(filteredRows, { pageSize: 20 })
-
-  const recommendedSkills = useMemo(() => {
-    const byCat = rows.filter((r) => RECOMMENDED_SKILL_CATEGORIES.includes(r.category))
-    if (byCat.length > 0) return byCat.slice(0, 6)
-    return rows
-      .filter((r) => (r.tags || []).some((t) => /处置|封禁|sop|流程/i.test(t)))
-      .slice(0, 6)
-  }, [rows])
 
   // 状态/分类指标统计（指标条用：启用分布 + 分类分布 + 引用汇总）
   const listStats = useMemo(() => {
@@ -516,34 +507,6 @@ function SkillList() {
       <div className="flex-1 overflow-y-auto p-6">
         {error && (
           <div className="mb-4 w-full rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">{error}</div>
-        )}
-
-        {!loading && recommendedSkills.length > 0 && (
-          <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-sm font-medium text-foreground">推荐技能</div>
-              <span className="text-[11px] text-muted-foreground">处置流程 / SOP 类，可直接挂到智能体</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {recommendedSkills.map((sk) => (
-                <button
-                  key={sk.id}
-                  type="button"
-                  onClick={() => openEdit(sk)}
-                  className="inline-flex max-w-xs items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-left text-xs transition hover:border-primary/40 hover:bg-primary/5"
-                  title={sk.description || sk.name}
-                >
-                  <ListChecks className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                  <span className="truncate font-medium text-foreground">{sk.name}</span>
-                  {sk.category && (
-                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${CATEGORY_STYLES[sk.category] || CATEGORY_STYLES['其他']}`}>
-                      {sk.category}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
         )}
 
         {/* 筛选 + 排序 + 视图切换 */}
