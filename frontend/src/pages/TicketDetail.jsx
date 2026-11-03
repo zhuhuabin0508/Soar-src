@@ -716,6 +716,24 @@ export default function TicketDetail() {
     return out
   }, [currentFields, values]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 设备动作判断字段实时联动：判断字段为本节点字段时，按处理人当前填写值决定是否调用设备
+  // （填了「是」→ 立即出现参数表单；改回「否」→ 收起）；判断字段引用前面节点（存量模板）
+  // 时，当前表单没有该字段，回退后端按历史记录计算的结果
+  const liveDeviceExecute = (it) => {
+    if (!it) return false
+    if (!it.judge_field) return !!it.execute
+    const cur = values[it.judge_field]
+    if (cur !== undefined && cur !== null && String(cur).trim() !== '') {
+      return String(cur) === String(it.judge_value || '是')
+    }
+    return !!it.execute
+  }
+  const liveDeviceActual = (it) => {
+    const cur = it?.judge_field ? values[it.judge_field] : undefined
+    if (cur !== undefined && cur !== null && String(cur).trim() !== '') return String(cur)
+    return it?.judge_actual || ''
+  }
+
   // 联动字段刚展开时自动定位并聚焦：如「是否需要处置」选「是」后出现必填的「处置建议」，
   // 避免处理人仍按原位置点击提交、实际漏填被拦截却以为"没有反应"
   const prevExtKeysRef = useRef(null)
@@ -848,7 +866,7 @@ export default function TicketDetail() {
       const miss = []
       const nextIp = {}
       for (const it of actionItems) {
-        if (!it.execute) continue
+        if (!liveDeviceExecute(it)) continue
         if (it.error) {
           toast.error(it.error)
           return
@@ -895,12 +913,12 @@ export default function TicketDetail() {
     } else {
       message = `提交后工单将流转至「${target?.name || targetKey}」（由${ticket.group_names?.[String(target?.group_id)] || '对应分组'}处理），组内任一成员提交即代表全组。确认提交？`
     }
-    const willRun = actionItems.filter((it) => it.execute)
+    const willRun = actionItems.filter((it) => liveDeviceExecute(it))
     if (willRun.length) {
       const names = willRun.map((it) => `${it.device_name || '设备'} / ${it.action_name || '动作'}`).join('、')
-      message = `判断组建议执行，本次将调用：${names}。设备调用失败时工单留在本节点。${message}`
+      message = `命中建议执行值，本次将调用：${names}。设备调用失败时工单留在本节点。${message}`
     } else if (actionItems.length) {
-      message = `判断组建议不执行，本次不调用设备，工单按去向继续。${message}`
+      message = `未命中建议执行值，本次不调用设备，工单按去向继续。${message}`
     }
     confirm({ title: '确认提交流转', message, confirmText: '提交流转' }).then((ok) => {
       if (!ok) return
@@ -1616,10 +1634,13 @@ export default function TicketDetail() {
                 )}
 
                 {(ticket.device_action_form?.items || []).map((it) => {
-                  if (!it.execute) {
+                  if (!liveDeviceExecute(it)) {
+                    const actual = liveDeviceActual(it)
                     return (
                       <div key={it.index} className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                        判断为「{it.judge_actual || '否'}」，本次不调用设备。
+                        {actual
+                          ? `判断为「${actual}」，本次不调用设备。`
+                          : `填写判断字段并命中建议执行值后，将调用 ${it.device_name || '设备'} / ${it.action_name || '动作'}。`}
                       </div>
                     )
                   }
@@ -1634,7 +1655,7 @@ export default function TicketDetail() {
                   return (
                     <div key={it.index} data-device-choice className="rounded-md border border-border p-3">
                       <div className="text-sm font-semibold text-foreground">{it.device_name || '设备'} / {it.action_name || '动作'}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">判断组建议执行，请填写参数</div>
+                      <div className="mt-1 text-xs text-muted-foreground">命中建议执行值，请填写设备参数</div>
                       {it.error && <div className="mt-2 text-xs text-destructive">{it.error}</div>}
                       <div className="mt-3 space-y-3">
                           {(it.params || []).map((p) => {

@@ -380,22 +380,29 @@ def validate_flow_structure(
                     errors.append(f"{pos}（{name}）：{label}{device_err}")
             judge_field = str(device_action.get("judge_field") or "").strip()
             if not judge_field:
-                errors.append(f"{pos}（{name}）：{label}未选择判断组的是否字段")
+                errors.append(f"{pos}（{name}）：{label}未选择判断字段")
             else:
+                # 判断字段候选：本节点字段优先（处理人填写实时联动），
+                # 也允许前面节点的字段（存量模板兼容，按历史记录判断）
                 src = None
-                for other in nodes:
-                    if not isinstance(other, dict) or str(other.get("key") or "") == str(key) or other.get("type") == "end":
-                        continue
-                    for f in other.get("fields") or []:
-                        if not isinstance(f, dict) or str(f.get("key") or "") != judge_field:
-                            continue
-                        if f.get("type") in ("select", "switch"):
-                            src = f
-                            break
-                    if src is not None:
+                for f in n.get("fields") or []:
+                    if isinstance(f, dict) and str(f.get("key") or "") == judge_field and f.get("type") in ("select", "switch"):
+                        src = f
                         break
                 if src is None:
-                    errors.append(f"{pos}（{name}）：{label}的判断字段须是前面节点的下拉选择或是否开关")
+                    for other in nodes:
+                        if not isinstance(other, dict) or str(other.get("key") or "") == str(key) or other.get("type") == "end":
+                            continue
+                        for f in other.get("fields") or []:
+                            if not isinstance(f, dict) or str(f.get("key") or "") != judge_field:
+                                continue
+                            if f.get("type") in ("select", "switch"):
+                                src = f
+                                break
+                        if src is not None:
+                            break
+                if src is None:
+                    errors.append(f"{pos}（{name}）：{label}的判断字段须是本节点或前面节点的下拉选择/是否开关")
                 else:
                     allowed = ["是", "否"] if src.get("type") == "switch" else [str(o) for o in (src.get("options") or [])]
                     judge_value = device_action.get("judge_value")

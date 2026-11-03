@@ -117,15 +117,17 @@ def test_flow_device_action_uses_prior_judge():
     errors = validate_flow_structure(flow, group_ok=lambda _gid: True, device_ok=lambda _d, _a: None)
     assert errors == []
 
+    # 新语义：判断字段也可以是本节点自己的字段（处理人填写实时联动）
     same_node = _flow({
         "fields": [{"key": "go", "label": "是否执行", "type": "switch"}],
         "device_actions": [{"device_id": 1, "action_id": 2, "judge_field": "go", "judge_value": "是"}],
     })
     errors = validate_flow_structure(same_node, group_ok=lambda _gid: True, device_ok=lambda _d, _a: None)
-    assert any("前面节点" in e for e in errors)
+    assert errors == []
 
 
-def test_flow_rejects_judge_field_on_same_node():
+def test_flow_accepts_judge_field_on_same_node():
+    # 判断字段为本节点字段：合法（填写命中建议执行值时调用设备）
     errors = validate_flow_structure(
         _flow({
             "fields": [{"key": "need", "label": "是否处置", "type": "select", "options": ["是", "否"]}],
@@ -134,7 +136,18 @@ def test_flow_rejects_judge_field_on_same_node():
         group_ok=lambda _gid: True,
         device_ok=lambda _d, _a: None,
     )
-    assert any("前面节点" in e for e in errors)
+    assert errors == []
+
+    # 判断字段为本节点字段但建议执行值不在可选项中：应报错
+    errors = validate_flow_structure(
+        _flow({
+            "fields": [{"key": "need", "label": "是否处置", "type": "select", "options": ["是", "否"]}],
+            "device_action": {"device_id": 3, "action_id": 9, "judge_field": "need", "judge_value": "可能"},
+        }),
+        group_ok=lambda _gid: True,
+        device_ok=lambda _d, _a: None,
+    )
+    assert any("可选项" in e for e in errors)
 
 
 def test_flow_device_ok_callback():

@@ -2073,7 +2073,10 @@ def advance_ticket(
 
     device_result = None
     device_outcomes = []
-    device_form = annotate_device_form(build_device_action_form(db, current_node), submitted)
+    # 判断字段命中优先级：本次提交的表单值（本节点字段联动）> 历史记录（存量模板引用前面节点）
+    device_form = annotate_device_form(
+        build_device_action_form(db, current_node), submitted, current_values=values,
+    )
     items = device_form.get("items") or [] if device_form.get("bound") else []
     if not items:
         if body.run_device_action or body.device_params or body.device_runs:

@@ -188,12 +188,22 @@ def judge_says_execute(item: dict, history: dict) -> bool:
     return str(actual) == str(expected)
 
 
-def annotate_device_form(form: dict, records) -> dict:
+def annotate_device_form(form: dict, records, current_values: Optional[dict] = None) -> dict:
+    """为设备动作表单补充判断结果。
+
+    - current_values：当前节点本次提交的表单值（新语义：判断字段引用本节点字段，
+      处理人填写后实时联动）。命中优先级：本次提交值 > 历史记录值（存量模板兼容：
+      旧配置的判断字段可能引用前面节点，仍从历史记录取值）。
+    """
     from app.core.ticket_flow import _normalize_cond_value
 
     if not form.get("bound"):
         return form
     history = history_field_values(records)
+    if isinstance(current_values, dict):
+        for key, value in current_values.items():
+            if value not in (None, ""):
+                history[str(key)] = value
     items = []
     for item in form.get("items") or []:
         actual = _normalize_cond_value(history.get(str(item.get("judge_field") or "")))
