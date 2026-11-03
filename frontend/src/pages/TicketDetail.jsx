@@ -8,7 +8,7 @@ import {
   ArrowLeft, CheckCircle2, XCircle, Clock, Paperclip, X,
   SendHorizonal, Ban, UserRound, ChevronRight, Flag, Link2, Archive, ArchiveRestore,
   ShieldCheck, ShieldBan, Database, AlertTriangle, ClipboardList, Plus, UsersRound, Users,
-  Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2, Info,
+  Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2, Info, Lock,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -1719,6 +1719,8 @@ export default function TicketDetail() {
                             const matched = presets.find((x) => String(x.resolved) === String(cur))
                             const customMode = (hasCur && !matched) || !!deviceCustom[token]
                             const isDur = String(p.type || '').toLowerCase() === 'duration'
+                            // 封禁原因（工单侧自动生成的「工单同步：工单号」）：只读展示，不可修改
+                            const isAutoReason = p.name === 'reason' && String(cur ?? '').startsWith('工单同步：')
                             const renderCustom = () => (isDur ? (
                               <DeviceDurationInput value={cur ?? ''} disabled={false} onChange={(v) => setP(p.name, v)} />
                             ) : p.options?.length ? (
@@ -1748,7 +1750,7 @@ export default function TicketDetail() {
                                     {p.required && <span className="text-red-500">*</span>}
                                     <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">{p.name}</span>
                                   </label>
-                                  {defVal !== null && (
+                                  {defVal !== null && !isAutoReason && (
                                     <div className="flex shrink-0 items-center gap-1.5">
                                       {changed && (
                                         <button type="button"
@@ -1767,7 +1769,13 @@ export default function TicketDetail() {
                                     </div>
                                   )}
                                 </div>
-                                {presets.length ? (
+                                {isAutoReason ? (
+                                  <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-2">
+                                    <Lock className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={String(cur)}>{String(cur)}</span>
+                                    <span className="shrink-0 text-[10px] text-muted-foreground">自动生成</span>
+                                  </div>
+                                ) : presets.length ? (
                                   <div>
                                     <CompactSelect size="lg" block
                                       value={matched ? matched.label : (customMode ? '__custom' : '')}

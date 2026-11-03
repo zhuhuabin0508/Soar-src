@@ -95,6 +95,20 @@ router = APIRouter(
 
 # ============ 常量与辅助 ============
 
+def _ticket_device_action_form(db, node, records, ticket_no: str) -> dict:
+    """工单详情的设备动作表单：reason 参数默认值改写为「工单同步：工单号」。
+
+    表单预填即展示真实将下发的封禁原因，处理人仍可修改；执行侧（advance）对
+    空值 / schema 默认值兜底为同一口径，两处共同保证设备侧封禁原因带上工单号。
+    """
+    form = annotate_device_form(build_device_action_form(db, node), records)
+    if isinstance(form, dict) and form.get("bound"):
+        for item in form.get("items") or []:
+            for p in (item.get("params") or []):
+                if str(p.get("name") or "") == "reason":
+                    p["default"] = f"工单同步：{ticket_no}"
+    return form
+
 # 状态中文
 STATUS_LABELS = {"processing": "进行中", "completed": "已完成", "cancelled": "已取消"}
 PRIORITY_LABELS = {"low": "低", "medium": "中", "high": "高", "critical": "紧急"}
@@ -710,7 +724,9 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         ),
         # 并行会签进度（非会签节点为 null）
         "sign_progress": sign_progress,
-        "device_action_form": annotate_device_form(build_device_action_form(db, current_node), records),
+        # 设备动作表单：reason 参数默认值改写为「工单同步：工单号」，表单预填即展示
+        # 真实将下发的封禁原因（处理人仍可修改；执行侧对空值/schema 默认值兜底同样口径）
+        "device_action_form": _ticket_device_action_form(db, current_node, records, ticket.ticket_no),
         # 抄送：列表 + 管理权限（发起人 / 当前处理人 / admin；仅进行中可增减）
         "cc_targets": [r.to_dict() for r in _cc_rows(db, ticket.id)],
         "can_manage_cc": (
@@ -2156,8 +2172,19 @@ def advance_ticket(
                 "key": current_node.get("key"),
                 "device_action": {"device_id": item.get("device_id"), "action_id": item.get("action_id")},
             }
+            exec_params = dict(choice.params or {})
+            # 工单侧下发的封禁原因自动带上工单号：reason 参数为空或仍是 schema 默认值
+            # （如「API添加」）时替换为「工单同步：工单号」，与工作台台账同口径；
+            # 处理人在表单里显式填写了原因则尊重其输入
+            reason_spec = next(
+                (p for p in (item.get("params") or []) if str(p.get("name") or "") == "reason"), None,
+            )
+            if reason_spec is not None:
+                cur = str(exec_params.get("reason") or "").strip()
+                if cur in ("", str(reason_spec.get("default") or "").strip()):
+                    exec_params["reason"] = f"工单同步：{ticket.ticket_no}"
             outcome = run_ticket_device_action(
-                db, fake_node, choice.params, user_id=current_user.id,
+                db, fake_node, exec_params, user_id=current_user.id,
             )
             if not outcome.get("ok"):
                 raise HTTPException(
