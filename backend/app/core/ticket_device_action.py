@@ -155,6 +155,58 @@ def node_action_configs(node: Optional[dict]) -> list:
     return [cfg]
 
 
+# 参数配置：{参数名: {display: editable/readonly/hidden, default_template: 含变量的模板}}
+# display 控制工单详情页展示样式；default_template 支持占位符（resolve_param_template 解析）
+def normalized_param_config(cfg: Any) -> dict:
+    raw = cfg.get("param_config") if isinstance(cfg, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for pname, item in raw.items():
+        if not str(pname or "").strip() or not isinstance(item, dict):
+            continue
+        display = str(item.get("display") or "").strip()
+        if display not in ("editable", "readonly", "hidden"):
+            continue
+        entry = {"display": display}
+        template = str(item.get("default_template") or "").strip()
+        if template:
+            entry["default_template"] = template[:200]
+        out[str(pname)] = entry
+    return out
+
+
+# reason 参数内置默认：未配置 param_config 的动作，封禁原因自动 只读 + 工单同步：{ticket_no}
+_BUILTIN_REASON_CONFIG = {"display": "readonly", "default_template": "工单同步：{ticket_no}"}
+
+_TEMPLATE_VAR_RE = re.compile(r"\{(ticket_no|ticket_title|creator|node|f:[A-Za-z0-9_]+)\}")
+
+
+def resolve_param_template(template: Any, ctx: Optional[dict]) -> str:
+    """解析默认值模板中的变量占位符。
+
+    支持：{ticket_no} {ticket_title} {creator} {node} {f:字段key}；
+    未识别的占位符原样保留；解析不到值的占位符置空。
+    ctx: {ticket_no, ticket_title, creator, node, field_values}
+    """
+    text = str(template or "")
+    if not text or "{" not in text:
+        return text
+    ctx = ctx or {}
+
+    def _sub(m: "re.Match") -> str:
+        var = m.group(1)
+        if var.startswith("f:"):
+            value = (ctx.get("field_values") or {}).get(var[2:])
+        else:
+            value = ctx.get(var)
+        if value in (None, ""):
+            return ""
+        return str(value)
+
+    return _TEMPLATE_VAR_RE.sub(_sub, text)
+
+
 def build_device_action_form(db, node: Optional[dict]) -> dict:
     configs = node_action_configs(node)
     if not configs:
@@ -177,6 +229,22 @@ def build_device_action_form(db, node: Optional[dict]) -> dict:
                 plist = presets.get(str(p.get("name") or ""))
                 if isinstance(plist, list):
                     p["presets"] = [x for x in plist if isinstance(x, dict) and str(x.get("label") or "").strip()]
+        # 参数配置（展示样式 + 默认值模板）：每个参数附 display / default_template（原始模板，工单侧解析）
+        pconf = normalized_param_config(cfg)
+        if pconf:
+            item["param_config"] = pconf
+        for p in item.get("params") or []:
+            pname = str(p.get("name") or "")
+            entry = pconf.get(pname)
+            if entry is None and pname == "reason":
+                # 内置默认：未配置的封禁原因自动 只读 + 工单同步：{ticket_no}
+                entry = _BUILTIN_REASON_CONFIG
+            if entry is not None:
+                p["display"] = entry.get("display") or "editable"
+                if entry.get("default_template"):
+                    p["default_template"] = entry["default_template"]
+            else:
+                p["display"] = "editable"
         items.append(item)
     return {"bound": True, "mode": "actions", "items": items}
 

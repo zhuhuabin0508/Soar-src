@@ -48,6 +48,8 @@ from app.core.ticket_device_action import (
     append_device_call_log,
     annotate_device_form,
     build_device_action_form,
+    history_field_values,
+    resolve_param_template,
     run_ticket_device_action,
     sync_device_outcome_to_workbench,
 )
@@ -95,18 +97,27 @@ router = APIRouter(
 
 # ============ 常量与辅助 ============
 
-def _ticket_device_action_form(db, node, records, ticket_no: str) -> dict:
-    """工单详情的设备动作表单：reason 参数默认值改写为「工单同步：工单号」。
+def _ticket_device_action_form(db, node, records, ticket) -> dict:
+    """工单详情的设备动作表单（含参数配置解析）。
 
-    表单预填即展示真实将下发的封禁原因，处理人仍可修改；执行侧（advance）对
-    空值 / schema 默认值兜底为同一口径，两处共同保证设备侧封禁原因带上工单号。
+    param_config 的默认值模板按工单上下文（工单号/标题/发起人/节点/历史字段值）
+    解析后写入各参数 default，前端仅按 display 渲染；reason 参数未配置时由
+    build_device_action_form 内置 只读 + 工单同步：{ticket_no}。
     """
     form = annotate_device_form(build_device_action_form(db, node), records)
     if isinstance(form, dict) and form.get("bound"):
+        ctx = {
+            "ticket_no": ticket.ticket_no,
+            "ticket_title": ticket.title or "",
+            "creator": getattr(ticket, "created_by_name", "") or "",
+            "node": (node or {}).get("name") or "",
+            "field_values": history_field_values(records),
+        }
         for item in form.get("items") or []:
             for p in (item.get("params") or []):
-                if str(p.get("name") or "") == "reason":
-                    p["default"] = f"工单同步：{ticket_no}"
+                template = str(p.get("default_template") or "")
+                if template:
+                    p["default"] = resolve_param_template(template, ctx)
     return form
 
 # 状态中文
@@ -724,9 +735,9 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         ),
         # 并行会签进度（非会签节点为 null）
         "sign_progress": sign_progress,
-        # 设备动作表单：reason 参数默认值改写为「工单同步：工单号」，表单预填即展示
-        # 真实将下发的封禁原因（处理人仍可修改；执行侧对空值/schema 默认值兜底同样口径）
-        "device_action_form": _ticket_device_action_form(db, current_node, records, ticket.ticket_no),
+        # 设备动作表单：param_config 默认值模板按工单上下文解析（reason 未配置时
+        # 内置 只读 + 工单同步：{ticket_no}），前端按 display 渲染
+        "device_action_form": _ticket_device_action_form(db, current_node, records, ticket),
         # 抄送：列表 + 管理权限（发起人 / 当前处理人 / admin；仅进行中可增减）
         "cc_targets": [r.to_dict() for r in _cc_rows(db, ticket.id)],
         "can_manage_cc": (
@@ -2173,16 +2184,27 @@ def advance_ticket(
                 "device_action": {"device_id": item.get("device_id"), "action_id": item.get("action_id")},
             }
             exec_params = dict(choice.params or {})
-            # 工单侧下发的封禁原因自动带上工单号：reason 参数为空或仍是 schema 默认值
-            # （如「API添加」）时替换为「工单同步：工单号」，与工作台台账同口径；
-            # 处理人在表单里显式填写了原因则尊重其输入
-            reason_spec = next(
-                (p for p in (item.get("params") or []) if str(p.get("name") or "") == "reason"), None,
-            )
-            if reason_spec is not None:
-                cur = str(exec_params.get("reason") or "").strip()
-                if cur in ("", str(reason_spec.get("default") or "").strip()):
-                    exec_params["reason"] = f"工单同步：{ticket.ticket_no}"
+            # 参数模板兜底（原 reason 专用逻辑泛化）：配置了默认值模板的参数
+            # （readonly/hidden/editable 均可），值为空或仍是 schema 默认值时按
+            # 工单上下文解析模板填充；处理人显式填写了则尊重其输入
+            exec_ctx = {
+                "ticket_no": ticket.ticket_no,
+                "ticket_title": ticket.title or "",
+                "creator": getattr(ticket, "created_by_name", "") or "",
+                "node": (current_node or {}).get("name") or "",
+                "field_values": {
+                    **history_field_values(submitted),
+                    **{k: v for k, v in (values or {}).items() if v not in (None, "")},
+                },
+            }
+            for p in (item.get("params") or []):
+                template = str(p.get("default_template") or "")
+                pname = str(p.get("name") or "")
+                if not template or not pname:
+                    continue
+                cur = str(exec_params.get(pname) or "").strip()
+                if cur in ("", str(p.get("default") or "").strip()):
+                    exec_params[pname] = resolve_param_template(template, exec_ctx)
             outcome = run_ticket_device_action(
                 db, fake_node, exec_params, user_id=current_user.id,
             )

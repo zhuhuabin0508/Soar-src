@@ -112,6 +112,7 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
       judge_field: x.judge_field || '',
       judge_value: x.judge_value || '是',
       ...(x.param_presets && typeof x.param_presets === 'object' ? { param_presets: x.param_presets } : {}),
+      ...(x.param_config && typeof x.param_config === 'object' ? { param_config: x.param_config } : {}),
     }))
   if (!actions.length && rest.device_action && typeof rest.device_action === 'object' && Object.keys(rest.device_action).length) {
     actions.push(rest.device_action)
@@ -129,6 +130,7 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
         action_id: a.action_id,
         judge_value: a.judge_value || '是',
         param_presets: a.param_presets && typeof a.param_presets === 'object' ? a.param_presets : null,
+        param_config: a.param_config && typeof a.param_config === 'object' ? a.param_config : null,
       })
     } else {
       nodeActions.push(a)
@@ -153,6 +155,20 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
   }
 })
 
+// param_config 归一化：过滤无效条目；「可编辑且无默认值模板」等于未配置，不落键（空配置整体省略）
+const normParamConfig = (pc) => {
+  if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return null
+  const out = {}
+  Object.entries(pc).forEach(([pname, entry]) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
+    const display = ['editable', 'readonly', 'hidden'].includes(entry.display) ? entry.display : 'editable'
+    const template = String(entry.default_template ?? '').trim()
+    if (display === 'editable' && !template) return
+    out[pname] = { display, ...(template ? { default_template: template } : {}) }
+  })
+  return Object.keys(out).length ? out : null
+}
+
 // 保存组装（normNodeRoutes 的逆变换）：字段级 device_action 合并回节点 device_actions（judge_field=字段key），
 // 字段副本剥离该键；未选完设备/动作的绑定不保存（发布校验会先行拦截）
 const buildPayloadNodes = (ns) => (ns || []).map((n) => {
@@ -161,14 +177,17 @@ const buildPayloadNodes = (ns) => (ns || []).map((n) => {
     if (!f) return f
     const { device_action: da, ...rest } = f
     if (da && typeof da === 'object' && da.device_id && da.action_id) {
-      // 参数快捷选项（{参数名: [{label, value}]}）随动作条目持久化；保存时归一化（过滤未填完整的空行），空配置不落键
+      // 参数快捷选项（{参数名: [{label, value}]}）与参数配置（{参数名: {display, default_template}}）
+      // 随动作条目持久化；保存时归一化（过滤未填完整的空行/空条目），空配置不落键
       const cleanPresets = normParamPresets(da.param_presets)
+      const cleanPConf = normParamConfig(da.param_config)
       deviceActions.push({
         device_id: da.device_id,
         action_id: da.action_id,
         judge_field: f.key,
         judge_value: da.judge_value || '是',
         ...(cleanPresets ? { param_presets: cleanPresets } : {}),
+        ...(cleanPConf ? { param_config: cleanPConf } : {}),
       })
     }
     return rest
@@ -973,21 +992,22 @@ export default function TicketFlowEdit() {
             return
           }
           checkBind(da, `字段「${f.label || f.key}」的设备动作`, f)
+          // 动作 schema（参数快捷选项 / 参数配置校验共用）
+          const pickedAct = (actionMap[da.device_id] || []).find((a) => a.id === da.action_id)
+          let actSchema = []
+          if (pickedAct) {
+            try { actSchema = JSON.parse(pickedAct.params_schema || '[]') } catch { actSchema = [] }
+            if (!Array.isArray(actSchema)) actSchema = []
+          }
           // 参数快捷选项校验：label/value 非空，且配置的参数名须存在于动作 schema
           const pp = da.param_presets
           if (pp && typeof pp === 'object' && !Array.isArray(pp)) {
-            const pickedAct = (actionMap[da.device_id] || []).find((a) => a.id === da.action_id)
-            let ppSchema = []
-            if (pickedAct) {
-              try { ppSchema = JSON.parse(pickedAct.params_schema || '[]') } catch { ppSchema = [] }
-              if (!Array.isArray(ppSchema)) ppSchema = []
-            }
             Object.entries(pp).forEach(([pname, list]) => {
               if (!Array.isArray(list)) {
                 addErr(n.key, `${name}：字段「${f.label || f.key}」的参数快捷选项格式不正确`)
                 return
               }
-              if (ppSchema.length && !ppSchema.some((x) => x && x.name === pname)) {
+              if (actSchema.length && !actSchema.some((x) => x && x.name === pname)) {
                 addErr(n.key, `${name}：字段「${f.label || f.key}」的快捷选项配置了动作中不存在的参数「${pname}」`)
               }
               list.forEach((it) => {
@@ -1001,6 +1021,25 @@ export default function TicketFlowEdit() {
                   addErr(n.key, `${name}：字段「${f.label || f.key}」的快捷选项「${it.label}」的值无法解析`)
                 }
               })
+            })
+          }
+          // 参数配置校验：参数名须存在于动作 schema；只读/隐藏且无默认值模板（动作也无默认值）→ 提交时参数将为空
+          const pcfg = da.param_config
+          if (pcfg && typeof pcfg === 'object' && !Array.isArray(pcfg)) {
+            Object.entries(pcfg).forEach(([pname, entry]) => {
+              if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+                addErr(n.key, `${name}：字段「${f.label || f.key}」的参数配置格式不正确`)
+                return
+              }
+              if (actSchema.length && !actSchema.some((x) => x && x.name === pname)) {
+                addErr(n.key, `${name}：字段「${f.label || f.key}」的参数配置引用了动作中不存在的参数「${pname}」`)
+                return
+              }
+              if (['readonly', 'hidden'].includes(entry.display)
+                && !String(entry.default_template ?? '').trim()
+                && !(actSchema.find((x) => x && x.name === pname) || {}).default) {
+                addErr(n.key, `${name}：字段「${f.label || f.key}」的参数「${pname}」设为${entry.display === 'hidden' ? '隐藏' : '只读'}但未配置默认值模板（动作也无默认值），提交时该参数将为空`)
+              }
             })
           }
         })
@@ -1792,32 +1831,80 @@ export default function TicketFlowEdit() {
                                       </p>
                                       {schema.length > 0 && da.action_id && (() => {
                                         const pp = (da.param_presets && typeof da.param_presets === 'object' && !Array.isArray(da.param_presets)) ? da.param_presets : {}
-                                        const cfgParams = schema.filter((p) => Array.isArray(pp[p.name]) && pp[p.name].length)
-                                        const restParams = schema.filter((p) => !(Array.isArray(pp[p.name]) && pp[p.name].length))
+                                        const pc = (da.param_config && typeof da.param_config === 'object' && !Array.isArray(da.param_config)) ? da.param_config : {}
+                                        // 已配置参数 = 有 param_config 条目或快捷选项；未配置的保持零负担（处理人直接输入）
+                                        const hasCfg = (p) => (pc[p.name] && typeof pc[p.name] === 'object')
+                                          || (Array.isArray(pp[p.name]) && pp[p.name].length)
+                                        const cfgParams = schema.filter((p) => hasCfg(p))
+                                        const restParams = schema.filter((p) => !hasCfg(p))
                                         const setParamPresets = (pname, list) => {
                                           const next = { ...pp }
                                           if (Array.isArray(list) && list.length) next[pname] = list
                                           else delete next[pname] // 清空即整体移除，避免残留空数组
                                           patchDa({ param_presets: next })
                                         }
+                                        const setParamCfg = (pname, entry) => {
+                                          const next = { ...pc }
+                                          if (entry) next[pname] = entry
+                                          else delete next[pname]
+                                          patchDa({ param_config: next })
+                                        }
+                                        const DISPLAY_OPTS = [
+                                          { value: 'editable', label: '可编辑' },
+                                          { value: 'readonly', label: '只读' },
+                                          { value: 'hidden', label: '隐藏' },
+                                        ]
                                         return (
                                           <div className="mt-2.5 rounded border border-cyan-500/25 bg-background/70 p-2.5">
                                             <div className="mb-2 flex items-center gap-1.5">
-                                              <span className="text-xs font-medium text-cyan-700">参数快捷选项</span>
-                                              <InfoTip content="按需为需要转换/快捷填写的参数（如封禁时长）配置选项：处理人在工单里直接选选项名，系统自动映射为实际参数值（支持数字与乘法表达式如 3*24*3600）。未配置的参数由处理人直接输入，无需在此设置。" />
+                                              <span className="text-xs font-medium text-cyan-700">参数配置</span>
+                                              <InfoTip content="按需配置参数在工单中的呈现与传值，三个维度可叠加：① 展示方式——可编辑 / 只读（处理人不可修改）/ 隐藏（完全不展示，按默认值提交）；② 默认值模板——支持变量 {ticket_no} 工单号、{ticket_title} 标题、{creator} 发起人、{f:字段key} 取工单字段值，如「工单同步：{ticket_no}」；③ 快捷选项——选项名映射实际值（支持 3*24*3600 表达式）。未配置的参数由处理人直接输入，无需在此设置。" />
                                             </div>
                                             {cfgParams.map((p) => {
                                               const presets = pp[p.name] || []
+                                              const entry = (pc[p.name] && typeof pc[p.name] === 'object' && !Array.isArray(pc[p.name])) ? pc[p.name] : {}
+                                              const display = entry.display || 'editable'
+                                              const template = entry.default_template || ''
                                               const patchPresets = (list) => setParamPresets(p.name, list)
+                                              const patchEntry = (patch) => setParamCfg(p.name, { ...entry, ...patch })
                                               return (
-                                                <div key={p.name} className="mb-2.5 last:mb-0">
-                                                  <div className="mb-1 flex items-center justify-between gap-2">
-                                                    <span className="text-[11px] font-medium text-muted-foreground">
+                                                <div key={p.name} className="mb-2.5 last:mb-0 rounded border border-border/70 bg-background p-2">
+                                                  <div className="flex items-center justify-between gap-2">
+                                                    <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
                                                       {p.description || p.name}{p.required ? ' *' : ''}
                                                       <span className="ml-1 font-mono opacity-60">{p.name}</span>
-                                                      <span className="ml-1 text-cyan-600">· {presets.length} 个快捷选项</span>
                                                     </span>
-                                                    <div className="flex shrink-0 items-center gap-1">
+                                                    {canEdit && (
+                                                      <button type="button"
+                                                        onClick={() => { setParamCfg(p.name, null); setParamPresets(p.name, []) }}
+                                                        className="shrink-0 rounded px-1 py-0.5 text-[11px] text-destructive hover:bg-destructive/10"
+                                                        title="移除该参数的全部配置（展示方式 / 默认值模板 / 快捷选项）">
+                                                        移除
+                                                      </button>
+                                                    )}
+                                                  </div>
+                                                  <div className="mt-1.5 grid grid-cols-[4rem_1fr] items-center gap-x-2 gap-y-1">
+                                                    <span className="text-[10px] text-muted-foreground">展示方式</span>
+                                                    <CompactSelect size="sm" block disabled={!canEdit} value={display}
+                                                      onChange={(e) => patchEntry({ display: e.target.value })}
+                                                      title="控制该参数在工单详情中的展示：只读=可见不可改；隐藏=不可见，提交时按默认值传设备">
+                                                      {DISPLAY_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                                    </CompactSelect>
+                                                    <span className="text-[10px] text-muted-foreground">默认值</span>
+                                                    <input className={`${inputCls} h-8 min-w-0 text-xs`} disabled={!canEdit}
+                                                      placeholder="值模板，如：工单同步：{ticket_no}"
+                                                      title="支持变量：{ticket_no} 工单号、{ticket_title} 标题、{creator} 发起人、{f:字段key} 取工单字段值"
+                                                      value={template}
+                                                      onChange={(e) => patchEntry({ default_template: e.target.value })} />
+                                                  </div>
+                                                  {display === 'hidden' && (
+                                                    <p className="mt-1 text-[10px] text-amber-600">隐藏参数处理人不可见，提交时按默认值模板传给设备；未配置模板时使用动作默认值</p>
+                                                  )}
+                                                  <div className="mt-1.5">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                      <span className="text-[10px] text-muted-foreground">
+                                                        快捷选项{display !== 'editable' && '（参数只读/隐藏时不生效）'}
+                                                      </span>
                                                       {canEdit && (
                                                         <button type="button"
                                                           onClick={() => patchPresets([...presets, { label: '', value: '' }])}
@@ -1825,46 +1912,38 @@ export default function TicketFlowEdit() {
                                                           <Plus className="h-3 w-3" />添加选项
                                                         </button>
                                                       )}
-                                                      {canEdit && (
-                                                        <button type="button"
-                                                          onClick={() => setParamPresets(p.name, [])}
-                                                          className="rounded px-1 py-0.5 text-[11px] text-destructive hover:bg-destructive/10"
-                                                          title="移除该参数的快捷选项配置">
-                                                          移除
-                                                        </button>
-                                                      )}
                                                     </div>
-                                                  </div>
-                                                  <div className="space-y-1.5">
-                                                    {presets.map((it, pi) => {
-                                                      const evaluated = evalParamExpr(it.value)
-                                                      const showEval = evaluated !== null
-                                                        && String(evaluated) !== String(it.value ?? '').trim()
-                                                      return (
-                                                        <div key={pi} className="flex items-center gap-1.5">
-                                                          <input className={`${inputCls} h-8 min-w-0 flex-1 text-xs`} disabled={!canEdit}
-                                                            placeholder="选项名，如：3天" value={it.label || ''}
-                                                            onChange={(e) => patchPresets(presets.map((x, i) => (i === pi ? { ...x, label: e.target.value } : x)))} />
-                                                          <span className="shrink-0 text-[10px] text-muted-foreground">→</span>
-                                                          <input className={`${inputCls} h-8 min-w-0 flex-[1.6] font-mono text-xs`} disabled={!canEdit}
-                                                            placeholder="实际值，如 3*24*3600" value={it.value ?? ''}
-                                                            onChange={(e) => patchPresets(presets.map((x, i) => (i === pi ? { ...x, value: e.target.value } : x)))} />
-                                                          {showEval && (
-                                                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="表达式求值结果">
-                                                              {String(evaluated)}
-                                                            </span>
-                                                          )}
-                                                          {canEdit && (
-                                                            <button type="button"
-                                                              onClick={() => patchPresets(presets.filter((_, i) => i !== pi))}
-                                                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-destructive hover:bg-destructive/10"
-                                                              title="删除该快捷选项">
-                                                              <Trash2 className="h-3.5 w-3.5" />
-                                                            </button>
-                                                          )}
-                                                        </div>
-                                                      )
-                                                    })}
+                                                    <div className="mt-1 space-y-1.5">
+                                                      {presets.map((it, pi) => {
+                                                        const evaluated = evalParamExpr(it.value)
+                                                        const showEval = evaluated !== null
+                                                          && String(evaluated) !== String(it.value ?? '').trim()
+                                                        return (
+                                                          <div key={pi} className="flex items-center gap-1.5">
+                                                            <input className={`${inputCls} h-8 min-w-0 flex-1 text-xs`} disabled={!canEdit}
+                                                              placeholder="选项名，如：3天" value={it.label || ''}
+                                                              onChange={(e) => patchPresets(presets.map((x, i) => (i === pi ? { ...x, label: e.target.value } : x)))} />
+                                                            <span className="shrink-0 text-[10px] text-muted-foreground">→</span>
+                                                            <input className={`${inputCls} h-8 min-w-0 flex-[1.6] font-mono text-xs`} disabled={!canEdit}
+                                                              placeholder="实际值，如 3*24*3600" value={it.value ?? ''}
+                                                              onChange={(e) => patchPresets(presets.map((x, i) => (i === pi ? { ...x, value: e.target.value } : x)))} />
+                                                            {showEval && (
+                                                              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="表达式求值结果">
+                                                                {String(evaluated)}
+                                                              </span>
+                                                            )}
+                                                            {canEdit && (
+                                                              <button type="button"
+                                                                onClick={() => patchPresets(presets.filter((_, i) => i !== pi))}
+                                                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-destructive hover:bg-destructive/10"
+                                                                title="删除该快捷选项">
+                                                                <Trash2 className="h-3.5 w-3.5" />
+                                                              </button>
+                                                            )}
+                                                          </div>
+                                                        )
+                                                      })}
+                                                    </div>
                                                   </div>
                                                 </div>
                                               )
@@ -1873,16 +1952,16 @@ export default function TicketFlowEdit() {
                                               <CompactSelect size="lg" block value=""
                                                 onChange={(e) => {
                                                   const pname = e.target.value
-                                                  if (pname) setParamPresets(pname, [{ label: '', value: '' }])
+                                                  if (pname) setParamCfg(pname, { display: 'editable' })
                                                 }}>
-                                                <option value="">{cfgParams.length ? '+ 为其他参数添加快捷选项…' : '+ 选择参数配置快捷选项…'}</option>
+                                                <option value="">{cfgParams.length ? '+ 配置其他参数…' : '+ 选择参数配置…'}</option>
                                                 {restParams.map((p) => (
                                                   <option key={p.name} value={p.name}>{p.description || p.name}（{p.name}）</option>
                                                 ))}
                                               </CompactSelect>
                                             )}
                                             {!cfgParams.length && (
-                                              <p className="text-[11px] text-muted-foreground">未配置：所有参数由处理人在工单中直接输入（仅需要转换的参数如封禁时长建议配置）</p>
+                                              <p className="text-[11px] text-muted-foreground">未配置：所有参数由处理人在工单中直接输入（追溯类参数可设只读 + 默认值模板，需转换的参数如封禁时长可配置快捷选项）</p>
                                             )}
                                           </div>
                                         )

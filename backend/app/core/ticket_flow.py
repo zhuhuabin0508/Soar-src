@@ -419,6 +419,25 @@ def validate_flow_structure(
                                     errors.append(f"{pos}（{name}）：{label}的参数「{pname}」存在未命名快捷选项")
                                 elif it.get("value") in (None, ""):
                                     errors.append(f"{pos}（{name}）：{label}的参数「{pname}」快捷选项「{it.get('label')}」未配置实际值")
+            # 参数配置：{参数名: {display: editable/readonly/hidden, default_template}}，
+            # display 控制工单详情页展示样式，default_template 支持工单上下文变量占位符
+            param_config = device_action.get("param_config")
+            if param_config not in (None, {}, ""):
+                if not isinstance(param_config, dict):
+                    errors.append(f"{pos}（{name}）：{label}的参数配置必须为对象")
+                else:
+                    for pname, pitem in param_config.items():
+                        if not str(pname or "").strip():
+                            errors.append(f"{pos}（{name}）：{label}的参数配置存在空参数名")
+                        elif not isinstance(pitem, dict):
+                            errors.append(f"{pos}（{name}）：{label}的参数「{pname}」配置必须为对象")
+                        else:
+                            display = str(pitem.get("display") or "").strip()
+                            if display not in ("editable", "readonly", "hidden"):
+                                errors.append(f"{pos}（{name}）：{label}的参数「{pname}」展示方式须为 可编辑/只读/隐藏")
+                            template = str(pitem.get("default_template") or "")
+                            if len(template) > 200:
+                                errors.append(f"{pos}（{name}）：{label}的参数「{pname}」默认值模板长度不能超过 200")
 
         device_action = n.get("device_action")
         if device_action not in (None, {}, ""):

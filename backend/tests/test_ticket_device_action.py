@@ -3,7 +3,10 @@ import sys
 
 sys.path.insert(0, "/app" if os.path.isdir("/app") else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.ticket_device_action import _duration_to_ban, judge_says_execute, prepare_device_params
+from app.core.ticket_device_action import (
+    _duration_to_ban, judge_says_execute, normalized_param_config,
+    prepare_device_params, resolve_param_template,
+)
 from app.core.ticket_flow import validate_flow_structure, when_matches
 
 
@@ -213,6 +216,85 @@ def test_flow_param_presets_validation():
     # 整体不是对象
     errors = validate_flow_structure(make(["3天"]), **ok_kw)
     assert any("必须为对象" in e for e in errors)
+
+
+def test_flow_param_config_validation():
+    """参数配置（param_config）：三种展示方式合法通过；非法 display / 超长模板 / 格式错误报错。"""
+    base_fields = [{"key": "need", "label": "是否处置", "type": "select", "options": ["是", "否"]}]
+
+    def make(cfg):
+        return _flow({
+            "fields": base_fields,
+            "device_action": {
+                "device_id": 3, "action_id": 9, "judge_field": "need", "judge_value": "是",
+                "param_config": cfg,
+            },
+        })
+
+    ok_kw = dict(group_ok=lambda _gid: True, device_ok=lambda _d, _a: None)
+
+    # 合法：只读 + 变量模板 / 隐藏 / 可编辑
+    errors = validate_flow_structure(make({
+        "reason": {"display": "readonly", "default_template": "工单同步：{ticket_no}"},
+        "enable": {"display": "hidden", "default_template": "true"},
+        "duration": {"display": "editable"},
+    }), **ok_kw)
+    assert errors == []
+
+    # 非法展示方式
+    errors = validate_flow_structure(make({"reason": {"display": "fixed"}}), **ok_kw)
+    assert any("展示方式须为 可编辑/只读/隐藏" in e for e in errors)
+
+    # 超长模板
+    errors = validate_flow_structure(make({"reason": {"display": "readonly", "default_template": "x" * 201}}), **ok_kw)
+    assert any("不能超过 200" in e for e in errors)
+
+    # 条目不是对象
+    errors = validate_flow_structure(make({"reason": "readonly"}), **ok_kw)
+    assert any("配置必须为对象" in e for e in errors)
+
+    # 整体不是对象
+    errors = validate_flow_structure(make(["reason"]), **ok_kw)
+    assert any("参数配置必须为对象" in e for e in errors)
+
+
+def test_resolve_param_template():
+    """默认值模板变量解析：工单上下文替换、{f:字段} 取值、未知占位符保留、解析不到置空。"""
+    ctx = {
+        "ticket_no": "TK-20261103-0030",
+        "ticket_title": "暴力破解",
+        "creator": "张三",
+        "node": "处置",
+        "field_values": {"src_ip": "1.2.3.4"},
+    }
+    assert resolve_param_template("工单同步：{ticket_no}", ctx) == "工单同步：TK-20261103-0030"
+    assert resolve_param_template("{f:src_ip} by {creator}", ctx) == "1.2.3.4 by 张三"
+    assert resolve_param_template("{node}-{ticket_title}", ctx) == "处置-暴力破解"
+    # 未识别的占位符原样保留；解析不到值的置空
+    assert resolve_param_template("{unknown_var}", ctx) == "{unknown_var}"
+    assert resolve_param_template("{f:not_exist}", ctx) == ""
+    assert resolve_param_template("plain text", ctx) == "plain text"
+    assert resolve_param_template(None, ctx) == ""
+    assert resolve_param_template("{ticket_no}", None) == ""
+
+
+def test_normalized_param_config():
+    """param_config 归一化：非法 display / 非对象条目剔除，超长模板截断 200。"""
+    assert normalized_param_config(None) == {}
+    assert normalized_param_config({"param_config": None}) == {}
+    assert normalized_param_config({"param_config": {
+        "reason": {"display": "readonly", "default_template": "工单同步：{ticket_no}"},
+    }}) == {"reason": {"display": "readonly", "default_template": "工单同步：{ticket_no}"}}
+    # 非法 display / 非对象条目 / 空参数名 → 剔除
+    assert normalized_param_config({"param_config": {
+        "a": {"display": "fixed"},
+        "b": "readonly",
+        "": {"display": "hidden"},
+        "c": {"display": "hidden"},
+    }}) == {"c": {"display": "hidden"}}
+    # 模板截断 200
+    out = normalized_param_config({"param_config": {"a": {"display": "readonly", "default_template": "x" * 300}}})
+    assert len(out["a"]["default_template"]) == 200
 
 
 def test_flow_device_ok_callback():
