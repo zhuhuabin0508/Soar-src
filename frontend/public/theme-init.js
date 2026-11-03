@@ -4,7 +4,7 @@
 // 保证在任何渲染发生前执行；同源外链脚本符合 CSP script-src 'self'（无内联）
 ;(function () {
   try {
-    var t = localStorage.getItem('soar_theme') || 'dark'
+    var t = localStorage.getItem('soar_theme') || 'light'
     var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
     var resolved = t === 'system' ? (prefersDark ? 'dark' : 'light') : t
     var root = document.documentElement

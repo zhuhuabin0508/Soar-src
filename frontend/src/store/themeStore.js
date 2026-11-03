@@ -21,7 +21,7 @@ function systemPrefersDark() {
   try {
     return window.matchMedia('(prefers-color-scheme: dark)').matches
   } catch {
-    return true // 默认暗色（与本平台科技风一致）
+    return false // 检测失败时回退亮色（与平台默认亮色一致）
   }
 }
 
@@ -42,9 +42,9 @@ function applyToHtml(resolved) {
 
 // 初始化：从 localStorage 读
 function initTheme() {
-  // 默认 dark：平台为暗色科技风，避免系统偏好为浅色的用户首屏进入 light 主题
-  // 导致 text-foreground 从白色变为黑色（与设计意图不符）
-  let theme = 'dark'
+  // 默认 light：未设置过偏好的用户（含新用户/清缓存）首屏进入亮色主题；
+  // 曾手动切换过主题的用户仍按其 localStorage 偏好还原
+  let theme = 'light'
   try {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved && VALID.includes(saved)) theme = saved
