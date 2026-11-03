@@ -12,7 +12,7 @@ import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls } from '../components/property/FormControls'
 import {
   PageContainer, Card, DataTable, Pagination, Badge, StatusBadge,
-  LoadingState, ErrorState, CompactSelect, DatePicker,
+  LoadingState, ErrorState, CompactSelect, DatePicker, AutoGrowTextarea,
 } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -59,16 +59,11 @@ function getFieldValue(rec, fdef) {
 }
 
 // 动态表单字段渲染
+// text / ip / cidr / textarea 均使用 AutoGrowTextarea：内容一长普通 input 只能
+// 横向滚动看不全，自适应框体 + 自动换行后长内容（多 IP 列表、长描述）完整可见。
 function FieldInput({ fdef, value, onChange, fieldOptions, invalid, onBlur }) {
   const ftype = fdef.type || 'text'
   const placeholder = fdef.placeholder || ''
-  const common = {
-    className: `${inputCls}${invalid ? ' border-destructive ring-1 ring-destructive' : ''}`,
-    value: value ?? '',
-    onChange: (e) => onChange(e.target.value),
-    onBlur,
-    placeholder,
-  }
   if (ftype === 'select') {
     return (
       <CompactSelect value={value ?? ''} onChange={(e) => onChange(e.target.value)} size="lg" block>
@@ -79,17 +74,35 @@ function FieldInput({ fdef, value, onChange, fieldOptions, invalid, onBlur }) {
       </CompactSelect>
     )
   }
-  if (ftype === 'textarea') {
-    return <textarea {...common} rows={3} />
-  }
   if (ftype === 'number') {
-    return <input type="number" {...common} />
+    return (
+      <input
+        type="number"
+        className={`${inputCls}${invalid ? ' border-destructive ring-1 ring-destructive' : ''}`}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        placeholder={placeholder}
+      />
+    )
   }
   if (ftype === 'date') {
     return <DatePicker value={value ?? ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} block />
   }
-  // text / ip / cidr
-  return <input type="text" {...common} />
+  // text / ip / cidr / textarea：自适应高度 + 自动换行
+  const isLong = ftype === 'textarea'
+  return (
+    <AutoGrowTextarea
+      value={value ?? ''}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      invalid={invalid}
+      mono={ftype === 'ip' || ftype === 'cidr'}
+      minRows={isLong ? 3 : 1}
+      maxRows={isLong ? 16 : 8}
+    />
+  )
 }
 
 // ===== 动态表单弹窗 =====
@@ -314,7 +327,10 @@ function DetailDrawer({ open, record, template, templates, onClose, onEdit, onDe
                     ) : isCrit ? (
                       <StatusBadge color={CRIT_COLORS[record.criticality] || 'neutral'} label={CRIT_LABELS[record.criticality] || record.criticality || '-'} />
                     ) : (
-                      <span className={`mt-0.5 text-sm text-foreground ${f.type === 'ip' || f.type === 'cidr' ? 'font-mono' : ''}`}>
+                      <span
+                        className={`mt-0.5 break-all text-sm text-foreground ${f.type === 'ip' || f.type === 'cidr' ? 'font-mono' : ''}`}
+                        style={{ overflowWrap: 'anywhere' }}
+                      >
                         {v === '' || v == null ? '-' : String(v)}
                       </span>
                     )}
@@ -912,14 +928,19 @@ export default function AssetList() {
   const [fCrit, setFCrit] = useState('')
   const [fDept, setFDept] = useState('')
   const [fTag, setFTag] = useState('')
+  // 模板字段筛选：{field_key: value}，随资产类型模板动态变化（不同模板不同筛选项）
+  const [fieldFilters, setFieldFilters] = useState({})
   const [tags, setTags] = useState([])
   const [deptOptions, setDeptOptions] = useState([])
   // 高级筛选面板折叠状态（默认收起，只留搜索框 + 筛选按钮）
   const [filterOpen, setFilterOpen] = useState(false)
+  // 当前模板各 select 字段的数据去重值（筛选下拉选项，与模板预设 options 合并）
+  const [fieldValuesMap, setFieldValuesMap] = useState({})
   // 已激活的高级筛选项数量（不含 keyword，keyword 由搜索框直接体现）
-  const activeFilterCount = [fStatus, fCrit, fDept, fTag].filter(Boolean).length
+  const activeFieldFilterCount = Object.values(fieldFilters).filter(Boolean).length
+  const activeFilterCount = [fStatus, fCrit, fDept, fTag].filter(Boolean).length + activeFieldFilterCount
   const resetFilters = () => {
-    setKeywordInput(''); setKeyword(''); setFStatus(''); setFCrit(''); setFDept(''); setFTag(''); setPage(1)
+    setKeywordInput(''); setKeyword(''); setFStatus(''); setFCrit(''); setFDept(''); setFTag(''); setFieldFilters({}); setPage(1)
   }
 
   // 头部「数据」下拉菜单（ref + document 监听实现点击外部关闭，不用全屏遮罩避免拦截交互）
@@ -981,7 +1002,7 @@ export default function AssetList() {
   const saveCurrentView = () => {
     const name = viewName.trim()
     if (!name) { toast.warning('请输入视图名称'); return }
-    const view = { name, type_code: activeTypeCode, keyword, fStatus, fCrit, fDept, fTag }
+    const view = { name, type_code: activeTypeCode, keyword, fStatus, fCrit, fDept, fTag, fieldFilters }
     const exists = savedViews.some((v) => v.name === name)
     if (exists) {
       persistViews(savedViews.map((v) => v.name === name ? view : v))
@@ -994,7 +1015,8 @@ export default function AssetList() {
   }
   const applyView = (v) => {
     setKeywordInput(v.keyword || ''); setKeyword(v.keyword || ''); setFStatus(v.fStatus || ''); setFCrit(v.fCrit || '')
-    setFDept(v.fDept || ''); setFTag(v.fTag || ''); setPage(1)
+    setFDept(v.fDept || ''); setFTag(v.fTag || ''); setFieldFilters(v.fieldFilters || {})
+    setPage(1)
     switchType(v.type_code || '')
     setViewDropdownOpen(false)
   }
@@ -1045,11 +1067,44 @@ export default function AssetList() {
     setKeyword(urlKeyword)
   }, [urlKeyword])
   const switchType = (code) => {
-    setPage(1); setSelected(new Set()); setSelectAllMode(false)
+    setPage(1); setSelected(new Set()); setSelectAllMode(false); setFieldFilters({})
     const next = new URLSearchParams(searchParams)
     if (code) next.set('type_code', code); else next.delete('type_code')
     setSearchParams(next, { replace: true })
   }
+
+  // 模板筛选字段：取当前模板的 select 字段作为筛选项（不同模板字段不同 → 筛选项不同）。
+  // 文本/IP 等其余字段由关键词搜索覆盖（后端 keyword 已扩展到模板 extra 字段）。
+  const templateFilterFields = useMemo(
+    () => (activeTemplate?.fields || []).filter((f) => f.type === 'select'),
+    [activeTemplate]
+  )
+
+  // 模板筛选字段的下拉选项：模板预设 options ∪ 该类型资产数据的去重值
+  // （历史数据可能存在超出预设的值，合并保证筛选项不漏）
+  useEffect(() => {
+    if (!activeTypeCode || templateFilterFields.length === 0) {
+      setFieldValuesMap({})
+      return
+    }
+    let cancelled = false
+    Promise.all(
+      templateFilterFields.map((f) =>
+        assetsApi
+          .fieldOptions(activeTypeCode, f.key)
+          .then((r) => [f.key, r.field_values || []])
+          .catch(() => [f.key, []])
+      )
+    ).then((entries) => {
+      if (!cancelled) setFieldValuesMap(Object.fromEntries(entries))
+    })
+    return () => { cancelled = true }
+  }, [activeTypeCode, templateFilterFields])
+
+  // 筛选字段的完整选项列表（预设 options 在前，数据去重值补充在后，去重）
+  const getFieldFilterOptions = (f) => Array.from(
+    new Set([...(f.options || []), ...(fieldValuesMap[f.key] || [])])
+  )
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -1061,6 +1116,7 @@ export default function AssetList() {
         criticality: fCrit || undefined,
         department: fDept || undefined,
         tag_id: fTag || undefined,
+        field_filters: activeFieldFilterCount > 0 ? fieldFilters : undefined,
         page, page_size: pageSize,
         sort_by: 'id', order: 'desc',
       })
@@ -1071,9 +1127,20 @@ export default function AssetList() {
       setError(e.message || '加载失败')
       setSuggestions([])
     } finally { setLoading(false) }
-  }, [activeTypeCode, keyword, fStatus, fCrit, fDept, fTag, page, pageSize])
+  }, [activeTypeCode, keyword, fStatus, fCrit, fDept, fTag, fieldFilters, activeFieldFilterCount, page, pageSize])
 
   useEffect(() => { load() }, [load])
+
+  // 当前筛选条件（列表查询、跨页全选、批量操作取 ID、导出取 ID 共用同一口径）
+  const currentFilter = useMemo(() => ({
+    type_code: activeTypeCode || undefined,
+    keyword,
+    status: fStatus,
+    criticality: fCrit,
+    department: fDept,
+    tag_id: fTag,
+    ...(activeFieldFilterCount > 0 ? { field_filters: fieldFilters } : {}),
+  }), [activeTypeCode, keyword, fStatus, fCrit, fDept, fTag, fieldFilters, activeFieldFilterCount])
 
   // 加载部门选项（按当前类型）
   useEffect(() => {
@@ -1094,10 +1161,6 @@ export default function AssetList() {
   // 一键全选：先同步全选本页保证立即反馈；多页时再拉取全量 ID 升级为“全选所有匹配结果”
   const handleHeaderSelectAll = useCallback(async () => {
     const allSelected = selectAllMode !== false && items.length > 0 && items.every((it) => selected.has(it.id))
-    const filter = {
-      type_code: activeTypeCode || undefined,
-      keyword, status: fStatus, criticality: fCrit, department: fDept, tag_id: fTag,
-    }
     if (allSelected) {
       // 已全选 → 取消全部
       setSelected(new Set())
@@ -1110,7 +1173,7 @@ export default function AssetList() {
     // 2) 多页时再拉取全量匹配 ID 升级为“全选所有匹配结果”
     if (total > items.length) {
       try {
-        const r = await assetsApi.listIds(filter)
+        const r = await assetsApi.listIds(currentFilter)
         const ids = (r.ids || []).filter((id) => typeof id !== 'undefined')
         setSelected(new Set(ids))
         setSelectAllMode('all')
@@ -1119,7 +1182,7 @@ export default function AssetList() {
         toast.error('跨页全选失败，本次仅选中当前页')
       }
     }
-  }, [selectAllMode, items, selected, total, activeTypeCode, keyword, fStatus, fCrit, fDept, fTag])
+  }, [selectAllMode, items, selected, total, currentFilter])
 
   // 列设置：当前类型下被隐藏的字段（标识字段不参与隐藏）
   const hiddenFieldKeys = useMemo(() => {
@@ -1308,7 +1371,7 @@ export default function AssetList() {
   const handleBatchDelete = async () => {
     let ids = [...selected]
     if (selectAllMode === 'all') {
-      const r = await assetsApi.listIds({ type_code: activeTypeCode || undefined, keyword, status: fStatus, criticality: fCrit, department: fDept, tag_id: fTag })
+      const r = await assetsApi.listIds(currentFilter)
       ids = r.ids
     }
     if (ids.length === 0) return
@@ -1326,7 +1389,7 @@ export default function AssetList() {
     let ids = null
     if (scope === 'selected') {
       ids = selectAllMode === 'all'
-        ? (await assetsApi.listIds({ type_code: activeTypeCode || undefined, keyword, status: fStatus, criticality: fCrit, department: fDept, tag_id: fTag })).ids
+        ? (await assetsApi.listIds(currentFilter)).ids
         : [...selected]
     }
     await assetsApi.exportCsv(activeTypeCode || undefined, ids, selectedFields.length > 0 ? selectedFields : undefined)
@@ -1335,7 +1398,7 @@ export default function AssetList() {
   }
 
   // 空态文案与操作（DataTable props；区分「无数据」与「筛选无结果」两种场景）
-  const hasActiveFilters = Boolean(keyword || fStatus || fCrit || fDept || fTag)
+  const hasActiveFilters = Boolean(keyword || fStatus || fCrit || fDept || fTag || activeFieldFilterCount > 0)
   const emptyProps = {
     emptyIcon: Boxes,
     emptyText: hasActiveFilters
@@ -1464,7 +1527,7 @@ export default function AssetList() {
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 className={`${inputCls} pl-8`}
-                placeholder="搜索 IP / 名称 / 标识 / 部门"
+                placeholder="搜索 IP / 名称 / 标识 / 模板字段"
                 value={keywordInput}
                 onChange={(e) => setKeywordInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -1563,65 +1626,94 @@ export default function AssetList() {
             </div>
           )}
         </div>
-        {/* 高级筛选面板（可折叠，默认收起；展开显示 4 个筛选项 + 一键重置） */}
+        {/* 高级筛选面板（可折叠，默认收起）。
+            布局规范：所有筛选项统一 w-36 宽 + gap-2 间隔，视觉间距一致；
+            重置 + 我的视图作为右侧整体操作组（shrink-0 + ml-auto），
+            空间不足时整组换行，避免视图按钮单独被挤到下一行。 */}
         {filterOpen && (
           <div className="flex flex-wrap items-center gap-2 border-t border-border bg-muted p-2.5">
-            <span className="mr-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
               <SlidersHorizontal className="h-3.5 w-3.5" /> 高级筛选
             </span>
-            <CompactSelect value={fStatus} onChange={(e) => { setFStatus(e.target.value); setPage(1) }} size="lg" className="w-[108px]">
+            <CompactSelect value={fStatus} onChange={(e) => { setFStatus(e.target.value); setPage(1) }} size="lg" className="w-36">
               <option value="">全部状态</option>
               {Object.entries(STATUS_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </CompactSelect>
-            <CompactSelect value={fCrit} onChange={(e) => { setFCrit(e.target.value); setPage(1) }} size="lg" className="w-[116px]">
+            <CompactSelect value={fCrit} onChange={(e) => { setFCrit(e.target.value); setPage(1) }} size="lg" className="w-36">
               <option value="">全部重要性</option>
               {Object.entries(CRIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </CompactSelect>
-            <CompactSelect value={fDept} onChange={(e) => { setFDept(e.target.value); setPage(1) }} size="lg" className="w-[144px]">
+            <CompactSelect value={fDept} onChange={(e) => { setFDept(e.target.value); setPage(1) }} size="lg" className="w-36">
               <option value="">全部部门</option>
               {deptOptions.map((d) => <option key={d} value={d}>{d}</option>)}
             </CompactSelect>
-            <CompactSelect value={fTag} onChange={(e) => { setFTag(e.target.value); setPage(1) }} size="lg" className="w-[124px]">
+            <CompactSelect value={fTag} onChange={(e) => { setFTag(e.target.value); setPage(1) }} size="lg" className="w-36">
               <option value="">全部标签</option>
               {tags.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </CompactSelect>
-            <button
-              type="button"
-              onClick={resetFilters}
-              disabled={!keyword && !fStatus && !fCrit && !fDept && !fTag}
-              className="btn-secondary btn-sm flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <RotateCcw className="h-3.5 w-3.5" /> 一键重置
-            </button>
-            {/* 保存视图 */}
-            <div className="relative ml-auto">
-              <button type="button" onClick={() => setViewDropdownOpen((o) => !o)} className="btn-secondary btn-sm flex items-center gap-1">
-                <Bookmark className="h-3.5 w-3.5" /> 我的视图
-                <ChevronDown className="h-3 w-3" />
+            {/* 模板字段筛选：随资产类型动态生成（select 字段 → 下拉筛选），宽度与其余筛选项一致 */}
+            {templateFilterFields.map((f) => (
+              <CompactSelect
+                key={f.key}
+                value={fieldFilters[f.key] || ''}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setFieldFilters((p) => {
+                    const next = { ...p }
+                    if (v) next[f.key] = v; else delete next[f.key]
+                    return next
+                  })
+                  setPage(1)
+                }}
+                size="lg"
+                className="w-36"
+                title={`按「${f.label}」筛选（当前类型模板字段）`}
+              >
+                <option value="">全部{f.label}</option>
+                {getFieldFilterOptions(f).map((v) => <option key={v} value={v}>{v}</option>)}
+              </CompactSelect>
+            ))}
+            {/* 右侧操作组：重置 + 视图（整组换行，不会出现视图按钮孤零零换行） */}
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={resetFilters}
+                disabled={!keyword && !fStatus && !fCrit && !fDept && !fTag && activeFieldFilterCount === 0}
+                className="btn-secondary btn-sm flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="h-3.5 w-3.5" /> 一键重置
               </button>
-              {viewDropdownOpen && (
-                <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-lg border border-border bg-card p-3 shadow-xl">
-                  <div className="mb-2 flex items-center gap-1">
-                    <input className={`${inputBaseCls} flex-1`} placeholder="视图名称..." value={viewName} onChange={(e) => setViewName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && saveCurrentView()} />
-                    <button type="button" onClick={saveCurrentView} className="btn-primary btn-sm flex items-center gap-1"><Save className="h-3 w-3" /> 保存</button>
+              {/* 保存视图 */}
+              <div className="relative">
+                <button type="button" onClick={() => setViewDropdownOpen((o) => !o)} className="btn-secondary btn-sm flex items-center gap-1">
+                  <Bookmark className="h-3.5 w-3.5" /> 我的视图
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {viewDropdownOpen && (
+                  <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-lg border border-border bg-card p-3 shadow-xl">
+                    {/* 名称输入 min-w-0：允许收缩到剩余空间内，保存按钮不再被挤换行 */}
+                    <div className="mb-2 flex items-center gap-1.5">
+                      <input className={`${inputBaseCls} min-w-0 flex-1`} placeholder="视图名称..." value={viewName} onChange={(e) => setViewName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && saveCurrentView()} />
+                      <button type="button" onClick={saveCurrentView} className="btn-primary btn-sm flex shrink-0 items-center gap-1"><Save className="h-3 w-3" /> 保存</button>
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      {savedViews.length === 0 ? (
+                        <p className="py-2 text-center text-[11px] text-muted-foreground">暂无保存的视图</p>
+                      ) : savedViews.map((v) => (
+                        <div key={v.name} className="flex items-center justify-between rounded px-2 py-1.5 text-xs hover:bg-muted">
+                          <button type="button" onClick={() => applyView(v)} className="flex-1 truncate text-left text-foreground">{v.name}</button>
+                          <button type="button" onClick={() => deleteView(v.name)} className="text-destructive hover:underline"><X className="h-3 w-3" /></button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="max-h-48 overflow-y-auto">
-                    {savedViews.length === 0 ? (
-                      <p className="py-2 text-center text-[11px] text-muted-foreground">暂无保存的视图</p>
-                    ) : savedViews.map((v) => (
-                      <div key={v.name} className="flex items-center justify-between rounded px-2 py-1.5 text-xs hover:bg-muted">
-                        <button type="button" onClick={() => applyView(v)} className="flex-1 text-left text-foreground">{v.name}</button>
-                        <button type="button" onClick={() => deleteView(v.name)} className="text-destructive hover:underline"><X className="h-3 w-3" /></button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         )}
         {/* 已选筛选条件可视化（Tag 形式，支持单个删除和一键清空） */}
-        {(keyword || fStatus || fCrit || fDept || fTag) && (
+        {(keyword || fStatus || fCrit || fDept || fTag || activeFieldFilterCount > 0) && (
           <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted p-2.5">
             <span className="text-[11px] text-muted-foreground">当前筛选：</span>
             {keyword && (
@@ -1639,6 +1731,20 @@ export default function AssetList() {
             {fTag && (
               <FilterChip label={`标签: ${tags.find((t) => String(t.id) === fTag)?.name || fTag}`} onRemove={() => { setFTag(''); setPage(1) }} />
             )}
+            {templateFilterFields.filter((f) => fieldFilters[f.key]).map((f) => (
+              <FilterChip
+                key={f.key}
+                label={`${f.label}: ${fieldFilters[f.key]}`}
+                onRemove={() => {
+                  setFieldFilters((p) => {
+                    const next = { ...p }
+                    delete next[f.key]
+                    return next
+                  })
+                  setPage(1)
+                }}
+              />
+            ))}
             <button type="button" onClick={resetFilters} className="ml-1 text-[11px] text-primary hover:underline">清空全部</button>
           </div>
         )}
@@ -1719,7 +1825,7 @@ export default function AssetList() {
             </span>
             {selectAllMode === 'page' && total > items.length && (
               <button onClick={async () => {
-                const r = await assetsApi.listIds({ type_code: activeTypeCode || undefined, keyword, status: fStatus, criticality: fCrit, department: fDept, tag_id: fTag })
+                const r = await assetsApi.listIds(currentFilter)
                 setSelected(new Set(r.ids)); setSelectAllMode('all')
               }} className="text-xs text-primary hover:underline">
                 选择所有匹配的 {total} 条
@@ -1860,7 +1966,7 @@ export default function AssetList() {
           onConfirm={async (addTags, removeTags) => {
             let ids = [...selected]
             if (selectAllMode === 'all') {
-              const r = await assetsApi.listIds({ type_code: activeTypeCode || undefined, keyword, status: fStatus, criticality: fCrit, department: fDept, tag_id: fTag })
+              const r = await assetsApi.listIds(currentFilter)
               ids = r.ids
             }
             await assetsApi.batchUpdate(ids, {}, { addTags, removeTags })
@@ -1879,7 +1985,7 @@ export default function AssetList() {
           onConfirm={async (fields) => {
             let ids = [...selected]
             if (selectAllMode === 'all') {
-              const r = await assetsApi.listIds({ type_code: activeTypeCode || undefined, keyword, status: fStatus, criticality: fCrit, department: fDept, tag_id: fTag })
+              const r = await assetsApi.listIds(currentFilter)
               ids = r.ids
             }
             await assetsApi.batchUpdate(ids, fields)
@@ -1981,12 +2087,12 @@ function BatchEditModal({ open, selectedCount, deptOptions, onClose, onConfirm }
         <p className="text-[11px] text-muted-foreground">仅填写需要修改的字段，留空的字段保持原值不变。</p>
         <div>
           <label className={labelCls}>部门</label>
-          <input className={inputCls} value={department} onChange={(e) => setDepartment(e.target.value)} list="dept-list" placeholder="留空保持不变" />
+          <AutoGrowTextarea value={department} onChange={(e) => setDepartment(e.target.value)} placeholder="留空保持不变" />
           <datalist id="dept-list">{deptOptions.map((d) => <option key={d} value={d} />)}</datalist>
         </div>
         <div>
           <label className={labelCls}>负责人</label>
-          <input className={inputCls} value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="留空保持不变" />
+          <AutoGrowTextarea value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="留空保持不变" />
         </div>
         <div>
           <label className={labelCls}>状态</label>

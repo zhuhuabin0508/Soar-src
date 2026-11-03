@@ -13,6 +13,10 @@ function buildQuery(params = {}) {
   if (params.source) qs.set('source', params.source)
   if (params.tag_id) qs.set('tag_id', params.tag_id)
   if (params.keyword) qs.set('keyword', params.keyword)
+  // 模板字段筛选：{field_key: value} 对象序列化为 JSON（后端按模板字段定义路由标准列/extra_fields）
+  if (params.field_filters && typeof params.field_filters === 'object' && Object.keys(params.field_filters).length > 0) {
+    qs.set('field_filters', JSON.stringify(params.field_filters))
+  }
   if (params.sort_by) qs.set('sort_by', params.sort_by)
   if (params.order) qs.set('order', params.order)
   if (params.page) qs.set('page', params.page)
@@ -36,9 +40,15 @@ export const assetsApi = {
   list: (params = {}) => request(`/assets${buildQuery(params)}`),
   // 跨页全选：返回当前筛选条件下所有匹配资产 ID（不分页，上限 10000）
   listIds: (params = {}) => request(`/assets/ids${buildQuery(params)}`),
-  // 部门/负责人/资产类型去重值（供 datalist 补全），可选 type_code 限定范围
-  fieldOptions: (type_code) =>
-    request(`/assets/field-options${type_code ? `?type_code=${encodeURIComponent(type_code)}` : ''}`),
+  // 部门/负责人/资产类型去重值（供 datalist 补全），可选 type_code 限定范围；
+  // 传 field_key（配合 type_code）时额外返回该模板字段的去重值 field_values
+  fieldOptions: (type_code, field_key) => {
+    const qs = new URLSearchParams()
+    if (type_code) qs.set('type_code', type_code)
+    if (field_key) qs.set('field_key', field_key)
+    const query = qs.toString()
+    return request(`/assets/field-options${query ? `?${query}` : ''}`)
+  },
   // 统计信息，可选 type_code 限定范围
   stats: (type_code) =>
     request(`/assets/stats${type_code ? `?type_code=${encodeURIComponent(type_code)}` : ''}`),

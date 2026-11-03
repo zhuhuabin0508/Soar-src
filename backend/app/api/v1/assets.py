@@ -9,6 +9,7 @@ CSV 导出，以及手动触发资产扫描任务。
 import csv
 import io
 import ipaddress
+import json
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -498,24 +499,102 @@ _KEYWORD_FIELDS = (
 )
 
 
-def _keyword_condition(keyword: str):
+def _template_keyword_columns(template: AssetTypeTemplate | None) -> list:
+    """返回模板中映射到 extra_fields 的字段取值表达式（供关键词搜索 OR 覆盖）。
+
+    模板字段分两类：``standard:<col>`` 映射到 Asset 标准列（identifier/name/ip 等
+    已在 ``_KEYWORD_FIELDS`` 中，无需重复）；``extra`` 映射到 extra_fields JSON，
+    此前关键词搜不到这些字段，导致模板自定义内容（如分类、用途）检索不到。
+    通过 ``extra_fields[key].astext``（PG ``->>``）把 JSON 值转成文本参与 ILIKE。
+    """
+    if template is None:
+        return []
+    cols = []
+    seen = set()
+    for fdef in template.fields or []:
+        key = fdef.get("key")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if (fdef.get("mapped_to") or "extra") == "extra":
+            cols.append(Asset.extra_fields[key].astext)
+    return cols
+
+
+def _keyword_condition(keyword: str, extra_cols: list | None = None):
     """构造关键词模糊匹配条件：多字段 OR + 大小写不敏感（PostgreSQL ILIKE）。
 
     - 用 ILIKE 而非 LIKE：LIKE 在 PG 下区分大小写，英文名称/标识会搜不到。
     - 使用 f"%{kw}%" 做包含匹配（真正的"模糊"），而非前缀匹配。
+    - extra_cols：模板 extra 字段的取值表达式（``extra_fields[key].astext``），
+      仅当按 type_code 检索时追加，使关键词也能命中模板自定义字段。
     """
     like = f"%{keyword}%"
-    return or_(*[col.ilike(like) for col in _KEYWORD_FIELDS])
+    cols = list(_KEYWORD_FIELDS) + list(extra_cols or [])
+    return or_(*[col.ilike(like) for col in cols])
+
+
+def _parse_field_filters(raw: str) -> dict:
+    """解析前端传入的模板字段筛选参数（JSON 字符串 ``{field_key: value}``）。
+
+    非法 JSON / 非对象 / 空值直接丢弃，保证下游只处理有效的字符串值。
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): v for k, v in data.items() if v not in (None, "")}
+
+
+def _template_field_conditions(
+    template: AssetTypeTemplate | None, field_filters: dict | None
+) -> list:
+    """按模板字段定义构造筛选条件（模板字段筛选核心）。
+
+    字段 key 必须存在于模板 fields 中（防注入/防误传），再按 ``mapped_to`` 路由：
+    - ``standard:<col>`` → Asset 标准列（select/number 精确匹配，其余 ILIKE 包含）
+    - ``extra`` → ``extra_fields[key].astext``（同上）
+
+    多个字段条件之间为 AND（在 _apply_asset_filters 中逐个 filter）。
+    """
+    if not template or not field_filters:
+        return []
+    conds = []
+    field_map = _template_field_map(template)
+    for key, value in field_filters.items():
+        fdef = field_map.get(key)
+        if fdef is None:
+            # 模板中不存在的字段直接忽略（模板被改字段后旧筛选参数不报错）
+            continue
+        ftype = fdef.get("type") or "text"
+        exact = ftype in ("select", "number", "date")
+        mapped_to = fdef.get("mapped_to") or "extra"
+        if mapped_to.startswith("standard:"):
+            col = getattr(Asset, mapped_to.split(":", 1)[1], None)
+            if col is None:
+                continue
+            conds.append(col == value if exact else col.ilike(f"%{value}%"))
+        else:
+            text = Asset.extra_fields[key].astext
+            conds.append(text == value if exact else text.ilike(f"%{value}%"))
+    return conds
 
 
 def _apply_asset_filters(
     query, kb_id, asset_type, department, criticality, source, keyword,
-    status=None, tag_id=None, type_code=None,
+    status=None, tag_id=None, type_code=None, template=None, field_filters=None,
 ):
     """应用资产筛选条件（list_assets 与 /ids 共用，DRY）。
 
     智能搜索：当 keyword 是合法 IP/CIDR 时，先用 SQL LIKE 模糊匹配拉取候选集，
     再在 Python 层做精确的 CIDR/范围包含判断（含逗号分隔多 IP 场景）。
+
+    - ``template``：当前资产类型模板；keyword 会扩展覆盖模板 extra 字段。
+    - ``field_filters``：模板字段筛选（{field_key: value}），见 _template_field_conditions。
     """
     if type_code:
         query = query.filter(Asset.type_code == type_code)
@@ -535,7 +614,9 @@ def _apply_asset_filters(
         # 多对多标签筛选：asset 必须关联该 tag
         query = query.filter(Asset.tags.any(AssetTag.id == tag_id))
     if keyword:
-        query = query.filter(_keyword_condition(keyword))
+        query = query.filter(_keyword_condition(keyword, _template_keyword_columns(template)))
+    for cond in _template_field_conditions(template, field_filters):
+        query = query.filter(cond)
     return query
 
 
@@ -562,7 +643,8 @@ def list_assets(
     status: str = Query("", description="按生命周期状态筛选：in_use/idle/repair/retired/lost"),
     source: str = Query("", description="按来源筛选：kb_ingest/agent_add/manual"),
     tag_id: int | None = Query(None, description="按标签 ID 筛选"),
-    keyword: str = Query("", description="模糊搜索 identifier/name/ip/owner"),
+    keyword: str = Query("", description="模糊搜索 identifier/name/ip/owner/department 及模板扩展字段"),
+    field_filters: str = Query("", description="模板字段筛选（JSON 字符串 {field_key: value}），配合 type_code 使用"),
     sort_by: str = Query("id", description="排序字段：id/identifier/name/asset_type/criticality/status/created_at/updated_at"),
     order: str = Query("desc", description="排序方向：asc/desc"),
     page: int = Query(1, ge=1, description="页码"),
@@ -574,7 +656,14 @@ def list_assets(
     智能搜索：当 keyword 是合法 IP/CIDR 时，其余筛选条件仍走 SQL，但 ip 命中
     判断在 Python 层用数值区间完成（支持 CIDR/跨段范围/逗号分隔多值存储）。
     单 IP 精准匹配未命中时，额外返回 suggestions（最接近的 5 个 IP 信息）。
+
+    模板字段筛选：``field_filters`` 按当前模板字段 key 过滤（select 字段精确
+    匹配、其余模糊匹配），标准列与 extra_fields JSON 自动路由。
     """
+    # ===== 模板上下文（模板字段筛选 + 关键词覆盖 extra 字段） =====
+    template = _get_template(db, type_code) if type_code else None
+    parsed_field_filters = _parse_field_filters(field_filters)
+
     # ===== IP 智能搜索 =====
     search_ip, search_net = _parse_search_ip(keyword)
 
@@ -591,6 +680,7 @@ def list_assets(
         light_query = _apply_asset_filters(
             db.query(Asset.id, Asset.ip, Asset.identifier, Asset.name, Asset.type_code),
             kb_id, asset_type, department, criticality, source, "", status, tag_id, type_code,
+            template=template, field_filters=parsed_field_filters,
         )
         all_rows = light_query.order_by(order_dir).all()
         filtered_ids: list[int] = []
@@ -621,6 +711,7 @@ def list_assets(
         query = _apply_asset_filters(
             db.query(Asset), kb_id, asset_type,
             department, criticality, source, keyword, status, tag_id, type_code,
+            template=template, field_filters=parsed_field_filters,
         )
 
         # 排序（白名单校验，非法值回退 id）
@@ -716,6 +807,7 @@ def list_asset_ids(
     source: str = Query("", description="按来源筛选"),
     tag_id: int | None = Query(None, description="按标签 ID 筛选"),
     keyword: str = Query("", description="模糊搜索"),
+    field_filters: str = Query("", description="模板字段筛选（JSON 字符串 {field_key: value}），配合 type_code 使用"),
     db: Session = Depends(get_db),
 ) -> dict:
     """返回当前筛选条件下所有匹配资产的 ID 列表（不分页，跨页全选用）。
@@ -728,12 +820,16 @@ def list_asset_ids(
 
     IP 智能匹配口径与 ``GET /assets`` 列表一致：keyword 为合法 IP/CIDR 时，
     用轻量列扫描 + Python 数值区间过滤（支持 CIDR/跨段范围/逗号分隔多值存储）。
+    模板字段筛选口径也与列表一致（field_filters）。
     """
+    template = _get_template(db, type_code) if type_code else None
+    parsed_field_filters = _parse_field_filters(field_filters)
     search_ip, search_net = _parse_search_ip(keyword)
     if search_ip or search_net:
         light_query = _apply_asset_filters(
             db.query(Asset.id, Asset.ip, Asset.identifier),
             kb_id, asset_type, department, criticality, source, "", status, tag_id, type_code,
+            template=template, field_filters=parsed_field_filters,
         )
         all_rows = light_query.all()
         ids = []
@@ -748,6 +844,7 @@ def list_asset_ids(
     query = _apply_asset_filters(
         db.query(Asset.id), kb_id, asset_type,
         department, criticality, source, keyword, status, tag_id, type_code,
+        template=template, field_filters=parsed_field_filters,
     )
     rows = query.limit(10000).all()
     ids = [r[0] for r in rows]
@@ -757,6 +854,7 @@ def list_asset_ids(
 @router.get("/field-options", dependencies=[Depends(require_permission("asset_list", "view"))])
 def get_field_options(
     type_code: str = Query("", description="按资产类型模板代码筛选"),
+    field_key: str = Query("", description="模板字段 key；传入时额外返回该字段的去重值列表 field_values"),
     db: Session = Depends(get_db),
 ) -> dict:
     """返回部门/负责人/资产类型的去重值列表（供前端 datalist 补全）。
@@ -764,6 +862,10 @@ def get_field_options(
     基于 Asset 表已有数据 DISTINCT 查询，过滤空值，每个字段限 200 个。
     用于新增/编辑表单和筛选栏的自动补全，避免同义词发散。
     可传 ``type_code`` 限定在某一资产类型范围内补全。
+
+    传 ``field_key`` 时（配合 type_code）按模板字段定义解析取值来源：
+    ``standard:<col>`` → Asset 标准列；``extra`` → extra_fields[key]（->> 取文本），
+    返回 ``field_values`` 供模板字段筛选下拉补全选项。
     """
     base = db.query(Asset)
     if type_code:
@@ -773,11 +875,29 @@ def get_field_options(
         rows = base.with_entities(col).filter(col != "").distinct().limit(200).all()
         return sorted([r[0] for r in rows if r[0]])
 
-    return {
+    result = {
         "departments": _distinct(Asset.department),
         "owners": _distinct(Asset.owner),
         "asset_types": _distinct(Asset.asset_type),
     }
+
+    # 模板字段去重值（模板字段筛选项的选项来源，兼容历史数据中超出模板预设的值）
+    if field_key and type_code:
+        template = _get_template(db, type_code)
+        fdef = _template_field_map(template).get(field_key) if template else None
+        col = None
+        if fdef:
+            mapped_to = fdef.get("mapped_to") or "extra"
+            if mapped_to.startswith("standard:"):
+                col = getattr(Asset, mapped_to.split(":", 1)[1], None)
+            else:
+                col = Asset.extra_fields[field_key].astext
+        if col is not None:
+            rows = base.with_entities(col).filter(col != "").distinct().limit(200).all()
+            result["field_values"] = sorted({str(r[0]) for r in rows if r[0] not in (None, "")})
+        else:
+            result["field_values"] = []
+    return result
 
 
 @router.get("/stats", dependencies=[Depends(require_permission("asset_overview", "view"))])
