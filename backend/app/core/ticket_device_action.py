@@ -71,6 +71,18 @@ def prepare_device_params(schema: list[dict], raw: Any) -> tuple[dict, list[str]
             except IPValidationError as exc:
                 errors.append(str(exc))
                 continue
+        elif ptype == "duration":
+            # 时长参数：接受 永久/45分钟/12小时/3天/纯秒数，统一转换为设备侧取值（-1=永久，否则秒数字符串）
+            text = str(value).strip()
+            if re.fullmatch(r"-?\d+(\.\d+)?", text):
+                seconds = float(text)
+                value = "-1" if seconds <= 0 else str(int(seconds) if seconds == int(seconds) else seconds)
+            else:
+                permanent, seconds = parse_duration(text)
+                if not permanent and seconds < 0:
+                    errors.append(f"参数「{label}」的时长格式无法识别（支持：永久、45分钟、12小时、3天 或秒数）")
+                    continue
+                value = "-1" if permanent else str(seconds)
         out[name] = value
     return out, errors
 
@@ -157,6 +169,14 @@ def build_device_action_form(db, node: Optional[dict]) -> dict:
             item["judge_field"] = ""
             item["judge_value"] = "是"
         item["manual"] = not item["judge_field"]
+        # 参数快捷选项：模板配置的 {参数名: [{label, value}]}，随表单下发供工单详情页渲染快捷下拉
+        presets = cfg.get("param_presets") if isinstance(cfg, dict) else None
+        if isinstance(presets, dict) and presets:
+            item["param_presets"] = presets
+            for p in item.get("params") or []:
+                plist = presets.get(str(p.get("name") or ""))
+                if isinstance(plist, list):
+                    p["presets"] = [x for x in plist if isinstance(x, dict) and str(x.get("label") or "").strip()]
         items.append(item)
     return {"bound": True, "mode": "actions", "items": items}
 
@@ -335,7 +355,7 @@ def sync_block_ip_record(db, ticket, node: dict, device: Device, params: dict) -
         ban_duration=0 if permanent else seconds,
         is_permanent=permanent,
         expire_time=None if permanent else now + timedelta(seconds=seconds),
-        reason=f"工单同步：{ticket.title}",
+        reason=f"工单同步：{ticket.ticket_no}",
         ban_source="ticket",
         status="active",
         ticket_id=ticket.id,

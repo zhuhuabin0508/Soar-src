@@ -107,7 +107,7 @@ export const ACTION_AUTH_TYPES = [
 ]
 
 // 参数类型支持
-export const PARAM_TYPES = ['string', 'number', 'boolean', 'enum', 'ip', 'port', 'domain', 'array', 'object']
+export const PARAM_TYPES = ['string', 'number', 'boolean', 'enum', 'ip', 'port', 'domain', 'array', 'object', 'duration']
 
 // 视图模式
 export const VIEW_MODES = [

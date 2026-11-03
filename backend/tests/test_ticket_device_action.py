@@ -60,6 +60,28 @@ def test_duration_permanent_and_seconds():
     assert _duration_to_ban("30天")[1] == 30 * 86400
 
 
+def test_prepare_params_duration_type_converts_human_values():
+    """duration 类型参数：人类可读时长（永久/3天/45分钟/秒数）→ 设备侧取值（-1/秒数字符串）。"""
+    schema = [{"name": "duration", "type": "duration", "required": True, "description": "封禁时长"}]
+    # 人类可读 → 秒数
+    params, errors = prepare_device_params(schema, {"duration": "3天"})
+    assert not errors and params["duration"] == str(3 * 86400)
+    params, _ = prepare_device_params(schema, {"duration": "45分钟"})
+    assert params["duration"] == "2700"
+    params, _ = prepare_device_params(schema, {"duration": "1.5小时"})
+    assert params["duration"] == "5400"
+    # 永久语义（多种写法）→ -1
+    for raw in ("永久", "-1", "0", 0):
+        params, _ = prepare_device_params(schema, {"duration": raw})
+        assert params["duration"] == "-1", raw
+    # 纯秒数原样（字符串化）
+    params, _ = prepare_device_params(schema, {"duration": 300})
+    assert params["duration"] == "300"
+    # 非法格式拒绝
+    params, errors = prepare_device_params(schema, {"duration": "abc"})
+    assert params == {} and any("时长格式无法识别" in e for e in errors)
+
+
 def test_flow_rejects_parallel_and_missing_action():
     errors = validate_flow_structure(
         _flow({"device_action": {"device_id": 1, "action_id": 2}}, node_type="parallel"),
@@ -148,6 +170,49 @@ def test_flow_accepts_judge_field_on_same_node():
         device_ok=lambda _d, _a: None,
     )
     assert any("可选项" in e for e in errors)
+
+
+def test_flow_param_presets_validation():
+    """参数快捷选项（param_presets）：结构合法通过；缺 label/value 或格式错误报错。"""
+    base_fields = [{"key": "need", "label": "是否处置", "type": "select", "options": ["是", "否"]}]
+
+    def make(presets):
+        return _flow({
+            "fields": base_fields,
+            "device_action": {
+                "device_id": 3, "action_id": 9, "judge_field": "need", "judge_value": "是",
+                "param_presets": presets,
+            },
+        })
+
+    ok_kw = dict(group_ok=lambda _gid: True, device_ok=lambda _d, _a: None)
+
+    # 合法：多参数、表达式/数值/负值混合
+    errors = validate_flow_structure(make({
+        "duration": [
+            {"label": "3天", "value": "3*24*3600"},
+            {"label": "7天", "value": 604800},
+            {"label": "永久", "value": -1},
+        ],
+        "reason": [{"label": "攻击行为", "value": "attack"}],
+    }), **ok_kw)
+    assert errors == []
+
+    # 未配置实际值
+    errors = validate_flow_structure(make({"duration": [{"label": "3天"}]}), **ok_kw)
+    assert any("未配置实际值" in e for e in errors)
+
+    # 未命名快捷选项
+    errors = validate_flow_structure(make({"duration": [{"value": 300}]}), **ok_kw)
+    assert any("未命名" in e for e in errors)
+
+    # 快捷选项不是数组
+    errors = validate_flow_structure(make({"duration": "3天"}), **ok_kw)
+    assert any("必须为非空数组" in e for e in errors)
+
+    # 整体不是对象
+    errors = validate_flow_structure(make(["3天"]), **ok_kw)
+    assert any("必须为对象" in e for e in errors)
 
 
 def test_flow_device_ok_callback():

@@ -17,9 +17,10 @@ import { inputCls, labelCls, hintCls } from '../components/property/FormControls
 import { Button, PageContainer, CompactSelect, DatePicker } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
-import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
+import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS, evalParamExpr, deviceDurationLabel } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
+import DeviceDurationInput from '../components/DeviceDurationInput'
 import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
@@ -646,6 +647,8 @@ export default function TicketDetail() {
   const [actionParams, setActionParams] = useState({})
   const [deviceMissing, setDeviceMissing] = useState([])
   const [deviceIpErrors, setDeviceIpErrors] = useState({})
+  // 设备参数"自定义"模式（token = `${item.index}:${param.name}`）：点开自定义后保持原输入控件可见
+  const [deviceCustom, setDeviceCustom] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -667,6 +670,7 @@ export default function TicketDetail() {
           setActionParams({})
           setDeviceMissing([])
           setDeviceIpErrors({})
+          setDeviceCustom({})
         }
       })
       .catch((e) => toast.error(e.message || '加载工单失败'))
@@ -702,9 +706,15 @@ export default function TicketDetail() {
   // 去向强制为该条件路由（按钮禁用不可改选，后端 _resolve_route 同步强制校验）；
   // 条件不再命中时清空残留（多路由回到手动选择，避免沿用旧值导致误流转）
   useEffect(() => {
-    if (routeSuggested) setRouteTo(routeSuggested)
-    else if (routeOptions.length > 1) setRouteTo('')
-  }, [routeSuggested, routeOptions.length])
+    if (routeSuggested) {
+      setRouteTo(routeSuggested)
+      return
+    }
+    // 残留的 routeTo 不在当前节点可选项内（节点切换后的旧值）时清空，避免误流转：
+    // 上一节点条件路由锁定的去向（如 n_emergency）流转后残留，单路由节点不清空会被
+    // 直接提交，后端白名单校验拒绝（"流转去向 X 不在节点的路由白名单内"）
+    setRouteTo((cur) => (cur && routeOptions.some((r) => r.to === cur) ? cur : ''))
+  }, [routeSuggested, routeOptions])
   const currentFields = currentNode?.fields || []
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
@@ -942,6 +952,7 @@ export default function TicketDetail() {
           setComment('')
           setMissingKeys([])
           setActionParams({})
+          setDeviceCustom({})
         })
         .catch((e) => toast.error(e.message || '流转失败'))
         .finally(() => setSubmitting(false))
@@ -1348,7 +1359,15 @@ export default function TicketDetail() {
                               </div>
                               {dr.params && Object.keys(dr.params).length > 0 && (
                                 <div className="mt-1 break-all">
-                                  {Object.entries(dr.params).map(([k, v]) => `${k}=${v}`).join('，')}
+                                  {Object.entries(dr.params).map(([k, v]) => {
+                                    let disp = `${k}=${v}`
+                                    // 时长类参数附加友好显示（如 duration=259200（3天）、-1（永久））
+                                    if (/duration|expire|ttl/i.test(k)) {
+                                      const lab = deviceDurationLabel(v)
+                                      if (lab && lab !== String(v)) disp = `${k}=${v}（${lab}）`
+                                    }
+                                    return disp
+                                  }).join('，')}
                                 </div>
                               )}
                             </div>
@@ -1668,29 +1687,86 @@ export default function TicketDetail() {
                             const token = `${it.index}:${p.name}`
                             const bad = deviceMissing.includes(token) || deviceIpErrors[token]
                             const cls = bad ? `${inputCls} !border-destructive ring-1 !ring-destructive` : inputCls
+                            // 参数快捷选项（模板设计者配置）：选择即映射为实际参数值；可切"自定义"手动填写
+                            const presets = (p.presets || [])
+                              .map((x) => ({ ...x, resolved: evalParamExpr(x.value) }))
+                              .filter((x) => String(x.label || '').trim() && x.resolved !== null && x.resolved !== '')
+                            const cur = params[p.name]
+                            const hasCur = cur !== undefined && cur !== null && String(cur) !== ''
+                            const matched = presets.find((x) => String(x.resolved) === String(cur))
+                            const customMode = (hasCur && !matched) || !!deviceCustom[token]
+                            const isDur = String(p.type || '').toLowerCase() === 'duration'
+                            const renderCustom = () => (isDur ? (
+                              <DeviceDurationInput value={cur ?? ''} disabled={false} onChange={(v) => setP(p.name, v)} />
+                            ) : p.options?.length ? (
+                              <CompactSelect size="lg" block value={cur ?? ''} onChange={(e) => setP(p.name, e.target.value)}>
+                                <option value="">请选择</option>
+                                {p.options.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                              </CompactSelect>
+                            ) : (
+                              <input className={cls} value={cur ?? ''}
+                                onChange={(e) => setP(p.name, e.target.value)}
+                                onBlur={() => {
+                                  if (!['ip', 'cidr'].includes(String(p.type || '').toLowerCase())) return
+                                  const v = params[p.name]
+                                  if (v === undefined || v === null || String(v).trim() === '') return
+                                  const msg = validateIPExpression(v, p.description || p.name)
+                                  setDeviceIpErrors((e) => ({ ...e, [token]: msg || '' }))
+                                }} />
+                            ))
+                            const defVal = (p.default !== undefined && p.default !== null && String(p.default) !== '') ? p.default : null
+                            const defText = defVal === null ? '' : (isDur ? (deviceDurationLabel(defVal) || String(defVal)) : String(defVal))
+                            const changed = defVal !== null && String(cur ?? '') !== String(defVal)
                             return (
                               <div key={p.name}>
-                                <label className={labelCls}>
-                                  {p.description || p.name}
-                                  {p.required && <span className="text-red-500">*</span>}
-                                  <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">{p.name}</span>
-                                </label>
-                                {p.options?.length ? (
-                                  <CompactSelect size="lg" block value={params[p.name] ?? ''} onChange={(e) => setP(p.name, e.target.value)}>
-                                    <option value="">请选择</option>
-                                    {p.options.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
-                                  </CompactSelect>
-                                ) : (
-                                  <input className={cls} value={params[p.name] ?? ''}
-                                    onChange={(e) => setP(p.name, e.target.value)}
-                                    onBlur={() => {
-                                      if (!['ip', 'cidr'].includes(String(p.type || '').toLowerCase())) return
-                                      const v = params[p.name]
-                                      if (v === undefined || v === null || String(v).trim() === '') return
-                                      const msg = validateIPExpression(v, p.description || p.name)
-                                      setDeviceIpErrors((e) => ({ ...e, [token]: msg || '' }))
-                                    }} />
-                                )}
+                                <div className="flex items-center justify-between gap-2">
+                                  <label className={labelCls}>
+                                    {p.description || p.name}
+                                    {p.required && <span className="text-red-500">*</span>}
+                                    <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">{p.name}</span>
+                                  </label>
+                                  {defVal !== null && (
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                      {changed && (
+                                        <button type="button"
+                                          onClick={() => {
+                                            setP(p.name, defVal)
+                                            setDeviceCustom((m) => ({ ...m, [token]: false }))
+                                          }}
+                                          className="rounded px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10"
+                                          title="恢复为该参数的默认值">
+                                          恢复默认
+                                        </button>
+                                      )}
+                                      <span className="text-[10px] text-muted-foreground" title="未修改时按该默认值提交">
+                                        默认 {defText}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                {presets.length ? (
+                                  <div>
+                                    <CompactSelect size="lg" block
+                                      value={matched ? matched.label : (customMode ? '__custom' : '')}
+                                      onChange={(e) => {
+                                        const v = e.target.value
+                                        if (v === '__custom') {
+                                          setDeviceCustom((m) => ({ ...m, [token]: true }))
+                                        } else {
+                                          setDeviceCustom((m) => ({ ...m, [token]: false }))
+                                          const sel = presets.find((x) => x.label === v)
+                                          setP(p.name, sel ? sel.resolved : '')
+                                        }
+                                      }}>
+                                      <option value="">请选择</option>
+                                      {presets.map((x) => (
+                                        <option key={x.label} value={x.label}>{x.label}</option>
+                                      ))}
+                                      <option value="__custom">自定义…</option>
+                                    </CompactSelect>
+                                    {customMode && <div className="mt-1.5">{renderCustom()}</div>}
+                                  </div>
+                                ) : renderCustom()}
                                 {deviceIpErrors[token] && <div className="mt-1 text-[11px] text-destructive">{deviceIpErrors[token]}</div>}
                               </div>
                             )

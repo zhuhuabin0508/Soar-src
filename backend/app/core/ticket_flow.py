@@ -382,6 +382,23 @@ def validate_flow_structure(
                         judge_value = "是"
                     if str(judge_value) not in allowed:
                         errors.append(f"{pos}（{name}）：{label}的建议执行取值 {judge_value} 不是判断字段的可选项")
+            # 参数快捷选项：{参数名: [{label, value}]}，宽松结构校验（值支持数字/表达式/文本，运行时由前端映射）
+            param_presets = device_action.get("param_presets")
+            if param_presets not in (None, {}, ""):
+                if not isinstance(param_presets, dict):
+                    errors.append(f"{pos}（{name}）：{label}的参数快捷选项必须为对象")
+                else:
+                    for pname, plist in param_presets.items():
+                        if not str(pname or "").strip():
+                            errors.append(f"{pos}（{name}）：{label}的参数快捷选项存在空参数名")
+                        elif not isinstance(plist, list) or not plist:
+                            errors.append(f"{pos}（{name}）：{label}的参数「{pname}」快捷选项必须为非空数组")
+                        else:
+                            for it in plist:
+                                if not isinstance(it, dict) or not str(it.get("label") or "").strip():
+                                    errors.append(f"{pos}（{name}）：{label}的参数「{pname}」存在未命名快捷选项")
+                                elif it.get("value") in (None, ""):
+                                    errors.append(f"{pos}（{name}）：{label}的参数「{pname}」快捷选项「{it.get('label')}」未配置实际值")
 
         device_action = n.get("device_action")
         if device_action not in (None, {}, ""):

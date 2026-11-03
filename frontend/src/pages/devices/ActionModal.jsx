@@ -8,6 +8,7 @@ import { inputCls, textareaCls } from '../../components/property/FormControls'
 import { useUnsavedChanges } from '../../hooks/useUnsavedChanges'
 import useLockBackgroundScroll from '../../hooks/useLockBackgroundScroll'
 import { CompactSelect } from '../../components/ui'
+import DeviceDurationInput from '../../components/DeviceDurationInput'
 import { devices as devicesApi } from '../../api/client'
 import { validateIPExpression, validateCidrList, validateSingleIP } from '../../utils/ipValidation'
 import {
@@ -547,6 +548,14 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
   const renderParamInput = (p) => {
     const val = params[p.name] ?? ''
     const setVal = (v) => setParams((prev) => ({ ...prev, [p.name]: v }))
+    if (String(p.type || '').toLowerCase() === 'duration') {
+      return (
+        <div>
+          <DeviceDurationInput value={val} onChange={setVal} />
+          <p className="mt-1 text-xs text-muted-foreground">预设快捷选择或自定义数值+单位，设备侧按秒传递（-1 = 永久）</p>
+        </div>
+      )
+    }
     if (p.type === 'boolean') {
       return (
         <label className="flex items-center gap-2">
