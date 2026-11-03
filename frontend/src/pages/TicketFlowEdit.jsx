@@ -8,7 +8,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   GitGraph, Plus, Trash2, ArrowUp, ArrowDown, Save, Rocket, ArrowLeft,
-  Flag, ChevronRight, GripVertical, AlertTriangle, UsersRound, CheckCircle2, List, History, ShieldBan, Zap,
+  Flag, ChevronRight, GripVertical, AlertTriangle, UsersRound, CheckCircle2, List, History, Zap,
 } from 'lucide-react'
 import ReactFlow, { Background, Controls, MiniMap, Handle, Position, MarkerType } from 'reactflow'
 import { toast } from '../store/toastStore'
@@ -890,37 +890,7 @@ export default function TicketFlowEdit() {
           if (!hasDefault) addWarn(n.key, `${name}：未配置无条件默认路由，条件都不满足时按首条路由流转`)
         }
 
-        // 节点动作 · 封禁同步（与后端校验一致：字段指向与取值均须有效）
-        const bs = n.ban_sync
-        if (bs && typeof bs === 'object' && Object.keys(bs).length) {
-          const flat = flatFields(n.fields || [])
-          const byKey = Object.fromEntries(flat.map((x) => [x.key, x]))
-          const sw = byKey[bs.switch_field]
-          if (!bs.switch_field || !sw) {
-            addErr(n.key, `${name}：封禁同步未配置触发字段，或触发字段不在本节点字段中`)
-          } else if (!['select', 'switch'].includes(sw.type)) {
-            addErr(n.key, `${name}：封禁同步触发字段 ${bs.switch_field} 需为下拉选择/是否开关类型`)
-          } else {
-            const allowed = sw.type === 'switch' ? ['是', '否'] : (sw.options || []).map(String)
-            const swv = bs.switch_value ?? '是'
-            if (!allowed.includes(String(swv))) addErr(n.key, `${name}：封禁同步触发值 ${swv} 必须是字段 ${bs.switch_field} 的可选项之一`)
-          }
-          if (!bs.ip_field || !byKey[bs.ip_field]) {
-            addErr(n.key, `${name}：封禁同步未配置封禁 IP 字段，或该字段不在本节点字段中`)
-          }
-          const dur = byKey[bs.duration_field]
-          if (!bs.duration_field || !dur) {
-            addErr(n.key, `${name}：封禁同步未配置封禁时长字段，或该字段不在本节点字段中`)
-          } else if (dur.type !== 'duration') {
-            addErr(n.key, `${name}：封禁同步时长字段 ${bs.duration_field} 需为时长类型`)
-          }
-          if (bs.device_field && !byKey[bs.device_field]) {
-            addErr(n.key, `${name}：封禁同步设备字段 ${bs.device_field} 不在本节点字段中`)
-          }
-          if (nodes.find((x) => x.type !== 'end')?.key === n.key) {
-            addWarn(n.key, `${name}：发起节点（首处理节点）提交不走流转，封禁同步不会触发`)
-          }
-        }
+        // 节点动作 · 设备动作校验（ban_sync 旧配置已下线，后端保留执行兼容存量模板，前端不再校验）
         const actions = Array.isArray(n.device_actions) ? n.device_actions : []
         const checkDa = (da, label) => {
           if (!da || typeof da !== 'object' || !Object.keys(da).length) return
@@ -1970,97 +1940,8 @@ export default function TicketFlowEdit() {
                   </div>
 
 
-                  {/* 节点动作 · 封禁同步（可选）：提交时命中触发条件，把封禁信息同步到工作台已封禁 IP 列表 */}
-                  {selected.type !== 'parallel' && (() => {
-                    const bs = selected.ban_sync || {}
-                    const flat = flatFields(selected.fields || [])
-                    const byKey = Object.fromEntries(flat.map((x) => [x.key, x]))
-                    const swFields = flat.filter((x) => ['select', 'switch'].includes(x.type))
-                    const durFields = flat.filter((x) => x.type === 'duration')
-                    const swDef = byKey[bs.switch_field]
-                    const swOpts = swDef
-                      ? (swDef.type === 'switch' ? ['是', '否'] : (swDef.options || []).map(String))
-                      : ['是']
-                    const patchBS = (patch) => patchNode(selected.key, { ban_sync: { ...bs, ...patch } })
-                    return (
-                      <div className="mt-6">
-                        <div className="mb-3 flex items-center justify-between border-t border-border pt-5">
-                          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                            <ShieldBan className="h-4 w-4 text-muted-foreground" />节点动作 · 封禁同步
-                          </div>
-                          {canEdit && (
-                            <label className="flex cursor-pointer items-center gap-2"
-                              title="开启后本节点提交流转时按触发条件同步封禁信息到工作台">
-                              <input type="checkbox" className="h-4 w-4 accent-primary"
-                                checked={!!selected.ban_sync}
-                                onChange={(e) => patchNode(selected.key, e.target.checked
-                                  ? { ban_sync: { switch_field: '', switch_value: '是', ip_field: '', device_field: '', duration_field: '' } }
-                                  : { ban_sync: null })} />
-                              <span className="text-sm text-foreground">提交流转时同步封禁</span>
-                            </label>
-                          )}
-                        </div>
-                        {selected.ban_sync ? (
-                          <div className="rounded-md border border-border p-4">
-                            <div className="grid grid-cols-5 gap-3">
-                              <div>
-                                <label className={labelCls}>触发字段<span className="text-red-500">*</span></label>
-                                <CompactSelect size="lg" block disabled={!canEdit} value={bs.switch_field || ''}
-                                  onChange={(e) => patchBS({ switch_field: e.target.value, switch_value: '' })}
-                                  title="本节点下拉选择/是否开关字段，命中触发值时执行同步">
-                                  <option value="">选择下拉/开关字段</option>
-                                  {swFields.map((x) => <option key={x.key} value={x.key}>{x.label || x.key}（{x.key}）</option>)}
-                                  {bs.switch_field && !swDef && <option value={bs.switch_field}>{bs.switch_field}（已失效）</option>}
-                                </CompactSelect>
-                              </div>
-                              <div>
-                                <label className={labelCls}>触发值</label>
-                                <CompactSelect size="lg" block disabled={!canEdit || !swDef} value={bs.switch_value || '是'}
-                                  onChange={(e) => patchBS({ switch_value: e.target.value })}>
-                                  {swOpts.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
-                                </CompactSelect>
-                              </div>
-                              <div>
-                                <label className={labelCls}>封禁 IP 字段<span className="text-red-500">*</span></label>
-                                <CompactSelect size="lg" block disabled={!canEdit} value={bs.ip_field || ''}
-                                  onChange={(e) => patchBS({ ip_field: e.target.value })}>
-                                  <option value="">选择字段</option>
-                                  {flat.map((x) => <option key={x.key} value={x.key}>{x.label || x.key}（{x.key}）</option>)}
-                                </CompactSelect>
-                              </div>
-                              <div>
-                                <label className={labelCls}>封禁设备字段</label>
-                                <CompactSelect size="lg" block disabled={!canEdit} value={bs.device_field || ''}
-                                  onChange={(e) => patchBS({ device_field: e.target.value })}>
-                                  <option value="">不指定</option>
-                                  {flat.map((x) => <option key={x.key} value={x.key}>{x.label || x.key}（{x.key}）</option>)}
-                                </CompactSelect>
-                              </div>
-                              <div>
-                                <label className={labelCls}>封禁时长字段<span className="text-red-500">*</span></label>
-                                <CompactSelect size="lg" block disabled={!canEdit} value={bs.duration_field || ''}
-                                  onChange={(e) => patchBS({ duration_field: e.target.value })}
-                                  title="须为时长类型字段，决定封禁时长与解封时间">
-                                  <option value="">选择时长字段</option>
-                                  {durFields.map((x) => <option key={x.key} value={x.key}>{x.label || x.key}（{x.key}）</option>)}
-                                  {bs.duration_field && !byKey[bs.duration_field] && (
-                                    <option value={bs.duration_field}>{bs.duration_field}（已失效）</option>
-                                  )}
-                                </CompactSelect>
-                              </div>
-                            </div>
-                            <p className={`${hintCls} mt-2`}>
-                              本节点提交流转时，若「触发字段」命中「触发值」且封禁 IP / 时长已填写，则将封禁 IP、设备、时长同步到工作台「已封禁 IP」列表（来源=工单同步，仅记录不调用设备），详情中可跳转回本工单
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="rounded-md border border-dashed border-border py-4 text-center text-sm text-muted-foreground">
-                            未启用：本节点提交时不同步封禁信息到工作台
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })()}
+                  {/* 节点动作 · 设备动作（含工作台同步）：block_ip 类动作执行成功后自动同步封禁台账，
+                      旧的独立"封禁同步"配置已下线（后端保留执行以兼容存量已发布模板） */}
                 </>
               )}
             </div>

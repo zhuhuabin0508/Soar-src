@@ -47,7 +47,7 @@ from app.core.ticket_device_action import (
     annotate_device_form,
     build_device_action_form,
     run_ticket_device_action,
-    sync_block_ip_record,
+    sync_device_outcome_to_workbench,
 )
 from app.core.ticket_flow import (
     collect_ref_options,
@@ -2143,21 +2143,23 @@ def advance_ticket(
         comment=sanitize_text(body.comment) if body.comment else None,
     ))
 
+    # 设备动作成功后的工作台同步：按 action_type 分发（block_ip → 封禁台账，
+    # 后续新动作类型在 ticket_device_action._WORKBENCH_SYNC_HANDLERS 注册即可）。
+    # 独立 SAVEPOINT：同步失败仅回滚自身，不阻塞工单流转主流程
     for device_outcome in device_outcomes:
-        if not device_outcome.get("ok") or device_outcome["action"].action_type != "block_ip":
+        if not device_outcome.get("ok"):
             continue
         try:
             with db.begin_nested():
-                sync_block_ip_record(
+                sync_device_outcome_to_workbench(
                     db, ticket, current_node,
-                    device_outcome["device"], device_outcome["params"],
+                    device_outcome["device"], device_outcome["action"], device_outcome["params"],
                 )
         except Exception:
-            logger.exception("工单设备封禁台账写入失败（不阻塞流转）: ticket=%s", ticket.ticket_no)
+            logger.exception("工单设备动作工作台同步失败（不阻塞流转）: ticket=%s", ticket.ticket_no)
 
-    # 封禁同步动作：节点配置了 ban_sync 且命中开关条件时，写入工作台已封禁 IP 列表
-    # （附加动作在独立 SAVEPOINT 中执行：任何失败——含提交阶段的约束错误如 IP 超长——
-    #   仅回滚封禁记录自身，不阻塞工单流转主流程）
+    # 旧版封禁同步（ban_sync 字段映射，仅记录不调用设备）：配置入口已从流程编辑器下线，
+    # 此处保留执行以兼容存量已发布模板，存量工单/台账行为不变
     try:
         with db.begin_nested():
             _sync_ban_from_ticket(db, ticket, current_node, values, current_user)

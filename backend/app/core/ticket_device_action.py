@@ -331,3 +331,27 @@ def sync_block_ip_record(db, ticket, node: dict, device: Device, params: dict) -
         ticket_node=node_key,
         ban_device=device.name or None,
     ))
+
+
+# ============ 工作台同步分发 ============
+# 按设备动作类型（action_type）注册同步 handler：动作执行成功后，
+# 对应类型的信息自动同步到工作台对应模块。后续新动作类型要接入工作台，
+# 在此注册即可，工单流转侧代码无需改动。
+_WORKBENCH_SYNC_HANDLERS = {
+    "block_ip": sync_block_ip_record,  # 封禁 IP → 工作台「已封禁 IP」列表（BanRecord）
+}
+
+
+def sync_device_outcome_to_workbench(
+    db, ticket, node: dict, device: Device, action: DeviceAction, params: dict,
+) -> bool:
+    """设备动作执行成功后按动作类型同步信息到工作台。
+
+    - 返回 True 表示该动作类型已注册同步且已执行；未注册的类型不做任何事
+    - 调用方应将其置于独立 SAVEPOINT 中：同步失败仅回滚自身，不阻塞工单流转
+    """
+    handler = _WORKBENCH_SYNC_HANDLERS.get(str(action.action_type or ""))
+    if handler is None:
+        return False
+    handler(db, ticket, node, device, params)
+    return True
