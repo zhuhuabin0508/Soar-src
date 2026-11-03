@@ -13,7 +13,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls, hintCls } from '../components/property/FormControls'
-import { Button, PageContainer, DataTable, Pagination, CompactSelect, DatePicker } from '../components/ui'
+import { Button, PageContainer, DataTable, Pagination, CompactSelect, ComboInput, DatePicker } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
@@ -73,6 +73,9 @@ export default function TicketCenter() {
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState(() => searchParams.get('status') || '')
   const [priority, setPriority] = useState(() => searchParams.get('priority') || '')
+  // 筛选：流程模板（与发起弹窗的 flowId/flows 状态无关，独立维护）
+  const [filterFlowId, setFilterFlowId] = useState(() => searchParams.get('flow') || '')
+  const [filterFlows, setFilterFlows] = useState([])
   const [keyword, setKeyword] = useState(() => searchParams.get('q') || '')
   const [searchKw, setSearchKw] = useState(() => searchParams.get('q') || '')
   const [deletingId, setDeletingId] = useState(null)
@@ -110,13 +113,19 @@ export default function TicketCenter() {
       view: view === 'archived' ? 'all' : view,
       archived: view === 'archived' ? 'only' : 'exclude',
       status, priority, q: searchKw, page, size,
+      flow_id: filterFlowId ? Number(filterFlowId) : undefined,
     })
       .then((res) => { setList(res.items || []); setTotal(res.total || 0) })
       .catch((e) => toast.error(e.message || '加载工单列表失败'))
       .finally(() => setLoading(false))
-  }, [view, status, priority, searchKw, page, size])
+  }, [view, status, priority, searchKw, page, size, filterFlowId])
 
   useEffect(() => { load() }, [load])
+
+  // 筛选行流程模板选项：全部已发布流程（与发起权限无关；静默失败不阻塞列表加载）
+  useEffect(() => {
+    ticketApi.flowOptions().then((res) => setFilterFlows(res.items || [])).catch(() => {})
+  }, [])
 
   // 筛选条件写回 URL（replace 不产生历史记录；分享链接可还原视图与筛选）
   useEffect(() => {
@@ -124,10 +133,11 @@ export default function TicketCenter() {
     if (view !== 'my_pending') p.view = view
     if (status) p.status = status
     if (priority) p.priority = priority
+    if (filterFlowId) p.flow = filterFlowId
     if (searchKw) p.q = searchKw
     setSearchParams(p, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, status, priority, searchKw])
+  }, [view, status, priority, filterFlowId, searchKw])
 
   // 告警一键发起：携带 state.alertPrefill 自动打开发起弹窗并预填
   useEffect(() => {
@@ -395,6 +405,7 @@ export default function TicketCenter() {
       view: view === 'archived' ? 'all' : view,
       archived: view === 'archived' ? 'only' : 'exclude',
       status, priority, q: searchKw,
+      flow_id: filterFlowId ? Number(filterFlowId) : undefined,
     })
       .then(() => toast.success('工单导出已开始下载'))
       .catch((e) => toast.error(e.message || '导出失败'))
@@ -523,17 +534,14 @@ export default function TicketCenter() {
 
   return (
     <PageContainer>
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">工单中心</h1>
-            {!loading && (
-              <span className="text-sm font-medium tabular-nums text-foreground">
-                共 {total.toLocaleString()} 个工单
-              </span>
-            )}
-          </div>
-          <p className="mt-2 text-[13px] text-muted-foreground">安全运营工单流转：节点到达分组后组内全员可见，任一成员提交即代表全组（先到先得）</p>
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">工单中心</h1>
+          {!loading && (
+            <span className="text-sm font-medium tabular-nums text-foreground">
+              共 {total.toLocaleString()} 个工单
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {canMonitor && (
@@ -541,13 +549,13 @@ export default function TicketCenter() {
               <Monitor className="mr-1 h-3.5 w-3.5" />监控大屏
             </Button>
           )}
-          <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新工单列表">
+          <Button variant="secondary" size="sm" onClick={load} title="刷新工单列表">
             <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
-          </button>
-          <button type="button" onClick={handleExport} disabled={exporting || loading} className="btn-secondary btn-sm"
+          </Button>
+          <Button variant="secondary" size="sm" onClick={handleExport} disabled={exporting || loading}
             title="按当前视图与筛选条件导出 CSV（UTF-8 BOM，Excel 可直接打开）">
             <Download className="mr-1 h-3.5 w-3.5" />{exporting ? '导出中' : '导出'}
-          </button>
+          </Button>
           {canEdit && (
             <Button variant="primary" size="sm" onClick={openCreate}>
               <Plus className="mr-1 h-3.5 w-3.5" />发起工单
@@ -556,12 +564,12 @@ export default function TicketCenter() {
         </div>
       </div>
 
-      {/* 视图 Tab（下划线式） */}
+      {/* 视图 Tab 单独一行（下划线式） */}
       <nav className="flex flex-wrap items-center border-b border-border">
         {VIEWS.map((v) => (
           <button key={v.key} type="button"
             onClick={() => { setView(v.key); setPage(1) }}
-            className={`-mb-px border-b-2 px-4 py-3 text-sm font-medium transition ${
+            className={`-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium transition ${
               view === v.key
                 ? 'border-primary text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -571,21 +579,34 @@ export default function TicketCenter() {
         ))}
       </nav>
 
-      {/* 筛选行 */}
-      <div className="mb-4 mt-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card px-4 py-2.5">
-        <CompactSelect size="lg" block className="w-32" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
-          <option value="">全部状态</option>
-          <option value="processing">进行中</option>
-          <option value="completed">已完成</option>
-          <option value="cancelled">已取消</option>
-        </CompactSelect>
-        <CompactSelect size="lg" block className="w-32" value={priority} onChange={(e) => { setPriority(e.target.value); setPage(1) }}>
-          <option value="">全部优先级</option>
-          <option value="low">低</option>
-          <option value="medium">中</option>
-          <option value="high">高</option>
-          <option value="critical">紧急</option>
-        </CompactSelect>
+      {/* 筛选行：流程模板 / 状态 / 优先级 / 关键词 + 查询，同一行。
+          定宽 wrapper 包 block 下拉：block 时组件自带 w-full，若直接拼 w-XX 类
+          会与其同 specificity 冲突（w-full 胜出导致下拉撑满整行、逐个堆叠换行） */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="w-36 shrink-0">
+          <CompactSelect size="lg" block value={filterFlowId}
+            onChange={(e) => { setFilterFlowId(e.target.value); setPage(1) }}>
+            <option value="">全部流程</option>
+            {filterFlows.map((f) => <option key={f.id} value={String(f.id)}>{f.name}</option>)}
+          </CompactSelect>
+        </div>
+        <div className="w-28 shrink-0">
+          <CompactSelect size="lg" block value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
+            <option value="">全部状态</option>
+            <option value="processing">进行中</option>
+            <option value="completed">已完成</option>
+            <option value="cancelled">已取消</option>
+          </CompactSelect>
+        </div>
+        <div className="w-28 shrink-0">
+          <CompactSelect size="lg" block value={priority} onChange={(e) => { setPriority(e.target.value); setPage(1) }}>
+            <option value="">全部优先级</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+            <option value="critical">紧急</option>
+          </CompactSelect>
+        </div>
         <div className="relative min-w-52 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
@@ -599,9 +620,10 @@ export default function TicketCenter() {
         <Button variant="primary" size="sm" className="h-9 whitespace-nowrap" onClick={() => { setSearchKw(keyword.trim()); setPage(1) }}>查询</Button>
       </div>
 
-      {/* 状态指标条：点击 chip 快捷筛选状态，右侧汇总工单总数与紧急工单 */}
-      {!loading && list.length > 0 && (
-        <div className="mb-4 flex flex-wrap items-center gap-2">
+      {/* 状态指标条：当前页状态分布统计 + 快捷筛选（与筛选行状态下拉联动，点击可取消）；
+          结果为空但状态筛选生效时保持显示，便于识别并取消当前筛选；右侧仅保留紧急计数 */}
+      {!loading && (list.length > 0 || status) && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           {STATUS_CHIPS.map((chip) => {
             const active = status === chip.key
             const count = listStats[chip.key] || 0
@@ -622,13 +644,6 @@ export default function TicketCenter() {
             )
           })}
           <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5" title="当前筛选条件下的工单总数">
-              <TicketCheck className="h-3.5 w-3.5 text-primary/80" />
-              工单总数
-              <span className={`font-semibold tabular-nums ${total > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
-                {total > 0 ? total.toLocaleString() : '--'}
-              </span>
-            </span>
             <span className="inline-flex items-center gap-1.5" title="当前页紧急优先级的工单数量">
               <AlertTriangle className="h-3.5 w-3.5 text-primary/80" />
               紧急
@@ -640,7 +655,8 @@ export default function TicketCenter() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border">
+      {/* 表格独立横滚容器：无论状态 chips 行是否展示，与上方内容保持稳定间距 */}
+      <div className="mt-4 overflow-hidden rounded-lg border border-border">
         <DataTable
           className="table-stagger"
           columns={columns}
@@ -832,15 +848,15 @@ export default function TicketCenter() {
                     {f.type === 'reference' && (() => {
                       const opts = refOpts[f.key] || []
                       if (f.allow_custom) {
+                        // 主题化组合框（可自由输入 + 候选列表），替代原生 datalist 的系统样式弹层
                         return (
-                          <>
-                            <input className={fieldCls(f)} list={`ref-opts-${f.key}`}
-                              placeholder={f.placeholder || '可输入，或从已填过的值中选择'}
-                              value={values[f.key] ?? ''} onChange={(e) => setFieldValue(f.key, e.target.value)} />
-                            <datalist id={`ref-opts-${f.key}`}>
-                              {opts.map((o) => <option key={o} value={o} />)}
-                            </datalist>
-                          </>
+                          <ComboInput
+                            options={opts}
+                            error={missingKeys.includes(f.key)}
+                            placeholder={f.placeholder || '可输入，或从已填过的值中选择'}
+                            value={values[f.key] ?? ''}
+                            onChange={(e) => setFieldValue(f.key, e.target.value)}
+                          />
                         )
                       }
                       return (
@@ -883,7 +899,6 @@ export default function TicketCenter() {
                         </div>
                       )
                     })()}
-                    {f.type === 'switch' && !f.required && <p className={hintCls}>开关型字段提交 是/否</p>}
                   </>
                 )
                 if (ext) {

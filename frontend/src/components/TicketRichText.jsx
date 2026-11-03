@@ -1,12 +1,14 @@
-// 工单富文本组件：所见即所得图片粘贴 + 双击放大预览 + 附件后缀校验
+// 工单富文本组件：所见即所得图片粘贴 + 画廊式放大预览 + 附件后缀校验
 // - RichEditable：contentEditable 富文本输入框，粘贴截图后在框内直接以图片呈现（所见即所得），
 //   数据层仍为纯文本 + `![名称](url)` 图片引用（与展示端 RichTextView / 存量数据完全兼容）；
 //   框内图片双击弹出 Lightbox 放大预览
-// - RichTextView：只读展示，图片引用渲染为缩略图，双击放大预览
+// - RichTextView：只读展示，少量图（≤3 张）内联限高展示、多图（≥4 张）转为九宫格缩略图网格，
+//   单击缩略图打开 Lightbox；Lightbox 支持多图切换（←/→ 键盘、箭头按钮、计数、缩略图导航条）
 // - attachmentFileError / ATTACHMENT_EXTS / ATTACHMENT_ACCEPT：附件后缀白名单（与后端一致）
 // 注意：本文件避免出现方括号正则字面量（如带连字符的字符类），Tailwind 会误扫为任意值类名生成非法 CSS
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 
@@ -130,48 +132,142 @@ function htmlToMd(rootEl) {
   return out
 }
 
-// 图片放大预览（Portal 挂 body，点击空白 / 双击图片 / Esc 关闭）
-// 全屏图片放大预览（编辑器/只读视图/附件缩略图共用）
-export function Lightbox({ src, name, onClose }) {
+// 画廊式图片放大预览（Portal 挂 body，编辑器/只读视图共用）
+// images: [{ src, name }]；index: 当前张；onIndex(i): 切换；onClose(): 关闭
+// 多张时提供 ←/→ 键盘循环切换、左右箭头按钮、n / N 计数、底部缩略图导航条；单张保持旧版精简形态
+export function Lightbox({ images, index, onIndex, onClose }) {
+  const stripRef = useRef(null)
+  const list = images || []
+  const single = list.length <= 1
+  const safeIndex = Math.min(Math.max(index, 0), Math.max(list.length - 1, 0))
+  const cur = list[safeIndex]
+
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose()
+      else if (!single && e.key === 'ArrowLeft') onIndex((safeIndex - 1 + list.length) % list.length)
+      else if (!single && e.key === 'ArrowRight') onIndex((safeIndex + 1) % list.length)
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [safeIndex, list, single, onIndex, onClose])
+
+  // 缩略图条滚动跟随当前张（仅横向滚动导航条本身，不影响遮罩层）
+  useEffect(() => {
+    if (single || !stripRef.current) return
+    const el = stripRef.current.querySelector(`[data-thumb="${safeIndex}"]`)
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [safeIndex, single])
+
+  if (!cur) return null
   return createPortal(
     <div className="fixed inset-0 z-[200] flex select-none flex-col items-center justify-center gap-3 bg-black/85 p-8"
       onClick={onClose}>
-      <div className="max-w-[85vw] truncate text-sm text-white/85">{name || '图片'}</div>
-      <img src={src} alt={name || '图片'} className="max-h-[78vh] max-w-[90vw] cursor-zoom-out rounded-md border border-white/20 object-contain"
+      <div className="max-w-[85vw] truncate text-sm text-white/85">{cur.name || '图片'}</div>
+      <img src={cur.src} alt={cur.name || '图片'} className="max-h-[78vh] max-w-[90vw] cursor-zoom-out rounded-md border border-white/20 object-contain"
         onClick={(e) => e.stopPropagation()} onDoubleClick={onClose} />
-      <div className="text-xs text-white/50">双击图片或点击空白处关闭（Esc 同样生效）</div>
+      {!single && (
+        <>
+          <button type="button" aria-label="上一张" title="上一张"
+            onClick={(e) => { e.stopPropagation(); onIndex((safeIndex - 1 + list.length) % list.length) }}
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-3 text-white/80 transition hover:bg-white/20 hover:text-white">
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+          <button type="button" aria-label="下一张" title="下一张"
+            onClick={(e) => { e.stopPropagation(); onIndex((safeIndex + 1) % list.length) }}
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-3 text-white/80 transition hover:bg-white/20 hover:text-white">
+            <ChevronRight className="h-6 w-6" />
+          </button>
+          <div className="text-xs tabular-nums text-white/70">{safeIndex + 1} / {list.length}</div>
+          <div ref={stripRef} data-allow-scroll onClick={(e) => e.stopPropagation()}
+            className="flex max-w-[90vw] gap-1.5 overflow-x-auto">
+            {list.map((it, i) => (
+              <img key={i} data-thumb={i} src={it.src} alt={it.name || '图片'} loading="lazy"
+                onClick={() => onIndex(i)}
+                className={`h-12 w-12 shrink-0 cursor-pointer rounded-md border object-cover transition ${
+                  i === safeIndex ? 'border-white/80 ring-2 ring-white/80' : 'border-white/20 opacity-60 hover:opacity-90'}`} />
+            ))}
+          </div>
+        </>
+      )}
+      <div className="text-xs text-white/50">
+        {single
+          ? '双击图片或点击空白处关闭（Esc 同样生效）'
+          : '← / → 或点击箭头切换图片；点击空白处或 Esc 关闭'}
+      </div>
     </div>,
     document.body,
   )
 }
 
-// 只读富文本展示：文本段落保留换行，图片渲染为缩略图，双击放大预览
+// 只读富文本展示：文本保留换行；图片分级排版——少量（≤3 张）内联限高 160px，
+// 多图（≥4 张）收敛为九宫格缩略图网格（>9 张默认收起为 +N 块，点击展开），
+// 单击图片打开画廊式 Lightbox（全量图片、可切换），避免多图把节点卡片撑得过高
 export function RichTextView({ text }) {
-  const [lightbox, setLightbox] = useState(null)
+  const [lightbox, setLightbox] = useState(null) // 当前打开的图片索引
+  const [showAll, setShowAll] = useState(false)
   const s = String(text ?? '')
   const matches = [...s.matchAll(IMG_MD_RE)]
   if (!matches.length) return <span className="break-all">{s}</span>
-  const parts = []
+  const images = matches.map((m) => ({ src: attachmentUrl(m[2]), name: m[1] || '图片' }))
+
+  const lightboxEl = lightbox !== null && (
+    <Lightbox images={images} index={lightbox} onIndex={setLightbox} onClose={() => setLightbox(null)} />
+  )
+
+  // 少量图：文本与图片按原顺序交错（图片位置不挪动），内联图限高 160px
+  if (images.length <= 3) {
+    const parts = []
+    let last = 0
+    matches.forEach((m, i) => {
+      if (m.index > last) parts.push(<span key={`t${i}`} className="whitespace-pre-wrap break-all">{s.slice(last, m.index)}</span>)
+      parts.push(
+        <img key={`i${i}`} src={images[i].src} alt={images[i].name} loading="lazy" title="点击查看大图"
+          className="my-1 block max-h-40 w-fit max-w-full cursor-zoom-in rounded-md border border-border object-contain"
+          onClick={() => setLightbox(i)} />,
+      )
+      last = m.index + m[0].length
+    })
+    if (last < s.length) parts.push(<span key="tail" className="whitespace-pre-wrap break-all">{s.slice(last)}</span>)
+    return (
+      <div className="space-y-1">
+        {parts}
+        {lightboxEl}
+      </div>
+    )
+  }
+
+  // 多图：文本段集中在前，图片统一收纳为九宫格缩略图网格
+  const textParts = []
   let last = 0
   matches.forEach((m, i) => {
-    if (m.index > last) parts.push(<span key={`t${i}`} className="whitespace-pre-wrap break-all">{s.slice(last, m.index)}</span>)
-    parts.push(
-      <img key={`i${i}`} src={attachmentUrl(m[2])} alt={m[1] || '图片'} loading="lazy" title="双击查看大图"
-        className="my-1 block max-h-60 w-fit max-w-full cursor-zoom-in rounded-md border border-border"
-        onDoubleClick={() => setLightbox({ src: attachmentUrl(m[2]), name: m[1] || '图片' })} />,
-    )
+    if (m.index > last) textParts.push(<span key={`t${i}`} className="whitespace-pre-wrap break-all">{s.slice(last, m.index)}</span>)
     last = m.index + m[0].length
   })
-  if (last < s.length) parts.push(<span key="tail" className="whitespace-pre-wrap break-all">{s.slice(last)}</span>)
+  if (last < s.length) textParts.push(<span key="tail" className="whitespace-pre-wrap break-all">{s.slice(last)}</span>)
+
+  const MAX_THUMBS = 9
+  const overflow = images.length - MAX_THUMBS
+  const collapsed = !showAll && overflow > 0
+  const shown = collapsed ? images.slice(0, MAX_THUMBS) : images
   return (
-    <div className="space-y-1">
-      {parts}
-      {lightbox && <Lightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
+    <div className="space-y-2">
+      {textParts.length > 0 && <div className="space-y-1">{textParts}</div>}
+      <div className="text-xs text-muted-foreground">图片 · {images.length} 张</div>
+      <div className="flex flex-wrap gap-2">
+        {shown.map((img, i) => (
+          <img key={i} src={img.src} alt={img.name} loading="lazy" title="点击查看大图"
+            className="h-24 w-24 cursor-zoom-in rounded-md border border-border object-cover transition hover:border-primary/50"
+            onClick={() => setLightbox(i)} />
+        ))}
+        {collapsed && (
+          <button type="button" onClick={() => setShowAll(true)} title={`展开剩余 ${overflow} 张`}
+            className="flex h-24 w-24 cursor-pointer items-center justify-center rounded-md border border-border bg-muted text-sm text-muted-foreground transition hover:border-primary/50 hover:text-foreground">
+            +{overflow}
+          </button>
+        )}
+      </div>
+      {lightboxEl}
     </div>
   )
 }
@@ -278,7 +374,8 @@ export function RichEditable({ value, onChange, placeholder, className, minHeigh
         className={`rich-editable cursor-text overflow-y-auto whitespace-pre-wrap break-words ${className || ''}`}
         style={{ minHeight }}
       />
-      {lightbox && <Lightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
+      {/* 编辑器内仅单张上下文：走 Lightbox 单图模式（无箭头/计数），保持双击打开防误触 */}
+      {lightbox && <Lightbox images={[lightbox]} index={0} onIndex={() => {}} onClose={() => setLightbox(null)} />}
     </>
   )
 }

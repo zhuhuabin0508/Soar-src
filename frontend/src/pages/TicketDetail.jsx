@@ -14,7 +14,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputBaseCls, inputCls, labelCls, hintCls } from '../components/property/FormControls'
-import { Button, PageContainer, CompactSelect, DatePicker } from '../components/ui'
+import {Button, PageContainer, CompactSelect, ComboInput, DatePicker, AutoGrowTextarea } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, evalWhen, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, durationToSeconds, DURATION_UNITS } from '../utils/ticketFlow'
@@ -1543,15 +1543,15 @@ export default function TicketDetail() {
                     {f.type === 'reference' && (() => {
                       const opts = refOpts[f.key] || []
                       if (f.allow_custom) {
+                        // 主题化组合框（可自由输入 + 候选列表），替代原生 datalist 的系统样式弹层
                         return (
-                          <>
-                            <input className={fieldCls(f)} list={`ref-opts-${f.key}`}
-                              placeholder={f.placeholder || '可输入，或从已填过的值中选择'}
-                              value={values[f.key] ?? ''} onChange={(e) => setFieldValue(f.key, e.target.value)} />
-                            <datalist id={`ref-opts-${f.key}`}>
-                              {opts.map((o) => <option key={o} value={o} />)}
-                            </datalist>
-                          </>
+                          <ComboInput
+                            options={opts}
+                            error={missingKeys.includes(f.key)}
+                            placeholder={f.placeholder || '可输入，或从已填过的值中选择'}
+                            value={values[f.key] ?? ''}
+                            onChange={(e) => setFieldValue(f.key, e.target.value)}
+                          />
                         )
                       }
                       return (
@@ -1842,7 +1842,7 @@ export default function TicketDetail() {
           </div>
           <div>
             <label className={labelCls}>取消原因<span className="text-red-500">*</span></label>
-            <textarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明取消该工单的原因" value={cancelReason}
+            <AutoGrowTextarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明取消该工单的原因" value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)} />
           </div>
         </div>
@@ -1878,7 +1878,7 @@ export default function TicketDetail() {
           )}
           <div>
             <label className={labelCls}>回退原因<span className="text-red-500">*</span></label>
-            <textarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明退回该工单的原因" value={rollbackReason}
+            <AutoGrowTextarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明退回该工单的原因" value={rollbackReason}
               onChange={(e) => setRollbackReason(e.target.value)} />
           </div>
         </div>
@@ -1919,7 +1919,7 @@ export default function TicketDetail() {
           </div>
           <div>
             <label className={labelCls}>转办原因<span className="text-red-500">*</span></label>
-            <textarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明转办原因（如职责调整、需专业组处理等）" value={transferReason}
+            <AutoGrowTextarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明转办原因（如职责调整、需专业组处理等）" value={transferReason}
               onChange={(e) => setTransferReason(e.target.value)} />
           </div>
         </div>
