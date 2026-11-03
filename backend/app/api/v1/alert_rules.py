@@ -997,6 +997,53 @@ def rules_stats(
     }
 
 
+@router.get("/hits")
+def rules_hits(
+    rule_id: int = Query(0, ge=0, description="按规则过滤（0=全部规则）"),
+    action: str = Query("", description="按动作过滤：alert / suppress / adjust_level"),
+    today: bool = Query(False, description="只看今日（北京时间自然日）"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("alert_rule", "view")),
+):
+    """命中记录分页（命中日志抽屉；跨规则查询，命中记录仅保留近 7 天）。"""
+    q = db.query(AlertRuleHit)
+    if rule_id > 0:
+        q = q.filter(AlertRuleHit.rule_id == rule_id)
+    if action in VALID_ACTIONS:
+        q = q.filter(AlertRuleHit.action == action)
+    if today:
+        q = q.filter(AlertRuleHit.matched_at >= beijing_now().replace(hour=0, minute=0, second=0, microsecond=0))
+    total = q.count()
+    rows = (
+        q.order_by(AlertRuleHit.matched_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": h.id,
+                "matched_at": h.matched_at.strftime("%Y-%m-%d %H:%M:%S") if h.matched_at else None,
+                "rule_id": h.rule_id,
+                "rule_name": h.rule_name,
+                "action": h.action,
+                "uuid": h.uuid,
+                "source_ip": h.source_ip,
+                "alert_name": h.alert_name,
+                "risk_level": h.risk_level,
+                "parse_status": h.parse_status,
+            }
+            for h in rows
+        ],
+    }
+
+
 @router.get("/{rule_id}/hits")
 def rule_hits(
     rule_id: int,

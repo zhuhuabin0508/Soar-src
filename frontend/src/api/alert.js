@@ -71,11 +71,13 @@ export const alertRuleApi = {
   create: (body) => request('/alert-rules', { method: 'POST', body }),
   update: (id, body) => request(`/alert-rules/${id}`, { method: 'PUT', body }),
   remove: (id) => request(`/alert-rules/${id}`, { method: 'DELETE' }),
-  toggle: (id) => request(`/alert-rules/${id}/toggle`, { method: 'PUT' }),
-  // 拖拽排序（全量规则 ID 顺序）
-  reorder: (orderedIds) => request('/alert-rules/reorder', { method: 'PUT', body: { ordered_ids: orderedIds } }),
+  // 注意：toggle/reorder/batch 后端均为 POST（与 CRUD 的 PUT 区分），
+  // 误用 PUT 会被 PUT /alert-rules/{rule_id} 路由吞掉并报「rule_id：必须是整数；名称：该字段为必填项」
+  toggle: (id) => request(`/alert-rules/${id}/toggle`, { method: 'POST' }),
+  // 拖拽排序（全量规则 ID 顺序；后端读取 body.ids）
+  reorder: (orderedIds) => request('/alert-rules/reorder', { method: 'POST', body: { ids: orderedIds } }),
   // 批量操作（op: enable / disable / delete）
-  batch: (ids, op) => request('/alert-rules/batch', { method: 'PUT', body: { ids, op } }),
+  batch: (ids, op) => request('/alert-rules/batch', { method: 'POST', body: { ids, op } }),
   // 批量样例测试（最多 10 条；draft_rule 可携带未保存草稿按优先级参与匹配；只读不落库）
   test: (samples, draftRule = null) => request('/alert-rules/test', {
     method: 'POST',
