@@ -329,37 +329,8 @@ def validate_flow_structure(
                                 if rf.get("rules"):
                                     errors.append(f"{pos}（{name}）：{rpos}的扩展字段 {rlabel} 不支持再嵌套匹配规则")
 
-        # 节点动作 · 封禁同步配置校验（触发字段/值、IP/设备/时长字段映射均须有效）
-        ban_sync = n.get("ban_sync")
-        if ban_sync not in (None, {}, ""):
-            if not isinstance(ban_sync, dict):
-                errors.append(f"{pos}（{name}）：封禁同步配置必须为对象")
-            else:
-                sw = ban_sync.get("switch_field")
-                sw_def = fdefs.get(str(sw)) if sw else None
-                if not sw or sw_def is None:
-                    errors.append(f"{pos}（{name}）：封禁同步未配置触发字段，或触发字段不在本节点字段中")
-                elif sw_def.get("type") not in ("select", "switch"):
-                    errors.append(f"{pos}（{name}）：封禁同步触发字段 {sw} 需为下拉选择/是否开关类型")
-                else:
-                    allowed_sw = ["是", "否"] if sw_def.get("type") == "switch" else [str(o) for o in (sw_def.get("options") or [])]
-                    swv = ban_sync.get("switch_value")
-                    if swv in (None, ""):
-                        swv = "是"
-                    if str(swv) not in allowed_sw:
-                        errors.append(f"{pos}（{name}）：封禁同步触发值 {swv} 必须是字段 {sw} 的可选项之一")
-                ipf = ban_sync.get("ip_field")
-                if not ipf or str(ipf) not in fdefs:
-                    errors.append(f"{pos}（{name}）：封禁同步未配置封禁 IP 字段，或该字段不在本节点字段中")
-                durf = ban_sync.get("duration_field")
-                dur_def = fdefs.get(str(durf)) if durf else None
-                if not durf or dur_def is None:
-                    errors.append(f"{pos}（{name}）：封禁同步未配置封禁时长字段，或该字段不在本节点字段中")
-                elif dur_def.get("type") != "duration":
-                    errors.append(f"{pos}（{name}）：封禁同步时长字段 {durf} 需为时长类型")
-                devf = ban_sync.get("device_field")
-                if devf and str(devf) not in fdefs:
-                    errors.append(f"{pos}（{name}）：封禁同步设备字段 {devf} 不在本节点字段中")
+        # 旧版封禁同步（ban_sync 字段映射）配置入口已下线，能力由设备动作的工作台同步覆盖；
+        # 残留配置在保存模板时由 _strip_legacy_ban_sync 剥离，此处不再校验（存量已发布模板的执行兼容在流转侧保留）
 
         def _check_device_cfg(device_action: Any, label: str) -> None:
             if ntype == "parallel":
@@ -380,7 +351,8 @@ def validate_flow_structure(
                     errors.append(f"{pos}（{name}）：{label}{device_err}")
             judge_field = str(device_action.get("judge_field") or "").strip()
             if not judge_field:
-                errors.append(f"{pos}（{name}）：{label}未选择判断字段")
+                # 手动模式：不绑定判断字段，处理人在工单详情页通过内置开关决定是否调用
+                pass
             else:
                 # 判断字段候选：本节点字段优先（处理人填写实时联动），
                 # 也允许前面节点的字段（存量模板兼容，按历史记录判断）

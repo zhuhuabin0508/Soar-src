@@ -10,6 +10,7 @@
 """
 import copy
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
@@ -85,6 +86,24 @@ def _version_payload(v: TicketFlowVersion, with_nodes: bool = False) -> dict:
     return data
 
 
+def _strip_legacy_ban_sync(nodes: Any) -> Any:
+    """剥离节点里旧版封禁同步（ban_sync 字段映射）残留配置。
+
+    该机制配置入口已下线（能力由设备动作的工作台同步覆盖）。存量模板重新编辑保存时
+    静默清理残留键，避免发布校验误报；已发布模板未经重存前，流转侧仍按原逻辑兼容执行。
+    """
+    if not isinstance(nodes, dict):
+        return nodes
+    removed = False
+    for n in nodes.values():
+        if isinstance(n, dict) and n.get("ban_sync") not in (None, {}, ""):
+            n.pop("ban_sync", None)
+            removed = True
+    if removed:
+        logger.info("已剥离旧版封禁同步残留配置: flow nodes 中的 ban_sync 键")
+    return nodes
+
+
 # ============ 接口 ============
 
 @router.get("")
@@ -123,7 +142,7 @@ def create_flow(
     flow = TicketFlow(
         name=name,
         description=sanitize_text(body.description) if body.description else None,
-        nodes=body.nodes or {},
+        nodes=_strip_legacy_ban_sync(body.nodes or {}),
         is_draft=True,
         created_by=current_user.username,
     )
@@ -167,9 +186,10 @@ def update_flow(
     if body.nodes is not None:
         if not isinstance(body.nodes, dict):
             raise HTTPException(status_code=400, detail="nodes 必须为 JSON 对象")
-        if body.nodes != flow.nodes:
+        clean_nodes = _strip_legacy_ban_sync(body.nodes)
+        if clean_nodes != flow.nodes:
             content_changed = True
-            flow.nodes = body.nodes
+            flow.nodes = clean_nodes
     if body.enabled is not None:
         flow.enabled = body.enabled
     if content_changed:

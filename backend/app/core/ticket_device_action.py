@@ -156,6 +156,7 @@ def build_device_action_form(db, node: Optional[dict]) -> dict:
         else:
             item["judge_field"] = ""
             item["judge_value"] = "是"
+        item["manual"] = not item["judge_field"]
         items.append(item)
     return {"bound": True, "mode": "actions", "items": items}
 
@@ -208,6 +209,7 @@ def annotate_device_form(form: dict, records, current_values: Optional[dict] = N
     for item in form.get("items") or []:
         actual = _normalize_cond_value(history.get(str(item.get("judge_field") or "")))
         copied = dict(item)
+        copied["manual"] = not str((item or {}).get("judge_field") or "").strip()
         copied["judge_actual"] = "" if actual is None else str(actual)
         copied["execute"] = judge_says_execute(item, history)
         items.append(copied)

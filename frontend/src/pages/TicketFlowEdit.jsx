@@ -100,6 +100,8 @@ function RefFieldsPicker({ value, onChange, excludeKey, allFields, disabled }) {
 }
 
 // 节点路由条件归一化：旧单条件 when 结构统一转为 {logic, conds}（保存原样入库，后端两种都兼容）
+// 设备动作拆解：judge_field 命中本节点顶层 select/switch 字段的动作挂到该字段的 device_action 上
+// （编辑器形态：配置入口在字段卡上），引用前序节点字段的存量动作保留在节点级 device_actions
 const normNodeRoutes = (ns) => (ns || []).map((n) => {
   const rest = { ...(n || {}) }
   const actions = (Array.isArray(rest.device_actions) ? rest.device_actions : [])
@@ -114,8 +116,21 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
     actions.push(rest.device_action)
   }
   delete rest.device_action
+  // 判断字段命中本节点顶层下拉/开关字段 → 字段挂载；其余（引用前序节点/无判断字段）留在节点级
+  const fieldAction = new Map()
+  const nodeActions = []
+  actions.forEach((a) => {
+    const hit = (rest.fields || []).find((f) => f && f.type === 'select' && f.key === a.judge_field)
+      || (rest.fields || []).find((f) => f && f.type === 'switch' && f.key === a.judge_field)
+    if (hit && !fieldAction.has(hit.key)) {
+      fieldAction.set(hit.key, { device_id: a.device_id, action_id: a.action_id, judge_value: a.judge_value || '是' })
+    } else {
+      nodeActions.push(a)
+    }
+  })
   const fields = (rest.fields || []).map((f) => ({
     ...f,
+    device_action: fieldAction.get(f?.key) || null,
     rules: (f.rules || []).map((r) => {
       if (!r || typeof r !== 'object' || !('device_action' in r)) return r
       const next = { ...r }
@@ -126,10 +141,30 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
   return {
     ...rest,
     fields,
-    device_actions: actions,
+    device_actions: nodeActions,
     routes: (rest.routes || []).map((r) => (r.when ? { ...r, when: normWhen(r.when) } : r)),
     ...(rest.type === 'parallel' ? { sign_groups: rest.sign_groups || [], finish_policy: rest.finish_policy || 'all' } : {}),
   }
+})
+
+// 保存组装（normNodeRoutes 的逆变换）：字段级 device_action 合并回节点 device_actions（judge_field=字段key），
+// 字段副本剥离该键；未选完设备/动作的绑定不保存（发布校验会先行拦截）
+const buildPayloadNodes = (ns) => (ns || []).map((n) => {
+  const deviceActions = [...(Array.isArray(n?.device_actions) ? n.device_actions : [])]
+  const fields = (n?.fields || []).map((f) => {
+    if (!f) return f
+    const { device_action: da, ...rest } = f
+    if (da && typeof da === 'object' && da.device_id && da.action_id) {
+      deviceActions.push({
+        device_id: da.device_id,
+        action_id: da.action_id,
+        judge_field: f.key,
+        judge_value: da.judge_value || '是',
+      })
+    }
+    return rest
+  })
+  return { ...n, fields, device_actions: deviceActions }
 })
 
 // 下拉选项编辑器：本地暂存原始文本，失焦时才提交为选项数组。
@@ -163,9 +198,13 @@ function FieldOptionsInput({ value, disabled, onCommit }) {
   )
 }
 
+// 节点设备动作配置集合：节点级（存量：判断字段引用前序节点）+ 字段级（select/switch 字段直接绑定）
 function collectDeviceCfgs(n) {
   const list = Array.isArray(n?.device_actions) ? n.device_actions : []
   const cfgs = list.filter((c) => c?.device_id)
+  ;(n?.fields || []).forEach((f) => {
+    if (f?.device_action?.device_id) cfgs.push(f.device_action)
+  })
   if (!cfgs.length && n?.device_action?.device_id) cfgs.push(n.device_action)
   return cfgs
 }
@@ -465,7 +504,7 @@ export default function TicketFlowEdit() {
   const payload = useCallback(() => ({
     name: meta.name.trim(),
     description: meta.description.trim(),
-    nodes: { start_groups: startGroups, cc_targets: ccTargets, nodes },
+    nodes: { start_groups: startGroups, cc_targets: ccTargets, nodes: buildPayloadNodes(nodes) },
   }), [meta, startGroups, ccTargets, nodes])
 
   const markClean = useCallback(() => {
@@ -890,15 +929,14 @@ export default function TicketFlowEdit() {
           if (!hasDefault) addWarn(n.key, `${name}：未配置无条件默认路由，条件都不满足时按首条路由流转`)
         }
 
-        // 节点动作 · 设备动作校验（ban_sync 旧配置已下线，后端保留执行兼容存量模板，前端不再校验）
-        const actions = Array.isArray(n.device_actions) ? n.device_actions : []
-        const checkDa = (da, label) => {
-          if (!da || typeof da !== 'object' || !Object.keys(da).length) return
-          if (n.type === 'parallel' || n.type === 'end') {
-            addErr(n.key, `${name}：会签节点与结束节点不能绑定设备动作`)
-          } else if (!da.device_id || !da.action_id) {
+        // 设备动作校验（ban_sync 旧配置已下线，后端保留执行兼容存量模板，前端不再校验）
+        // 主口径：select/switch 字段卡上直接绑定（f.device_action）；存量节点级动作（判断字段引用前序节点）兼容校验
+        const checkBind = (da, label, jf) => {
+          if (!da.device_id || !da.action_id) {
             addErr(n.key, `${name}：${label}未选择设备或动作`)
-          } else if (deviceList.length) {
+            return
+          }
+          if (deviceList.length) {
             const dev = deviceList.find((d) => d.id === da.device_id)
             if (!dev || !dev.enabled) addErr(n.key, `${name}：${label}绑定的设备不存在或已禁用`)
             else if (actionMap[da.device_id]) {
@@ -906,26 +944,53 @@ export default function TicketFlowEdit() {
               if (!act || !act.enabled) addErr(n.key, `${name}：${label}绑定的动作不存在、未启用或不属于该设备`)
             }
           }
+          if (jf) {
+            const allowed = jf.type === 'switch' ? ['是', '否'] : (jf.options || []).map(String)
+            const jv = da.judge_value || '是'
+            if (allowed.length && !allowed.includes(String(jv))) addErr(n.key, `${name}：${label}的触发取值「${jv}」不是该字段的可选项`)
+          }
+        }
+        let hasFieldBind = false
+        ;(n.fields || []).forEach((f) => {
+          const da = f?.device_action
+          if (!da || typeof da !== 'object') return
+          hasFieldBind = true
+          if (n.type === 'parallel' || n.type === 'end') {
+            addErr(n.key, `${name}：会签节点与结束节点的字段不能绑定设备动作`)
+            return
+          }
+          if (!['select', 'switch'].includes(f.type)) {
+            addErr(n.key, `${name}：字段「${f.label || f.key}」绑定了设备动作，但字段类型需为下拉选择或是否开关`)
+            return
+          }
+          checkBind(da, `字段「${f.label || f.key}」的设备动作`, f)
+        })
+        const actions = Array.isArray(n.device_actions) ? n.device_actions : []
+        actions.forEach((da, i) => {
+          const label = `第 ${i + 1} 个设备动作`
+          if (n.type === 'parallel' || n.type === 'end') {
+            addErr(n.key, `${name}：会签节点与结束节点不能绑定设备动作`)
+            return
+          }
+          checkBind(da, label, null)
           if (!da.judge_field) {
-            addErr(n.key, `${name}：${label}未选择判断字段`)
+            addErr(n.key, `${name}：${label}未选择判断字段（存量动作请改到字段的设备动作绑定中配置）`)
           } else {
-            // 判断字段候选：本节点优先（填写实时联动），兼容前面节点（存量模板）
-            const own = n.fields || []
-            const prior = nodes
-              .filter((x) => x.key !== n.key && x.type !== 'end')
-              .flatMap((x) => x.fields || [])
-            const jf = own.find((f) => f.key === da.judge_field && ['select', 'switch'].includes(f.type))
-              || prior.find((f) => f.key === da.judge_field && ['select', 'switch'].includes(f.type))
-            if (!jf) addErr(n.key, `${name}：${label}的判断字段须是本节点或前面节点的下拉选择或是否开关`)
-            else {
+            // 存量动作判断字段：本节点 select/switch 已拆到字段挂载形态，此处兼容前面节点及本节点其他类型
+            const candidates = [
+              ...(n.fields || []),
+              ...nodes.filter((x) => x.key !== n.key && x.type !== 'end').flatMap((x) => x.fields || []),
+            ]
+            const jf = candidates.find((f) => f.key === da.judge_field && ['select', 'switch'].includes(f.type))
+            if (!jf) addErr(n.key, `${name}：${label}的判断字段须是下拉选择或是否开关类型`)
+            else if (!(n.fields || []).some((f) => f.key === da.judge_field)) {
               const allowed = jf.type === 'switch' ? ['是', '否'] : (jf.options || []).map(String)
               const jv = da.judge_value || '是'
               if (allowed.length && !allowed.includes(String(jv))) addErr(n.key, `${name}：${label}的建议执行取值不是判断字段的可选项`)
             }
           }
-        }
-        actions.forEach((da, i) => checkDa(da, `第 ${i + 1} 个设备动作`))
-        if (actions.length && n.type !== 'parallel' && n.type !== 'end' && nodes.find((x) => x.type !== 'end')?.key === n.key) {
+        })
+        if ((actions.length || hasFieldBind) && n.type !== 'parallel' && n.type !== 'end' && nodes.find((x) => x.type !== 'end')?.key === n.key) {
           addWarn(n.key, `${name}：发起节点（首处理节点）提交不走流转，设备动作不会在发起时执行`)
         }
       })
@@ -1430,7 +1495,12 @@ export default function TicketFlowEdit() {
                               <div>
                                 <label className={labelCls}>类型</label>
                                 <CompactSelect size="lg" block disabled={!canEdit} value={f.type || 'text'}
-                                  onChange={(e) => patchField(f.key, { type: e.target.value })}>
+                                  onChange={(e) => {
+                                    const type = e.target.value
+                                    // 切换出下拉/开关类型时自动解绑设备动作（判断字段须为这两种类型）
+                                    const clear = f.device_action && !['select', 'switch'].includes(type)
+                                    patchField(f.key, clear ? { type, device_action: null } : { type })
+                                  }}>
                                   {FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                                 </CompactSelect>
                               </div>
@@ -1547,6 +1617,96 @@ export default function TicketFlowEdit() {
                                 </CompactSelect>
                               </div>
                             </div>
+                            {['select', 'switch'].includes(f.type) && selected.type !== 'parallel' && selected.type !== 'end' && (() => {
+                              // 字段级设备动作绑定：处理人填写命中触发值时调用设备（保存时合并为节点 device_actions，judge_field=该字段 key）
+                              const da = f.device_action
+                              const enabledDevices = deviceList.filter((d) => d.enabled)
+                              const acts = (da?.device_id && actionMap[da.device_id]) || []
+                              const enabledActs = acts.filter((a) => a.enabled)
+                              const picked = enabledActs.find((a) => a.id === da?.action_id) || acts.find((a) => a.id === da?.action_id)
+                              let schema = []
+                              if (picked) {
+                                try { schema = JSON.parse(picked.params_schema || '[]') } catch { schema = [] }
+                                if (!Array.isArray(schema)) schema = []
+                              }
+                              const patchDa = (patch) => patchField(f.key, { device_action: { ...da, ...patch } })
+                              const valueOpts = f.type === 'switch' ? ['是', '否'] : (f.options || []).map(String)
+                              return (
+                                <div className="mt-3 rounded-md border border-cyan-500/40 bg-cyan-500/5 p-3">
+                                  <div className="mb-2 flex items-center justify-between gap-2">
+                                    <span className="flex items-center gap-1.5 text-xs font-medium text-cyan-700">
+                                      <Zap className="h-3.5 w-3.5" />设备动作：{da ? '处理人选择触发值时填写参数并调用设备' : '可绑定设备动作，处理人选择触发值时调用'}
+                                    </span>
+                                    {canEdit && (da ? (
+                                      <button type="button" onClick={() => patchField(f.key, { device_action: null })}
+                                        className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10">
+                                        <Trash2 className="h-3.5 w-3.5" />解绑
+                                      </button>
+                                    ) : (
+                                      <button type="button" onClick={() => patchField(f.key, {
+                                        device_action: {
+                                          device_id: '',
+                                          action_id: '',
+                                          judge_value: f.type === 'switch' ? '是' : (valueOpts[0] ?? '是'),
+                                        },
+                                      })}
+                                        disabled={f.type === 'select' && !valueOpts.length}
+                                        title={f.type === 'select' && !valueOpts.length ? '请先配置下拉选项' : '在该字段上绑定设备动作'}
+                                        className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-cyan-700 hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                                        <Plus className="h-3.5 w-3.5" />绑定设备动作
+                                      </button>
+                                    ))}
+                                  </div>
+                                  {da ? (
+                                    <>
+                                      <div className="grid grid-cols-3 gap-3">
+                                        <div>
+                                          <label className={labelCls}>设备<span className="text-red-500">*</span></label>
+                                          <CompactSelect size="lg" block disabled={!canEdit} value={da.device_id || ''}
+                                            onChange={(e) => patchDa({ device_id: e.target.value ? Number(e.target.value) : '', action_id: '' })}>
+                                            <option value="">选择已启用的设备</option>
+                                            {enabledDevices.map((d) => (
+                                              <option key={d.id} value={d.id}>{d.name}（{d.type}{d.vendor ? ` · ${d.vendor}` : ''}）</option>
+                                            ))}
+                                          </CompactSelect>
+                                        </div>
+                                        <div>
+                                          <label className={labelCls}>动作<span className="text-red-500">*</span></label>
+                                          <CompactSelect size="lg" block disabled={!canEdit || !da.device_id} value={da.action_id || ''}
+                                            onChange={(e) => patchDa({ action_id: e.target.value ? Number(e.target.value) : '' })}>
+                                            <option value="">{da.device_id ? '选择已启用的动作' : '请先选择设备'}</option>
+                                            {enabledActs.map((a) => (
+                                              <option key={a.id} value={a.id}>{a.name}（{a.action_type}）</option>
+                                            ))}
+                                          </CompactSelect>
+                                        </div>
+                                        <div>
+                                          <label className={labelCls}>触发值</label>
+                                          <CompactSelect size="lg" block disabled={!canEdit} value={da.judge_value || '是'}
+                                            onChange={(e) => patchDa({ judge_value: e.target.value })}
+                                            title="处理人填写该值时才调用设备">
+                                            {valueOpts.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                                            {da.judge_value && !valueOpts.includes(String(da.judge_value)) && (
+                                              <option value={da.judge_value}>{da.judge_value}（已失效）</option>
+                                            )}
+                                          </CompactSelect>
+                                        </div>
+                                      </div>
+                                      <p className={`${hintCls} mt-2`}>
+                                        {schema.length
+                                          ? `处理人选择「${da.judge_value || '是'}」时填写并调用：${schema.map((p) => `${p.description || p.name}${p.required ? '' : '（选填）'}`).join('、')}；选其他值不调用`
+                                          : (picked ? `处理人选择「${da.judge_value || '是'}」时直接调用，无需填写参数；选其他值不调用。` : '选择设备与动作后，处理人选择触发值时填写参数并调用；选其他值不调用。')}
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <p className={hintCls}>
+                                      未绑定：该字段仅作为普通表单项填写。绑定后，处理人选择触发值时会在工单详情页展开设备参数表单
+                                      {f.type === 'select' && !valueOpts.length && '（请先在上方配置下拉选项）'}
+                                    </p>
+                                  )}
+                                </div>
+                              )
+                            })()}
                             {['select', 'switch'].includes(f.type) && (
                               <div className="mt-3 rounded bg-muted p-3">
                                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -1686,129 +1846,51 @@ export default function TicketFlowEdit() {
                     )}
                   </div>
 
-                  {selected.type !== 'end' && selected.type !== 'parallel' && (
+                  {/* 存量设备动作（判断字段引用前序节点）：配置入口已迁移到字段卡上，此处只读展示 + 可删除 */}
+                  {selected.type !== 'end' && selected.type !== 'parallel' && (selected.device_actions || []).length > 0 && (
                     <div className="mt-6">
                       <div className="mb-3 flex items-center justify-between border-t border-border pt-5">
                         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                          <Zap className="h-4 w-4 text-muted-foreground" />设备动作（{(selected.device_actions || []).length}）
+                          <Zap className="h-4 w-4 text-muted-foreground" />存量设备动作（{(selected.device_actions || []).length}）
                         </div>
-                        {canEdit && (
-                          <Button size="sm" variant="secondary" onClick={() => patchNode(selected.key, {
-                            device_actions: [...(selected.device_actions || []), { device_id: '', action_id: '', judge_field: '', judge_value: '是' }],
-                          })}>
-                            <Plus className="mr-1 h-3.5 w-3.5" />添加动作
-                          </Button>
-                        )}
                       </div>
-                      {!(selected.device_actions || []).length ? (
-                        <div className="rounded-md border border-dashed border-border py-4 text-center text-sm text-muted-foreground">
-                          未添加设备动作
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {(selected.device_actions || []).map((da, di) => {
-                            const enabledDevices = deviceList.filter((d) => d.enabled)
-                            const actions = (da.device_id && actionMap[da.device_id]) || []
-                            const enabledActions = actions.filter((a) => a.enabled)
-                            const picked = enabledActions.find((a) => a.id === da.action_id) || actions.find((a) => a.id === da.action_id)
-                            let schema = []
-                            if (picked) {
-                              try { schema = JSON.parse(picked.params_schema || '[]') } catch { schema = [] }
-                              if (!Array.isArray(schema)) schema = []
-                            }
-                            const patchDa = (patch) => patchNode(selected.key, {
-                              device_actions: (selected.device_actions || []).map((x, i) => (i === di ? { ...x, ...patch } : x)),
-                            })
-                            return (
-                              <div key={di} className="rounded-md border border-border p-4">
-                                <div className="mb-3 flex items-center gap-2">
-                                  <span className="text-xs font-medium text-muted-foreground">动作 {di + 1}</span>
-                                  <div className="flex-1" />
-                                  {canEdit && (
-                                    <button type="button" className="flex items-center gap-1 text-xs font-medium text-destructive"
-                                      onClick={() => patchNode(selected.key, {
-                                        device_actions: (selected.device_actions || []).filter((_, i) => i !== di),
-                                      })}>
-                                      <Trash2 className="h-3.5 w-3.5" />删除
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                  <div>
-                                    <label className={labelCls}>设备<span className="text-red-500">*</span></label>
-                                    <CompactSelect size="lg" block disabled={!canEdit} value={da.device_id || ''}
-                                      onChange={(e) => patchDa({ device_id: e.target.value ? Number(e.target.value) : '', action_id: '' })}>
-                                      <option value="">选择已启用的设备</option>
-                                      {enabledDevices.map((d) => (
-                                        <option key={d.id} value={d.id}>{d.name}（{d.type}{d.vendor ? ` · ${d.vendor}` : ''}）</option>
-                                      ))}
-                                    </CompactSelect>
-                                  </div>
-                                  <div>
-                                    <label className={labelCls}>动作<span className="text-red-500">*</span></label>
-                                    <CompactSelect size="lg" block disabled={!canEdit || !da.device_id} value={da.action_id || ''}
-                                      onChange={(e) => patchDa({ action_id: e.target.value ? Number(e.target.value) : '' })}>
-                                      <option value="">{da.device_id ? '选择已启用的动作' : '请先选择设备'}</option>
-                                      {enabledActions.map((a) => (
-                                        <option key={a.id} value={a.id}>{a.name}（{a.action_type}）</option>
-                                      ))}
-                                    </CompactSelect>
-                                  </div>
-                                </div>
-                                {(() => {
-                                  // 判断字段候选：本节点的顶层下拉选择/是否开关字段（处理人填写实时联动）
-                                  const judgeFields = (selected.fields || [])
-                                    .filter((f) => ['select', 'switch'].includes(f.type))
-                                  const jf = judgeFields.find((f) => f.key === da.judge_field)
-                                  const jvOpts = jf
-                                    ? (jf.type === 'switch' ? ['是', '否'] : (jf.options || []).map(String))
-                                    : ['是']
-                                  return (
-                                    <div className="mt-3 grid grid-cols-2 gap-3">
-                                      <div>
-                                        <label className={labelCls}>判断字段<span className="text-red-500">*</span></label>
-                                        <CompactSelect size="lg" block disabled={!canEdit} value={da.judge_field || ''}
-                                          onChange={(e) => {
-                                            const nf = judgeFields.find((f) => f.key === e.target.value)
-                                            const base = nf
-                                              ? (nf.type === 'switch' ? ['是', '否'] : (nf.options || []).map(String))
-                                              : ['是']
-                                            patchDa({ judge_field: e.target.value, judge_value: base[0] || '是' })
-                                          }}
-                                          title="本节点表单的下拉选择/是否开关字段，处理人填写命中建议执行值时调用设备">
-                                          <option value="">选择本节点的下拉/开关字段</option>
-                                          {judgeFields.map((f) => (
-                                            <option key={f.key} value={f.key}>{f.label || f.key}（{f.key}）</option>
-                                          ))}
-                                          {da.judge_field && !jf && (
-                                            <option value={da.judge_field}>{da.judge_field}（已失效）</option>
-                                          )}
-                                        </CompactSelect>
-                                      </div>
-                                      <div>
-                                        <label className={labelCls}>建议执行值</label>
-                                        <CompactSelect size="lg" block disabled={!canEdit || !jf} value={da.judge_value || '是'}
-                                          onChange={(e) => patchDa({ judge_value: e.target.value })}
-                                          title="判断字段等于该值时才调用设备">
-                                          {jvOpts.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
-                                          {jf && da.judge_value && !jvOpts.includes(String(da.judge_value)) && (
-                                            <option value={da.judge_value}>{da.judge_value}（已失效）</option>
-                                          )}
-                                        </CompactSelect>
-                                      </div>
-                                    </div>
-                                  )
-                                })()}
-                                <p className={`${hintCls} mt-2`}>
-                                  {schema.length
-                                    ? `处理人填写命中建议执行值后，填写并调用：${schema.map((p) => `${p.description || p.name}${p.required ? '' : '（选填）'}`).join('、')}`
-                                    : (picked ? '处理人填写命中建议执行值后直接调用，无需填写参数；未命中则不调用。' : '处理人填写命中建议执行值后填写参数并调用；未命中则不调用。')}
-                                </p>
+                      <div className="space-y-3">
+                        {(selected.device_actions || []).map((da, di) => {
+                          const dev = deviceList.find((d) => d.id === da.device_id)
+                          const act = (actionMap[da.device_id] || []).find((a) => a.id === da.action_id)
+                          const jf = [
+                            ...(selected.fields || []),
+                            ...nodes.filter((x) => x.key !== selected.key && x.type !== 'end').flatMap((x) => x.fields || []),
+                          ].find((f) => f.key === da.judge_field)
+                          return (
+                            <div key={di} className="rounded-md border border-dashed border-border bg-muted/40 p-4">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-muted-foreground">动作 {di + 1}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {dev ? `${dev.name}` : `设备 #${da.device_id || '?'}`}
+                                  {' · '}
+                                  {act ? `${act.name}（${act.action_type}）` : `动作 #${da.action_id || '?'}`}
+                                  {da.judge_field
+                                    ? ` · 判断字段 ${jf ? `${jf.label || jf.key}（${da.judge_field}）= ${da.judge_value || '是'}` : da.judge_field}（已失效）`
+                                    : ' · 未绑定判断字段（不会执行）'}
+                                </span>
+                                <div className="flex-1" />
+                                {canEdit && (
+                                  <button type="button" className="flex shrink-0 items-center gap-1 text-xs font-medium text-destructive hover:text-destructive"
+                                    onClick={() => patchNode(selected.key, {
+                                      device_actions: (selected.device_actions || []).filter((_, i) => i !== di),
+                                    })}>
+                                    <Trash2 className="h-3.5 w-3.5" />删除
+                                  </button>
+                                )}
                               </div>
-                            )
-                          })}
-                        </div>
-                      )}
+                              <p className={`${hintCls} mt-2`}>
+                                该动作的判断字段引用前序节点，为存量配置。如需调整，请删除后在字段卡（下拉选择/是否开关类型）上重新绑定设备动作。
+                              </p>
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
                   )}
 
