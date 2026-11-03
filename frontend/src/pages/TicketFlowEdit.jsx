@@ -911,7 +911,7 @@ export default function TicketFlowEdit() {
           } else {
             const prior = nodes
               .filter((x) => x.key !== n.key && x.type !== 'end')
-              .flatMap((x) => flatFields(x.fields || []))
+              .flatMap((x) => x.fields || [])
             const jf = prior.find((f) => f.key === da.judge_field && ['select', 'switch'].includes(f.type))
             if (!jf) addErr(n.key, `${name}：${label}的判断字段须是前面节点的下拉选择或是否开关`)
             else {
@@ -1753,31 +1753,56 @@ export default function TicketFlowEdit() {
                                   </div>
                                 </div>
                                 {(() => {
+                                  // 与后端发布校验同口径：前面节点的顶层下拉选择/是否开关字段（不含扩展字段）
                                   const judgeFields = nodes
                                     .filter((x) => x.key !== selected.key && x.type !== 'end')
-                                    .flatMap((x) => flatFields(x.fields || [])
-                                      .filter((f) => f.type === 'switch')
+                                    .flatMap((x) => (x.fields || [])
+                                      .filter((f) => ['select', 'switch'].includes(f.type))
                                       .map((f) => ({ ...f, nodeName: x.name || x.key })))
+                                  const jf = judgeFields.find((f) => f.key === da.judge_field)
+                                  const jvOpts = jf
+                                    ? (jf.type === 'switch' ? ['是', '否'] : (jf.options || []).map(String))
+                                    : ['是']
                                   return (
-                                    <div className="mt-3">
-                                      <label className={labelCls}>判断组的是否字段<span className="text-red-500">*</span></label>
-                                      <CompactSelect size="lg" block disabled={!canEdit} value={da.judge_field || ''}
-                                        onChange={(e) => patchDa({ judge_field: e.target.value, judge_value: '是' })}>
-                                        <option value="">选择前面节点的是否开关</option>
-                                        {judgeFields.map((f) => (
-                                          <option key={`${f.nodeName}-${f.key}`} value={f.key}>{f.nodeName} · {f.label || f.key}</option>
-                                        ))}
-                                        {da.judge_field && !judgeFields.some((f) => f.key === da.judge_field) && (
-                                          <option value={da.judge_field}>{da.judge_field}（已失效）</option>
-                                        )}
-                                      </CompactSelect>
+                                    <div className="mt-3 grid grid-cols-2 gap-3">
+                                      <div>
+                                        <label className={labelCls}>判断字段<span className="text-red-500">*</span></label>
+                                        <CompactSelect size="lg" block disabled={!canEdit} value={da.judge_field || ''}
+                                          onChange={(e) => {
+                                            const nf = judgeFields.find((f) => f.key === e.target.value)
+                                            const base = nf
+                                              ? (nf.type === 'switch' ? ['是', '否'] : (nf.options || []).map(String))
+                                              : ['是']
+                                            patchDa({ judge_field: e.target.value, judge_value: base[0] || '是' })
+                                          }}
+                                          title="前面节点的下拉选择/是否开关字段，命中建议执行值时调用设备">
+                                          <option value="">选择前面节点的下拉/开关字段</option>
+                                          {judgeFields.map((f) => (
+                                            <option key={`${f.nodeName}-${f.key}`} value={f.key}>{f.nodeName} · {f.label || f.key}</option>
+                                          ))}
+                                          {da.judge_field && !jf && (
+                                            <option value={da.judge_field}>{da.judge_field}（已失效）</option>
+                                          )}
+                                        </CompactSelect>
+                                      </div>
+                                      <div>
+                                        <label className={labelCls}>建议执行值</label>
+                                        <CompactSelect size="lg" block disabled={!canEdit || !jf} value={da.judge_value || '是'}
+                                          onChange={(e) => patchDa({ judge_value: e.target.value })}
+                                          title="判断字段等于该值时才调用设备">
+                                          {jvOpts.map((o) => <option key={String(o)} value={String(o)}>{String(o)}</option>)}
+                                          {jf && da.judge_value && !jvOpts.includes(String(da.judge_value)) && (
+                                            <option value={da.judge_value}>{da.judge_value}（已失效）</option>
+                                          )}
+                                        </CompactSelect>
+                                      </div>
                                     </div>
                                   )
                                 })()}
                                 <p className={`${hintCls} mt-2`}>
                                   {schema.length
-                                    ? `判断组选「是」后，执行组填写：${schema.map((p) => `${p.description || p.name}${p.required ? '' : '（选填）'}`).join('、')}`
-                                    : (picked ? '判断组选「是」后直接调用，无需填写参数。选「否」则不调用。' : '判断组选「是」后执行组填写参数并调用；选「否」则不调用。')}
+                                    ? `判断字段命中建议执行值后，填写并调用：${schema.map((p) => `${p.description || p.name}${p.required ? '' : '（选填）'}`).join('、')}`
+                                    : (picked ? '判断字段命中建议执行值后直接调用，无需填写参数；未命中则不调用。' : '判断字段命中建议执行值后填写参数并调用；未命中则不调用。')}
                                 </p>
                               </div>
                             )
