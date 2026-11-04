@@ -647,9 +647,11 @@ export default function GovCloudAssets() {
                           {t.consistent ? '已对齐' : '未对齐'}
                         </Badge>
                       </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {isQingteng ? 'API 同步 · linux / win 主机' : '.xlsx / .csv · 全量爬取'}
-                      </div>
+                      {isQingteng && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          API 同步 · linux / win 主机
+                        </div>
+                      )}
                     </button>
                   )
                 })}
