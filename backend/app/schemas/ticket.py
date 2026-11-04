@@ -85,6 +85,8 @@ class DeviceRunChoice(BaseModel):
     action_id: int
     run: bool = False
     params: dict[str, Any] = Field(default_factory=dict)
+    # 处理人手动改过的参数名：可编辑参数带默认值模板时，改过的用用户输入，未改的按模板重算
+    overridden_params: list[str] = Field(default_factory=list)
 
 
 class TicketAdvance(BaseModel):

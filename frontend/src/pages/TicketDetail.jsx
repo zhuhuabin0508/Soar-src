@@ -45,7 +45,32 @@ const ACTION_META = {
   comment: { label: '评论', cls: 'bg-muted text-muted-foreground', dot: 'border-muted-foreground/50' },
   device_action: { label: '设备动作', cls: 'bg-cyan-500/10 text-cyan-500', dot: 'border-cyan-500' },
 }
-// 流转记录 comment 的显示标题（按动作区分语义）
+// 设备参数默认值模板：预览按工单上下文实时解析，不把解析结果冻进提交参数
+const DEVICE_TEMPLATE_VAR_RE = /\{(ticket_no|ticket_title|creator|node|f:[A-Za-z0-9_]+)\}/g
+
+// 设备参数预览：字段上下文 = 历史记录 + 当前表单（本次值按 key 出现即覆盖历史）
+const deviceTemplateContext = (ticket, values) => {
+  const fields = {}
+  ;(ticket?.records || []).forEach((r) => {
+    Object.entries(r.field_values || {}).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && String(v) !== '') fields[k] = v
+    })
+  })
+  Object.entries(values || {}).forEach(([k, v]) => { fields[k] = v })
+  return {
+    ticket_no: ticket?.ticket_no || '',
+    ticket_title: ticket?.title || '',
+    creator: ticket?.created_by_name || '',
+    node: ticket?.current_node?.name || '',
+    fields,
+  }
+}
+
+const resolveDeviceTemplate = (template, ctx) => String(template || '').replace(DEVICE_TEMPLATE_VAR_RE, (_, key) => {
+  const value = key.startsWith('f:') ? (ctx?.fields || {})[key.slice(2)] : ctx?.[key]
+  return value === undefined || value === null ? '' : String(value)
+})
+
 const initialDeviceParams = (form, records) => {
   const prior = {}
   ;(records || []).forEach((r) => {
@@ -53,15 +78,20 @@ const initialDeviceParams = (form, records) => {
       if (v !== undefined && v !== null && String(v) !== '') prior[k] = v
     })
   })
+  // 字段值只经旧版参数映射（参数名 → 字段 key）或默认值模板进入设备参数，
+  // 不再用同名历史字段兜底，避免历史 reason 之类的字段盖掉模板
+  const fieldMap = form?.param_field_map || {}
   const init = {}
   ;(form?.params || []).forEach((p) => {
-    if (prior[p.name] !== undefined) init[p.name] = prior[p.name]
+    const mapped = fieldMap[p.name]
+    if (mapped && prior[mapped] !== undefined) init[p.name] = prior[mapped]
     else if (p.default !== undefined && p.default !== null && String(p.default) !== '') init[p.name] = p.default
     else init[p.name] = ''
   })
   return init
 }
 
+// 流转记录 comment 的显示标题（按动作区分语义）
 const ACTION_COMMENT_LABELS = {
   create: '发起备注', submit: '处置意见', cancel: '取消原因', rollback: '回退原因',
   transfer: '转办原因', comment: '评论内容',
@@ -669,6 +699,8 @@ export default function TicketDetail() {
   const [deviceIpErrors, setDeviceIpErrors] = useState({})
   // 设备参数"自定义"模式（token = `${item.index}:${param.name}`）：点开自定义后保持原输入控件可见
   const [deviceCustom, setDeviceCustom] = useState({})
+  // 处理人手动改过的设备参数（index → 参数名列表），随提交告知服务端优先用用户输入
+  const [deviceOverrides, setDeviceOverrides] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -691,6 +723,7 @@ export default function TicketDetail() {
           setDeviceMissing([])
           setDeviceIpErrors({})
           setDeviceCustom({})
+          setDeviceOverrides({})
         }
       })
       .catch((e) => toast.error(e.message || '加载工单失败'))
@@ -746,6 +779,12 @@ export default function TicketDetail() {
     }
     return out
   }, [currentFields, values]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 设备参数默认值模板预览上下文（历史记录 + 当前表单）
+  const devicePreviewCtx = useMemo(
+    () => deviceTemplateContext(ticket, values),
+    [ticket, values],
+  )
 
   // 设备动作判断字段实时联动：判断字段为本节点字段时，按处理人当前填写值决定是否调用设备
   // （填了「是」→ 立即出现参数表单；改回「否」→ 收起）；判断字段引用前面节点（存量模板）
@@ -902,6 +941,7 @@ export default function TicketDetail() {
     if (actionItems.length) {
       const miss = []
       const nextIp = {}
+      const tplCtx = deviceTemplateContext(ticket, values)
       for (const it of actionItems) {
         if (!liveDeviceExecute(it)) continue
         if (it.error) {
@@ -910,16 +950,27 @@ export default function TicketDetail() {
         }
         const params = actionParams[it.index] || initialDeviceParams(it, ticket.records)
         for (const p of it.params || []) {
-          const v = params[p.name]
+          const raw = params[p.name]
+          const hasRaw = raw !== undefined && raw !== null && String(raw).trim() !== ''
+          // 模板参数按历史 + 当前表单实时预览；隐藏/只读由服务端定稿，不在前端拦截空值
+          const templated = p.default_template ? resolveDeviceTemplate(p.default_template, tplCtx) : ''
+          const v = hasRaw ? raw : templated
           const empty = v === undefined || v === null || String(v).trim() === ''
           const token = `${it.index}:${p.name}`
-          if (p.required && empty) miss.push(token)
+          const serverFinalized = !!p.default_template && ['readonly', 'hidden'].includes(p.display)
+          if (p.required && empty && !serverFinalized) miss.push(token)
           if (!empty && ['ip', 'cidr'].includes(String(p.type || '').toLowerCase())) {
             const msg = validateIPExpression(v, p.description || p.name)
             if (msg) nextIp[token] = msg
           }
         }
-        deviceRuns.push({ index: it.index, action_id: it.action_id, run: true, params })
+        deviceRuns.push({
+          index: it.index,
+          action_id: it.action_id,
+          run: true,
+          params,
+          overridden_params: deviceOverrides[it.index] || [],
+        })
       }
       if (miss.length || Object.keys(nextIp).length) {
         setDeviceMissing(miss)
@@ -975,6 +1026,7 @@ export default function TicketDetail() {
           setMissingKeys([])
           setActionParams({})
           setDeviceCustom({})
+          setDeviceOverrides({})
         })
         .catch((e) => toast.error(e.message || '流转失败'))
         .finally(() => setSubmitting(false))
@@ -1696,6 +1748,11 @@ export default function TicketDetail() {
                   const setP = (name, v) => {
                     const base = actionParams[it.index] || initialDeviceParams(it, ticket.records)
                     setActionParams((s) => ({ ...s, [it.index]: { ...base, [name]: v } }))
+                    // 记录处理人手改过的参数，提交时告知服务端优先用其输入而不是模板
+                    setDeviceOverrides((m) => ({
+                      ...m,
+                      [it.index]: [...new Set([...(m[it.index] || []), name])],
+                    }))
                     const token = `${it.index}:${name}`
                     if (deviceMissing.includes(token)) setDeviceMissing((ks) => ks.filter((k) => k !== token))
                     if (deviceIpErrors[token]) setDeviceIpErrors((e) => ({ ...e, [token]: '' }))
@@ -1716,6 +1773,8 @@ export default function TicketDetail() {
                               .filter((x) => String(x.label || '').trim() && x.resolved !== null && x.resolved !== '')
                             const cur = params[p.name]
                             const hasCur = cur !== undefined && cur !== null && String(cur) !== ''
+                            // 默认值模板预览：历史记录 + 当前表单实时解析，仅用于展示，不写回 actionParams
+                            const tplPreview = p.default_template ? resolveDeviceTemplate(p.default_template, devicePreviewCtx) : ''
                             const matched = presets.find((x) => String(x.resolved) === String(cur))
                             const customMode = (hasCur && !matched) || !!deviceCustom[token]
                             const isDur = String(p.type || '').toLowerCase() === 'duration'
@@ -1731,6 +1790,7 @@ export default function TicketDetail() {
                               </CompactSelect>
                             ) : (
                               <input className={cls} value={cur ?? ''}
+                                placeholder={tplPreview || undefined}
                                 onChange={(e) => setP(p.name, e.target.value)}
                                 onBlur={() => {
                                   if (!['ip', 'cidr'].includes(String(p.type || '').toLowerCase())) return
@@ -1743,6 +1803,8 @@ export default function TicketDetail() {
                             const defVal = (p.default !== undefined && p.default !== null && String(p.default) !== '') ? p.default : null
                             const defText = defVal === null ? '' : (isDur ? (deviceDurationLabel(defVal) || String(defVal)) : String(defVal))
                             const changed = defVal !== null && String(cur ?? '') !== String(defVal)
+                            // 只读展示服务端定稿结果：模板实时预览优先，否则动作默认值
+                            const readonlyText = tplPreview || (defVal === null ? '' : String(defVal))
                             return (
                               <div key={p.name}>
                                 <div className="flex items-center justify-between gap-2">
@@ -1773,7 +1835,7 @@ export default function TicketDetail() {
                                 {isReadOnly ? (
                                   <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-2">
                                     <Lock className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={String(cur ?? '')}>{String(cur ?? '')}</span>
+                                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={readonlyText}>{readonlyText}</span>
                                     <span className="shrink-0 text-[10px] text-muted-foreground">只读</span>
                                   </div>
                                 ) : presets.length ? (

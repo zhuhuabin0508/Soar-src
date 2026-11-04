@@ -34,7 +34,11 @@ def parse_params_schema(action: DeviceAction) -> list[dict]:
     return [p for p in schema if isinstance(p, dict) and p.get("name")]
 
 
-def prepare_device_params(schema: list[dict], raw: Any) -> tuple[dict, list[str]]:
+def prepare_device_params(schema: list[dict], raw: Any, *, check_required: bool = True) -> tuple[dict, list[str]]:
+    """校验并整理设备参数。
+
+    ``check_required=False``：必填校验已由调用方完成（如定稿阶段），避免重复报错。
+    """
     if raw in (None, {}):
         raw = {}
     if not isinstance(raw, dict):
@@ -55,7 +59,7 @@ def prepare_device_params(schema: list[dict], raw: Any) -> tuple[dict, list[str]
             if value in (None, ""):
                 value = None
         if value in (None, ""):
-            if spec.get("required"):
+            if spec.get("required") and check_required:
                 errors.append(f"参数「{label}」为必填")
             continue
         options = spec.get("options")
@@ -229,14 +233,22 @@ def build_device_action_form(db, node: Optional[dict]) -> dict:
                 plist = presets.get(str(p.get("name") or ""))
                 if isinstance(plist, list):
                     p["presets"] = [x for x in plist if isinstance(x, dict) and str(x.get("label") or "").strip()]
+        # 旧版参数映射（参数名 → 字段 key）：字段值经此进入设备参数，前端据此预填
+        field_map = cfg.get("params") if isinstance(cfg, dict) else None
+        if isinstance(field_map, dict) and field_map:
+            item["param_field_map"] = {
+                str(k): str(v) for k, v in field_map.items() if str(k).strip() and str(v).strip()
+            }
         # 参数配置（展示样式 + 默认值模板）：每个参数附 display / default_template（原始模板，工单侧解析）
         pconf = normalized_param_config(cfg)
         if pconf:
             item["param_config"] = pconf
+        # 内置封禁原因只接管封禁动作，且参数名必须是 reason：解封/查询等动作的 reason 保持可编辑
+        builtin_reason = str(item.get("action_type") or "") == "block_ip"
         for p in item.get("params") or []:
             pname = str(p.get("name") or "")
             entry = pconf.get(pname)
-            if entry is None and pname == "reason":
+            if entry is None and pname == "reason" and builtin_reason:
                 # 内置默认：未配置的封禁原因自动 只读 + 工单同步：{ticket_no}
                 entry = _BUILTIN_REASON_CONFIG
             if entry is not None:
@@ -302,6 +314,179 @@ def annotate_device_form(form: dict, records, current_values: Optional[dict] = N
         copied["execute"] = judge_says_execute(item, history)
         items.append(copied)
     return {**form, "items": items}
+
+
+def build_field_context(records, current_values: Optional[dict] = None) -> dict:
+    """模板字段上下文：历史记录值 + 本次提交值。
+
+    本次提交按「键是否出现」覆盖历史值，``""`` / ``0`` / ``False`` 都算出现，
+    不能用真值判断，否则本节点清空的值会被历史值或模板盖回去。
+    """
+    ctx = history_field_values(records)
+    if isinstance(current_values, dict):
+        for key in current_values:
+            ctx[str(key)] = current_values.get(key)
+    return ctx
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
+
+
+def finalize_device_params(
+    item: dict,
+    raw_params: Any,
+    *,
+    overridden: Optional[list] = None,
+    ctx: Optional[dict] = None,
+) -> tuple[dict, list[str]]:
+    """按参数配置定稿本次要下发的设备参数。
+
+    - ``readonly`` / ``hidden``：忽略请求里的值，只用默认值模板（无模板用 schema 默认值）
+    - ``editable``：处理人改过的参数（``overridden``）用其输入；否则模板，再否则 schema 默认值；
+      没有模板的普通参数仍用请求里提交的非空值
+    """
+    specs = [p for p in (item or {}).get("params") or [] if isinstance(p, dict) and p.get("name")]
+    if raw_params in (None, {}):
+        raw_params = {}
+    if not isinstance(raw_params, dict):
+        return {}, ["设备参数必须为对象"]
+    overridden_names = {str(x) for x in (overridden or [])}
+    params: dict[str, Any] = {}
+    errors: list[str] = []
+    for spec in specs:
+        name = str(spec.get("name"))
+        label = spec.get("description") or spec.get("label") or name
+        display = str(spec.get("display") or "editable")
+        template = str(spec.get("default_template") or "")
+        default = spec.get("default")
+        if display in ("readonly", "hidden"):
+            value = resolve_param_template(template, ctx) if template else None
+            if _blank(value):
+                value = default
+        elif name in overridden_names:
+            value = raw_params.get(name)
+        elif template:
+            value = resolve_param_template(template, ctx)
+            if _blank(value):
+                value = default
+        elif name in raw_params and not _blank(raw_params.get(name)):
+            value = raw_params.get(name)
+        else:
+            value = default
+        if _blank(value):
+            if spec.get("required"):
+                errors.append(f"参数「{label}」（{name}）为必填")
+            continue
+        params[name] = value
+    return params, errors
+
+
+def _action_label(item: dict) -> str:
+    return f"{item.get('device_name') or '设备'} / {item.get('action_name') or '动作'}"
+
+
+def prepare_device_run(
+    db,
+    item: dict,
+    raw_params: Any,
+    *,
+    overridden: Optional[list] = None,
+    ctx: Optional[dict] = None,
+) -> tuple[Optional[dict], list[str]]:
+    """定稿 + 校验单个动作参数，返回可执行计划（不调用设备）。"""
+    label = _action_label(item)
+    device, action, err = resolve_device_action(
+        db, {"device_id": item.get("device_id"), "action_id": item.get("action_id")}
+    )
+    if err or device is None or action is None:
+        return None, [f"「{label}」{err or '设备动作不可用'}"]
+    params, errors = finalize_device_params(item, raw_params, overridden=overridden, ctx=ctx)
+    # 定稿失败（如必填模板为空）不提前返回，继续校验其余参数，一次返回该动作的全部错误
+    params, prepare_errors = prepare_device_params(
+        parse_params_schema(action), params, check_required=False,
+    )
+    errors.extend(prepare_errors)
+    if errors:
+        return None, [f"「{label}」{e}" for e in errors]
+    return {
+        "index": item.get("index"),
+        "label": label,
+        "device": device,
+        "action": action,
+        "params": params,
+    }, []
+
+
+def plan_device_runs(
+    db,
+    items: list[dict],
+    runs: dict,
+    ctx: Optional[dict] = None,
+) -> tuple[list[dict], list[str]]:
+    """先对全部待执行动作定稿并校验参数；任一失败返回全部错误且不产生计划。"""
+    plans: list[dict] = []
+    errors: list[str] = []
+    for item in items or []:
+        run = (runs or {}).get(item.get("index"))
+        if run is None:
+            run = {}
+        params = run.get("params") if isinstance(run, dict) else getattr(run, "params", None)
+        overridden = run.get("overridden_params") if isinstance(run, dict) else getattr(run, "overridden_params", None)
+        plan, item_errors = prepare_device_run(
+            db, item, params or {}, overridden=overridden or [], ctx=ctx,
+        )
+        errors.extend(item_errors)
+        if plan is not None:
+            plans.append(plan)
+    if errors:
+        return [], errors
+    return plans, []
+
+
+def _execute_device_plan(db, plan: dict, *, user_id: Optional[int]) -> dict:
+    from app.devices.action_executor import execute_device_action
+
+    device, action, params = plan["device"], plan["action"], plan["params"]
+    try:
+        call = execute_device_action(
+            device, action, dict(params),
+            db=None, skip_log=True, source="ticket", user_id=user_id,
+        )
+    except Exception as exc:
+        logger.exception("工单下发设备动作异常")
+        call = {"success": False, "status_code": None, "response_body": None, "error": str(exc), "latency_ms": 0}
+    if not call.get("success"):
+        log_failed_device_call(device, action, params, call, user_id)
+        return {"ok": False, "status": 400, "detail": call.get("error") or "设备动作执行失败"}
+    record = {
+        "skipped": False,
+        "device_id": device.id,
+        "device_name": device.name,
+        "action_id": action.id,
+        "action_name": action.name,
+        "action_type": action.action_type,
+        "params": params,
+        "success": True,
+        "status_code": call.get("status_code"),
+        "error": None,
+    }
+    return {"ok": True, "device": device, "action": action, "params": params, "call": call, "record": record}
+
+
+def execute_prepared_runs(
+    db,
+    items: list[dict],
+    runs: dict,
+    ctx: Optional[dict] = None,
+    *,
+    user_id: Optional[int],
+) -> tuple[list[dict], list[str]]:
+    """全部参数校验通过后才逐个调用设备；校验失败时设备调用次数为 0。"""
+    plans, errors = plan_device_runs(db, items, runs, ctx)
+    if errors:
+        return [], errors
+    return [_execute_device_plan(db, plan, user_id=user_id) for plan in plans], []
 
 
 def _log_fields(device: Device, action: DeviceAction, params: dict, call: dict, user_id: Optional[int]) -> dict:
@@ -392,6 +577,12 @@ def _duration_to_ban(raw: Any) -> tuple[bool, int]:
     return parse_duration(text)
 
 
+def ban_record_reason(params: Any, ticket_no: str) -> str:
+    """封禁台账原因：与下发给设备的 reason 一致，没有该参数时回退工单同步文案。"""
+    text = str((params or {}).get("reason") or "").strip() if isinstance(params, dict) else ""
+    return text or f"工单同步：{ticket_no}"
+
+
 def sync_block_ip_record(db, ticket, node: dict, device: Device, params: dict) -> None:
     from app.core.ip_validation import IPValidationError, validate_ban_target
     from app.models.workflow_ban import BanRecord
@@ -423,7 +614,7 @@ def sync_block_ip_record(db, ticket, node: dict, device: Device, params: dict) -
         ban_duration=0 if permanent else seconds,
         is_permanent=permanent,
         expire_time=None if permanent else now + timedelta(seconds=seconds),
-        reason=f"工单同步：{ticket.ticket_no}",
+        reason=ban_record_reason(params, ticket.ticket_no),
         ban_source="ticket",
         status="active",
         ticket_id=ticket.id,

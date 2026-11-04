@@ -66,6 +66,13 @@ const nextFieldKey = (fields) => {
   return `f${i}`
 }
 
+// 新绑定设备动作的稳定标识：创建时生成，后续保存/重开不重造
+let deviceActionSeq = 0
+const nextDeviceActionId = () => {
+  deviceActionSeq += 1
+  return `da${Date.now().toString(36)}${deviceActionSeq.toString(36)}`
+}
+
 // 平铺节点全部字段（顶层 + 匹配规则扩展字段）：key 唯一性集合与路由条件字段选择共用
 const flatFields = (fields) => {
   const out = []
@@ -107,10 +114,13 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
   const actions = (Array.isArray(rest.device_actions) ? rest.device_actions : [])
     .filter((x) => x && typeof x === 'object')
     .map((x) => ({
+      ...(x.id ? { id: x.id } : {}),
       device_id: x.device_id,
       action_id: x.action_id,
       judge_field: x.judge_field || '',
       judge_value: x.judge_value || '是',
+      ...(x.when !== undefined ? { when: x.when } : {}),
+      ...(x.params && typeof x.params === 'object' && !Array.isArray(x.params) ? { params: x.params } : {}),
       ...(x.param_presets && typeof x.param_presets === 'object' ? { param_presets: x.param_presets } : {}),
       ...(x.param_config && typeof x.param_config === 'object' ? { param_config: x.param_config } : {}),
     }))
@@ -126,9 +136,12 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
       || (rest.fields || []).find((f) => f && f.type === 'switch' && f.key === a.judge_field)
     if (hit && !fieldAction.has(hit.key)) {
       fieldAction.set(hit.key, {
+        ...(a.id ? { id: a.id } : {}),
         device_id: a.device_id,
         action_id: a.action_id,
         judge_value: a.judge_value || '是',
+        ...(a.when !== undefined ? { when: a.when } : {}),
+        ...(a.params && typeof a.params === 'object' && !Array.isArray(a.params) ? { params: a.params } : {}),
         param_presets: a.param_presets && typeof a.param_presets === 'object' ? a.param_presets : null,
         param_config: a.param_config && typeof a.param_config === 'object' ? a.param_config : null,
       })
@@ -155,7 +168,8 @@ const normNodeRoutes = (ns) => (ns || []).map((n) => {
   }
 })
 
-// param_config 归一化：过滤无效条目；「可编辑且无默认值模板」等于未配置，不落键（空配置整体省略）
+// param_config 归一化：过滤无效条目；显式「可编辑」即使没有模板也要保留（用于覆盖内置只读），
+// 只有处理人主动清除覆盖时才删掉该键；空配置整体省略
 const normParamConfig = (pc) => {
   if (!pc || typeof pc !== 'object' || Array.isArray(pc)) return null
   const out = {}
@@ -163,7 +177,6 @@ const normParamConfig = (pc) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return
     const display = ['editable', 'readonly', 'hidden'].includes(entry.display) ? entry.display : 'editable'
     const template = String(entry.default_template ?? '').trim()
-    if (display === 'editable' && !template) return
     out[pname] = { display, ...(template ? { default_template: template } : {}) }
   })
   return Object.keys(out).length ? out : null
@@ -172,8 +185,11 @@ const normParamConfig = (pc) => {
 // 保存组装（normNodeRoutes 的逆变换）：字段级 device_action 合并回节点 device_actions（judge_field=字段key），
 // 字段副本剥离该键；未选完设备/动作的绑定不保存（发布校验会先行拦截）
 const buildPayloadNodes = (ns) => (ns || []).map((n) => {
-  const deviceActions = [...(Array.isArray(n?.device_actions) ? n.device_actions : [])]
-  const fields = (n?.fields || []).map((f) => {
+  const node = { ...(n || {}) }
+  // 旧版封禁同步残留键不回写：保存模板时彻底清除（已创建工单快照不受影响）
+  delete node.ban_sync
+  const deviceActions = [...(Array.isArray(node.device_actions) ? node.device_actions : [])]
+  const fields = (node.fields || []).map((f) => {
     if (!f) return f
     const { device_action: da, ...rest } = f
     if (da && typeof da === 'object' && da.device_id && da.action_id) {
@@ -182,17 +198,20 @@ const buildPayloadNodes = (ns) => (ns || []).map((n) => {
       const cleanPresets = normParamPresets(da.param_presets)
       const cleanPConf = normParamConfig(da.param_config)
       deviceActions.push({
+        ...(da.id ? { id: da.id } : {}),
         device_id: da.device_id,
         action_id: da.action_id,
         judge_field: f.key,
         judge_value: da.judge_value || '是',
+        ...(da.when !== undefined ? { when: da.when } : {}),
+        ...(da.params && typeof da.params === 'object' && !Array.isArray(da.params) ? { params: da.params } : {}),
         ...(cleanPresets ? { param_presets: cleanPresets } : {}),
         ...(cleanPConf ? { param_config: cleanPConf } : {}),
       })
     }
     return rest
   })
-  return { ...n, fields, device_actions: deviceActions }
+  return { ...node, fields, device_actions: deviceActions }
 })
 
 // 下拉选项编辑器：本地暂存原始文本，失焦时才提交为选项数组。
@@ -1081,11 +1100,10 @@ export default function TicketFlowEdit() {
           const seenDA = new Set()
           das.forEach((da, di) => {
             const dpos = `第 ${di + 1} 个设备动作`
-            if (!da.id) {
-              addErr(n.key, `${name}：${dpos}缺少标识`)
-            } else if (seenDA.has(String(da.id))) {
+            // 存量节点级动作可以没有 id（后端也不要求）；有 id 时仍校验唯一性
+            if (da.id && seenDA.has(String(da.id))) {
               addErr(n.key, `${name}：${dpos}标识 ${da.id} 重复`)
-            } else {
+            } else if (da.id) {
               seenDA.add(String(da.id))
             }
             if (!da.device_id) {
@@ -1777,6 +1795,7 @@ export default function TicketFlowEdit() {
                                     ) : (
                                       <button type="button" onClick={() => patchField(f.key, {
                                         device_action: {
+                                          id: nextDeviceActionId(),
                                           device_id: '',
                                           action_id: '',
                                           judge_value: f.type === 'switch' ? '是' : (valueOpts[0] ?? '是'),

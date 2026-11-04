@@ -86,22 +86,25 @@ def _version_payload(v: TicketFlowVersion, with_nodes: bool = False) -> dict:
     return data
 
 
-def _strip_legacy_ban_sync(nodes: Any) -> Any:
+def _strip_legacy_ban_sync(payload: Any) -> Any:
     """剥离节点里旧版封禁同步（ban_sync 字段映射）残留配置。
 
     该机制配置入口已下线（能力由设备动作的工作台同步覆盖）。存量模板重新编辑保存时
     静默清理残留键，避免发布校验误报；已发布模板未经重存前，流转侧仍按原逻辑兼容执行。
     """
-    if not isinstance(nodes, dict):
-        return nodes
+    if not isinstance(payload, dict):
+        return payload
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, list):
+        return payload
     removed = False
-    for n in nodes.values():
+    for n in nodes:
         if isinstance(n, dict) and n.get("ban_sync") not in (None, {}, ""):
             n.pop("ban_sync", None)
             removed = True
     if removed:
         logger.info("已剥离旧版封禁同步残留配置: flow nodes 中的 ban_sync 键")
-    return nodes
+    return payload
 
 
 # ============ 接口 ============

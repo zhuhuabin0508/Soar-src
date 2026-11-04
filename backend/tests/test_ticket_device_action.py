@@ -1,10 +1,13 @@
+import json
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, "/app" if os.path.isdir("/app") else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.ticket_device_action import (
-    _duration_to_ban, judge_says_execute, normalized_param_config,
+    _duration_to_ban, ban_record_reason, build_device_action_form, build_field_context,
+    execute_prepared_runs, finalize_device_params, judge_says_execute, normalized_param_config,
     prepare_device_params, resolve_param_template,
 )
 from app.core.ticket_flow import validate_flow_structure, when_matches
@@ -323,3 +326,220 @@ def test_flow_device_ok_callback():
     }
     errors = validate_flow_structure(flow, group_ok=lambda _gid: True, device_ok=lambda _d, _a: None)
     assert errors == []
+
+
+# ===== 设备动作修复回归 =====
+
+def _fake_action(action_type, schema):
+    return SimpleNamespace(
+        id=2,
+        name="动作",
+        action_type=action_type,
+        enabled=True,
+        params_schema=json.dumps(schema),
+        http_method="POST",
+    )
+
+
+def _device():
+    return SimpleNamespace(id=1, name="设备", enabled=True)
+
+
+def _patch_resolve(monkeypatch, action):
+    import app.core.ticket_device_action as mod
+
+    monkeypatch.setattr(mod, "resolve_device_action", lambda db, cfg: (_device(), action, None))
+
+
+def test_block_reason_builtin_readonly_only_for_block_ip(monkeypatch):
+    schema = [{"name": "reason", "type": "string", "required": True, "label": "封禁原因"}]
+    node = {"device_actions": [{"device_id": 1, "action_id": 2}]}
+
+    _patch_resolve(monkeypatch, _fake_action("block_ip", schema))
+    item = build_device_action_form(None, node)["items"][0]
+    reason = item["params"][0]
+    assert reason["display"] == "readonly"
+    assert reason["default_template"] == "工单同步：{ticket_no}"
+
+    # 显式可编辑覆盖内置只读，且不带模板
+    cfg = {"device_id": 1, "action_id": 2, "param_config": {"reason": {"display": "editable"}}}
+    _patch_resolve(monkeypatch, _fake_action("block_ip", schema))
+    reason = build_device_action_form(None, {"device_actions": [cfg]})["items"][0]["params"][0]
+    assert reason["display"] == "editable"
+    assert "default_template" not in reason
+
+    # 解封/查询动作的 reason 不接管
+    _patch_resolve(monkeypatch, _fake_action("unblock_ip", schema))
+    reason = build_device_action_form(None, node)["items"][0]["params"][0]
+    assert reason["display"] == "editable"
+    assert "default_template" not in reason
+
+
+def test_finalize_readonly_reason_ignores_client_value():
+    item = {"action_type": "block_ip", "params": [{
+        "name": "reason", "type": "string", "required": True, "description": "封禁原因",
+        "display": "readonly", "default_template": "工单同步：{ticket_no}",
+    }]}
+    params, errors = finalize_device_params(
+        item, {"reason": "手工改原因"}, ctx={"ticket_no": "TK-1"},
+    )
+    assert errors == []
+    assert params == {"reason": "工单同步：TK-1"}
+
+
+def test_finalize_editable_template_and_overridden():
+    item = {"params": [{
+        "name": "ip", "type": "ip", "required": True, "description": "目标 IP",
+        "display": "editable", "default_template": "{f:src_ip}",
+    }]}
+    ctx = {"ticket_no": "TK", "field_values": {"src_ip": "1.1.1.1"}}
+
+    # 未手改：按本次字段值重算模板，不用请求里的旧值
+    params, errors = finalize_device_params(item, {"ip": "9.9.9.9"}, ctx=ctx)
+    assert errors == []
+    assert params["ip"] == "1.1.1.1"
+
+    # 手改：保留用户输入，其他字段变化也不覆盖
+    params, errors = finalize_device_params(
+        item, {"ip": "9.9.9.9"}, overridden=["ip"], ctx={"field_values": {"src_ip": "2.2.2.2"}},
+    )
+    assert errors == []
+    assert params["ip"] == "9.9.9.9"
+
+
+def test_finalize_hidden_template_and_falsy_values():
+    item = {"params": [
+        {"name": "ip", "type": "ip", "required": True, "display": "hidden",
+         "default_template": "{f:src_ip}"},
+        {"name": "enable", "type": "enum", "required": False, "default": "1",
+         "options": ["1", "0"], "display": "editable"},
+        {"name": "n", "type": "number", "required": False, "default": 5, "display": "editable"},
+    ]}
+    params, errors = finalize_device_params(
+        item, {"ip": "9.9.9.9", "enable": 0, "n": False},
+        ctx={"field_values": {"src_ip": "3.3.3.3"}},
+    )
+    assert errors == []
+    # 隐藏参数忽略请求值；0 / False 按出现值保留，不被默认值替代
+    assert params == {"ip": "3.3.3.3", "enable": 0, "n": False}
+
+
+def test_finalize_required_template_empty_reports_param():
+    item = {"device_name": "设备", "action_name": "封禁", "params": [{
+        "name": "ip", "type": "ip", "required": True, "display": "hidden",
+        "default_template": "{f:src_ip}",
+    }]}
+    params, errors = finalize_device_params(item, {}, ctx={"field_values": {}})
+    assert params == {}
+    assert errors and "必填" in errors[0] and "ip" in errors[0]
+
+
+def test_field_context_uses_submitted_falsy_values():
+    records = [{"field_values": {"src_ip": "1.1.1.1", "n": 5, "flag": True}}]
+    ctx = build_field_context(records, {"src_ip": "", "n": 0, "flag": False})
+    # 本次提交按 key 出现覆盖历史值：空串 / 0 / False 都生效
+    assert ctx["src_ip"] == ""
+    assert ctx["n"] == 0
+    assert ctx["flag"] is False
+    assert resolve_param_template("ip={f:src_ip}", {"field_values": ctx}) == "ip="
+    assert resolve_param_template("{f:n}", {"field_values": ctx}) == "0"
+
+
+def test_ban_record_reason_matches_device_reason():
+    assert ban_record_reason({"reason": "手工原因"}, "TK-1") == "手工原因"
+    assert ban_record_reason({}, "TK-1") == "工单同步：TK-1"
+
+
+def _run_item(index, params, action_id=2):
+    return {
+        "index": index, "device_id": 1, "action_id": action_id,
+        "device_name": "设备", "action_name": "动作", "params": params,
+    }
+
+
+def _fake_executor(monkeypatch, calls):
+    from app.devices import action_executor
+
+    def fake_execute(*args, **kwargs):
+        calls.append(1)
+        return {"success": True, "status_code": 200, "response_body": "ok", "error": None, "latency_ms": 1}
+
+    monkeypatch.setattr(action_executor, "execute_device_action", fake_execute)
+
+
+def test_no_device_call_until_all_params_valid(monkeypatch):
+    calls = []
+    _fake_executor(monkeypatch, calls)
+    _patch_resolve(monkeypatch, _fake_action("block_ip", [{
+        "name": "ip", "type": "ip", "required": True, "description": "目标 IP",
+    }]))
+    items = [
+        _run_item(0, [{"name": "ip", "type": "ip", "required": True, "display": "editable"}]),
+        _run_item(1, [{"name": "ip", "type": "ip", "required": True, "display": "editable"}]),
+    ]
+    runs = {0: {"params": {"ip": "1.2.3.4"}}, 1: {"params": {"ip": "not-an-ip"}}}
+
+    outcomes, errors = execute_prepared_runs(None, items, runs, {"field_values": {}}, user_id=None)
+
+    assert outcomes == []
+    assert errors and "not-an-ip" in "；".join(errors)
+    assert len(calls) == 0
+
+
+def test_no_device_call_when_required_template_empty(monkeypatch):
+    calls = []
+    _fake_executor(monkeypatch, calls)
+    _patch_resolve(monkeypatch, _fake_action("block_ip", [{
+        "name": "ip", "type": "ip", "required": True, "description": "目标 IP",
+    }]))
+    items = [
+        _run_item(0, [{"name": "ip", "type": "ip", "required": True, "display": "editable"}]),
+        _run_item(1, [{"name": "ip", "type": "ip", "required": True, "display": "hidden",
+                       "default_template": "{f:src_ip}"}]),
+    ]
+    runs = {0: {"params": {"ip": "1.2.3.4"}}, 1: {"params": {}}}
+
+    outcomes, errors = execute_prepared_runs(None, items, runs, {"field_values": {}}, user_id=None)
+
+    assert outcomes == []
+    assert errors and "ip" in "；".join(errors)
+    assert len(calls) == 0
+
+
+def test_valid_params_execute_each_action_once(monkeypatch):
+    calls = []
+    _fake_executor(monkeypatch, calls)
+    _patch_resolve(monkeypatch, _fake_action("block_ip", [{
+        "name": "ip", "type": "ip", "required": True, "description": "目标 IP",
+    }]))
+    items = [
+        _run_item(0, [{"name": "ip", "type": "ip", "required": True, "display": "editable"}]),
+        _run_item(1, [{"name": "ip", "type": "ip", "required": True, "display": "editable"}]),
+    ]
+    runs = {0: {"params": {"ip": "1.2.3.4"}}, 1: {"params": {"ip": "5.6.7.8"}}}
+
+    outcomes, errors = execute_prepared_runs(None, items, runs, {"field_values": {}}, user_id=None)
+
+    assert errors == []
+    assert len(outcomes) == 2
+    assert len(calls) == 2
+
+
+def test_strip_legacy_ban_sync_keeps_action_fields():
+    from app.api.v1.ticket_flows import _strip_legacy_ban_sync
+
+    payload = {
+        "start_groups": [1],
+        "nodes": [
+            {
+                "key": "n1", "id": "da1", "when": {"logic": "and", "conds": []},
+                "params": {"ip": "src_ip"}, "ban_sync": {"ip_field": "src_ip"},
+            },
+            {"key": "end"},
+        ],
+    }
+    out = _strip_legacy_ban_sync(payload)
+    node = out["nodes"][0]
+    assert "ban_sync" not in node
+    assert node["id"] == "da1" and node["when"] == {"logic": "and", "conds": []}
+    assert node["params"] == {"ip": "src_ip"}

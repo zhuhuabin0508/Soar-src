@@ -48,9 +48,10 @@ from app.core.ticket_device_action import (
     append_device_call_log,
     annotate_device_form,
     build_device_action_form,
-    history_field_values,
-    resolve_param_template,
-    run_ticket_device_action,
+    build_field_context,
+    execute_prepared_runs,
+    parse_params_schema,
+    prepare_device_params,
     sync_device_outcome_to_workbench,
 )
 from app.core.ticket_flow import (
@@ -97,28 +98,14 @@ router = APIRouter(
 
 # ============ 常量与辅助 ============
 
-def _ticket_device_action_form(db, node, records, ticket) -> dict:
-    """工单详情的设备动作表单（含参数配置解析）。
+def _ticket_device_action_form(db, node, records) -> dict:
+    """工单详情的设备动作表单（含参数配置展示方式）。
 
-    param_config 的默认值模板按工单上下文（工单号/标题/发起人/节点/历史字段值）
-    解析后写入各参数 default，前端仅按 display 渲染；reason 参数未配置时由
-    build_device_action_form 内置 只读 + 工单同步：{ticket_no}。
+    ``default_template`` 原样下发，前端用历史记录 + 当前表单实时解析预览；
+    不在服务端把模板结果写进 ``default``，避免处理人改其他参数时被冻结的旧值覆盖。
+    reason 参数未配置时由 build_device_action_form 内置 只读 + 工单同步：{ticket_no}。
     """
-    form = annotate_device_form(build_device_action_form(db, node), records)
-    if isinstance(form, dict) and form.get("bound"):
-        ctx = {
-            "ticket_no": ticket.ticket_no,
-            "ticket_title": ticket.title or "",
-            "creator": getattr(ticket, "created_by_name", "") or "",
-            "node": (node or {}).get("name") or "",
-            "field_values": history_field_values(records),
-        }
-        for item in form.get("items") or []:
-            for p in (item.get("params") or []):
-                template = str(p.get("default_template") or "")
-                if template:
-                    p["default"] = resolve_param_template(template, ctx)
-    return form
+    return annotate_device_form(build_device_action_form(db, node), records)
 
 # 状态中文
 STATUS_LABELS = {"processing": "进行中", "completed": "已完成", "cancelled": "已取消"}
@@ -735,9 +722,9 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         ),
         # 并行会签进度（非会签节点为 null）
         "sign_progress": sign_progress,
-        # 设备动作表单：param_config 默认值模板按工单上下文解析（reason 未配置时
-        # 内置 只读 + 工单同步：{ticket_no}），前端按 display 渲染
-        "device_action_form": _ticket_device_action_form(db, current_node, records, ticket),
+        # 设备动作表单：default_template 原样下发，前端按 display 渲染并用历史 + 当前表单实时预览；
+        # reason 未配置时内置 只读 + 工单同步：{ticket_no}
+        "device_action_form": _ticket_device_action_form(db, current_node, records),
         # 抄送：列表 + 管理权限（发起人 / 当前处理人 / admin；仅进行中可增减）
         "cc_targets": [r.to_dict() for r in _cc_rows(db, ticket.id)],
         "can_manage_cc": (
@@ -2161,54 +2148,57 @@ def advance_ticket(
             if matched is None or choice.action_id != matched.get("action_id"):
                 raise HTTPException(status_code=400, detail="设备动作与当前节点配置不一致")
             choices[choice.index] = choice
-        results = []
+        # 先对本次要执行的动作全部定稿并校验参数；任一失败直接返回全部错误，
+        # 不做任何设备调用（设备一旦被调用无法撤销）。
+        skipped_results = {}
+        run_items = []
+        runs = {}
         for item in items:
             label = f"{item.get('device_name') or '设备'} / {item.get('action_name') or '动作'}"
             choice = choices.get(item.get("index"))
             if not item.get("execute"):
-                if choice and choice.params:
+                if choice and (choice.params or choice.overridden_params):
                     raise HTTPException(status_code=400, detail=f"判断组未建议执行「{label}」，不能提交设备参数")
-                results.append({
+                skipped_results[item.get("index")] = {
                     "skipped": True,
                     "by": "judge",
                     "judge_actual": item.get("judge_actual") or "",
                     "device_name": item.get("device_name") or "",
                     "action_name": item.get("action_name") or "",
                     "action_id": item.get("action_id"),
-                })
+                }
                 continue
             if choice is None:
                 raise HTTPException(status_code=400, detail=f"判断组已建议执行「{label}」，请填写参数")
-            fake_node = {
-                "key": current_node.get("key"),
-                "device_action": {"device_id": item.get("device_id"), "action_id": item.get("action_id")},
+            run_items.append(item)
+            runs[item.get("index")] = {
+                "params": dict(choice.params or {}),
+                "overridden_params": list(choice.overridden_params or []),
             }
-            exec_params = dict(choice.params or {})
-            # 参数模板兜底（原 reason 专用逻辑泛化）：配置了默认值模板的参数
-            # （readonly/hidden/editable 均可），值为空或仍是 schema 默认值时按
-            # 工单上下文解析模板填充；处理人显式填写了则尊重其输入
-            exec_ctx = {
-                "ticket_no": ticket.ticket_no,
-                "ticket_title": ticket.title or "",
-                "creator": getattr(ticket, "created_by_name", "") or "",
-                "node": (current_node or {}).get("name") or "",
-                "field_values": {
-                    **history_field_values(submitted),
-                    **{k: v for k, v in (values or {}).items() if v not in (None, "")},
-                },
-            }
-            for p in (item.get("params") or []):
-                template = str(p.get("default_template") or "")
-                pname = str(p.get("name") or "")
-                if not template or not pname:
-                    continue
-                cur = str(exec_params.get(pname) or "").strip()
-                if cur in ("", str(p.get("default") or "").strip()):
-                    exec_params[pname] = resolve_param_template(template, exec_ctx)
-            outcome = run_ticket_device_action(
-                db, fake_node, exec_params, user_id=current_user.id,
-            )
+        exec_ctx = {
+            "ticket_no": ticket.ticket_no,
+            "ticket_title": ticket.title or "",
+            "creator": getattr(ticket, "created_by_name", "") or "",
+            "node": (current_node or {}).get("name") or "",
+            "field_values": build_field_context(submitted, values),
+        }
+        outcomes, errors = execute_prepared_runs(
+            db, run_items, runs, exec_ctx, user_id=current_user.id,
+        )
+        if errors:
+            raise HTTPException(status_code=422, detail="；".join(errors))
+        executed = {
+            item.get("index"): outcome
+            for item, outcome in zip(run_items, outcomes)
+        }
+        results = []
+        for item in items:
+            outcome = executed.get(item.get("index"))
+            if outcome is None:
+                results.append(skipped_results[item.get("index")])
+                continue
             if not outcome.get("ok"):
+                label = f"{item.get('device_name') or '设备'} / {item.get('action_name') or '动作'}"
                 raise HTTPException(
                     status_code=outcome.get("status") or 400,
                     detail=outcome.get("detail") or f"「{label}」执行失败",
@@ -2340,6 +2330,13 @@ def execute_ticket_device_action(
     if cfg is None:
         raise HTTPException(status_code=404, detail="当前节点不存在该设备动作配置")
 
+    # 带判断字段的动作只在提交流转里执行，旧接口不再接受
+    if str(cfg.get("judge_field") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="该设备动作由判断字段触发，请在工单提交流转时执行",
+        )
+
     # 触发条件服务端复检：未命中说明面板本不该出现（或表单值已变化），拒绝执行
     values = _clean_field_values(body.field_values)
     if not eval_when(cfg.get("when"), values):
@@ -2364,7 +2361,10 @@ def execute_ticket_device_action(
             detail=f"设备「{device.name}」上的动作「{cfg.get('action_name') or cfg.get('action_id')}」不存在或已停用",
         )
 
-    params = {k: v for k, v in (body.params or {}).items() if v is not None and str(v).strip() != ""}
+    # 参数统一走 prepare_device_params：默认值补齐、类型/选项/IP/时长校验后再调用设备
+    params, errors = prepare_device_params(parse_params_schema(action), body.params or {})
+    if errors:
+        raise HTTPException(status_code=422, detail="；".join(errors))
     result = execute_device_action(
         device,
         action,
