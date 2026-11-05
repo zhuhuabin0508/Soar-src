@@ -177,14 +177,25 @@ def verify_captcha(captcha_id: str, captcha_code: str) -> bool:
     # 校验通过：立即删除（一次性消费，防重放）
     if abs(given - target) <= CAPTCHA_TOLERANCE:
         redis_client.delete(key)
+        redis_client.delete(f"{key}:fails")
         logger.debug("滑块验证码校验通过: captcha_id=%s", captcha_id)
         return True
-    # 校验失败：保留键，用户可在过期前重新拖动提交
+    # 校验失败：累计失败次数（与预校验 check_captcha 共用同一计数键），
+    # 达到上限删除验证码强制换图，防止绕过预检直接对登录接口暴力枚举位置
+    fail_key = f"{key}:fails"
+    fails = redis_client.incr(fail_key)
+    redis_client.expire(fail_key, CAPTCHA_TTL_SECONDS)
+    if int(fails) >= CHECK_MAX_FAILS:
+        redis_client.delete(key)
+        redis_client.delete(fail_key)
+        logger.info("滑块验证码失败超限，验证码作废: captcha_id=%s", captcha_id)
+        return False
     logger.debug("滑块验证码校验失败: captcha_id=%s, given=%s, target=%s", captcha_id, given, target)
     return False
 
 
-# 预校验失败次数上限：达到后删除验证码强制换图（防脚本在单一验证图上暴力枚举位置）
+# 验证码失败次数上限（预校验与登录校验共用）：达到后删除验证码强制换图
+# （防脚本在单一验证图上暴力枚举位置；登录路径同样生效，防止绕过预检直调登录枚举）
 CHECK_MAX_FAILS = 5
 
 

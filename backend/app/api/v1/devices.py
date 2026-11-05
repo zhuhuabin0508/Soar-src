@@ -389,10 +389,15 @@ def update_device(
         "max_retries": body.max_retries, "verify_tls": body.verify_tls,
         "icon": body.icon, "parser_strategy_id": body.parser_strategy_id,
     }
+    # 凭据类字段审计只记录"已变更"，不落明文/密文（与 password 同口径）
+    _masked_fields = {"api_key", "username"}
     for fname, new_val in field_map.items():
         old_val = getattr(device, fname)
         if old_val != new_val:
-            changes[fname] = {"old": old_val, "new": new_val}
+            if fname in _masked_fields:
+                changes[fname] = {"old": "***", "new": "***"}
+            else:
+                changes[fname] = {"old": old_val, "new": new_val}
     # tags 单独比对（序列化后）
     new_tags_json = _tags_to_json(body.tags)
     if (device.tags or "[]") != new_tags_json:

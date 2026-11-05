@@ -209,22 +209,39 @@ export function RichTextView({ text }) {
   const s = String(text ?? '')
   const matches = [...s.matchAll(IMG_MD_RE)]
   if (!matches.length) return <span className="break-all">{s}</span>
-  const images = matches.map((m) => ({ src: attachmentUrl(m[2]), name: m[1] || '图片' }))
+  // 仅放行本系统附件路径：外链图片引用不加载（防止把当前用户 JWT 以 query
+  // token 追加到第三方 URL 泄露凭证），白名单外的引用按原文本展示（与编辑端 mdToHtml 同口径）
+  const images = matches.map((m) => {
+    const clean = canonicalAttachUrl(m[2])
+    return { src: clean ? attachmentUrl(clean) : null, name: m[1] || '图片' }
+  })
+
+  // Lightbox 与缩略图仅收录放行通过的附件图；validIndex[i] 为 -1 表示该引用按文本展示
+  const validImages = []
+  const validIndex = new Array(images.length).fill(-1)
+  images.forEach((im, i) => {
+    if (im.src) {
+      validIndex[i] = validImages.length
+      validImages.push(im)
+    }
+  })
 
   const lightboxEl = lightbox !== null && (
-    <Lightbox images={images} index={lightbox} onIndex={setLightbox} onClose={() => setLightbox(null)} />
+    <Lightbox images={validImages} index={lightbox} onIndex={setLightbox} onClose={() => setLightbox(null)} />
   )
 
   // 少量图：文本与图片按原顺序交错（图片位置不挪动），内联图限高 160px
-  if (images.length <= 3) {
+  if (validImages.length <= 3) {
     const parts = []
     let last = 0
     matches.forEach((m, i) => {
       if (m.index > last) parts.push(<span key={`t${i}`} className="whitespace-pre-wrap break-all">{s.slice(last, m.index)}</span>)
       parts.push(
-        <img key={`i${i}`} src={images[i].src} alt={images[i].name} loading="lazy" title="点击查看大图"
-          className="my-1 block max-h-40 w-fit max-w-full cursor-zoom-in rounded-md border border-border object-contain"
-          onClick={() => setLightbox(i)} />,
+        validIndex[i] >= 0
+          ? <img key={`i${i}`} src={images[i].src} alt={images[i].name} loading="lazy" title="点击查看大图"
+            className="my-1 block max-h-40 w-fit max-w-full cursor-zoom-in rounded-md border border-border object-contain"
+            onClick={() => setLightbox(validIndex[i])} />
+          : <span key={`x${i}`} className="whitespace-pre-wrap break-all">{m[0]}</span>,
       )
       last = m.index + m[0].length
     })
@@ -237,23 +254,24 @@ export function RichTextView({ text }) {
     )
   }
 
-  // 多图：文本段集中在前，图片统一收纳为九宫格缩略图网格
+  // 多图：文本段集中在前，图片统一收纳为九宫格缩略图网格（白名单外的引用按文本保留在文本段）
   const textParts = []
   let last = 0
   matches.forEach((m, i) => {
     if (m.index > last) textParts.push(<span key={`t${i}`} className="whitespace-pre-wrap break-all">{s.slice(last, m.index)}</span>)
+    if (validIndex[i] < 0) textParts.push(<span key={`x${i}`} className="whitespace-pre-wrap break-all">{m[0]}</span>)
     last = m.index + m[0].length
   })
   if (last < s.length) textParts.push(<span key="tail" className="whitespace-pre-wrap break-all">{s.slice(last)}</span>)
 
   const MAX_THUMBS = 9
-  const overflow = images.length - MAX_THUMBS
+  const overflow = validImages.length - MAX_THUMBS
   const collapsed = !showAll && overflow > 0
-  const shown = collapsed ? images.slice(0, MAX_THUMBS) : images
+  const shown = collapsed ? validImages.slice(0, MAX_THUMBS) : validImages
   return (
     <div className="space-y-2">
       {textParts.length > 0 && <div className="space-y-1">{textParts}</div>}
-      <div className="text-xs text-muted-foreground">图片 · {images.length} 张</div>
+      <div className="text-xs text-muted-foreground">图片 · {validImages.length} 张</div>
       <div className="flex flex-wrap gap-2">
         {shown.map((img, i) => (
           <img key={i} src={img.src} alt={img.name} loading="lazy" title="点击查看大图"

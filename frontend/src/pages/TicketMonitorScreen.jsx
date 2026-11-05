@@ -36,6 +36,14 @@ import {
 import { ticketApi } from '../api/tickets'
 import { toast } from '../store/toastStore'
 
+// HTML 转义：ECharts tooltip 默认以 innerHTML 渲染，分类 name 来自工单表单
+// 用户填写值（告警名称/来源平台等），拼接前必须转义，防止存储型 XSS
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]))
+}
+
 // ============ 主题常量（最初版：深蓝黑底 + 灰蓝科技蓝 + 橙色强调 + 青色装饰） ============
 // 背景为深蓝黑底，中心略亮、四角压暗；卡片为高透磨砂玻璃：
 // 约 60% 背景透出 + backdrop-filter 模糊 + 斜向玻璃反光 + 细霜纹理 + 微发光描边。
@@ -610,7 +618,8 @@ function pieOption(rows) {
     color: BLUE_PALETTE,
     tooltip: {
       trigger: 'item', backgroundColor: C.tooltipBg, borderColor: C.panelBorder,
-      textStyle: { color: C.text, fontSize: 13 }, formatter: '{b}：{c} 件（{d}%）',
+      textStyle: { color: C.text, fontSize: 13 },
+      formatter: (p) => `${escapeHtml(p?.name)}：${fmtInt(p?.value)} 件（${p?.percent ?? 0}%）`,
     },
     // 环形中心显示总量
     title: total > 0 ? {
@@ -647,7 +656,7 @@ function typeBarOption(rows) {
       textStyle: { color: C.text, fontSize: 13 },
       formatter: (ps) => {
         const p = ps?.[0]
-        return p ? `${p.name}：${p.value} 件（${pct(p.value)}%）` : ''
+        return p ? `${escapeHtml(p.name)}：${p.value} 件（${pct(p.value)}%）` : ''
       },
     },
     xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: C.split } }, ...axisStyle({ fontSize: 11 }) },
@@ -1548,7 +1557,7 @@ function platformBarOption(rows) {
         if (!r) return ''
         const lines = PLATFORM_TIP_COLS.map(([key, label, color]) =>
           `${label}：<b style="color:${color}">${fmtInt(r[key])}</b>`)
-        return `<div style="font-weight:600;margin-bottom:4px;">${r.name}</div>${lines.join('<br/>')}`
+        return `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(r.name)}</div>${lines.join('<br/>')}`
       },
     },
     xAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: C.split } }, ...axisStyle({ fontSize: 11 }) },

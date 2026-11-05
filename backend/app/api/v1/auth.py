@@ -731,6 +731,9 @@ def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)) -
         record_login_success,
     )
 
+    # 0. IP 限频：60 秒内最多 10 次登录尝试（防脚本绕过预检对验证码位置暴力枚举/口令喷洒）
+    _rate_limit_ip(request, "login", max_count=10, window=60, message="请求过于频繁")
+
     # 1. 校验图形验证码（最先校验，防暴力枚举）
     if not verify_captcha(body.captcha_id, body.captcha_code):
         logger.warning("验证码校验失败: username=%s, captcha_id=%s", body.username, body.captcha_id)

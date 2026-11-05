@@ -107,7 +107,7 @@ def rename_group(group_id: int, payload: GroupBody, request: Request, db: Sessio
     rules = db.query(AlertRule).filter(AlertRule.rule_group == old_name).all()
     for r in rules:
         r.rule_group = new_name
-        r.updated_by = current_user
+        r.updated_by = current_user.username
     group.name = new_name
     db.commit()
     _log_audit(request, "alert_rule_group.rename", f"重命名告警规则分组「{old_name}」→「{new_name}」（同步 {len(rules)} 条规则）", current_user)
@@ -125,7 +125,7 @@ def delete_group(group_id: int, request: Request, db: Session = Depends(get_db),
     rules = db.query(AlertRule).filter(AlertRule.rule_group == group.name).all()
     for r in rules:
         r.rule_group = DEFAULT_GROUP
-        r.updated_by = current_user
+        r.updated_by = current_user.username
     db.delete(group)
     db.commit()
     _log_audit(request, "alert_rule_group.delete", f"删除告警规则分组「{group.name}」（{len(rules)} 条规则移入「其他」）", current_user)

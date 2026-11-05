@@ -785,7 +785,7 @@ def check_consistency(
 
 
 @router.post("/import")
-async def import_govcloud_excel(
+def import_govcloud_excel(
     file: UploadFile = File(..., description="爬虫产出的 xlsx / csv"),
     resource_type: str = Query("", description="cloud_host / bare_metal / e_government_network / elastic_ip"),
     mode: str = Query("full", description="导入模式：full 全量对齐 / incremental 增量 upsert 不删除"),
@@ -793,13 +793,15 @@ async def import_govcloud_excel(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "edit")),
 ) -> dict:
+    """导入爬虫产出的 xlsx / csv（同步 def：走 FastAPI 线程池，防止大文件
+    同步解析阻塞事件循环导致全站 502，与 assets.import_assets 同口径）。"""
     filename = file.filename or "upload"
     lower = filename.lower()
     is_csv = lower.endswith(".csv")
     if not (is_csv or lower.endswith(".xlsx")):
         raise HTTPException(status_code=400, detail="仅支持 .xlsx / .csv（爬虫输出格式）")
     import_mode = mode if mode in ("full", "incremental") else "full"
-    raw = await file.read()
+    raw = file.file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="文件为空")
     if len(raw) > MAX_FILE_SIZE:

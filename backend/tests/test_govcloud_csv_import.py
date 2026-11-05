@@ -1,5 +1,5 @@
 """资产发现导入 CSV 支持的单元测试（解码 / 解析 / 端点分发）。"""
-import asyncio
+import io
 
 import pytest
 from fastapi import HTTPException
@@ -104,12 +104,11 @@ def test_source_id_falls_back_to_source_id_column():
 
 
 class _FakeUpload:
+    """模拟 FastAPI UploadFile：同步 def 端点直接读底层 file 对象。"""
+
     def __init__(self, filename, content=b""):
         self.filename = filename
-        self._content = content
-
-    async def read(self):
-        return self._content
+        self.file = io.BytesIO(content)
 
 
 class _FakeDB:
@@ -128,11 +127,11 @@ def test_import_dispatches_csv_to_csv_parser(monkeypatch):
     monkeypatch.setattr("app.api.v1.govcloud._parse_csv", lambda raw: called["csv"].append(1) or [])
     monkeypatch.setattr("app.api.v1.govcloud._parse_excel", lambda raw: called["excel"].append(1) or [])
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(import_govcloud_excel(
+        import_govcloud_excel(
             file=_FakeUpload("云主机资产.csv", "a,b\n".encode("utf-8")),
             resource_type="cloud_host", mode="full", request=None,
             db=_FakeDB(), user=_fake_user(),
-        ))
+        )
     assert exc.value.status_code == 400  # 解析为空 → 400
     assert called["csv"] and not called["excel"]  # 走了 CSV 解析器
 
@@ -142,30 +141,30 @@ def test_import_xlsx_still_uses_excel_parser(monkeypatch):
     monkeypatch.setattr("app.api.v1.govcloud._parse_csv", lambda raw: called["csv"].append(1) or [])
     monkeypatch.setattr("app.api.v1.govcloud._parse_excel", lambda raw: called["excel"].append(1) or [])
     with pytest.raises(HTTPException):
-        asyncio.run(import_govcloud_excel(
+        import_govcloud_excel(
             file=_FakeUpload("云主机资产.xlsx", b"xlsx-bytes"),
             resource_type="cloud_host", mode="full", request=None,
             db=_FakeDB(), user=_fake_user(),
-        ))
+        )
     assert called["excel"] and not called["csv"]
 
 
 def test_import_rejects_other_extensions():
     for name in ("云主机资产.xls", "云主机资产.txt", "云主机资产.xlsx.bak"):
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(import_govcloud_excel(
+            import_govcloud_excel(
                 file=_FakeUpload(name), resource_type="cloud_host", mode="full",
                 request=None, db=_FakeDB(), user=_fake_user(),
-            ))
+            )
         assert exc.value.status_code == 400
 
 
 def test_import_empty_file_rejected():
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(import_govcloud_excel(
+        import_govcloud_excel(
             file=_FakeUpload("云主机资产.csv"), resource_type="cloud_host",
             mode="full", request=None, db=_FakeDB(), user=_fake_user(),
-        ))
+        )
     assert exc.value.status_code == 400
 
 
@@ -176,9 +175,9 @@ def test_import_all_rows_missing_source_id_rejected(monkeypatch):
         lambda raw: [{"foo": "1"}, {"foo": "2"}],
     )
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(import_govcloud_excel(
+        import_govcloud_excel(
             file=_FakeUpload("云主机资产.csv", b"x"), resource_type="cloud_host",
             mode="full", request=None, db=_FakeDB(), user=_fake_user(),
-        ))
+        )
     assert exc.value.status_code == 400
     assert "均无法识别唯一标识" in exc.value.detail

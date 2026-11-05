@@ -495,6 +495,11 @@ def find_device_action_by_type(
 # 超限时截断并标记 response_truncated，保护 LLM 上下文与 SSE 事件大小
 _TOOL_RESPONSE_MAX_CHARS = 30000
 
+# 中高风险等级：处置类动作（封禁/解封/隔离/删数据/变更配置等）。
+# 该类动作经智能体触发时必须在服务端校验发起用户权限（与手动封禁工作台
+# ban_workflow:edit 口径一致），不能仅依赖工具 description 的提示词纪律。
+_HIGH_RISK_LEVELS = {"medium", "high"}
+
 
 async def execute_device_action_by_id(
     action_id: int,
@@ -566,6 +571,26 @@ async def execute_device_action_by_id(
                 return {"error": f"动作所属设备不存在: device_id={action.device_id}"}
             if not device.enabled:
                 return {"error": f"设备已禁用: {device.name}"}
+
+            # 服务端门禁：中高风险处置动作校验发起用户权限，防止仅靠提示词
+            # 约束被绕过（提示注入/模型误判即可触发封禁等破坏性操作）。
+            if (getattr(action, "risk_level", "") or "").lower() in _HIGH_RISK_LEVELS:
+                if user_id is None:
+                    return {
+                        "error": "中高风险设备动作需要在用户会话中执行（缺少发起用户上下文）",
+                        "hint": "处置类动作仅允许有权限的登录用户在智能体对话中触发",
+                    }
+                from app.dependencies import _check_matrix_permission
+                from app.models.user import User
+
+                invoking_user = db.query(User).filter(User.id == user_id).first()
+                if invoking_user is None or not _check_matrix_permission(
+                    db, invoking_user, "ban_workflow", "edit"
+                ):
+                    return {
+                        "error": "权限不足：中高风险处置动作需要「封禁工作台-编辑」权限",
+                        "hint": "请联系管理员开通权限，或改由封禁工作台/工单设备动作流程执行",
+                    }
 
             result = execute_device_action(
                 device,
