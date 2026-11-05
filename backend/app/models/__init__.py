@@ -59,12 +59,14 @@ from app.models.ticket import (
     TicketFlowVersion,
     Ticket,
     TicketNodeRecord,
+    TicketDeviceRun,
 )
 from app.models.knowledge_base import KnowledgeBase, KnowledgeDocument, KnowledgeSegment
 from app.models.llm_config import LLMConfig
 from app.models.model_call_log import ModelCallLog
 from app.models.notification import Notification
 from app.models.notification_rule import NotificationRule
+from app.models.open_api import OpenApiApp, OpenApiScope, OpenApiCallLog
 from app.models.user_notification_pref import UserNotificationPref
 from app.models.parse_error import ParseErrorQueue
 from app.models.parse_strategy import ParseStrategy, ParseStrategyVersion
@@ -116,6 +118,9 @@ __all__ = [
     "ChatSession",
     "Notification",
     "NotificationRule",
+    "OpenApiApp",
+    "OpenApiScope",
+    "OpenApiCallLog",
     "UserNotificationPref",
     "Feedback",
     "FeedbackHistory",
@@ -150,6 +155,7 @@ __all__ = [
     "TicketFlowVersion",
     "Ticket",
     "TicketNodeRecord",
+    "TicketDeviceRun",
     "WorkflowTriggerRule",
     "WorkflowInstance",
     "WorkflowNodeLog",

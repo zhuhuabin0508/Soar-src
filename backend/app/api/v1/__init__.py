@@ -34,6 +34,8 @@ from app.api.v1 import (
     monitor,
     notification_rules,
     notifications,
+    open_api,
+    open_api_admin,
     resource_shares,
     roles,
     skills,
@@ -142,3 +144,6 @@ api_router.include_router(tickets.download_router)
 api_router.include_router(ticket_groups.router)
 api_router.include_router(ticket_flows.router)
 api_router.include_router(ticket_sla.router)
+# API 开放平台（网关统一数据端点 /open/* + 管理端 /open-admin/*）
+api_router.include_router(open_api.router)
+api_router.include_router(open_api_admin.router)

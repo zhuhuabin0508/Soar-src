@@ -394,6 +394,16 @@ async def _audit_middleware(request, call_next):
     """记录用户写操作到审计日志（操作者/模块/资源ID/IP/结果）。"""
     return await audit_middleware(request, call_next)
 
+
+# ============ 开放 API 调用监控中间件（记录 /api/v1/open/* 全部调用）============
+from app.core.open_api_auth import open_api_call_middleware  # noqa: E402
+
+
+@app.middleware("http")
+async def _open_api_call_middleware(request, call_next):
+    """记录开放 API 网关调用日志（应用/资源/状态码/耗时/IP），含鉴权拒绝。"""
+    return await open_api_call_middleware(request, call_next)
+
 # 所有业务路由统一前缀 /api/v1
 app.include_router(api_router, prefix="/api/v1")
 

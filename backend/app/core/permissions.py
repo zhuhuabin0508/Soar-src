@@ -54,6 +54,8 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "system_config": ["view", "edit"],
     "system_monitor": ["view"],
     "audit_log": ["view"],
+    # API 开放平台（应用/密钥/授权管理 + 调用监控）
+    "open_api": ["view", "edit"],
     # 运营管理（值班管理拆分为二级权限：人员/值班表/请假/调班/大屏）
     "duty_member": ["view", "edit", "delete"],
     "duty_schedule": ["view", "edit", "delete"],
@@ -61,7 +63,7 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "duty_log": ["view", "edit", "delete"],
     "duty_dashboard": ["view"],
     # 工单（工单中心 + 工单监控大屏 + 工单配置：分组/流程模板）
-    "ticket": ["view", "edit", "delete"],
+    "ticket": ["view", "edit", "delete", "execute"],
     "ticket_monitor": ["view"],
     "ticket_config": ["view", "edit"],
 }
@@ -105,6 +107,7 @@ MODULE_LABELS: dict[str, str] = {
     "system_config": "系统设置",
     "system_monitor": "系统监控",
     "audit_log": "审计日志",
+    "open_api": "API开放平台",
     # 运营管理（值班管理二级权限）
     "duty_member": "值班人员",
     "duty_schedule": "值班表",
@@ -196,6 +199,8 @@ def migrate_permissions(perms: dict[str, list[str]] | None) -> dict[str, list[st
     _inherit_module_actions(result, "bigscreen2", "dashboard")
     # 已有工单中心查看权限的角色自动补工单监控大屏（未显式配置时）
     _inherit_module_actions(result, "ticket_monitor", "ticket")
+    # 已有系统设置权限的角色自动补 API 开放平台（动作取交集：view→view，edit→view+edit）
+    _inherit_module_actions(result, "open_api", "system_config")
 
     return result
 
