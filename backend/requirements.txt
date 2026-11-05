@@ -7,6 +7,8 @@ psycopg2-binary==2.9.9
 pydantic==2.9.2
 pydantic-settings==2.5.2
 celery==5.4.0
+# kombu 5.7.0 要求 redis-py>=6.1.0，与下方 redis==5.1.1 冲突（worker 连 Redis 崩溃）；锁定到已验证兼容版本
+kombu==5.6.2
 redis==5.1.1
 python-dotenv==1.0.1
 # 日志类型识别特征匹配表（classifier_features.yaml 热加载）
@@ -49,6 +51,6 @@ scapy==2.6.1
 # 文件跟踪可选加速（file_tail 默认手写轮询 tail，无此依赖也可运行）
 watchdog==6.0.0
 # 可选：Grok 模式预处理插件（策略正则增强）
-pygrok==0.11.0
+pygrok==1.0.0
 # 可选：JDBC 适配器拉取 MySQL 数据源
 PyMySQL==1.1.1
