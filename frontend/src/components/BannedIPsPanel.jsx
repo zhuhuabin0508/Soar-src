@@ -29,7 +29,7 @@ import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { inputCls, inputBaseCls } from '../components/property/FormControls'
 import {CompactSelect, AutoGrowTextarea } from './ui'
-import { validateBanTarget } from '../utils/ipValidation'
+import { validateBanEntry } from '../utils/ipValidation'
 
 // 封禁等级中文映射 + 配色
 const LEVEL_META = {
@@ -187,8 +187,8 @@ function BannedIPsPanel() {
   const [creating, setCreating] = useState(false)
   const [createForm, setCreateForm] = useState({ ip: '', ban_level: 'medium', ban_duration: 3600, region: '', reason: '' })
   const [createIpTouched, setCreateIpTouched] = useState(false)
-  // 即时校验：封禁目标（单 IP / CIDR / 范围 / 多值，不允许通配）
-  const createIpError = validateBanTarget(createForm.ip, '封禁目标')
+  // 即时校验：封禁目标（单 IP / CIDR / 范围 / 域名 / 多值，不允许通配）
+  const createIpError = validateBanEntry(createForm.ip, '封禁目标')
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -237,8 +237,8 @@ function BannedIPsPanel() {
   }
 
   const handleCreate = async () => {
-    if (!createForm.ip.trim()) { toast.warning('请填写 IP 地址'); return }
-    const ipMsg = validateBanTarget(createForm.ip, '封禁目标')
+    if (!createForm.ip.trim()) { toast.warning('请填写封禁目标'); return }
+    const ipMsg = validateBanEntry(createForm.ip, '封禁目标')
     if (ipMsg) { setCreateIpTouched(true); toast.warning(ipMsg); return }
     setCreating(true)
     try {
@@ -666,12 +666,12 @@ function BannedIPsPanel() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                IP 地址 <span className="text-destructive">*</span>
+                IP / 域名 <span className="text-destructive">*</span>
                 <span className="ml-1.5 font-normal text-muted-foreground/70">可多值，逗号分隔</span>
               </label>
               <input
                 className={`${inputCls}${createIpTouched && createIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
-                placeholder="如 1.2.3.4, 10.0.0.0/8, 1.2.3.4-1.2.3.20"
+                placeholder="如 1.2.3.4, 10.0.0.0/8, 1.2.3.4-1.2.3.20, evil.com"
                 value={createForm.ip}
                 onChange={(e) => setCreateForm({ ...createForm, ip: e.target.value })}
                 onBlur={() => setCreateIpTouched(true)}

@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ShieldBan, ShieldCheck, Search, Inbox, LockOpen, Loader2, RotateCw, ExternalLink, Plus, Trash2,
-  Upload, Download, Info, CheckCircle2, AlertTriangle, SkipForward, XCircle, X,
+  Upload, Download, Info, CheckCircle2, AlertTriangle, SkipForward, XCircle, X, Database,
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
@@ -15,7 +15,7 @@ import { Modal, Drawer } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission, guardNavPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
-import { validateBanTarget, validateSingleIP, splitIPExpression } from '../../utils/ipValidation'
+import { validateBanEntry, validateSingleIP, splitIPExpression, isBanDomain } from '../../utils/ipValidation'
 
 const STATUS_OPTIONS = [
   { v: 'pending_sync', label: '待同步' }, { v: 'syncing', label: '同步中' },
@@ -187,8 +187,8 @@ export default function BanWorkbench({ embedded = false }) {
   const [manualSubmitting, setManualSubmitting] = useState(false)
   const [manualIpTouched, setManualIpTouched] = useState(false)
   const [manualReasonTouched, setManualReasonTouched] = useState(false)
-  // 即时校验：封禁目标（单 IP / CIDR / 范围 / 多值，不允许通配）
-  const manualIpError = validateBanTarget(manualForm.ip, '封禁目标')
+  // 即时校验：封禁目标（单 IP / CIDR / 范围 / 域名 / 多值，不允许通配）
+  const manualIpError = validateBanEntry(manualForm.ip, '封禁目标')
   // 即时校验：封禁原因必填
   const manualReasonError = manualForm.reason.trim() ? '' : '请填写封禁原因'
   // 打开手动封禁弹窗：重置校验状态，避免上次残留的报错提示
@@ -215,13 +215,13 @@ export default function BanWorkbench({ embedded = false }) {
     }
     const raw = manualForm.ip.trim()
     // 输入为空 / 表达式非法（多半是还在输入）：不打设备接口，收起面板
-    if (!raw || validateBanTarget(raw, '封禁目标')) {
+    if (!raw || validateBanEntry(raw, '封禁目标')) {
       setDupCheck((s) => ({ ...s, loading: false }))
       return undefined
     }
-    const singleIps = splitIPExpression(raw).filter((t) => !validateSingleIP(t, 'IP'))
+    // 精确条目（单 IP / 域名）可预检；CIDR / 范围设备按精确条目查询，跳过
+    const singleIps = splitIPExpression(raw).filter((t) => !validateSingleIP(t, 'IP') || isBanDomain(t))
     if (!singleIps.length) {
-      // 全是 CIDR / 范围目标：设备按精确条目查询，无法预检
       setDupCheck((s) => ({ ...s, loading: false }))
       return undefined
     }
@@ -256,6 +256,66 @@ export default function BanWorkbench({ embedded = false }) {
   const dupQueryErrors = dupCheck.results.filter((r) => r.error)
   // 右侧预检面板：有命中且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
   const showDupPanel = dupFound.length > 0 && !dupHidden
+
+  // ===== 手动封禁资产匹配预检：双数据源并行查询（资产发现全量 + 资产清单已录入）=====
+  // 展示形式同上方安博通黑名单预检（右侧内嵌面板平滑滑出）；匹配逻辑复用
+  // 工单安全上下文的资产匹配规则（后端同口径：两来源都查、资产发现优先、
+  // 按来源去重）。查询时机与黑名单预检一致：防抖 700ms + 表达式整体合法；
+  // 仅对「单 IP」匹配（安全上下文按 IP 精确匹配），CIDR / 范围 / 域名不做资产匹配。
+  const [assetCheck, setAssetCheck] = useState({ loading: false, items: [], error: '', fetchedAt: null })
+  const [assetHidden, setAssetHidden] = useState(false)
+  const assetSeq = useRef(0)
+  useEffect(() => {
+    // 弹窗关闭 / 无查看权限：清空匹配状态，避免下次打开残留旧结果
+    if (!manualOpen || !canView) {
+      setAssetCheck({ loading: false, items: [], error: '', fetchedAt: null })
+      setAssetHidden(false)
+      return undefined
+    }
+    const raw = manualForm.ip.trim()
+    // 输入为空 / 表达式非法（多半是还在输入）：不打资产接口，收起面板
+    if (!raw || validateBanEntry(raw, '封禁目标')) {
+      setAssetCheck((s) => ({ ...s, loading: false }))
+      return undefined
+    }
+    // 仅单 IP 参与匹配（与安全上下文口径一致）；同 IP 去重避免重复查询
+    const singleIps = Array.from(new Set(
+      splitIPExpression(raw).filter((t) => !validateSingleIP(t, 'IP')),
+    ))
+    if (!singleIps.length) {
+      setAssetCheck((s) => ({ ...s, loading: false }))
+      return undefined
+    }
+    const seq = ++assetSeq.current
+    const timer = setTimeout(() => {
+      setAssetCheck((s) => ({ ...s, loading: true }))
+      banWorkflowApi.assetMatch(singleIps.slice(0, 20))
+        .then((res) => {
+          // 竞态保护：输入已再次变化时丢弃本次结果
+          if (seq !== assetSeq.current) return
+          const items = res?.items || []
+          // 查到新命中时自动重新滑出（用户上次手动收起后 IP 已变化）
+          if (items.some((it) => it.matched)) setAssetHidden(false)
+          setAssetCheck({ loading: false, items, error: '', fetchedAt: res?.fetched_at || null })
+        })
+        .catch((e) => {
+          if (seq !== assetSeq.current) return
+          // 匹配失败不阻断封禁流程：清空结果，输入框下弱提示
+          setAssetCheck({ loading: false, items: [], error: e?.message || '资产匹配查询失败', fetchedAt: null })
+        })
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [manualOpen, manualForm.ip, canView])
+  // 资产匹配派生：命中条目 / 未命中 IP / 单 IP 匹配异常
+  const assetMatched = assetCheck.items.filter((it) => it.matched)
+  const assetMissedIps = assetCheck.items.filter((it) => !it.matched && !it.error).map((it) => it.ip)
+  const assetQueryErrors = assetCheck.items.filter((it) => it.error)
+  // 右侧资产匹配面板：有命中且未被用户收起时展示
+  const showAssetPanel = assetMatched.length > 0 && !assetHidden
+  // 弹窗宽度：黑名单预检 / 资产匹配两面板独立滑出；双面板时加宽至 7xl 容纳
+  const manualMaxWidth = showDupPanel && showAssetPanel
+    ? 'max-w-7xl'
+    : (showDupPanel || showAssetPanel ? 'max-w-6xl' : 'max-w-xl')
 
   // 选择（批量同步）
   const [selected, setSelected] = useState([])
@@ -327,8 +387,8 @@ export default function BanWorkbench({ embedded = false }) {
 
   // 手动发起封禁
   const doManualBan = () => {
-    if (!manualForm.ip.trim()) { setManualIpTouched(true); toast.error('请填写目标 IP'); return }
-    const ipMsg = validateBanTarget(manualForm.ip, '封禁目标')
+    if (!manualForm.ip.trim()) { setManualIpTouched(true); toast.error('请填写封禁目标'); return }
+    const ipMsg = validateBanEntry(manualForm.ip, '封禁目标')
     if (ipMsg) { setManualIpTouched(true); toast.error(ipMsg); return }
     if (!manualForm.reason.trim()) { setManualReasonTouched(true); toast.error('请填写封禁原因'); return }
     // Ban duration in days (decimals allowed, e.g. 0.5 = 12h); permanent bans skip duration
@@ -356,7 +416,7 @@ export default function BanWorkbench({ embedded = false }) {
         toast.success(
           n > 1
             ? `${n} 个目标已全部下发封禁（已同步安博通阻断器，逐目标生成 ${n} 条封禁记录）`
-            : `IP ${rec.ip} 已下发封禁（已同步安博通阻断器）`
+            : `目标 ${rec.ip} 已下发封禁（已同步安博通阻断器）`
         )
         setManualOpen(false)
         setManualIpTouched(false)
@@ -885,7 +945,7 @@ export default function BanWorkbench({ embedded = false }) {
       <Modal
         open={manualOpen}
         title="手动发起封禁"
-        maxWidth={showDupPanel ? 'max-w-6xl' : 'max-w-xl'}
+        maxWidth={manualMaxWidth}
         onClose={() => { if (!manualSubmitting) setManualOpen(false) }}
         footer={(
           <>
@@ -901,12 +961,12 @@ export default function BanWorkbench({ embedded = false }) {
           {/* 封禁目标 */}
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              目标 IP / CIDR / 范围 <span className="text-destructive">*</span>
+              目标 IP / CIDR / 范围 / 域名 <span className="text-destructive">*</span>
               <span className="ml-1.5 font-normal text-muted-foreground/70">可多值，逗号分隔，最多 20 个</span>
             </label>
             <input
               className={`${inputBaseCls} h-[38px] w-full font-mono${manualIpTouched && manualIpError ? ' !border-destructive ring-1 ring-destructive' : ''}`}
-              placeholder="如 203.0.113.50, 10.0.0.0/8, 1.2.3.4-1.2.3.20"
+              placeholder="如 203.0.113.50, 10.0.0.0/8, 1.2.3.4-1.2.3.20, evil.com"
               value={manualForm.ip}
               onChange={(e) => setManualForm((f) => ({ ...f, ip: e.target.value }))}
               onBlur={() => setManualIpTouched(true)}
@@ -939,6 +999,39 @@ export default function BanWorkbench({ embedded = false }) {
             {manualOpen && !dupCheck.loading && dupCheck.results.length > 0 && dupFound.length === 0 && dupQueryErrors.length === 0 && (
               <div className="mt-1 text-[11px] text-muted-foreground">
                 已查询 {dupCheck.results.length} 个 IP，均不在设备黑名单中
+              </div>
+            )}
+            {/* 资产匹配弱提示：查询中 / 命中但面板被收起（点击展开）/ 命中详情见右侧 /
+                空结果（两数据源均未找到）/ 查询失败（不阻断封禁流程） */}
+            {manualOpen && assetCheck.loading && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> 正在匹配资产（资产发现 + 资产清单）…
+              </div>
+            )}
+            {manualOpen && !assetCheck.loading && assetMatched.length > 0 && assetHidden && (
+              <button
+                type="button"
+                onClick={() => setAssetHidden(false)}
+                className="mt-1 flex items-center gap-1.5 rounded-md border border-info/30 bg-info/5 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition hover:border-info/50"
+                title="展开右侧资产匹配面板">
+                <Database className="h-3.5 w-3.5 text-info" />
+                资产匹配 · {assetMatched.length} 个 IP 命中资产（点击展开）
+              </button>
+            )}
+            {manualOpen && !assetCheck.loading && assetMatched.length > 0 && !assetHidden && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-info">
+                <Database className="h-3 w-3 shrink-0" />
+                {assetMatched.length} 个 IP 匹配到资产，详情见右侧
+              </div>
+            )}
+            {manualOpen && !assetCheck.loading && assetCheck.items.length > 0 && assetMatched.length === 0 && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                已匹配 {assetCheck.items.length} 个 IP，资产发现与资产清单中均未找到相关资产
+              </div>
+            )}
+            {manualOpen && !assetCheck.loading && assetCheck.error && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                资产匹配暂不可用：{assetCheck.error}（不影响封禁提交）
               </div>
             )}
           </div>
@@ -1040,7 +1133,7 @@ export default function BanWorkbench({ embedded = false }) {
           </div>
           <div className="flex items-start gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>提交后立即通过默认「安博通阻断器」下发设备封禁，记录标记为「手动封禁」；非永久封禁到期由定时任务联动设备自动解封。</span>
+            <span>提交后立即通过默认「安博通阻断器」下发设备封禁，目标支持 IP / CIDR / 范围 / 域名（多值拆分逐个下发），记录标记为「手动封禁」；非永久封禁到期由定时任务联动设备自动解封。</span>
           </div>
         </div>
         {/* IP 封禁状态预检面板：有命中且未收起时柔和浮现（弹窗先平滑展宽，面板随后淡入轻滑入） */}
@@ -1103,6 +1196,65 @@ export default function BanWorkbench({ embedded = false }) {
             </div>
           </aside>
         )}
+        {/* 资产匹配面板：有命中且未收起时柔和浮现（形式同黑名单预检面板：
+            弹窗先平滑展宽，面板随后淡入轻滑入）；双数据源并行查询结果并列展示 */}
+        {showAssetPanel && (
+          <aside className="panel-enter-soft sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-info/30 bg-info/[0.04]">
+            <div className="flex items-center gap-1.5 border-b border-info/20 px-3 py-2">
+              <Database className="h-3.5 w-3.5 shrink-0 text-info" />
+              <span className="text-[13px] font-medium text-foreground">资产匹配（双数据源）</span>
+              <span className="text-[11px] tabular-nums text-muted-foreground">命中 {assetMatched.length}/{assetCheck.items.length}</span>
+              <button type="button" onClick={() => setAssetHidden(true)}
+                className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                title="收起资产匹配面板（IP 变化后有新命中会重新滑出）">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div data-allow-scroll className="max-h-[62vh] space-y-2 overflow-y-auto overscroll-contain p-2.5">
+              {/* 命中 IP 卡片：逐来源展示（资产发现优先、其次资产清单，与安全上下文口径一致） */}
+              {assetMatched.map((it) => (
+                <div key={it.ip} className="rounded-md border border-border bg-card p-2.5">
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <span className="font-mono text-[13px] font-semibold text-foreground">{it.ip}</span>
+                    <span className="ml-auto"><Badge variant="info">已匹配资产</Badge></span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {(it.assets || []).map((a, i) => (
+                      <div key={i} className="rounded border border-border/60 bg-background/60 p-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge variant="info">{a.source_label || (a.source === 'asset_discovery' ? '资产发现' : '资产清单')}</Badge>
+                          <span className="min-w-0 break-all text-[12px] font-medium text-foreground">{a.asset_name || '--'}</span>
+                        </div>
+                        {Object.keys(a.details || {}).length > 0 && (
+                          <div className="mt-1 space-y-0.5">
+                            {Object.entries(a.details).slice(0, 6).map(([k, v]) => (
+                              <div key={k} className="flex min-w-0 items-start gap-1 text-[11px]">
+                                <span className="shrink-0 text-muted-foreground">{ASSET_DETAIL_LABELS[k] || k}</span>
+                                <span className="min-w-0 break-all text-foreground">{v}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {/* 单 IP 匹配异常 / 未命中列表：确认知晓「哪些 IP 没有资产信息」 */}
+              {assetQueryErrors.length > 0 && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                  {assetQueryErrors.map((it) => `${it.ip}：${it.error}`).join('；')}
+                </div>
+              )}
+              {assetMissedIps.length > 0 && (
+                <div className="px-0.5 text-[11px] text-muted-foreground">未匹配到资产：{assetMissedIps.join('、')}</div>
+              )}
+            </div>
+            <div className="border-t border-info/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+              同时查询资产发现与资产清单（发现优先）；CIDR / 范围 / 域名不做资产匹配{assetCheck.fetchedAt && `；更新于 ${fmtTime(assetCheck.fetchedAt)}`}
+            </div>
+          </aside>
+        )}
         </div>
       </Modal>
       {/* 导入封禁记录（CSV/Excel）：逐行校验字段，仅入库为「待同步」，不自动下发 */}
@@ -1128,7 +1280,7 @@ export default function BanWorkbench({ embedded = false }) {
             <div className="space-y-0.5">
               <div>
                 支持 .csv / .xlsx / .xls；必需列：
-                <span className="font-medium">IP地址、封禁原因</span>。
+                <span className="font-medium">IP地址（可填 IP / CIDR / 范围 / 域名）、封禁原因</span>。
                 可选列：封禁等级、封禁时长(天)、是否永久、归属地区、
                 <span className="font-medium">封堵设备</span>（留空使用默认安博通阻断器）。
               </div>

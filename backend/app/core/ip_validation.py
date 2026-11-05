@@ -359,6 +359,86 @@ def validate_ban_target(value, field_label: str = "封禁目标") -> str:
     )
 
 
+# ===== 封禁目标扩展（域名）：安博通黑名单条目（blist）同时接受 IP 与域名 =====
+# 域名规则：ASCII 主机名，每段 1~63 字符、字母/数字/连字符且不以连字符开头/结尾；
+# 须含至少一个点（拒绝单段主机名，避免把任意文本当域名）；拒绝通配/端口/路径。
+_DOMAIN_LABEL_RE = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+MAX_DOMAIN_LEN = 253  # RFC 1035 域名长度上限（不含末尾点）
+
+
+def validate_domain_token(token: str, *, where: str = "") -> str:
+    """校验单个域名 token，合法时返回小写归一化文本。
+
+    Raises:
+        ValueError: 格式非法（消息可直接展示给用户）
+    """
+    elem = (token or "").strip()
+    prefix = f"{where} " if where else ""
+    if not elem:
+        raise ValueError(f"{prefix}为空")
+    if len(elem) > MAX_DOMAIN_LEN:
+        raise ValueError(f"{prefix}域名过长（{len(elem)} > {MAX_DOMAIN_LEN} 字符）")
+    if "*" in elem:
+        raise ValueError(f"{prefix}不支持通配域名（如 *.example.com）")
+    labels = elem.split(".")
+    if len(labels) < 2:
+        raise ValueError(
+            f"{prefix}域名须包含至少一个点（如 evil.example.com），不支持单段主机名"
+        )
+    for lb in labels:
+        if not _DOMAIN_LABEL_RE.match(lb):
+            raise ValueError(
+                f"{prefix}不是合法的域名（段 '{lb}' 只能含字母/数字/连字符，"
+                "且不以连字符开头或结尾）"
+            )
+    return elem.lower()
+
+
+def validate_ban_entry(value, field_label: str = "封禁目标") -> str:
+    """校验封禁目标（支持域名）：每段为单 IP / CIDR / 范围 或 域名，多值允许。
+
+    与 ``validate_ban_target`` 的区别：无法按 IP 规则解析的段会尝试域名校验
+    （安博通 blist 条目同时接受 IP 与域名），仍非法才报错。
+    通配（IP 通配 / *.example.com）一律拒绝，避免误封全网。
+
+    Returns:
+        归一化字符串（多值用英文逗号连接，域名小写）；空输入返回 ""。
+
+    Raises:
+        IPValidationError: 校验失败，消息可直接展示给用户
+    """
+    label = _label(field_label)
+    s = "" if value is None else str(value).strip()
+    if not s:
+        return ""
+    if len(s) > MAX_EXPRESSION_LEN:
+        raise IPValidationError(
+            f"{label}过长（{len(s)} > {MAX_EXPRESSION_LEN} 字符），请拆分后重试"
+        )
+    tokens = split_ip_expression(s)
+    if not tokens:
+        raise IPValidationError(
+            f"{label}不是合法的封禁目标（请输入 IP / CIDR / 范围 / 域名）"
+        )
+    normalized: list[str] = []
+    for i, elem in enumerate(tokens):
+        where = f"{label}第{i + 1}段 '{elem}'"
+        try:
+            iv = parse_ip_token(
+                elem, allow_cidr=True, allow_range=True, allow_wildcard=False,
+                where=where,
+            )
+            normalized.append(iv.text)
+            continue
+        except ValueError:
+            pass  # 非 IP 形态 → 尝试域名
+        try:
+            normalized.append(validate_domain_token(elem, where=where))
+        except ValueError as exc:
+            raise IPValidationError(str(exc))
+    return ",".join(normalized)
+
+
 # 字段 key 形如 ip / src_ip / dst_ip / eip / cidr / ipv4 / ipv6 等视为 IP 字段；
 # 只做整词匹配，避免 ``description``（含 "ip" 子串）被误判。
 _IP_LIKE_KEY_RE = re.compile(

@@ -6,6 +6,8 @@
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/anbotong/blacklist`` + ``GET .../blacklist/query``：安博通黑名单
   分页拉取与单个 IP 精确查询（需 ban_workflow:view）
+- ``GET /ban-workflow/asset-match``：手动封禁弹窗资产匹配预检（资产发现 +
+  资产清单双源并行查询，复用工单安全上下文匹配规则，需 ban_workflow:view）
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
 - ``POST /ban-workflow/banned-ips/batch-delete``：封禁记录批量删除（需 ban_workflow:delete）
 - ``GET /ban-workflow/banned-ips/export/csv`` / ``GET .../import/template`` /
@@ -246,15 +248,16 @@ def _parse_wb_import_file(filename: str, raw: bytes) -> tuple[list[dict], list[s
 
 def _validate_wb_import_row(row: dict) -> dict:
     """校验单行导入数据并归一化；非法时抛 ``ValueError``（消息直接展示给用户）。"""
-    from app.core.ip_validation import IPValidationError, validate_ban_target
+    from app.core.ip_validation import IPValidationError, validate_ban_entry
 
     if "ip" not in row:
         raise ValueError("缺少 IP地址 列")
     raw_ip = _wb_cell_text(row.get("ip"))
     if not raw_ip:
         raise ValueError("IP地址不能为空")
+    # IP地址列同时接受 IP / CIDR / 范围 / 域名（安博通 blist 条目两者皆可）
     try:
-        ip = validate_ban_target(raw_ip, "IP地址")
+        ip = validate_ban_entry(raw_ip, "IP地址")
     except IPValidationError as exc:
         raise ValueError(str(exc)) from exc
 
@@ -910,6 +913,47 @@ def query_anbotong_blacklist_entry(
     }
 
 
+@router.get("/asset-match", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+def query_asset_match(
+    ips: str = Query(..., min_length=1, max_length=512, description="要匹配资产的 IP 列表（逗号分隔，最多 20 个）"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """手动封禁弹窗的资产匹配预检：双数据源并行查询（资产发现全量 + 资产清单）。
+
+    匹配逻辑复用工单安全上下文的 ``_match_asset``（经 ``_asset_match_for_ip``
+    转为前端展示结构）：两来源都查、资产发现优先、结果按来源去重，
+    与工单详情「安全上下文 → 资产匹配」完全同口径。仅接受单 IP（与
+    安全上下文按 IP 精确匹配一致）；CIDR / 范围 / 域名不做资产预检。
+    单个 IP 匹配失败不影响其余 IP（该条目带 error 返回）。
+    """
+    tokens = [t.strip() for t in ips.split(",") if t.strip()]
+    if not tokens:
+        raise HTTPException(status_code=400, detail="IP 列表不能为空")
+    if len(tokens) > 20:
+        raise HTTPException(status_code=400, detail="IP 数量超过上限（20 个）")
+    for t in tokens:
+        try:
+            ipaddress.ip_address(t)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"'{t}' 不是合法的 IP 地址")
+
+    # 输入去重：同一 IP 只匹配一次，结果顺序按输入首次出现顺序
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in tokens:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+
+    items = [_asset_match_for_ip(db, t) | {"ip": t} for t in uniq]
+    return {
+        "items": items,
+        "matched": sum(1 for i in items if i.get("matched")),
+        "total": len(items),
+        "fetched_at": beijing_now().isoformat(),
+    }
+
+
 # ======================================================================
 # 封禁工作台（已封禁 IP 模块，数据源 ban_records）
 # ======================================================================
@@ -1532,7 +1576,7 @@ def unban_ip(
 class ManualBanBody(BaseModel):
     ip: str = Field(
         ..., min_length=1, max_length=2048,
-        description="封禁目标：单 IP / CIDR / 范围 / 多值（IPv4/IPv6）；"
+        description="封禁目标：单 IP / CIDR / 范围 / 域名 / 多值（IPv4/IPv6）；"
                     "多值拆分逐个下发并逐条落记录，单次最多 20 个目标",
     )
     ban_level: str = Field("medium", description="封禁等级 low/medium/high/critical")
@@ -1583,16 +1627,17 @@ def _issue_manual_ban(
     与导入同步链路共用 ``app.devices.ban_target``：设备下发失败抛 502，
     **不会**落「生效中」平台记录，避免平台与设备状态不一致。
 
-    多值目标（逗号分隔的单 IP / CIDR / 范围）拆成单目标逐个下发：设备接口
+    多值目标（逗号分隔的单 IP / CIDR / 范围 / 域名）拆成单目标逐个下发：设备接口
     一次只接受一个 blist 条目，整串下发会被设备静默丢弃（返回空条目）；
     平台侧也按目标逐条落 BanRecord，否则整串表达式无法逐 IP 解封 / 到期。
     任一目标下发失败会回滚本次已成功的设备条目，保证「全成功才落库」。
     """
-    from app.core.ip_validation import split_ip_expression, validate_ban_target
+    from app.core.ip_validation import split_ip_expression, validate_ban_entry
 
-    # 封禁目标校验：支持单 IP / CIDR / 范围 / 多值（拒绝主机名/文本/通配）
+    # 封禁目标校验：支持单 IP / CIDR / 范围 / 域名 / 多值
+    # （安博通 blist 条目同时接受 IP 与域名；拒绝通配与任意文本）
     try:
-        ip = validate_ban_target(ip, "封禁目标")
+        ip = validate_ban_entry(ip, "封禁目标")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     if not ip:

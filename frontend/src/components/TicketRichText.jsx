@@ -135,8 +135,14 @@ function htmlToMd(rootEl) {
 // 画廊式图片放大预览（Portal 挂 body，编辑器/只读视图共用）
 // images: [{ src, name }]；index: 当前张；onIndex(i): 切换；onClose(): 关闭
 // 多张时提供 ←/→ 键盘循环切换、左右箭头按钮、n / N 计数、底部缩略图导航条；单张保持旧版精简形态
+// 箭头热区与关闭判定说明：
+// - 箭头按钮通过 ::before 向四周扩展 12px 点击热区（视觉圆形大小不变），整个视觉区域及外圈均可触发切换；
+// - 遮罩层关闭采用"按下起点 + 点击落点"双重判定：浏览器在 mousedown/mouseup 落点不同时会把 click
+//   重定向到共同祖先（遮罩层），若按下起点在导航控件热区内（箭头边缘典型场景），不视为关闭操作
 export function Lightbox({ images, index, onIndex, onClose }) {
   const stripRef = useRef(null)
+  // 记录 pointerdown 起点是否落在导航控件（箭头/缩略图条）热区内
+  const navPressedRef = useRef(false)
   const list = images || []
   const single = list.length <= 1
   const safeIndex = Math.min(Math.max(index, 0), Math.max(list.length - 1, 0))
@@ -159,27 +165,41 @@ export function Lightbox({ images, index, onIndex, onClose }) {
     el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [safeIndex, single])
 
+  // 点击目标（含 ::before 扩展热区）是否属于导航控件
+  const isNavTarget = (t) => !!(t && t.closest && t.closest('[data-lightbox-ctrl]'))
+  // 遮罩层关闭判定：按下起点或点击落点任一在导航控件热区内均不关闭，
+  // 避免 click 被重定向到遮罩层后误判为"点击空白关闭"
+  const handleOverlayPointerDown = (e) => { navPressedRef.current = isNavTarget(e.target) }
+  const handleOverlayClick = (e) => {
+    const pressedNav = navPressedRef.current
+    navPressedRef.current = false
+    if (pressedNav || isNavTarget(e.target)) return
+    onClose()
+  }
+
   if (!cur) return null
   return createPortal(
     <div className="fixed inset-0 z-[200] flex select-none flex-col items-center justify-center gap-3 bg-black/85 p-8"
-      onClick={onClose}>
+      onPointerDown={handleOverlayPointerDown}
+      onClick={handleOverlayClick}>
       <div className="max-w-[85vw] truncate text-sm text-white/85">{cur.name || '图片'}</div>
       <img src={cur.src} alt={cur.name || '图片'} className="max-h-[78vh] max-w-[90vw] cursor-zoom-out rounded-md border border-white/20 object-contain"
         onClick={(e) => e.stopPropagation()} onDoubleClick={onClose} />
       {!single && (
         <>
-          <button type="button" aria-label="上一张" title="上一张"
+          {/* ::before 向四周扩展 12px 热区：视觉圆形不变，边缘/边角点击同样触发切换 */}
+          <button type="button" data-lightbox-ctrl aria-label="上一张" title="上一张"
             onClick={(e) => { e.stopPropagation(); onIndex((safeIndex - 1 + list.length) % list.length) }}
-            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-3 text-white/80 transition hover:bg-white/20 hover:text-white">
+            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-3 text-white/80 transition hover:bg-white/20 hover:text-white active:bg-white/30 before:absolute before:-inset-3 before:content-['']">
             <ChevronLeft className="h-6 w-6" />
           </button>
-          <button type="button" aria-label="下一张" title="下一张"
+          <button type="button" data-lightbox-ctrl aria-label="下一张" title="下一张"
             onClick={(e) => { e.stopPropagation(); onIndex((safeIndex + 1) % list.length) }}
-            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-3 text-white/80 transition hover:bg-white/20 hover:text-white">
+            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-3 text-white/80 transition hover:bg-white/20 hover:text-white active:bg-white/30 before:absolute before:-inset-3 before:content-['']">
             <ChevronRight className="h-6 w-6" />
           </button>
           <div className="text-xs tabular-nums text-white/70">{safeIndex + 1} / {list.length}</div>
-          <div ref={stripRef} data-allow-scroll onClick={(e) => e.stopPropagation()}
+          <div ref={stripRef} data-allow-scroll data-lightbox-ctrl onClick={(e) => e.stopPropagation()}
             className="flex max-w-[90vw] gap-1.5 overflow-x-auto">
             {list.map((it, i) => (
               <img key={i} data-thumb={i} src={it.src} alt={it.name || '图片'} loading="lazy"

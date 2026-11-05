@@ -42,15 +42,16 @@ def record_ban(
     Raises:
         BanCallError: 封禁目标不合法，或重试耗尽仍失败。
     """
-    # 封禁目标硬拦截：单 IP / CIDR / 范围 / 多值（与人工封禁同一套规则），
-    # 避免告警字段脏数据（如 "N/A"、主机名）被下发到封禁工具。
-    from app.core.ip_validation import IPValidationError, validate_ban_target
+    # 封禁目标硬拦截：单 IP / CIDR / 范围 / 域名 / 多值（与人工封禁同一套规则），
+    # 避免告警字段脏数据（如 "N/A"、任意文本）被下发到封禁工具；
+    # 域名是合法目标（安博通 blist 条目同时接受 IP 与域名）。
+    from app.core.ip_validation import IPValidationError, validate_ban_entry
 
     ip = str(ip or "").strip()
     if not ip:
         raise BanCallError("封禁目标为空")
     try:
-        ip = validate_ban_target(ip, "封禁目标")
+        ip = validate_ban_entry(ip, "封禁目标")
     except IPValidationError as exc:
         raise BanCallError(f"封禁目标不合法: {exc}") from exc
     request_body = {

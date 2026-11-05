@@ -308,6 +308,58 @@ export function validateBanTarget(value, label = '封禁目标') {
   return validateIPExpression(value, label, { allowWildcard: false })
 }
 
+// ===== 封禁目标扩展（域名）：安博通黑名单条目（blist）同时接受 IP 与域名 =====
+// 域名规则与后端 validate_domain_token 保持一致：ASCII 主机名，每段 1~63 字符、
+// 字母/数字/连字符且不以连字符开头/结尾；须含至少一个点（拒绝单段主机名，
+// 避免把任意文本当域名）；拒绝通配域名/端口/路径。
+const DOMAIN_LABEL_RE = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$/
+export const MAX_DOMAIN_LEN = 253 // RFC 1035 域名长度上限（不含末尾点）
+
+// 单个域名 token 校验：合法返回 null，非法返回中文错误消息
+function domainTokenError(token, where = '') {
+  const elem = String(token || '').trim()
+  const prefix = where ? `${where} ` : ''
+  if (!elem) return `${prefix}为空`
+  if (elem.length > MAX_DOMAIN_LEN) return `${prefix}域名过长（${elem.length} > ${MAX_DOMAIN_LEN} 字符）`
+  if (elem.includes('*')) return `${prefix}不支持通配域名（如 *.example.com）`
+  const labels = elem.split('.')
+  if (labels.length < 2) return `${prefix}域名须包含至少一个点（如 evil.example.com），不支持单段主机名`
+  for (const lb of labels) {
+    if (!DOMAIN_LABEL_RE.test(lb)) {
+      return `${prefix}不是合法的域名（段 '${lb}' 只能含字母/数字/连字符，且不以连字符开头或结尾）`
+    }
+  }
+  return null
+}
+
+/** 单个 token 是否为合法域名（封禁预检 / 设备精确条目查询判断用） */
+export function isBanDomain(token) {
+  return domainTokenError(token) === null
+}
+
+/** 封禁目标（支持域名）：每段为单 IP / CIDR / 范围 或 域名；多值允许；不允许通配 */
+export function validateBanEntry(value, label = '封禁目标') {
+  const s = value === null || value === undefined ? '' : String(value).trim()
+  if (!s) return null
+  if (s.length > MAX_EXPRESSION_LEN) {
+    return `${labelOf(label)}过长（${s.length} > ${MAX_EXPRESSION_LEN} 字符），请拆分后重试`
+  }
+  const tokens = splitIPExpression(s)
+  if (tokens.length === 0) {
+    return `${labelOf(label)}不是合法的封禁目标（请输入 IP / CIDR / 范围 / 域名）`
+  }
+  for (let i = 0; i < tokens.length; i += 1) {
+    const elem = tokens[i]
+    const where = `${labelOf(label)}第${i + 1}段 '${elem}'`
+    // 先按 IP 形态（单 IP / CIDR / 范围）解析，失败再按域名校验
+    const ipErr = validateIPExpression(elem, '', { allowWildcard: false })
+    if (!ipErr) continue
+    const domErr = domainTokenError(elem, where)
+    if (domErr) return domErr
+  }
+  return null
+}
+
 /** IP/CIDR 列表（告警 in_cidr）：不允许范围与通配 */
 export function validateCidrList(value, label = '') {
   return validateIPExpression(value, label, { allowRange: false, allowWildcard: false })

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.ip_validation import validate_ban_target
+from app.core.ip_validation import validate_ban_entry
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.models.user import User
@@ -112,9 +112,9 @@ def manual_ban_ip(
     if body.ban_level not in ("low", "medium", "high", "serious"):
         raise HTTPException(status_code=400, detail="封禁等级必须为 low/medium/high/serious")
 
-    # 校验封禁目标格式（单 IP / CIDR / 范围 / 多值；拒绝主机名/文本/通配）
+    # 校验封禁目标格式（单 IP / CIDR / 范围 / 域名 / 多值；拒绝任意文本/通配）
     try:
-        ban_ip = validate_ban_target(body.ip, "封禁目标")
+        ban_ip = validate_ban_entry(body.ip, "封禁目标")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     if not ban_ip:
@@ -379,9 +379,9 @@ async def import_banned_ips(
             continue
         try:
             ip = row[0].strip()
-            # 入库/下发设备前严格校验封禁目标（支持 CIDR/范围/多值，拒绝文本）
+            # 入库/下发设备前严格校验封禁目标（支持 CIDR/范围/域名/多值，拒绝文本）
             try:
-                ip = validate_ban_target(ip, "封禁目标")
+                ip = validate_ban_entry(ip, "封禁目标")
             except ValueError as exc:
                 errors.append(f"第 {idx} 行: {exc}")
                 continue
