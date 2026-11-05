@@ -25,9 +25,9 @@ class ConnectionManager:
         # {execution_id: [WebSocket, ...]}
         self._connections: dict[int, list[WebSocket]] = {}
 
-    async def connect(self, execution_id: int, ws: WebSocket) -> None:
+    async def connect(self, execution_id: int, ws: WebSocket, subprotocol: str | None = None) -> None:
         """接受客户端连接并注册到 execution_id 分组。"""
-        await ws.accept()
+        await ws.accept(subprotocol=subprotocol)
         if execution_id not in self._connections:
             self._connections[execution_id] = []
         self._connections[execution_id].append(ws)

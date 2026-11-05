@@ -121,9 +121,8 @@ def _seed_admin_user(db) -> None:
     db.add(admin)
     db.commit()
     logger.warning(
-        "已种子默认管理员账号: username=%s, password=%s（请立即登录修改密码！）",
+        "已种子默认管理员账号: username=%s（请立即登录并修改密码）",
         settings.SEED_ADMIN_USERNAME,
-        settings.SEED_ADMIN_PASSWORD,
     )
 
     # 种子默认角色（admin 用户种子后执行）
@@ -437,7 +436,16 @@ async def ws_execution_progress(websocket: _WS, execution_id: int) -> None:
     - ``{"type": "trace", "node_id": "...", "node_type": "...", "status": "success", ...}``
     - ``{"type": "status", "execution_id": N, "status": "success"/"failed"}``
     """
-    await ws_manager.connect(execution_id, websocket)
+    from app.api.v1.ws import _authenticate, _extract_token
+
+    token = _extract_token(websocket, websocket.query_params.get("token", ""))
+    requested = websocket.headers.get("sec-websocket-protocol", "")
+    subprotocol = "bearer" if requested else None
+    if _authenticate(token) is None:
+        await websocket.accept(subprotocol=subprotocol)
+        await websocket.close(code=4401)
+        return
+    await ws_manager.connect(execution_id, websocket, subprotocol=subprotocol)
     try:
         # 保持连接，等待服务端推送；客户端也可发送心跳
         while True:

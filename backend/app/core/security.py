@@ -227,40 +227,58 @@ def _derive_device_key() -> bytes:
     return hashlib.sha256(("device-secret:" + settings.JWT_SECRET).encode("utf-8")).digest()
 
 
+_FERNET_PREFIX = "fernet:"
+
+
+def _device_fernet():
+    from cryptography.fernet import Fernet
+    return Fernet(base64.urlsafe_b64encode(_derive_device_key()))
+
+
+def _xor_device_bytes(data: bytes) -> bytes:
+    key = _derive_device_key()
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
 def encrypt_device_secret(plaintext: Optional[str]) -> str:
     """加密设备凭据（api_key/password/username）。
 
     - ``None`` 或空原样返回；
-    - 已加密（``enc:`` 前缀）不重复加密；
-    - 其余明文加密为 ``enc:<base64>``。
+    - 已是 ``fernet:`` 或历史 ``enc:`` 密文时不重复加密；
+    - 新写入使用 Fernet，密文前缀 ``fernet:``。
     """
     if not plaintext:
         return ""
-    if isinstance(plaintext, str) and plaintext.startswith(_ENV_ENC_PREFIX):
-        # 已加密，避免重复加密
+    if isinstance(plaintext, str) and (
+        plaintext.startswith(_FERNET_PREFIX) or plaintext.startswith(_ENV_ENC_PREFIX)
+    ):
         return plaintext
-    key = _derive_device_key()
-    data = plaintext.encode("utf-8")
-    encrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
-    return _ENV_ENC_PREFIX + base64.b64encode(encrypted).decode("ascii")
+    token = _device_fernet().encrypt(plaintext.encode("utf-8")).decode("ascii")
+    return _FERNET_PREFIX + token
 
 
 def decrypt_device_secret(ciphertext: Optional[str]) -> str:
     """解密设备凭据。
 
-    - 无 ``enc:`` 前缀视为历史明文原样返回（兼容旧数据）；
-    - 解密失败返回空字符串，避免泄露与异常。
+    - ``fernet:`` 走 Fernet；
+    - ``enc:`` 仍按历史 XOR 解密，已入库口令不用迁移也能用；
+    - 无前缀视为历史明文原样返回；
+    - 解密失败返回空字符串。
     """
-    if not ciphertext:
+    if not ciphertext or not isinstance(ciphertext, str):
         return ""
-    if not isinstance(ciphertext, str) or not ciphertext.startswith(_ENV_ENC_PREFIX):
-        # 兼容历史明文
+    if ciphertext.startswith(_FERNET_PREFIX):
+        try:
+            raw = ciphertext[len(_FERNET_PREFIX):].encode("ascii")
+            return _device_fernet().decrypt(raw).decode("utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("设备凭据解密失败: %s", exc)
+            return ""
+    if not ciphertext.startswith(_ENV_ENC_PREFIX):
         return ciphertext
     try:
-        key = _derive_device_key()
         encrypted = base64.b64decode(ciphertext[len(_ENV_ENC_PREFIX):])
-        decrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(encrypted))
-        return decrypted.decode("utf-8")
+        return _xor_device_bytes(encrypted).decode("utf-8")
     except Exception as exc:  # noqa: BLE001
         logger.warning("设备凭据解密失败: %s", exc)
         return ""

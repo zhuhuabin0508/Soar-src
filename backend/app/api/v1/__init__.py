@@ -27,7 +27,6 @@ from app.api.v1 import (
     feedback,
     govcloud,
     ingest,
-    internal_mock,
     knowledge_base,
     llm_config,
     log_center,
@@ -131,8 +130,11 @@ api_router.include_router(alert_rule_groups.router)
 api_router.include_router(monitor.router)
 # 告警自动封禁工作流（实例管理/触发规则/熔断/审批/封禁工作台/统计）
 api_router.include_router(ban_workflow.router)
-# 内置 mock 服务（IP 风险研判智能体 + 封禁工具，/internal 前缀免鉴权）
-api_router.include_router(internal_mock.router)
+from app.config import settings
+
+if settings.APP_ENV.strip().lower() != "production":
+    from app.api.v1 import internal_mock
+    api_router.include_router(internal_mock.router)
 # 工单中心（发起/流转/取消 + 附件）
 api_router.include_router(tickets.router)
 api_router.include_router(tickets.download_router)

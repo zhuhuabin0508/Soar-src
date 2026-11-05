@@ -6,7 +6,7 @@
 - 登出/刷新/强制下线时，将 ``jti`` 加入黑名单 ``blacklist:{jti}``（TTL = token 剩余有效期），
   并删除对应会话记录。``get_current_user`` 解析 token 后校验 jti 未被拉黑。
 - 刷新令牌（sliding session）：旧 jti 进黑名单 + 旧会话删除，签发新 token + 新会话。
-- Redis 不可用时降级为「不校验黑名单」（保证系统可用，记录 WARNING）。
+- Redis 不可用时黑名单校验失败按已吊销处理，拒绝继续使用该 token。
 """
 import json
 import logging
@@ -71,15 +71,15 @@ def create_session(
 def is_token_blacklisted(jti: str) -> bool:
     """检查 token 的 jti 是否已被拉黑（登出/刷新/强制下线）。
 
-    Redis 不可用时降级为「未拉黑」（保证可用性）。
+    Redis 不可用时视为已拉黑，避免登出和强制下线在故障期间失效。
     """
     if not jti:
         return False
     try:
         return bool(get_redis().get(f"{_BLACKLIST_KEY_PREFIX}{jti}"))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("黑名单校验失败（Redis 不可用，降级放行）: %s", exc)
-        return False
+        logger.error("黑名单校验失败，拒绝放行: %s", exc)
+        return True
 
 
 def blacklist_token(jti: str, ttl_seconds: int) -> None:

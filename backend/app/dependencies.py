@@ -95,7 +95,7 @@ def get_current_user(
 
     安全增强：
     - 解码 JWT 后校验 ``jti`` 是否在黑名单中（登出/刷新/强制下线后立即失效）。
-    - Redis 不可用时降级放行（保证可用性）。
+    - Redis 不可用时黑名单校验失败，拒绝该 token。
 
     Raises:
         HTTPException(401): 未携带 token / token 无效 / 用户不存在 / 用户已禁用 / token 已被吊销。

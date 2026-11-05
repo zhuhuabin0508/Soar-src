@@ -71,8 +71,8 @@ def _authenticate(token: str) -> int | None:
 
             if is_token_blacklisted(jti):
                 return None
-        except Exception:  # noqa: BLE001 - Redis 不可用时降级放行（与 HTTP 依赖一致）
-            pass
+        except Exception:
+            return None
     try:
         uid = int(payload["sub"])
     except (KeyError, TypeError, ValueError):

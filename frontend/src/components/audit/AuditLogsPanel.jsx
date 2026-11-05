@@ -62,7 +62,8 @@ function fmtDetail(detail) {
 
 // JSON 语法高亮
 function highlightJson(jsonStr) {
-  return jsonStr.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+\.?\d*([eE][+-]?\d+)?)/g, (match) => {
+  const safe = String(jsonStr).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return safe.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+\.?\d*([eE][+-]?\d+)?)/g, (match) => {
     let cls = 'text-warning'
     if (/^"/.test(match)) cls = /:$/.test(match) ? 'text-primary' : 'text-success'
     else if (/true|false/.test(match)) cls = 'text-info'
