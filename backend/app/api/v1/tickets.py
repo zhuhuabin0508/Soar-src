@@ -27,6 +27,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import uuid
 from urllib.parse import quote
 
@@ -45,14 +47,18 @@ from app.core.ticket_enrichment import (
 )
 from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config
 from app.core.ticket_device_action import (
-    append_device_call_log,
     annotate_device_form,
     build_device_action_form,
     build_field_context,
-    execute_prepared_runs,
     parse_params_schema,
+    plan_device_runs,
     prepare_device_params,
-    sync_device_outcome_to_workbench,
+)
+from app.core.ticket_device_run import (
+    apply_run_to_node_record,
+    create_runs_for_plans,
+    enqueue_run,
+    mark_enqueue_failed,
 )
 from app.core.ticket_flow import (
     collect_ref_options,
@@ -66,16 +72,19 @@ from app.core.ticket_flow import (
     suggest_route,
     validate_field_values,
 )
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.core.timezone import beijing_now
 from app.database import get_db
-from app.dependencies import get_current_user, is_admin, require_permission
+from app.dependencies import (
+    get_current_user, has_permission_for_user, is_admin, require_permission,
+)
 from app.devices.action_executor import execute_device_action
 from app.models.device import Device, DeviceAction
 from app.models.notification import Notification
 from app.models.ticket import (
-    Ticket, TicketCc, TicketFlow, TicketGroup, TicketGroupMember, TicketNodeRecord,
+    Ticket, TicketCc, TicketDeviceRun, TicketFlow, TicketGroup, TicketGroupMember,
+    TicketNodeRecord,
 )
 from app.models.user import User
 from app.models.workflow_ban import BanRecord
@@ -103,7 +112,7 @@ def _ticket_device_action_form(db, node, records) -> dict:
 
     ``default_template`` 原样下发，前端用历史记录 + 当前表单实时解析预览；
     不在服务端把模板结果写进 ``default``，避免处理人改其他参数时被冻结的旧值覆盖。
-    reason 参数未配置时由 build_device_action_form 内置 只读 + 工单同步：{ticket_no}。
+    reason 参数未配置时由 build_device_action_form 内置 隐藏 + 工单同步：{ticket_no}。
     """
     return annotate_device_form(build_device_action_form(db, node), records)
 
@@ -679,6 +688,18 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         db.query(User).filter(User.id == ticket.claimed_by_id).first()
         if ticket.claimed_by_id else None
     )
+    # 设备动作执行权限（独立授权）：详情/只看不受影响，
+    # 提交流转触发设备、失败重试、封禁撤销均需 ticket:execute
+    can_execute_device = has_permission_for_user(db, current_user, "ticket", "execute")
+    # 排队/执行中的设备任务数：前端据此轮询刷新时间线状态
+    pending_device_runs = int(
+        db.query(func.count(TicketDeviceRun.id))
+        .filter(
+            TicketDeviceRun.ticket_id == ticket.id,
+            TicketDeviceRun.status.in_(["queued", "running"]),
+        )
+        .scalar() or 0
+    )
 
     # 并行会签进度（当前节点为会签节点时返回，前端展示已签/待签分组）
     sign_progress = None
@@ -716,6 +737,10 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         "claimed_by_name": (claimed_by.display_name or claimed_by.username) if claimed_by else None,
         "can_urge": can_urge,
         "can_comment": can_comment,
+        # 设备动作执行权限（下车/重试/撤销）：独立权限 ticket:execute
+        "can_execute_device": bool(can_execute_device),
+        # 排队/执行中的设备任务数（>0 时前端轮询刷新时间线）
+        "pending_device_runs": pending_device_runs,
         "can_cancel": (
             ticket.status == "processing"
             and (admin or ticket.created_by_id == current_user.id)
@@ -723,7 +748,7 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         # 并行会签进度（非会签节点为 null）
         "sign_progress": sign_progress,
         # 设备动作表单：default_template 原样下发，前端按 display 渲染并用历史 + 当前表单实时预览；
-        # reason 未配置时内置 只读 + 工单同步：{ticket_no}
+        # reason 未配置时内置 隐藏 + 工单同步：{ticket_no}
         "device_action_form": _ticket_device_action_form(db, current_node, records),
         # 抄送：列表 + 管理权限（发起人 / 当前处理人 / admin；仅进行中可增减）
         "cc_targets": [r.to_dict() for r in _cc_rows(db, ticket.id)],
@@ -1148,6 +1173,158 @@ def _monitor_light(db: Session, now, today_start) -> dict:
     }
 
 
+# ============ 封禁IP实时统计（大屏「封禁IP统计」卡）：安博通黑名单全量 + 重保区间 ============
+# 与 /monitor 聚合接口解耦：数据源为安博通阻断器黑名单接口（设备侧实时全量），
+# 大屏卡片独立轮询本接口，避免设备调用频率绑死在工单聚合刷新周期上。
+
+# 全量黑名单翻页上限（单页 LIST_PAGE_SIZE=1000，20 页 = 2 万条，超出以 truncated 标记）
+_BLACKLIST_FETCH_MAX_PAGES = 20
+# 全量拉取结果缓存 TTL（秒）：卡片轮询间隔可低至 10s，缓存避免高频打设备
+_BLACKLIST_CACHE_TTL_SECONDS = 10.0
+_blacklist_cache: dict = {"at": 0.0, "items": [], "truncated": False}
+_blacklist_cache_lock = threading.Lock()
+
+
+def _parse_effect_time(value) -> datetime | None:
+    """解析设备黑名单条目的 effectTime（条目产生/生效时间，北京时间）。
+
+    设备返回形如 ``2026-11-05 10:00:00`` / ``2026-11-05T10:00:00``（可能带秒级以下
+    精度或时区偏移）；解析失败返回 None（该条目不参与重保区间统计）。
+    """
+    if value in (None, ""):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    dt: datetime | None = None
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(s.replace("T", " ")[:19])
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    dt = datetime.strptime(s[:19], fmt)
+                    break
+                except ValueError:
+                    continue
+    if dt is None:
+        return None
+    # 设备与平台同时区：带时区偏移时按北京时间剥离 tzinfo，统一为 naive 比较
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _parse_hit_num(value) -> int:
+    """解析设备黑名单条目的 hit_num（命中/拦截次数，设备返回字符串或整数）。
+
+    缺失 / 非法 / 负值按 0 计（不影响其他条目统计）。
+    """
+    if value is None or value == "":
+        return 0
+    try:
+        return max(0, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
+    """翻页拉取安博通阻断器黑名单全量条目（带 TTL 缓存）。
+
+    Returns:
+        (items, error, truncated)：error 非 None 时 items 为空；truncated=True 表示
+        超出翻页上限，仅统计到前 ``_BLACKLIST_FETCH_MAX_PAGES`` 页。
+    """
+    now_ts = time.monotonic()
+    with _blacklist_cache_lock:
+        if _blacklist_cache["items"] and now_ts - _blacklist_cache["at"] < _BLACKLIST_CACHE_TTL_SECONDS:
+            return _blacklist_cache["items"], None, _blacklist_cache["truncated"]
+
+    from app.devices.anbotong import LIST_PAGE_SIZE, list_blacklist_on_anbotong
+
+    items: list[dict] = []
+    truncated = False
+    page = 1
+    while page <= _BLACKLIST_FETCH_MAX_PAGES:
+        res = list_blacklist_on_anbotong(db, page=page, count=LIST_PAGE_SIZE, source="monitor")
+        if not res.get("success"):
+            # 首页失败：整体失败；翻页中途失败：保留已拉到的部分（数据可能不全但可展示）
+            if page == 1:
+                return [], res.get("error") or "安博通黑名单接口调用失败", False
+            logger.warning("黑名单全量拉取在第 %d 页中断: %s", page, res.get("error"))
+            break
+        items.extend(res.get("items") or [])
+        if not res.get("page_full"):
+            break
+        page += 1
+    else:
+        truncated = True
+        logger.warning("黑名单条目超过 %d 页上限，统计可能不全", _BLACKLIST_FETCH_MAX_PAGES)
+
+    with _blacklist_cache_lock:
+        _blacklist_cache.update(at=now_ts, items=items, truncated=truncated)
+    return items, None, truncated
+
+
+@router.get("/monitor/ban-live")
+def ticket_monitor_ban_live(
+    period_start: datetime | None = Query(default=None, description="重保时间范围起点（ISO 格式，如 2026-11-01T00:00:00）"),
+    period_end: datetime | None = Query(default=None, description="重保时间范围终点（ISO 格式，如 2026-11-07T23:59:59）"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket_monitor", "view")),
+):
+    """封禁IP实时统计（大屏「封禁IP统计」卡专用，独立于 /monitor 聚合接口轮询）。
+
+    - ``total``：安博通阻断器黑名单接口全量条目总数（设备侧实时值，直读直显）；
+    - ``total_hit_count``：全量条目的拦截（命中）次数总和（逐条累加 hit_num）；
+    - ``period_count``：重保时间范围内「产生」的封禁条目数（按条目 effectTime 落在
+      ``[period_start, period_end]` 统计）；起止均未传时为 null（前端提示未配置）；
+    - ``period_hit_count``：重保时间范围内产生条目的拦截（命中）次数总和；
+      未配置范围时为 null。
+
+    设备接口异常时返回 ``ok=false`` + ``error``（HTTP 仍为 200），前端据此降级：
+    保留最近一次成功快照并给出错误提示，而非空白。全量拉取结果后端缓存 10 秒，
+    卡片高频轮询不会逐次打到设备。
+    """
+    if (period_start is None) != (period_end is None):
+        raise HTTPException(status_code=400, detail="重保时间范围需同时提供起止时间")
+    ps = period_start.replace(tzinfo=None) if period_start and period_start.tzinfo else period_start
+    pe = period_end.replace(tzinfo=None) if period_end and period_end.tzinfo else period_end
+    if ps and pe and pe < ps:
+        raise HTTPException(status_code=400, detail="重保时间范围终点不能早于起点")
+
+    def _payload(ok, total, period_count, total_hit=None, period_hit=None, error=None, truncated=False) -> dict:
+        return {
+            "ok": ok,
+            "error": error,
+            "total": total,
+            "total_hit_count": total_hit,
+            "period_count": period_count,
+            "period_hit_count": period_hit,
+            "period_start": ps.isoformat() if ps else None,
+            "period_end": pe.isoformat() if pe else None,
+            "truncated": truncated,
+            "fetched_at": beijing_now().isoformat(),
+        }
+
+    items, err, truncated = _fetch_full_blacklist(db)
+    if err:
+        logger.warning("大屏封禁IP实时统计失败: %s", err)
+        return _payload(False, None, None, error=err)
+    period_count = None
+    period_hit_count = None
+    if ps and pe:
+        in_period = [
+            it for it in items
+            if (t := _parse_effect_time(it.get("effectTime"))) is not None and ps <= t <= pe
+        ]
+        period_count = len(in_period)
+        period_hit_count = sum(_parse_hit_num(it.get("hit_num")) for it in in_period)
+    total_hit_count = sum(_parse_hit_num(it.get("hit_num")) for it in items)
+    return _payload(True, len(items), period_count, total_hit=total_hit_count,
+                    period_hit=period_hit_count, truncated=truncated)
+
+
 @router.get("/monitor")
 def ticket_monitor_stats(
     flow_id: int | None = Query(default=None, description="指定流程模板 ID；缺省时自动选取进行中工单最多的流程"),
@@ -1177,6 +1354,23 @@ def ticket_monitor_stats(
     ``flow``（当前生效流程及是否自动选取）。末位「已完结」节点的件数为全流程已解决
     （``completed``）工单数，不随 ``flow_id`` 变化（与 KPI「已解决」口径一致）。
     注意：本路由必须注册在 ``GET /{ticket_id}`` 之前，避免 "monitor" 被路径参数吞掉。
+    """
+    return ticket_monitor_payload(
+        db, flow_id=flow_id, light=light, include_drill=include_drill, drill_limit=drill_limit
+    )
+
+
+def ticket_monitor_payload(
+    db: Session,
+    flow_id: int | None = None,
+    light: bool = False,
+    include_drill: bool = True,
+    drill_limit: int = 2000,
+) -> dict:
+    """工单监控大屏聚合数据核心（内部路由 ``GET /tickets/monitor`` 与开放 API 资源共用）。
+
+    响应结构：KPI / 趋势 / 分布 / 团队排名 / 来源平台 / 封禁IP / 流转节点 /
+    最新工单 / 下钻集，与 ``GET /tickets/monitor`` 完全一致。
     """
     now = beijing_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1423,6 +1617,68 @@ def ticket_monitor_stats(
         "current": flow_finished,
     })
 
+    # —— 处置状态流转泳道：所有已启用流程模板各一条泳道（大屏多泳道展示，无需切换）——
+    # 每条泳道节点序列读取流程模板当前定义（与单流程 flow_nodes 同口径），进行中工单按
+    # (flow_id, node_key) 统计停留。所有泳道最终汇聚到统一的「已完结」终态节点（前端
+    # 泳道区右侧共享节点卡，全部流程共用的最终状态）：数值直接复用 KPI「已解决」总数
+    # （len(completed)，与单流程 flow_nodes 的 _finished 同源），不按流程单独统计；
+    # 已取消工单不属于处置流转路径，不在流转图中展示（KPI / 等级分布等模块不受影响）。
+    # 边界兜底：停用 / 草稿 / 已删除流程名下的进行中存量工单归入末位「其他流程」合成泳道；
+    # 模板改版后 current_node_key 不在当前节点定义中的进行中工单归入「其他位置」合成节点卡。
+    # 泳道按进行中工单数降序，「其他流程」恒排末位；节点 key 跨流程可能重名，泳道内天然隔离。
+    _flow_key_counts: dict[tuple[int, str], int] = {}
+    for t in processing:
+        if t.current_node_key:
+            k = (t.flow_id, t.current_node_key)
+            _flow_key_counts[k] = _flow_key_counts.get(k, 0) + 1
+    flow_lanes: list[dict] = []
+    for f in all_flows:
+        if f.is_draft or not f.enabled:
+            continue
+        lane_nodes = [
+            {
+                "key": n.get("key"),
+                "name": n.get("name"),
+                "group": group_map.get(n.get("group_id"), ""),
+                "current": _flow_key_counts.get((f.id, n.get("key")), 0),
+            }
+            for n in (f.nodes or {}).get("nodes", [])
+            if n.get("type") != "end"
+        ]
+        # 「其他位置」兜底：本流程进行中数 - 各节点停留数之和 = 停留节点不在当前模板
+        # 定义中的工单数（模板重发布后节点 key 变更 / current_node_key 为空），保证
+        # Σ节点卡停留数 = 本泳道进行中数，泳道内部自洽
+        lane_processing = flow_count.get(f.id, 0)
+        unmatched = lane_processing - sum(n["current"] for n in lane_nodes)
+        if unmatched > 0:
+            lane_nodes.append({
+                "key": "_other",
+                "name": "其他位置",
+                "group": "",
+                "current": unmatched,
+            })
+        flow_lanes.append({
+            "flow_id": f.id,
+            "flow_name": f.name,
+            "processing_count": lane_processing,
+            "nodes": lane_nodes,
+        })
+    flow_lanes.sort(key=lambda x: -x["processing_count"])
+    # 「其他流程」合成泳道：启用流程集合之外（停用 / 草稿 / 已删除模板）名下的存量
+    # 进行中工单承接。无节点链（模板定义不可用），exclude_flow_ids 供前端下钻过滤
+    # （弹窗匹配 flow_id 不在启用流程集合中的工单，与泳道计数严格同口径）。
+    _active_flow_ids = {f.id for f in all_flows if not f.is_draft and f.enabled}
+    other_processing = sum(c for fid, c in flow_count.items() if fid not in _active_flow_ids)
+    if other_processing:
+        flow_lanes.append({
+            "flow_id": None,
+            "flow_name": "其他流程",
+            "synthetic": True,
+            "processing_count": other_processing,
+            "nodes": [],
+            "exclude_flow_ids": sorted(_active_flow_ids),
+        })
+
     # —— 下钻工单集（大屏各分区弹窗逐级下钻的数据源）——
     # 字段口径与各分区统计严格一致：team/platform/alert_type 与团队排名、来源平台、
     # 类型分布同源（首节点语义字段）；active_today 与 KPI「处理中」卡「今日活跃」小字一致；
@@ -1554,6 +1810,13 @@ def ticket_monitor_stats(
             "auto": selected_flow_id == auto_flow_id,
         },
         "flow_nodes": flow_nodes,
+        # 处置状态流转泳道（大屏多泳道展示）：全部已启用流程按进行中工单数降序 + 末位
+        # 「其他流程」合成泳道兜底（停用/草稿/已删除模板的存量进行中工单，仅有存量时存在）。
+        # [{flow_id, flow_name, synthetic?, processing_count, exclude_flow_ids?,
+        #   nodes: [{key, name, group, current}]}]
+        # 所有泳道最终汇聚到统一「已完结」终态节点（数值复用 KPI「已解决」总数，
+        # 前端从 kpi.completed 直读），不在此字段下发；已取消不在流转图展示。
+        "flow_lanes": flow_lanes,
     }
 
 
@@ -1985,11 +2248,11 @@ def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict,
     if not ip or duration_raw in (None, ""):
         logger.warning("封禁同步跳过（IP/时长未填）: ticket=%s node=%s", ticket.ticket_no, node.get("key"))
         return
-    # 封禁目标硬拦截：单 IP / CIDR / 范围 / 多值（与人工封禁同一套规则）
-    from app.core.ip_validation import IPValidationError, validate_ban_target
+    # 封禁目标硬拦截：单 IP / CIDR / 范围 / 域名 / 多值（与人工封禁同一套规则）
+    from app.core.ip_validation import IPValidationError, validate_ban_entry
 
     try:
-        ip = validate_ban_target(ip, "封禁目标")
+        ip = validate_ban_entry(ip, "封禁目标")
     except IPValidationError as exc:
         logger.warning(
             "封禁同步跳过（封禁目标非法: %s）: ticket=%s node=%s",
@@ -2029,6 +2292,42 @@ def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict,
     )
 
 
+def _submit_node_record(
+    ticket: Ticket,
+    current_node: dict,
+    current_user: User,
+    pending: set,
+    my_groups: set,
+    *,
+    values: dict,
+    route_to: str | None,
+    comment: str | None,
+) -> TicketNodeRecord:
+    """构造提交流转的节点记录（不含设备结果，device_result 由调用方按需回填）。
+
+    并行会签节点取本分组 ID（无待签分组时为空）；普通节点取节点配置分组。
+    advance_ticket 的「绑定/未绑定设备动作」两个分支共用，避免记录结构漂移。
+    """
+    group_id = (
+        current_node.get("group_id")
+        if current_node.get("type") != "parallel"
+        else (min(pending & my_groups) if (pending & my_groups) else None)
+    )
+    return TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=current_node.get("key") or "",
+        node_name=current_node.get("name") or "",
+        group_id=group_id,
+        handler_id=current_user.id,
+        handler_name=current_user.display_name or current_user.username,
+        action="submit",
+        field_values=values,
+        device_result=None,
+        route_to=route_to,
+        comment=comment,
+    )
+
+
 @router.post("/{ticket_id}/advance")
 def advance_ticket(
     ticket_id: int,
@@ -2043,6 +2342,8 @@ def advance_ticket(
     - 并行会签节点：按 finish_policy 等待全部会签分组提交后才流转
       （all=全部完成 / any=任一即过）；中间会签提交不改变停留节点
     - 流向结束节点时工单完成
+    - 命中设备动作：参数定稿后落库排队，由 Celery Worker 异步下发；
+      触发需独立权限 ``ticket:execute``，失败可在时间线重试，封禁成功可撤销
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
     if ticket.status != "processing":
@@ -2130,7 +2431,7 @@ def advance_ticket(
         raise HTTPException(status_code=400, detail=f"流转目标节点 {route_to} 不存在")
 
     device_result = None
-    device_outcomes = []
+    queued_runs: list[TicketDeviceRun] = []
     # 判断字段命中优先级：本次提交的表单值（本节点字段联动）> 历史记录（存量模板引用前面节点）
     device_form = annotate_device_form(
         build_device_action_form(db, current_node), submitted, current_values=values,
@@ -2139,6 +2440,11 @@ def advance_ticket(
     if not items:
         if body.run_device_action or body.device_params or body.device_runs:
             raise HTTPException(status_code=400, detail="当前节点未绑定设备动作")
+        db.add(_submit_node_record(
+            ticket, current_node, current_user, pending, my_groups,
+            values=values, route_to=route_to,
+            comment=sanitize_text(body.comment) if body.comment else None,
+        ))
     else:
         choices = {}
         for choice in body.device_runs or []:
@@ -2149,7 +2455,7 @@ def advance_ticket(
                 raise HTTPException(status_code=400, detail="设备动作与当前节点配置不一致")
             choices[choice.index] = choice
         # 先对本次要执行的动作全部定稿并校验参数；任一失败直接返回全部错误，
-        # 不做任何设备调用（设备一旦被调用无法撤销）。
+        # 不做任何设备排队/下发（下发后需通过撤销补偿回退）。
         skipped_results = {}
         run_items = []
         runs = {}
@@ -2182,67 +2488,59 @@ def advance_ticket(
             "node": (current_node or {}).get("name") or "",
             "field_values": build_field_context(submitted, values),
         }
-        outcomes, errors = execute_prepared_runs(
-            db, run_items, runs, exec_ctx, user_id=current_user.id,
-        )
+        plans, errors = plan_device_runs(db, run_items, runs, exec_ctx)
         if errors:
             raise HTTPException(status_code=422, detail="；".join(errors))
-        executed = {
-            item.get("index"): outcome
-            for item, outcome in zip(run_items, outcomes)
-        }
-        results = []
-        for item in items:
-            outcome = executed.get(item.get("index"))
-            if outcome is None:
-                results.append(skipped_results[item.get("index")])
-                continue
-            if not outcome.get("ok"):
-                label = f"{item.get('device_name') or '设备'} / {item.get('action_name') or '动作'}"
-                raise HTTPException(
-                    status_code=outcome.get("status") or 400,
-                    detail=outcome.get("detail") or f"「{label}」执行失败",
-                )
-            append_device_call_log(
-                db,
-                outcome["device"],
-                outcome["action"],
-                outcome["params"],
-                outcome["call"],
-                current_user.id,
+        # 独立设备执行权限：仅命中建议执行的设备动作才校验，未触发时仍需正常流转
+        if plans and not has_permission_for_user(db, current_user, "ticket", "execute"):
+            raise HTTPException(
+                status_code=403,
+                detail="您没有设备动作执行权限（ticket:execute），无法下发设备",
             )
-            device_outcomes.append(outcome)
-            results.append(outcome["record"])
-        device_result = results[0] if len(results) == 1 else {"items": results}
 
-    db.add(TicketNodeRecord(
-        ticket_id=ticket.id,
-        node_key=current_node.get("key") or "",
-        node_name=current_node.get("name") or "",
-        group_id=current_node.get("group_id") if current_node.get("type") != "parallel" else (min(pending & my_groups) if (pending & my_groups) else None),
-        handler_id=current_user.id,
-        handler_name=current_user.display_name or current_user.username,
-        action="submit",
-        field_values=values,
-        device_result=device_result,
-        route_to=route_to,
-        comment=sanitize_text(body.comment) if body.comment else None,
-    ))
-
-    # 设备动作成功后的工作台同步：按 action_type 分发（block_ip → 封禁台账，
-    # 后续新动作类型在 ticket_device_action._WORKBENCH_SYNC_HANDLERS 注册即可）。
-    # 独立 SAVEPOINT：同步失败仅回滚自身，不阻塞工单流转主流程
-    for device_outcome in device_outcomes:
-        if not device_outcome.get("ok"):
-            continue
-        try:
-            with db.begin_nested():
-                sync_device_outcome_to_workbench(
-                    db, ticket, current_node,
-                    device_outcome["device"], device_outcome["action"], device_outcome["params"],
-                )
-        except Exception:
-            logger.exception("工单设备动作工作台同步失败（不阻塞流转）: ticket=%s", ticket.ticket_no)
+        # 排队态结果先写入时间线（前端展示 排队中），Worker 完成后回写成功/失败
+        queued_items = {}
+        for plan in plans:
+            device, action = plan["device"], plan["action"]
+            queued_items[int(plan.get("index"))] = {
+                "index": plan.get("index"),
+                "skipped": False,
+                "run_id": None,
+                "device_id": device.id,
+                "device_name": device.name or "",
+                "action_id": action.id,
+                "action_name": action.name or "",
+                "action_type": action.action_type or "",
+                "params": plan.get("params") or {},
+                "status": "queued",
+                "success": None,
+                "attempts": 0,
+                "status_code": None,
+                "error": None,
+                "finished_at": None,
+            }
+        results = [
+            queued_items.get(item.get("index")) or skipped_results[item.get("index")]
+            for item in items
+        ]
+        node_record = _submit_node_record(
+            ticket, current_node, current_user, pending, my_groups,
+            values=values, route_to=route_to,
+            comment=sanitize_text(body.comment) if body.comment else None,
+        )
+        db.add(node_record)
+        db.flush()
+        if plans:
+            # 动作槽位唯一约束 + 幂等键：重复提交不会重复下发设备
+            queued_runs = create_runs_for_plans(
+                db, ticket, node_record, plans, results,
+                created_by_id=current_user.id,
+                created_by_name=current_user.display_name or current_user.username,
+            )
+            device_result = node_record.device_result
+        else:
+            device_result = results[0] if len(results) == 1 else {"items": results}
+            node_record.device_result = device_result
 
     # 旧版封禁同步（ban_sync 字段映射，仅记录不调用设备）：配置入口已从流程编辑器下线，
     # 此处保留执行以兼容存量已发布模板，存量工单/台账行为不变
@@ -2271,6 +2569,24 @@ def advance_ticket(
         _notify_next_group(db, ticket, target.get("name") or route_to, sorted(_csv_group_ids(ticket)))
     db.commit()
     db.refresh(ticket)
+    # 工单先落库，再把设备动作投递给 Celery Worker：
+    # - 异步执行，失败不阻塞工单流转，时间线可重试
+    # - 排队失败标记 failed，前端可在流转历史中重新排队
+    for run in queued_runs:
+        queued_ok = enqueue_run(run.id)
+        if not queued_ok:
+            mark_enqueue_failed(run.id, "任务排队失败，请在流转历史中重试")
+        write_audit(
+            db,
+            action="ticket_device_run_queued" if queued_ok else "ticket_device_run_queue_failed",
+            resource_type="ticket", resource_id=ticket.id,
+            detail={
+                "ticket_no": ticket.ticket_no, "run_id": run.id, "node": run.node_key,
+                "device": run.device_name, "action": run.action_name, "params": run.params,
+            },
+            operator=current_user.username, user_id=current_user.id,
+            result="success" if queued_ok else "failed",
+        )
     write_audit(
         db, action="ticket_advance", resource_type="ticket", resource_id=ticket.id,
         detail={"ticket_no": ticket.ticket_no, "from": current_node.get("key"), "to": route_to,
@@ -2290,7 +2606,7 @@ def execute_ticket_device_action(
     body: TicketDeviceActionExecute,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("ticket", "edit")),
+    current_user: User = Depends(require_permission("ticket", "execute")),
 ) -> dict:
     """执行当前节点配置的设备动作（如安博通阻断器的封禁/解封/查询）。
 
@@ -2422,6 +2738,233 @@ def execute_ticket_device_action(
         "note": note or None,
         "latency_ms": result.get("latency_ms"),
     }
+
+
+# ============ 设备动作执行记录：失败重试 / 封禁撤销 ============
+
+def _get_device_run_or_404(db: Session, ticket_id: int, run_id: int, *, for_update: bool = False) -> TicketDeviceRun:
+    query = db.query(TicketDeviceRun).filter(
+        TicketDeviceRun.id == run_id,
+        TicketDeviceRun.ticket_id == ticket_id,
+    )
+    if for_update:
+        query = query.with_for_update()
+    run = query.first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="设备执行记录不存在")
+    return run
+
+
+@router.post("/{ticket_id}/device-runs/{run_id}/retry")
+def retry_ticket_device_run(
+    ticket_id: int,
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "execute")),
+) -> dict:
+    """重试失败的设备动作：复用同一执行记录，不重复生成动作槽位。"""
+    ticket = _get_ticket_or_404(db, ticket_id)
+    run = _get_device_run_or_404(db, ticket_id, run_id, for_update=True)
+    if run.status != "failed":
+        raise HTTPException(status_code=400, detail="仅失败的设备动作可以重试")
+    run.status = "queued"
+    run.error = None
+    run.finished_at = None
+    run.updated_at = beijing_now()
+    apply_run_to_node_record(db, run)
+    db.commit()
+
+    queued_ok = enqueue_run(run.id)
+    if not queued_ok:
+        mark_enqueue_failed(run.id, "任务排队失败，请稍后重试")
+    write_audit(
+        db,
+        action="ticket_device_run_retry" if queued_ok else "ticket_device_run_retry_failed",
+        resource_type="ticket", resource_id=ticket.id,
+        detail={
+            "ticket_no": ticket.ticket_no, "run_id": run.id, "node": run.node_key,
+            "device": run.device_name, "action": run.action_name, "attempts": run.attempts,
+        },
+        operator=current_user.username, user_id=current_user.id,
+        result="success" if queued_ok else "failed",
+    )
+    if not queued_ok:
+        raise HTTPException(status_code=503, detail="任务排队失败，请稍后重试")
+    return _ticket_detail(db, ticket, current_user)
+
+
+@router.post("/{ticket_id}/device-runs/{run_id}/compensate")
+def compensate_ticket_device_run(
+    ticket_id: int,
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "execute")),
+) -> dict:
+    """撤销已成功的封禁动作：自动匹配同设备的解封动作并异步下发。
+
+    - 仅 ``block_ip`` 且执行成功的记录可撤销；已撤销/撤销中返回冲突
+    - 解封参数从原封禁参数映射（``ip`` → ``blist``），再按解封动作 schema 校验
+    - 撤销动作写独立时间线记录（action=device_action），原记录标记为 compensated
+    """
+    ticket = _get_ticket_or_404(db, ticket_id)
+    run = _get_device_run_or_404(db, ticket_id, run_id, for_update=True)
+    if run.kind != "execute" or run.status != "success":
+        raise HTTPException(status_code=400, detail="仅执行成功的设备动作可以撤销")
+    if (run.action_type or "") != "block_ip":
+        raise HTTPException(status_code=400, detail="仅封禁类动作支持自动撤销（解封）")
+    prior = (
+        db.query(TicketDeviceRun)
+        .filter(TicketDeviceRun.compensation_of_run_id == run.id)
+        .order_by(TicketDeviceRun.id.desc())
+        .first()
+    )
+    if prior is not None:
+        if prior.status in ("queued", "running", "success"):
+            raise HTTPException(status_code=409, detail="该封禁动作已发起撤销或已撤销")
+        if prior.status == "failed":
+            # 上次撤销失败：复用同一撤销记录重新排队（避免重复动作槽位/幂等键冲突）
+            prior.status = "queued"
+            prior.error = None
+            prior.finished_at = None
+            prior.updated_at = beijing_now()
+            apply_run_to_node_record(db, prior)
+            db.commit()
+            queued_ok = enqueue_run(prior.id)
+            if not queued_ok:
+                mark_enqueue_failed(prior.id, "任务排队失败，请稍后重试")
+            write_audit(
+                db,
+                action="ticket_device_run_compensate_retry" if queued_ok else "ticket_device_run_compensate_failed",
+                resource_type="ticket", resource_id=ticket.id,
+                detail={
+                    "ticket_no": ticket.ticket_no, "run_id": run.id, "compensation_run_id": prior.id,
+                    "node": run.node_key, "device": prior.device_name, "action": prior.action_name,
+                    "attempts": prior.attempts,
+                },
+                operator=current_user.username, user_id=current_user.id,
+                result="success" if queued_ok else "failed",
+            )
+            if not queued_ok:
+                raise HTTPException(status_code=503, detail="撤销任务排队失败，请稍后重试")
+            return _ticket_detail(db, ticket, current_user)
+
+    device = db.query(Device).filter(Device.id == run.device_id).first()
+    if device is None or not device.enabled:
+        raise HTTPException(status_code=400, detail="原封禁设备不存在或已停用，无法自动撤销")
+    unblock = (
+        db.query(DeviceAction)
+        .filter(
+            DeviceAction.device_id == device.id,
+            DeviceAction.action_type == "unblock_ip",
+            DeviceAction.enabled.is_(True),
+        )
+        .order_by(DeviceAction.id.asc())
+        .first()
+    )
+    if unblock is None:
+        raise HTTPException(status_code=400, detail="该设备未配置启用的解封动作（unblock_ip），请手动处理")
+
+    # 参数映射：同名字段直接沿用；封禁 ip → 解封 blist（安博通解封以路径参数 blist 指定对象）
+    schema = parse_params_schema(unblock)
+    orig_params = dict(run.params or {})
+    names = {str(p.get("name")) for p in schema}
+    mapped = {}
+    for name in names:
+        if name == "blist":
+            mapped[name] = orig_params.get("blist") or orig_params.get("ip") or ""
+        elif name in orig_params:
+            mapped[name] = orig_params.get(name)
+    if "reason" in names and not mapped.get("reason"):
+        mapped["reason"] = f"工单撤销：{ticket.ticket_no}"
+    if "blist" in names and not str(mapped.get("blist") or "").strip():
+        raise HTTPException(status_code=422, detail="原封禁记录未保存封禁对象，无法自动撤销")
+    params, errors = prepare_device_params(schema, mapped)
+    if errors:
+        raise HTTPException(status_code=422, detail="；".join(errors))
+
+    summary = json.dumps({
+        "kind": "compensate",
+        "device": device.name,
+        "action": unblock.name,
+        "params": params,
+        "compensation_of_run_id": run.id,
+    }, ensure_ascii=False)
+    record = TicketNodeRecord(
+        ticket_id=ticket.id,
+        node_key=run.node_key,
+        node_name=run.node_name,
+        group_id=None,
+        handler_id=current_user.id,
+        handler_name=current_user.display_name or current_user.username,
+        action="device_action",
+        field_values={},
+        device_result=None,
+        route_to=None,
+        comment=summary,
+    )
+    db.add(record)
+    db.flush()
+    comp = TicketDeviceRun(
+        ticket_id=ticket.id,
+        node_record_id=record.id,
+        node_key=run.node_key,
+        node_name=run.node_name,
+        action_index=0,
+        kind="compensate",
+        device_id=device.id,
+        action_id=unblock.id,
+        device_name=device.name or "",
+        action_name=unblock.name or "",
+        action_type=unblock.action_type or "",
+        params=params,
+        status="queued",
+        attempts=0,
+        idempotency_key=f"{ticket.id}:{run.id}:compensate",
+        compensation_of_run_id=run.id,
+        created_by_id=current_user.id,
+        created_by_name=current_user.display_name or current_user.username,
+        updated_at=beijing_now(),
+    )
+    db.add(comp)
+    db.flush()
+    record.device_result = {"items": [{
+        "index": 0,
+        "skipped": False,
+        "kind": "compensate",
+        "run_id": comp.id,
+        "device_id": device.id,
+        "device_name": device.name or "",
+        "action_id": unblock.id,
+        "action_name": unblock.name or "",
+        "action_type": unblock.action_type or "",
+        "params": params,
+        "status": "queued",
+        "success": None,
+        "attempts": 0,
+        "status_code": None,
+        "error": None,
+        "finished_at": None,
+        "compensation_of_run_id": run.id,
+    }]}
+    db.commit()
+
+    queued_ok = enqueue_run(comp.id)
+    if not queued_ok:
+        mark_enqueue_failed(comp.id, "任务排队失败，请稍后重试")
+    write_audit(
+        db,
+        action="ticket_device_run_compensate" if queued_ok else "ticket_device_run_compensate_failed",
+        resource_type="ticket", resource_id=ticket.id,
+        detail={
+            "ticket_no": ticket.ticket_no, "run_id": run.id, "compensation_run_id": comp.id,
+            "node": run.node_key, "device": device.name, "action": unblock.name, "params": params,
+        },
+        operator=current_user.username, user_id=current_user.id,
+        result="success" if queued_ok else "failed",
+    )
+    if not queued_ok:
+        raise HTTPException(status_code=503, detail="撤销任务排队失败，请稍后重试")
+    return _ticket_detail(db, ticket, current_user)
 
 
 # ============ 回退 ============

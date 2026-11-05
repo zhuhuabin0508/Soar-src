@@ -6,9 +6,9 @@ from types import SimpleNamespace
 sys.path.insert(0, "/app" if os.path.isdir("/app") else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.ticket_device_action import (
-    _duration_to_ban, ban_record_reason, build_device_action_form, build_field_context,
-    execute_prepared_runs, finalize_device_params, judge_says_execute, normalized_param_config,
-    prepare_device_params, resolve_param_template,
+    MAX_DEVICE_DURATION_SECONDS, _duration_to_ban, ban_record_reason, build_device_action_form,
+    build_field_context, execute_prepared_runs, finalize_device_params, judge_says_execute,
+    normalized_param_config, prepare_device_params, resolve_param_template,
 )
 from app.core.ticket_flow import validate_flow_structure, when_matches
 
@@ -86,6 +86,22 @@ def test_prepare_params_duration_type_converts_human_values():
     # 非法格式拒绝
     params, errors = prepare_device_params(schema, {"duration": "abc"})
     assert params == {} and any("时长格式无法识别" in e for e in errors)
+
+
+def test_prepare_params_string_duration_and_upper_limit():
+    """schema 标成 string 的 duration 参数同样归一，并按 max / 全局兜底校验上限。"""
+    schema = [{"name": "duration", "type": "string", "required": False, "default": "-1", "max": 2592000}]
+    params, errors = prepare_device_params(schema, {"duration": "3天"})
+    assert not errors and params["duration"] == str(3 * 86400)
+    params, errors = prepare_device_params(schema, {"duration": "2592001"})
+    assert params == {} and any("超出上限 2592000 秒" in e for e in errors)
+    # 未配置 max 时使用全局兜底上限
+    schema_no_max = [{"name": "duration", "type": "string", "required": False}]
+    params, errors = prepare_device_params(schema_no_max, {"duration": str(MAX_DEVICE_DURATION_SECONDS + 1)})
+    assert params == {} and any("超出上限" in e for e in errors)
+    # -1 永久不受上限影响
+    params, errors = prepare_device_params(schema, {"duration": "-1"})
+    assert not errors and params["duration"] == "-1"
 
 
 def test_flow_rejects_parallel_and_missing_action():
@@ -351,22 +367,30 @@ def _patch_resolve(monkeypatch, action):
     monkeypatch.setattr(mod, "resolve_device_action", lambda db, cfg: (_device(), action, None))
 
 
-def test_block_reason_builtin_readonly_only_for_block_ip(monkeypatch):
+def test_block_reason_builtin_hidden_only_for_block_ip(monkeypatch):
     schema = [{"name": "reason", "type": "string", "required": True, "label": "封禁原因"}]
     node = {"device_actions": [{"device_id": 1, "action_id": 2}]}
 
     _patch_resolve(monkeypatch, _fake_action("block_ip", schema))
     item = build_device_action_form(None, node)["items"][0]
     reason = item["params"][0]
-    assert reason["display"] == "readonly"
+    assert reason["display"] == "hidden"
     assert reason["default_template"] == "工单同步：{ticket_no}"
 
-    # 显式可编辑覆盖内置只读，且不带模板
+    # 显式可编辑覆盖内置隐藏，且不带模板
     cfg = {"device_id": 1, "action_id": 2, "param_config": {"reason": {"display": "editable"}}}
     _patch_resolve(monkeypatch, _fake_action("block_ip", schema))
     reason = build_device_action_form(None, {"device_actions": [cfg]})["items"][0]["params"][0]
     assert reason["display"] == "editable"
     assert "default_template" not in reason
+
+    # 只配置了只读/隐藏、未配置模板时，仍回填内置「工单同步」默认值
+    for display in ("readonly", "hidden"):
+        cfg = {"device_id": 1, "action_id": 2, "param_config": {"reason": {"display": display}}}
+        _patch_resolve(monkeypatch, _fake_action("block_ip", schema))
+        reason = build_device_action_form(None, {"device_actions": [cfg]})["items"][0]["params"][0]
+        assert reason["display"] == display
+        assert reason["default_template"] == "工单同步：{ticket_no}"
 
     # 解封/查询动作的 reason 不接管
     _patch_resolve(monkeypatch, _fake_action("unblock_ip", schema))

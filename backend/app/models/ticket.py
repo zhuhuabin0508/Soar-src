@@ -12,7 +12,7 @@
 """
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, JSON, func
 
-from app.core.timezone import to_beijing_iso
+from app.core.timezone import beijing_now, to_beijing_iso
 from app.database import Base
 
 
@@ -303,3 +303,54 @@ class TicketNodeRecord(Base):
 
     def __repr__(self) -> str:
         return f"<TicketNodeRecord id={self.id} ticket={self.ticket_id} node={self.node_key!r}>"
+
+
+class TicketDeviceRun(Base):
+    """工单设备动作异步执行记录。
+
+    每个“节点记录 + 动作槽位”只允许一条执行记录（``node_record_id + action_index`` 唯一），
+    保证重复提交/重复点击不会重复下发设备；重试复用同一行并累计 attempts。
+    """
+
+    __tablename__ = "ticket_device_runs"
+    __table_args__ = (
+        UniqueConstraint("node_record_id", "action_index", name="uq_ticket_device_run_slot"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)
+    node_record_id = Column(Integer, ForeignKey("ticket_node_records.id"), nullable=False, index=True)
+    node_key = Column(String(64), nullable=False, default="")
+    node_name = Column(String(100), nullable=False, default="")
+    action_index = Column(Integer, nullable=False, default=0)
+    kind = Column(String(16), nullable=False, default="execute")  # execute / compensate
+    device_id = Column(Integer, nullable=False)
+    action_id = Column(Integer, nullable=False)
+    device_name = Column(String(100), nullable=False, default="")
+    action_name = Column(String(100), nullable=False, default="")
+    action_type = Column(String(32), nullable=False, default="")
+    params = Column(JSON, nullable=False, default=dict)
+    status = Column(String(16), nullable=False, default="queued", index=True)  # queued/running/success/failed/compensated
+    attempts = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    status_code = Column(Integer, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    call_log_id = Column(Integer, nullable=True)
+    idempotency_key = Column(String(160), nullable=False, unique=True)
+    compensation_of_run_id = Column(Integer, nullable=True)
+    created_by_id = Column(Integer, nullable=True)
+    created_by_name = Column(String(64), nullable=False, default="")
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True, default=beijing_now)
+
+    def to_dict(self) -> dict:
+        result = {}
+        for column in self.__table__.columns:
+            value = getattr(self, column.name)
+            result[column.name] = to_beijing_iso(value) if hasattr(value, "isoformat") else value
+        return result
+
+    def __repr__(self) -> str:
+        return f"<TicketDeviceRun id={self.id} ticket={self.ticket_id} status={self.status!r}>"

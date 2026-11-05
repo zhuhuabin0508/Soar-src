@@ -132,6 +132,10 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
             decrypt_device_secret(device.username or ""),
             decrypt_device_secret(device.password or ""),
         )
+        # basic 认证凭据为空通常是解密失败（如 Worker 缺 JWT_SECRET）或未配置，
+        # 提前报清晰错误，避免把空凭据发给设备换来难以定位的 401
+        if not auth[0] or not auth[1]:
+            raise ValueError("设备 basic 认证凭据为空（未配置或解密失败，请检查设备账号密码配置）")
     # none: 不添加认证
 
     # 4) 请求体
@@ -338,7 +342,11 @@ def execute_device_action(
     verify = bool(device.verify_tls)
     max_retries = device.max_retries if device.max_retries is not None else 0
 
-    method, url, headers, auth, req_body = _build_request(device, action, params)
+    try:
+        method, url, headers, auth, req_body = _build_request(device, action, params)
+    except ValueError as exc:
+        return {"success": False, "status_code": None, "response_body": None,
+                "error": str(exc), "latency_ms": 0}
     if not url:
         return {"success": False, "status_code": None, "response_body": None,
                 "error": "设备未配置 api_url 且动作未配置 api_path", "latency_ms": 0}

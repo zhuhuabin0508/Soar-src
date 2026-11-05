@@ -10,6 +10,10 @@ from app.models.device import Device, DeviceAction, DeviceCallLog
 
 logger = logging.getLogger(__name__)
 
+# 时长类参数兜底上限（10 年）：schema 未显式配置 max 时防止误传超大值；
+# 具体设备上限可在动作 params_schema 中为参数配置 {"max": 秒数} 精确收紧
+MAX_DEVICE_DURATION_SECONDS = 10 * 365 * 24 * 3600
+
 
 def _pos_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
@@ -67,6 +71,8 @@ def prepare_device_params(schema: list[dict], raw: Any, *, check_required: bool 
             errors.append(f"参数「{label}」的取值不在可选项中")
             continue
         ptype = str(spec.get("type") or "").lower()
+        # 时长类参数：即使设备 schema 标成 string（如安博通 duration），也按名字做统一校验/归一
+        is_duration = ptype == "duration" or name.lower() in ("duration", "expire", "ttl", "age")
         if ptype in ("ip", "cidr"):
             from app.core.ip_validation import IPValidationError, validate_ip_expression
 
@@ -75,8 +81,10 @@ def prepare_device_params(schema: list[dict], raw: Any, *, check_required: bool 
             except IPValidationError as exc:
                 errors.append(str(exc))
                 continue
-        elif ptype == "duration":
+        elif is_duration:
             # 时长参数：接受 永久/45分钟/12小时/3天/纯秒数，统一转换为设备侧取值（-1=永久，否则秒数字符串）
+            # 错误提示优先取描述冒号前的短标签，避免把整段参数说明塞进报错
+            d_label = str(spec.get("label") or spec.get("description") or name).split("：")[0].strip() or name
             text = str(value).strip()
             if re.fullmatch(r"-?\d+(\.\d+)?", text):
                 seconds = float(text)
@@ -84,9 +92,19 @@ def prepare_device_params(schema: list[dict], raw: Any, *, check_required: bool 
             else:
                 permanent, seconds = parse_duration(text)
                 if not permanent and seconds < 0:
-                    errors.append(f"参数「{label}」的时长格式无法识别（支持：永久、45分钟、12小时、3天 或秒数）")
+                    errors.append(f"参数「{d_label}」的时长格式无法识别（支持：永久、45分钟、12小时、3天 或秒数）")
                     continue
                 value = "-1" if permanent else str(seconds)
+            # 上限预校验：优先用 schema 的 max（设备允许的最大秒数），否则用全局兜底上限
+            if value != "-1":
+                raw_limit = spec.get("max")
+                try:
+                    limit = float(raw_limit) if raw_limit not in (None, "") else MAX_DEVICE_DURATION_SECONDS
+                    if float(value) > limit:
+                        errors.append(f"参数「{d_label}」的时长超出上限 {int(limit)} 秒（-1 表示永久）")
+                        continue
+                except (TypeError, ValueError):
+                    pass
         out[name] = value
     return out, errors
 
@@ -125,6 +143,8 @@ def _params_form(action: Optional[DeviceAction]) -> list[dict]:
             "description": spec.get("description") or spec.get("label") or "",
             "default": spec.get("default") if spec.get("default") is not None else "",
             "options": spec.get("options") if isinstance(spec.get("options"), list) else [],
+            # 时长/数值类参数上限（秒），供前端输入即时提示；后端提交时仍强制校验
+            "max": spec.get("max"),
         })
     return params
 
@@ -180,8 +200,9 @@ def normalized_param_config(cfg: Any) -> dict:
     return out
 
 
-# reason 参数内置默认：未配置 param_config 的动作，封禁原因自动 只读 + 工单同步：{ticket_no}
-_BUILTIN_REASON_CONFIG = {"display": "readonly", "default_template": "工单同步：{ticket_no}"}
+# reason 参数内置默认：未配置 param_config 的动作，封禁原因自动 隐藏 + 工单同步：{ticket_no}
+# （工单详情扩展面板不渲染该参数，提交时仍按模板自动填充下发设备）
+_BUILTIN_REASON_CONFIG = {"display": "hidden", "default_template": "工单同步：{ticket_no}"}
 
 _TEMPLATE_VAR_RE = re.compile(r"\{(ticket_no|ticket_title|creator|node|f:[A-Za-z0-9_]+)\}")
 
@@ -249,8 +270,13 @@ def build_device_action_form(db, node: Optional[dict]) -> dict:
             pname = str(p.get("name") or "")
             entry = pconf.get(pname)
             if entry is None and pname == "reason" and builtin_reason:
-                # 内置默认：未配置的封禁原因自动 只读 + 工单同步：{ticket_no}
+                # 内置默认：未配置的封禁原因自动 隐藏 + 工单同步：{ticket_no}
                 entry = _BUILTIN_REASON_CONFIG
+            elif (pname == "reason" and builtin_reason and entry is not None
+                  and not entry.get("default_template")
+                  and entry.get("display") in ("readonly", "hidden")):
+                # 仅配置了展示方式、未配置默认值模板时，回填内置的工单同步原因，避免落到动作默认「API添加」
+                entry = {**_BUILTIN_REASON_CONFIG, "display": entry.get("display")}
             if entry is not None:
                 p["display"] = entry.get("display") or "editable"
                 if entry.get("default_template"):
@@ -525,8 +551,10 @@ def log_failed_device_call(device: Device, action: DeviceAction, params: dict, c
         session.close()
 
 
-def append_device_call_log(db, device: Device, action: DeviceAction, params: dict, call: dict, user_id: Optional[int]) -> None:
-    db.add(DeviceCallLog(**_log_fields(device, action, params, call, user_id)))
+def append_device_call_log(db, device: Device, action: DeviceAction, params: dict, call: dict, user_id: Optional[int]):
+    log = DeviceCallLog(**_log_fields(device, action, params, call, user_id))
+    db.add(log)
+    return log
 
 
 def run_ticket_device_action(db, node: dict, raw_params: Any, *, user_id: Optional[int]) -> dict:
@@ -624,12 +652,43 @@ def sync_block_ip_record(db, ticket, node: dict, device: Device, params: dict) -
     ))
 
 
+def sync_unblock_ip_record(db, ticket, node: dict, device: Device, params: dict) -> None:
+    """解封成功：把同工单对应封禁台账标记为已解封（撤销补偿）。"""
+    from app.core.ip_validation import IPValidationError, validate_ban_target
+    from app.models.workflow_ban import BanRecord
+
+    raw = params.get("blist") or params.get("ip")
+    if raw in (None, ""):
+        return
+    try:
+        ip = validate_ban_target(str(raw), "解封目标")
+    except IPValidationError:
+        logger.warning("工单设备解封台账跳过（目标非法）: ticket=%s", ticket.ticket_no)
+        return
+    now = beijing_now()
+    records = (
+        db.query(BanRecord)
+        .filter(
+            BanRecord.ip == ip,
+            BanRecord.ticket_id == ticket.id,
+            BanRecord.status.in_(["active", "pending_sync", "syncing", "pending_approval"]),
+        )
+        .all()
+    )
+    for record in records:
+        record.status = "unbanned"
+        record.unban_reason = "工单撤销封禁"
+        record.unban_operator = f"ticket:{ticket.ticket_no}"[:64]
+        record.unban_time = now
+
+
 # ============ 工作台同步分发 ============
 # 按设备动作类型（action_type）注册同步 handler：动作执行成功后，
 # 对应类型的信息自动同步到工作台对应模块。后续新动作类型要接入工作台，
 # 在此注册即可，工单流转侧代码无需改动。
 _WORKBENCH_SYNC_HANDLERS = {
     "block_ip": sync_block_ip_record,  # 封禁 IP → 工作台「已封禁 IP」列表（BanRecord）
+    "unblock_ip": sync_unblock_ip_record,  # 解封 IP → 对应工单封禁台账标记已解封（撤销补偿）
 }
 
 
