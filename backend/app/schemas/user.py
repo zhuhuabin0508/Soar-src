@@ -33,6 +33,8 @@ class UserUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # 登录用户名：管理员可在用户管理中修改（唯一性由更新接口校验）
+    username: Optional[str] = Field(None, min_length=2, max_length=64)
     display_name: Optional[str] = None
     email: Optional[str] = None
     role: Optional[str] = None

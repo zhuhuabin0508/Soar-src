@@ -5,20 +5,31 @@
 """
 import csv
 import io
+import json
 import logging
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_
+from sqlalchemy import func, inspect, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
 from app.database import get_db
 from app.dependencies import get_current_user, is_admin, require_permission
+from app.models.agent_memory import AgentMemory
+from app.models.chat_message import ChatMessage
+from app.models.chat_session import ChatSession
+from app.models.feedback import Feedback
+from app.models.notification import Notification
+from app.models.notification_rule import NotificationRule
+from app.models.resource_share import ResourceShare
 from app.models.role import Role
+from app.models.ticket import TicketCc, TicketGroupMember
 from app.models.user import User
+from app.models.user_notification_pref import UserNotificationPref
 from app.schemas.user import (
     ResetPasswordRequest,
     UserCreate,
@@ -33,6 +44,47 @@ router = APIRouter(
     tags=["users"],
     dependencies=[Depends(get_current_user)],
 )
+
+
+_USERNAME_MIN_LEN = 2
+_USERNAME_MAX_LEN = 64
+
+
+def _normalize_username(raw: Optional[str]) -> Optional[str]:
+    """去空格并校验用户名长度；``None`` 原样返回（表示未提交该字段）。"""
+    if raw is None:
+        return None
+    username = raw.strip()
+    if not username or not (_USERNAME_MIN_LEN <= len(username) <= _USERNAME_MAX_LEN):
+        raise HTTPException(
+            status_code=400,
+            detail=f"用户名长度需为 {_USERNAME_MIN_LEN}-{_USERNAME_MAX_LEN} 个字符",
+        )
+    return username
+
+
+def _username_conflict(db: Session, username: str, exclude_id: Optional[int] = None) -> bool:
+    """用户名唯一性校验（不区分大小写，避免 Admin/admin 混淆）。"""
+    query = db.query(User.id).filter(func.lower(User.username) == username.lower())
+    if exclude_id is not None:
+        query = query.filter(User.id != exclude_id)
+    return query.first() is not None
+
+
+def _is_username_integrity_error(exc: IntegrityError) -> bool:
+    """判断完整性错误是否由用户名唯一约束触发（兼容 SQLite/PostgreSQL 报错文本）。"""
+    return "username" in str(getattr(exc, "orig", exc)).lower()
+
+
+def _purge_if_table_exists(db: Session, inspector, model, *criteria) -> int:
+    """按条件清理用户关联数据；表尚未创建时跳过，避免旧库上删除用户报错。
+
+    Returns:
+        实际清理的行数，用于删除日志汇总。
+    """
+    if not inspector.has_table(model.__tablename__):
+        return 0
+    return int(db.query(model).filter(*criteria).delete(synchronize_session=False) or 0)
 
 
 @router.get("", response_model=list[UserOut])
@@ -80,9 +132,9 @@ def create_user(
         if body.role not in ("analyst", None) or body.role_id is not None or body.is_active is not True:
             raise HTTPException(status_code=403, detail="仅管理员可创建管理员或指定角色/启用状态")
 
-    existing = db.query(User).filter(User.username == body.username).first()
-    if existing:
-        raise HTTPException(status_code=409, detail=f"用户名 '{body.username}' 已存在")
+    username = _normalize_username(body.username)
+    if _username_conflict(db, username):
+        raise HTTPException(status_code=409, detail=f"用户名 '{username}' 已存在")
 
     # 等保密码复杂度校验（与系统设置中的密码策略一致）
     from app.core.security_policy import get_security_policy, validate_password_complexity
@@ -99,7 +151,7 @@ def create_user(
             role_id = role.id
 
     user = User(
-        username=body.username,
+        username=username,
         password_hash=hash_password(body.password),
         display_name=body.display_name,
         email=body.email,
@@ -111,7 +163,14 @@ def create_user(
         must_change_password=True,
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if _is_username_integrity_error(exc):
+            raise HTTPException(status_code=409, detail=f"用户名 '{username}' 已存在")
+        logger.warning("用户创建失败（完整性约束冲突）: username=%s", username, exc_info=True)
+        raise HTTPException(status_code=400, detail="用户数据校验失败，请检查输入")
     db.refresh(user)
     logger.info("用户创建: id=%s, username=%s", user.id, user.username)
     return user
@@ -266,8 +325,8 @@ async def import_users(
     if idx["用户名"] < 0:
         raise HTTPException(status_code=400, detail="缺少必填列：用户名")
 
-    # 预加载：已有用户名、角色名 → ID、密码策略
-    existing_users: dict[str, User] = {u.username: u for u in db.query(User).all()}
+    # 预加载：已有用户名（统一小写作为 key，保证导入匹配不区分大小写）、角色名 → ID、密码策略
+    existing_users: dict[str, User] = {u.username.lower(): u for u in db.query(User).all()}
     roles_map: dict[str, int] = {r.name: r.id for r in db.query(Role).all()}
     policy = get_security_policy(db)
     strategy = conflict_strategy if conflict_strategy in ("skip", "overwrite") else "skip"
@@ -288,7 +347,7 @@ async def import_users(
         if first.startswith("#"):
             continue
         total += 1
-        username = cell(row, "用户名")
+        username = cell(row, "用户名").strip()
         password = cell(row, "初始密码")
         display_name = cell(row, "显示名")
         email = cell(row, "邮箱")
@@ -303,13 +362,14 @@ async def import_users(
             nonlocal skipped
             skipped += 1
 
-        if not username or not (2 <= len(username) <= 64):
-            fail("用户名必填且长度 2-64")
+        if not username or not (_USERNAME_MIN_LEN <= len(username) <= _USERNAME_MAX_LEN):
+            fail(f"用户名必填且长度 {_USERNAME_MIN_LEN}-{_USERNAME_MAX_LEN}")
             continue
-        if username in seen:
+        username_key = username.lower()
+        if username_key in seen:
             fail("文件内重复的用户名")
             continue
-        seen.add(username)
+        seen.add(username_key)
 
         # 状态 / 角色解析（带合法性校验）
         is_active_val = _parse_bool(status_val)
@@ -334,7 +394,7 @@ async def import_users(
             fail("仅管理员可指定角色或禁用状态")
             continue
 
-        existing = existing_users.get(username)
+        existing = existing_users.get(username_key)
         if existing and strategy == "skip":
             skipped += 1
             continue
@@ -405,7 +465,7 @@ async def import_users(
                 must_change_password=True,
             )
             db.add(user)
-            existing_users[username] = user
+            existing_users[username_key] = user
             inserted += 1
 
     db.commit()
@@ -506,13 +566,52 @@ def update_user(
     sensitive_fields = ("role", "role_id", "is_active")
     if any(getattr(body, f, None) is not None for f in sensitive_fields) and not is_admin(current, db):
         raise HTTPException(status_code=403, detail="仅管理员可修改用户角色或启用状态")
+    # 登录用户名是身份标识：仅 admin 可改名（非 admin 仍可提交未变化的用户名，
+    # 比较时忽略大小写与首尾空格，避免「只改大小写」绕过权限限制）
+    if (
+        body.username is not None
+        and body.username.strip().lower() != (user.username or "").lower()
+        and not is_admin(current, db)
+    ):
+        raise HTTPException(status_code=403, detail="仅管理员可修改用户登录用户名")
 
     update_data = body.model_dump(exclude_unset=True)
+
+    # 用户名可改：统一去空格、校验长度与唯一性（避免数据库唯一约束抛 500）
+    if "username" in update_data:
+        new_username = _normalize_username(update_data.pop("username"))
+        if new_username is not None:
+            if _username_conflict(db, new_username, exclude_id=user_id):
+                raise HTTPException(status_code=409, detail="用户名已存在")
+            update_data["username"] = new_username
+
+    old_username = user.username
     for key, value in update_data.items():
         setattr(user, key, value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if _is_username_integrity_error(exc):
+            raise HTTPException(status_code=409, detail="用户名已存在，请更换后重试")
+        logger.warning("用户更新失败（完整性约束冲突）: id=%s", user_id, exc_info=True)
+        raise HTTPException(status_code=400, detail="用户数据校验失败，请检查输入")
     db.refresh(user)
     logger.info("用户更新: id=%s", user_id)
+    if user.username != old_username:
+        # 用户名是审计身份标识：除普通 logger 外，落一条带 old→new 明细的审计日志
+        from app.core.audit import log_audit
+
+        log_audit(
+            db,
+            user_id=current.id,
+            username=current.username,
+            action="update_username",
+            resource_type="user",
+            resource_id=user.id,
+            detail={"old_username": old_username, "new_username": user.username},
+        )
+        logger.info("用户名变更: id=%s, %s -> %s", user_id, old_username, user.username)
     return user
 
 
@@ -540,9 +639,71 @@ def delete_user(
         if admin_count <= 1:
             raise HTTPException(status_code=400, detail="系统至少保留一个管理员账号")
 
-    db.delete(user)
-    db.commit()
-    logger.info("用户删除: id=%s", user_id)
+    # 先清理直接引用该用户的数据。ticket_group_members / agent_memories 存在
+    # 数据库外键，直接删用户会被 PostgreSQL 拒绝并返回 500。
+    # 部分部署中 agent_memories 等表可能尚未创建，按实际表结构跳过。
+    # 复用当前 Session 的连接做反射，避免额外连接与当前事务相互干扰。
+    #
+    # 删除策略：
+    # - 清理用户私有数据（对话/记忆/通知/通知偏好/工单分组成员）与失效的抄送记录；
+    # - ResourceShare 按 granted_by 一并清理：账号删除后不再保留其授出的共享权限（安全收敛）；
+    # - 工单/反馈等业务记录保留，依赖创建人/处理人名称快照展示，仅清除会悬空的处理人引用。
+    inspector = inspect(db.connection())
+    purged = 0
+    purged += _purge_if_table_exists(
+        db, inspector, TicketGroupMember, TicketGroupMember.user_id == user_id
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, AgentMemory, AgentMemory.user_id == user_id
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, ChatMessage, ChatMessage.user_id == user_id
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, ChatSession, ChatSession.user_id == user_id
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, UserNotificationPref, UserNotificationPref.user_id == user_id
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, Notification, Notification.user_id == user_id
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, ResourceShare,
+        or_(ResourceShare.shared_with == user_id, ResourceShare.granted_by == user_id),
+    )
+    purged += _purge_if_table_exists(
+        db, inspector, TicketCc,
+        TicketCc.target_type == "user", TicketCc.target_id == user_id,
+    )
+
+    # 反馈记录属于业务数据需保留：清空该用户的处理人，避免继续指向已删除账号
+    if inspector.has_table(Feedback.__tablename__):
+        purged += int(
+            db.query(Feedback)
+            .filter(Feedback.assignee_id == user_id)
+            .update({Feedback.assignee_id: None}, synchronize_session=False)
+            or 0
+        )
+
+    # 通知规则中的目标用户 ID 同步移除，避免后续通知继续投递给已删除用户
+    if inspector.has_table(NotificationRule.__tablename__):
+        for rule in db.query(NotificationRule).all():
+            target_ids = rule.get_target_user_ids()
+            if user_id in target_ids:
+                rule.target_user_ids = json.dumps(
+                    [i for i in target_ids if i != user_id], ensure_ascii=False
+                )
+                purged += 1
+
+    try:
+        db.delete(user)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.warning("用户删除失败（仍被其他业务数据引用）: id=%s", user_id, exc_info=True)
+        raise HTTPException(status_code=409, detail="该用户仍被其他业务数据引用，无法删除")
+    logger.info("用户删除: id=%s, 清理关联数据=%d 条", user_id, purged)
     return None
 
 

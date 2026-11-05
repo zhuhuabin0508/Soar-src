@@ -21,12 +21,14 @@ const LOCAL_MODULE_FALLBACK = {
   bigscreen: ['view'],
   bigscreen2: ['view'],
   ticket_monitor: ['view'],
+  open_api: ['view', 'edit'],
 }
 const LOCAL_MODULE_LABELS = {
   asset_discovery: '资产发现',
   bigscreen: '盾立方W',
   bigscreen2: '盾立方指挥大屏',
   ticket_monitor: '工单监控大屏',
+  open_api: 'API开放平台',
 }
 
 function mergeModuleDef(modData) {
@@ -97,7 +99,7 @@ const MODULE_GROUPS = [
   {
     key: 'system',
     label: '系统管理',
-    modules: ['user', 'role', 'feedback', 'system_config', 'system_monitor', 'audit_log'],
+    modules: ['user', 'role', 'feedback', 'system_config', 'system_monitor', 'audit_log', 'open_api'],
   },
 ]
 

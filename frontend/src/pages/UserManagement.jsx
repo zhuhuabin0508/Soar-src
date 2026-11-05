@@ -10,7 +10,7 @@ import { usersApi } from '../api/users'
 import { rolesApi } from '../api/roles'
 import { useAuthStore } from '../store/authStore'
 import { authApi } from '../api/auth'
-import { hasPermission } from '../utils/permissions'
+import { hasPermission, isAdmin } from '../utils/permissions'
 import { Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
@@ -420,6 +420,8 @@ function UserManagement() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const currentUser = useAuthStore((s) => s.user)
+  // 角色/状态/登录用户名属于敏感字段，仅管理员可修改（后端同样有校验）
+  const canManageSensitive = isAdmin()
 
   // 编辑相关
   const [editOpen, setEditOpen] = useState(false)
@@ -606,7 +608,9 @@ function UserManagement() {
 
   const validateForm = () => {
     const errs = {}
-    if (!form.username.trim()) errs.username = '请填写用户名'
+    const username = form.username.trim()
+    if (!username) errs.username = '请填写用户名'
+    else if (username.length < 2 || username.length > 64) errs.username = '用户名长度需为 2-64 个字符'
     if (!editing && !form.password) errs.password = '请填写初始密码'
     if (!editing && form.password.length > 0 && form.password.length < (pwdPolicy.min_length || 8)) errs.password = `密码至少 ${pwdPolicy.min_length || 8} 位`
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errs.email = '邮箱格式不正确'
@@ -619,25 +623,31 @@ function UserManagement() {
     setSaving(true)
     try {
       if (editing) {
+        // 非管理员只提交基础资料，避免后端对 role/is_active 变更直接返回 403
         const body = {
+          username: form.username.trim(),
           display_name: form.display_name || null,
           email: form.email || null,
-          role: form.role,
-          role_id: form.role_id,
-          is_active: form.is_active,
           allowed_login_methods: form.allowed_login_methods,
+          ...(canManageSensitive
+            ? { role: form.role, role_id: form.role_id, is_active: form.is_active }
+            : {}),
         }
         await usersApi.update(editing.id, body)
+        // 改自己的用户名后刷新本地缓存，避免顶栏/头像仍显示旧用户名
+        if (currentUser?.id === editing.id) {
+          await useAuthStore.getState().refreshUser?.()
+        }
       } else {
         const body = {
-          username: form.username,
+          username: form.username.trim(),
           password: form.password,
           display_name: form.display_name || null,
           email: form.email || null,
-          role: form.role,
-          role_id: form.role_id,
-          is_active: form.is_active,
           allowed_login_methods: form.allowed_login_methods,
+          ...(canManageSensitive
+            ? { role: form.role, role_id: form.role_id, is_active: form.is_active }
+            : {}),
         }
         await usersApi.create(body)
       }
@@ -1152,7 +1162,10 @@ function UserManagement() {
               onChange={setField('username')}
               placeholder="登录用户名"
               required
-              hint={editing ? '用户名创建后不可修改' : undefined}
+              disabled={Boolean(editing) && !canManageSensitive}
+              hint={editing
+                ? (canManageSensitive ? '修改后该用户需使用新用户名登录' : '仅管理员可修改登录用户名')
+                : undefined}
             />
             <TextInput
               label="显示名"
@@ -1216,6 +1229,7 @@ function UserManagement() {
               value={form.role_id ? String(form.role_id) : ''}
               onChange={(v) => setField('role_id')(v ? Number(v) : null)}
               options={[{ value: '', label: '不关联（使用旧 role 字段）' }, ...roleOptions]}
+              disabled={!canManageSensitive}
             />
           ) : (
             <SelectInput
@@ -1223,11 +1237,12 @@ function UserManagement() {
               value={form.role}
               onChange={setField('role')}
               options={legacyRoleOptions}
+              disabled={!canManageSensitive}
             />
           )}
           <div className="flex items-center justify-between">
             <span className="text-sm text-foreground">启用账号</span>
-            <Switch checked={form.is_active} onChange={setField('is_active')} />
+            <Switch checked={form.is_active} onChange={setField('is_active')} disabled={!canManageSensitive} />
           </div>
           {/* 允许的登录方式 */}
           <div>
