@@ -7,7 +7,7 @@ import {
   Settings, HeartPulse, DatabaseBackup, LogOut, ChevronLeft, ChevronRight,
   ChevronsRight, UserRound, PieChart, Boxes, Info, Bug, MessageSquareWarning, Inbox, PackageCheck,
   CalendarClock, CalendarRange, CalendarX, History, Monitor, FileJson, BellRing, Activity,
-  ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset,
+  ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset, KeyRound,
 } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { hasPermission } from '../utils/permissions'
@@ -135,6 +135,7 @@ export const NAV_GROUPS = [
       { to: '/system-settings', icon: Settings, label: '系统设置', perm: ['system_config', 'view'] },
       { to: '/system-monitor', icon: HeartPulse, label: '系统监控', perm: ['system_monitor', 'view'] },
       { to: '/audit-logs', icon: ScrollText, label: '审计日志', perm: ['audit_log', 'view'] },
+      { to: '/api-open', icon: KeyRound, label: 'API开放平台', perm: ['open_api', 'view'] },
       { to: '/backup', icon: DatabaseBackup, label: '备份恢复', perm: ['system_config', 'view'] },
       { to: '/feedbacks/admin', icon: Bug, label: '反馈管理', perm: ['feedback', 'view'] },
       { to: '/about', icon: Info, label: '关于', perm: ['system_config', 'view'] },
@@ -237,6 +238,7 @@ const BREADCRUMB_MAP = {
   '/system-settings': ['系统管理', '系统设置'],
   '/system-monitor': ['系统管理', '系统监控'],
   '/audit-logs': ['系统管理', '审计日志'],
+  '/api-open': ['系统管理', 'API开放平台'],
   '/backup': ['系统管理', '备份恢复'],
   '/feedbacks/admin': ['系统管理', '反馈管理'],
   '/about': ['系统管理', '关于'],

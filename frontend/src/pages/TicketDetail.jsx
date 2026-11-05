@@ -20,7 +20,6 @@ import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS, evalParamExpr, deviceDurationLabel } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
-import DeviceDurationInput from '../components/DeviceDurationInput'
 import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
@@ -45,6 +44,24 @@ const ACTION_META = {
   comment: { label: '评论', cls: 'bg-muted text-muted-foreground', dot: 'border-muted-foreground/50' },
   device_action: { label: '设备动作', cls: 'bg-cyan-500/10 text-cyan-500', dot: 'border-cyan-500' },
 }
+// 设备异步执行状态：排队/执行中/成功/失败/已撤销（旧记录无 status 时按 success 兼容）
+const DEVICE_RUN_STATUS = {
+  queued: { label: '排队中', cls: 'bg-amber-500/10 text-amber-600' },
+  running: { label: '执行中', cls: 'bg-sky-500/10 text-sky-600' },
+  success: { label: '已下发', cls: 'bg-emerald-500/10 text-emerald-600' },
+  failed: { label: '下发失败', cls: 'bg-red-500/10 text-red-600' },
+  compensated: { label: '已撤销', cls: 'bg-muted text-muted-foreground' },
+}
+
+// 节点 device_result 兼容读取：新记录 {"items":[...]}，旧记录单对象
+const deviceItemsOfRecord = (record) => {
+  const data = record?.device_result
+  if (!data) return []
+  return Array.isArray(data.items) ? data.items : [data]
+}
+// 状态兼容：旧记录没有 status，按 success 判断
+const deviceRunStatus = (item) => item?.status || (item?.success === false ? 'failed' : 'success')
+const deviceRunPending = (item) => ['queued', 'running'].includes(deviceRunStatus(item))
 // 设备参数默认值模板：预览按工单上下文实时解析，不把解析结果冻进提交参数
 const DEVICE_TEMPLATE_VAR_RE = /\{(ticket_no|ticket_title|creator|node|f:[A-Za-z0-9_]+)\}/g
 
@@ -70,6 +87,23 @@ const resolveDeviceTemplate = (template, ctx) => String(template || '').replace(
   const value = key.startsWith('f:') ? (ctx?.fields || {})[key.slice(2)] : ctx?.[key]
   return value === undefined || value === null ? '' : String(value)
 })
+
+// 自定义时长统一按秒输入：把 -1/永久/3天/259200 等存量或预设值换算成秒展示
+const DURATION_UNIT_SECONDS = { 分钟: 60, 小时: 3600, 天: 86400 }
+const durationValueToSeconds = (value) => {
+  const s = String(value ?? '').trim()
+  if (!s) return ''
+  // -1 = 永久；其余负数非法，留空让用户重新填写
+  if (/^-?\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s)
+    if (n === -1) return '-1'
+    return n > 0 ? String(n) : ''
+  }
+  const parts = durationToParts(s)
+  if (parts.permanent) return '-1'
+  if (!parts.num || Number.isNaN(Number(parts.num))) return ''
+  return String(Number(parts.num) * (DURATION_UNIT_SECONDS[parts.unit] || 1))
+}
 
 const initialDeviceParams = (form, records) => {
   const prior = {}
@@ -701,6 +735,8 @@ export default function TicketDetail() {
   const [deviceCustom, setDeviceCustom] = useState({})
   // 处理人手动改过的设备参数（index → 参数名列表），随提交告知服务端优先用用户输入
   const [deviceOverrides, setDeviceOverrides] = useState({})
+  // 设备动作异步交互忙碌态：`${runId}:retry|compensate`、`batch:retry`
+  const [deviceBusy, setDeviceBusy] = useState({})
 
   const load = useCallback(() => {
     setLoading(true)
@@ -732,21 +768,69 @@ export default function TicketDetail() {
 
   useEffect(() => { load() }, [load])
 
+  // 静默刷新：只更新 ticket 数据，不重置当前节点表单/意见（轮询、手动刷新共用）
+  const refreshTicketSilently = useCallback(() => {
+    ticketApi.getTicket(id)
+      .then((res) => setTicket(res))
+      .catch(() => {})
+  }, [id])
+
   // 智能体研判后台进行中（agent.pending）：静默轮询刷新研判结果
   //（只更新 ticket，不重置当前节点表单/意见，完成后停止轮询）
   const hasPendingAgent = useMemo(
     () => (ticket?.enrichment_data?.sources || []).some((s) => s?.agent?.pending),
     [ticket],
   )
+  // 设备动作异步执行中（排队/执行中）：轮询刷新时间线状态，完成后自动停止
+  const hasPendingDeviceRun = useMemo(() => {
+    if (Number(ticket?.pending_device_runs || 0) > 0) return true
+    return (ticket?.records || []).some((r) => deviceItemsOfRecord(r).some(deviceRunPending))
+  }, [ticket])
+  // 全工单设备执行条目：用于把撤销记录关联回原封禁记录
+  const allDeviceItems = useMemo(
+    () => (ticket?.records || []).flatMap(deviceItemsOfRecord),
+    [ticket],
+  )
+  // 异步完成提醒：轮询发现“排队/执行中 → 成功/失败”时给一次 toast，避免用户长时间等待无反馈
+  const deviceRunStatusRef = useRef(new Map())
   useEffect(() => {
-    if (!hasPendingAgent) return undefined
-    const timer = setInterval(() => {
-      ticketApi.getTicket(id)
-        .then((res) => setTicket(res))
-        .catch(() => {})
-    }, 5000)
+    const itemById = new Map()
+    const next = new Map()
+    allDeviceItems.forEach((it) => {
+      if (it?.run_id && (it.action_name || it.device_name)) {
+        itemById.set(String(it.run_id), it)
+        next.set(String(it.run_id), deviceRunStatus(it))
+      }
+    })
+    const prev = deviceRunStatusRef.current
+    if (prev.size) {
+      const finished = []
+      next.forEach((status, runId) => {
+        const before = prev.get(runId)
+        if (before && deviceRunPending({ status: before }) && !deviceRunPending({ status })) {
+          finished.push({ status, item: itemById.get(runId) })
+        }
+      })
+      if (finished.length) {
+        const comps = finished.filter((f) => f.item?.kind === 'compensate')
+        const execs = finished.filter((f) => f.item?.kind !== 'compensate')
+        const compOk = comps.filter((f) => f.status !== 'failed').length
+        const compFail = comps.filter((f) => f.status === 'failed').length
+        const execOk = execs.filter((f) => f.status !== 'failed').length
+        const execFail = execs.filter((f) => f.status === 'failed').length
+        if (execOk) toast.success(`设备动作执行完成：${execOk} 个成功`)
+        if (execFail) toast.error(`设备动作执行失败：${execFail} 个，可在流转历史中重试`)
+        if (compOk) toast.success(`封禁撤销完成：${compOk} 个`)
+        if (compFail) toast.error(`封禁撤销失败：${compFail} 个，可在流转历史中重试`)
+      }
+    }
+    deviceRunStatusRef.current = next
+  }, [allDeviceItems])
+  useEffect(() => {
+    if (!hasPendingAgent && !hasPendingDeviceRun) return undefined
+    const timer = setInterval(refreshTicketSilently, 5000)
     return () => clearInterval(timer)
-  }, [hasPendingAgent, id])
+  }, [hasPendingAgent, hasPendingDeviceRun, refreshTicketSilently])
 
   const snapshot = ticket?.flow_snapshot || {}
   const nodes = snapshot.nodes || []
@@ -809,6 +893,8 @@ export default function TicketDetail() {
     if (cur !== undefined && cur !== null && String(cur).trim() !== '') return String(normDeviceVal(cur))
     return it?.judge_actual || ''
   }
+  // 本次提交命中建议执行值：无独立设备执行权限（ticket:execute）时禁止提交流转
+  const deviceNeedsPermission = (ticket?.device_action_form?.items || []).some((it) => liveDeviceExecute(it))
 
   // 联动字段刚展开时自动定位并聚焦：如「是否需要处置」选「是」后出现必填的「处置建议」，
   // 避免处理人仍按原位置点击提交、实际漏填被拦截却以为"没有反应"
@@ -991,23 +1077,76 @@ export default function TicketDetail() {
     const target = nodes.find((n) => n.key === targetKey)
     // 会签感知的确认文案：当前并行节点中间提交 / 目标并行节点 / 目标结束 / 普通流转
     const sp = ticket?.sign_progress
-    let message
+    let flowText
     if (currentNode?.type === 'parallel' && (sp?.pending?.length || 0) > 1) {
-      message = `本节点为并行会签节点（待签 ${sp.pending.length} 组），本次提交代表本分组完成会签，其余分组全部会签完成后工单才继续流转。确认提交？`
+      flowText = `本次提交代表本分组完成会签，其余 ${sp.pending.length} 组完成后继续流转`
     } else if (target?.type === 'end') {
-      message = '提交后工单将流转至结束节点并标记为已完成，确认提交？'
+      flowText = '提交后工单将流转至结束节点并完成'
     } else if (target?.type === 'parallel') {
-      const names = (target.sign_groups || []).map((g) => ticket.group_names?.[String(g)]).filter(Boolean).join('、')
-      message = `提交后工单将流转至「${target.name || targetKey}」，由${names || '多分组'}并行会签（${target.finish_policy === 'any' ? '任一分组提交即流转' : '全部完成后才继续流转'}）。确认提交？`
+      flowText = `提交后流转至「${target.name || targetKey}」并行会签（${target.finish_policy === 'any' ? '任一分组提交即流转' : '全部完成后流转'}）`
     } else {
-      message = `提交后工单将流转至「${target?.name || targetKey}」（由${ticket.group_names?.[String(target?.group_id)] || '对应分组'}处理），组内任一成员提交即代表全组。确认提交？`
+      flowText = `提交后流转至「${target?.name || targetKey}」（${ticket.group_names?.[String(target?.group_id)] || '对应分组'}处理）`
     }
     const willRun = actionItems.filter((it) => liveDeviceExecute(it))
+    let message
+    if (willRun.length && !ticket?.can_execute_device) {
+      toast.error('您没有设备动作执行权限（ticket:execute），无法提交流转触发设备')
+      return
+    }
     if (willRun.length) {
-      const names = willRun.map((it) => `${it.device_name || '设备'} / ${it.action_name || '动作'}`).join('、')
-      message = `命中建议执行值，本次将调用：${names}。设备调用失败时工单留在本节点。${message}`
+      // 确认摘要：设备 / 动作 + 关键参数（IP、时长优先，长文本截断），避免处理人误下发
+      const paramChip = (k, v, specs) => {
+        const label = String(specs.find((p) => p.name === k)?.description || k).split('：')[0]
+        let val = String(v)
+        if (/duration|expire|ttl/i.test(k)) {
+          const lab = deviceDurationLabel(v)
+          if (lab && lab !== val) val = `${val}（${lab}）`
+        }
+        return (
+          <span key={k} title={`${label}=${val}`}
+            className="inline-flex max-w-[13rem] shrink items-baseline rounded bg-background/70 px-1.5 py-0.5">
+            <span className="shrink-0 opacity-70">{label}</span>
+            <span className="mx-0.5 shrink-0 opacity-40">=</span>
+            <span className="min-w-0 truncate text-foreground/80">{val}</span>
+          </span>
+        )
+      }
+      const deviceCard = (it) => {
+        const run = deviceRuns.find((x) => x.index === it.index)
+        const params = run?.params || {}
+        const specs = it.params || []
+        // 只保留关键参数：IP 类 → 时长类 → 其余，最多 3 个
+        const rank = (k) => (/^(ip|blist|target)$/i.test(k) ? 0 : /duration|expire|ttl/i.test(k) ? 1 : 2)
+        const chips = Object.entries(params)
+          .filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== '')
+          .sort(([a], [b]) => rank(a) - rank(b))
+          .slice(0, 3)
+          .map(([k, v]) => paramChip(k, v, specs))
+        return (
+          <div key={it.index} className="rounded-md border border-border/70 bg-muted/60 px-3 py-2">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+              <Zap className="h-3.5 w-3.5 shrink-0 text-cyan-500" />
+              <span className="min-w-0 truncate">{it.device_name || '设备'}</span>
+              <span className="shrink-0 text-muted-foreground/60">/</span>
+              <span className="min-w-0 truncate">{it.action_name || '动作'}</span>
+            </div>
+            {chips.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground">{chips}</div>}
+          </div>
+        )
+      }
+      message = (
+        <div className="space-y-2 text-left">
+          <p className="text-sm text-foreground">将下发 {willRun.length} 个设备动作：</p>
+          <div className="space-y-1.5">{willRun.map(deviceCard)}</div>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            提交后工单立即流转，设备异步执行，结果可在流转历史中查看、重试或撤销。
+          </p>
+        </div>
+      )
     } else if (actionItems.length) {
-      message = `未命中建议执行值，本次不调用设备，工单按去向继续。${message}`
+      message = `未命中建议执行值，本次不调用设备，工单按去向继续。${flowText}。确认提交？`
+    } else {
+      message = `${flowText}。确认提交？`
     }
     confirm({ title: '确认提交流转', message, confirmText: '提交流转' }).then((ok) => {
       if (!ok) return
@@ -1031,6 +1170,109 @@ export default function TicketDetail() {
         .catch((e) => toast.error(e.message || '流转失败'))
         .finally(() => setSubmitting(false))
     })
+  }
+
+  // 设备动作异步结果：失败重试 / 封禁成功撤销（补偿）
+  const setDeviceRunBusy = (key, busy) => {
+    setDeviceBusy((prev) => {
+      if (!busy) {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      }
+      return { ...prev, [key]: true }
+    })
+  }
+
+  const handleRetryDeviceRun = async (dr) => {
+    if (!dr?.run_id) return
+    const key = `${dr.run_id}:retry`
+    if (deviceBusy[key]) return
+    // 确认框期间就锁定按钮，避免连点弹出多个确认框/重复排队
+    setDeviceRunBusy(key, true)
+    const ok = await confirm({
+      title: '重试设备动作',
+      message: `将重新下发「${dr.device_name || '设备'} / ${dr.action_name || '动作'}」，确认继续？`,
+      confirmText: '重试',
+    })
+    if (!ok) {
+      setDeviceRunBusy(key, false)
+      return
+    }
+    try {
+      const res = await ticketApi.retryDeviceRun(id, dr.run_id)
+      setTicket(res)
+      toast.success('已重新排队，执行结果将自动刷新')
+    } catch (e) {
+      toast.error(e.message || '重试失败')
+      // 排队失败时后端会把记录标记为 failed，主动刷新一次让失败原因立即可见
+      refreshTicketSilently()
+    } finally {
+      setDeviceRunBusy(key, false)
+    }
+  }
+
+  // 批量重试：仅重新排队失败项（成功/执行中的动作不受影响）
+  const handleRetryFailedDeviceRuns = async (items) => {
+    const targets = (items || []).filter((x) => x?.run_id)
+    if (!targets.length || deviceBusy['batch:retry']) return
+    setDeviceRunBusy('batch:retry', true)
+    const ok = await confirm({
+      title: '重试全部失败动作',
+      message: `将重新排队 ${targets.length} 个失败动作，已成功或执行中的动作不受影响。确认继续？`,
+      confirmText: '全部重试',
+    })
+    if (!ok) {
+      setDeviceRunBusy('batch:retry', false)
+      return
+    }
+    let success = 0
+    let latest = null
+    const errors = []
+    try {
+      for (const dr of targets) {
+        try {
+          latest = await ticketApi.retryDeviceRun(id, dr.run_id)
+          success += 1
+        } catch (e) {
+          errors.push(`${dr.action_name || '动作'}：${e.message || '重试失败'}`)
+        }
+      }
+      if (latest) setTicket(latest)
+      if (success) toast.success(`已重新排队 ${success}/${targets.length} 个动作`)
+      if (errors.length) toast.error(errors.join('；'))
+      // 部分排队失败时同步后端最新状态
+      if (errors.length) refreshTicketSilently()
+    } finally {
+      setDeviceRunBusy('batch:retry', false)
+    }
+  }
+
+  const handleCompensateDeviceRun = async (dr, busyKey) => {
+    if (!dr?.run_id) return
+    const key = busyKey || `${dr.run_id}:compensate`
+    if (deviceBusy[key]) return
+    const target = dr.params?.ip || dr.params?.blist || '原封禁对象'
+    setDeviceRunBusy(key, true)
+    const ok = await confirm({
+      title: '撤销封禁',
+      message: `将向「${dr.device_name || '设备'}」下发解封「${target}」，并同步工作台封禁台账。确认撤销该封禁？`,
+      confirmText: '确认撤销',
+    })
+    if (!ok) {
+      setDeviceRunBusy(key, false)
+      return
+    }
+    try {
+      const res = await ticketApi.compensateDeviceRun(id, dr.run_id)
+      setTicket(res)
+      toast.success('撤销任务已排队，执行结果将自动刷新')
+    } catch (e) {
+      toast.error(e.message || '撤销失败')
+      refreshTicketSilently()
+    } finally {
+      setDeviceRunBusy(key, false)
+    }
   }
 
   const handleCancel = () => {
@@ -1380,6 +1622,14 @@ export default function TicketDetail() {
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <span className="font-semibold text-foreground">流转历史</span>
               <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{(ticket.records || []).length} 条</span>
+              {Number(ticket.pending_device_runs || 0) > 0 && (
+                <button type="button" onClick={refreshTicketSilently}
+                  className="flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-600 transition hover:bg-amber-500/20"
+                  title="设备动作异步执行中，点击立即刷新状态">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {ticket.pending_device_runs} 个设备动作执行中
+                </button>
+              )}
               <span className="text-xs text-muted-foreground">按处理时间正序展示，含每个节点的处理人与处置意见</span>
             </div>
             {(ticket.records || []).length > 0 ? (
@@ -1390,6 +1640,27 @@ export default function TicketDetail() {
                   const defs = fieldDefMap(nodeDef?.fields)
                   const am = ACTION_META[r.action] || ACTION_META.submit
                   const routeTarget = r.route_to ? nodes.find((n) => n.key === r.route_to) : null
+                  // 本节点设备动作统计/失败项/撤销关联，用于批量重试与部分成功提示
+                  const recordDeviceItems = deviceItemsOfRecord(r)
+                  const activeDeviceItems = recordDeviceItems.filter(
+                    (it) => it && !it.skipped && (it.action_name || it.device_name),
+                  )
+                  const failedDeviceItems = activeDeviceItems.filter(
+                    (it) => deviceRunStatus(it) === 'failed' && it.run_id,
+                  )
+                  const pendingDeviceCount = activeDeviceItems.filter(deviceRunPending).length
+                  const deviceCounts = activeDeviceItems.reduce((acc, it) => {
+                    const s = deviceRunStatus(it)
+                    acc[s] = (acc[s] || 0) + 1
+                    return acc
+                  }, {})
+                  const compByRunId = {}
+                  allDeviceItems.forEach((it) => {
+                    if (it?.kind === 'compensate' && it.compensation_of_run_id) {
+                      // 同一原记录若有多条撤销记录，按时间线顺序后者覆盖前者（最新状态）
+                      compByRunId[String(it.compensation_of_run_id)] = it
+                    }
+                  })
                   return (
                     <div key={r.id} className="relative">
                       <span className={`absolute -left-7 top-6 flex h-[11px] w-[11px] items-center justify-center rounded-full border-2 bg-card ${am.dot}`} />
@@ -1415,37 +1686,159 @@ export default function TicketDetail() {
                             ))}
                           </div>
                         )}
-                        {(r.device_result?.items || (r.device_result ? [r.device_result] : [])).map((dr, di) => (
-                          dr?.skipped ? (
-                            <div key={di} className="mt-2 text-xs text-muted-foreground">
-                              {dr.by === 'judge'
-                                ? `判断组建议不执行，未调用「${dr.device_name || '设备'} / ${dr.action_name || '动作'}」`
-                                : dr.by === 'condition'
-                                ? '判断条件未命中，未下发设备'
-                                : (dr.action_name ? `本次未执行「${dr.device_name || '设备'} / ${dr.action_name}」` : '本次未下发设备')}
-                            </div>
-                          ) : (dr && (dr.skipped === false || dr.action_name || dr.device_name)) ? (
-                            <div key={di} className="mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                              <div className="text-foreground">
-                                已下发 {dr.device_name || '设备'} / {dr.action_name || '动作'}
-                                {dr.status_code ? ` · HTTP ${dr.status_code}` : ''}
+                        {recordDeviceItems.map((dr, di) => {
+                          if (!dr) return null
+                          if (dr.skipped) {
+                            const skipLabel = dr.by === 'judge' ? '判断组建议不执行' : dr.by === 'condition' ? '条件未命中' : '未执行'
+                            return (
+                              <div key={di} className="mt-1.5 flex items-center gap-1.5 rounded border border-dashed border-border/70 px-3 py-1.5 text-[11px] text-muted-foreground">
+                                <span className="shrink-0">{skipLabel}</span>
+                                {(dr.device_name || dr.action_name) && (
+                                  <>
+                                    <span className="shrink-0 opacity-40">·</span>
+                                    <span className="min-w-0 truncate">
+                                      {dr.device_name || '设备'}{dr.action_name ? ` / ${dr.action_name}` : ''}
+                                    </span>
+                                  </>
+                                )}
                               </div>
-                              {dr.params && Object.keys(dr.params).length > 0 && (
-                                <div className="mt-1 break-all">
-                                  {Object.entries(dr.params).map(([k, v]) => {
-                                    let disp = `${k}=${v}`
-                                    // 时长类参数附加友好显示（如 duration=259200（3天）、-1（永久））
+                            )
+                          }
+                          if (!(dr.skipped === false || dr.action_name || dr.device_name)) return null
+                          const isComp = dr.kind === 'compensate'
+                          const status = deviceRunStatus(dr)
+                          const meta = DEVICE_RUN_STATUS[status] || DEVICE_RUN_STATUS.success
+                          const isPending = deviceRunPending(dr)
+                          const statusLabel = isComp
+                            ? { queued: '撤销排队中', running: '撤销执行中', success: '已撤销', failed: '撤销失败' }[status] || '撤销'
+                            : meta.label
+                          // 原封禁记录的撤销进度（撤销动作在独立时间线记录中）
+                          const compItem = isComp ? null : compByRunId[String(dr.run_id)]
+                          const compStatus = compItem ? deviceRunStatus(compItem) : null
+                          const compBusyKey = compItem?.run_id ? `${compItem.run_id}:retry` : `${dr.run_id}:compensate`
+                          const retryBusy = !!deviceBusy[`${dr.run_id}:retry`]
+                          const compBusy = !!deviceBusy[compBusyKey]
+                          const canRetry = status === 'failed' && !!dr.run_id && !!ticket.can_execute_device
+                          const canCompensate = !isComp && status === 'success' && dr.action_type === 'block_ip'
+                            && !!dr.run_id && !!ticket.can_execute_device
+                            && (!compStatus || compStatus === 'failed')
+                          // 参数只保留有效值：主目标（ip/blist）与时长优先，长文本靠 title 查看全文
+                          const paramEntries = dr.params && typeof dr.params === 'object'
+                            ? Object.entries(dr.params)
+                              .filter(([, v]) => v !== null && v !== undefined && String(v) !== '')
+                              .sort(([a], [b]) => {
+                                const rank = (k) => (/^(ip|blist|target)$/i.test(k) ? 0 : /duration|expire|ttl|age/i.test(k) ? 1 : 2)
+                                return rank(a) - rank(b)
+                              })
+                            : []
+                          const compProgress = !isComp && compStatus
+                            ? { queued: '撤销排队中', running: '撤销执行中', failed: '撤销失败' }[compStatus]
+                            : null
+                          return (
+                            <div key={di} className="mt-2 rounded-md border border-border/70 bg-muted/60 px-3 py-2">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                                <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
+                                  {isComp
+                                    ? <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                                    : <Zap className="h-3.5 w-3.5 shrink-0 text-cyan-500" />}
+                                  <span className="min-w-0 truncate">{dr.device_name || '设备'}</span>
+                                  <span className="shrink-0 text-muted-foreground/60">/</span>
+                                  <span className="min-w-0 truncate">{dr.action_name || '动作'}</span>
+                                </span>
+                                <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${meta.cls}`}>{statusLabel}</span>
+                                {isPending && <Loader2 className="h-3 w-3 animate-spin text-amber-500" />}
+                                {compProgress && (
+                                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${DEVICE_RUN_STATUS[compStatus].cls}`}>
+                                    {compProgress}
+                                  </span>
+                                )}
+                                {Number(dr.attempts) > 1 && (
+                                  <span className="text-[11px] text-muted-foreground" title={`共尝试 ${dr.attempts} 次`}>
+                                    第 {dr.attempts} 次
+                                  </span>
+                                )}
+                                {status === 'failed' && !dr.error && dr.status_code ? (
+                                  <span className="text-[11px] text-muted-foreground">HTTP {dr.status_code}</span>
+                                ) : null}
+                                {(canRetry || canCompensate) && (
+                                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                                    {canRetry && (
+                                      <button type="button" disabled={retryBusy}
+                                        className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-[11px] text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                        onClick={() => handleRetryDeviceRun(dr)}>
+                                        {retryBusy && <Loader2 className="h-3 w-3 animate-spin" />}
+                                        重试
+                                      </button>
+                                    )}
+                                    {canCompensate && (
+                                      <button type="button" disabled={compBusy}
+                                        className="flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                        onClick={() => handleCompensateDeviceRun(dr, compBusyKey)}>
+                                        {compBusy && <Loader2 className="h-3 w-3 animate-spin" />}
+                                        {compStatus === 'failed' ? '重试撤销' : '撤销封禁'}
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              {paramEntries.length > 0 && (
+                                <div className="mt-1.5 flex flex-wrap gap-1">
+                                  {paramEntries.map(([k, v]) => {
+                                    let disp = String(v)
+                                    // 时长类参数附加友好显示（如 259200（3天）、-1（永久））
                                     if (/duration|expire|ttl/i.test(k)) {
                                       const lab = deviceDurationLabel(v)
-                                      if (lab && lab !== String(v)) disp = `${k}=${v}（${lab}）`
+                                      if (lab && lab !== String(v)) disp = `${v}（${lab}）`
                                     }
-                                    return disp
-                                  }).join('，')}
+                                    return (
+                                      <span key={k}
+                                        className="inline-flex max-w-[15rem] items-baseline rounded bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                                        title={`${k}=${disp}`}>
+                                        <span className="shrink-0 opacity-70">{k}</span>
+                                        <span className="mx-0.5 shrink-0 opacity-40">=</span>
+                                        <span className="min-w-0 truncate text-foreground/80">{disp}</span>
+                                      </span>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                              {dr.error && (
+                                <div className="mt-1.5 flex items-start gap-1.5 rounded bg-destructive/5 px-2 py-1 text-[11px] leading-relaxed text-destructive">
+                                  {dr.status_code ? <span className="shrink-0 font-mono opacity-80">HTTP {dr.status_code}</span> : null}
+                                  <span className="break-all">{dr.error}</span>
                                 </div>
                               )}
                             </div>
-                          ) : null
-                        ))}
+                          )
+                        })}
+                        {activeDeviceItems.length > 0 && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2 text-xs text-muted-foreground">
+                            <span>设备动作 {activeDeviceItems.length} 个</span>
+                            {[['queued', '排队'], ['running', '执行中'], ['success', '成功'], ['failed', '失败'], ['compensated', '已撤销']]
+                              .filter(([s]) => deviceCounts[s])
+                              .map(([s, label]) => (
+                                <span key={s} className={`rounded px-1.5 py-0.5 font-medium ${DEVICE_RUN_STATUS[s]?.cls || ''}`}>
+                                  {label} {deviceCounts[s]}
+                                </span>
+                              ))}
+                            {pendingDeviceCount > 0 && (
+                              <button type="button" onClick={refreshTicketSilently}
+                                className="flex items-center gap-1 text-amber-600 hover:underline"
+                                title="设备异步执行中，点击立即刷新状态">
+                                <Loader2 className="h-3 w-3 animate-spin" />刷新
+                              </button>
+                            )}
+                            <div className="flex-1" />
+                            {failedDeviceItems.length > 1 && !!ticket.can_execute_device && (
+                              <button type="button" disabled={!!deviceBusy['batch:retry']}
+                                className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                onClick={() => handleRetryFailedDeviceRuns(failedDeviceItems)}>
+                                {deviceBusy['batch:retry'] && <Loader2 className="h-3 w-3 animate-spin" />}
+                                重试全部失败（{failedDeviceItems.length}）
+                              </button>
+                            )}
+                          </div>
+                        )}
                         {r.comment && (
                           <div className={`mt-2 rounded-r-md border-l-2 px-3 py-2 ${
                             r.action === 'rollback' ? 'border-amber-500/60 bg-amber-500/5' : 'border-primary/60 bg-primary/5'
@@ -1733,6 +2126,12 @@ export default function TicketDetail() {
                   </div>
                 )}
 
+                {(ticket.device_action_form?.bound && deviceNeedsPermission && !ticket.can_execute_device) && (
+                  <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-600">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>您没有设备动作执行权限（ticket:execute），当前命中建议执行值无法提交流转，请联系管理员授权。</span>
+                  </div>
+                )}
                 {(ticket.device_action_form?.items || []).map((it) => {
                   if (!liveDeviceExecute(it)) {
                     const actual = liveDeviceActual(it)
@@ -1760,7 +2159,6 @@ export default function TicketDetail() {
                   return (
                     <div key={it.index} data-device-choice className="rounded-md border border-border p-3">
                       <div className="text-sm font-semibold text-foreground">{it.device_name || '设备'} / {it.action_name || '动作'}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">命中建议执行值，请填写设备参数</div>
                       {it.error && <div className="mt-2 text-xs text-destructive">{it.error}</div>}
                       <div className="mt-3 space-y-3">
                           {(it.params || []).map((p) => {
@@ -1777,12 +2175,23 @@ export default function TicketDetail() {
                             const tplPreview = p.default_template ? resolveDeviceTemplate(p.default_template, devicePreviewCtx) : ''
                             const matched = presets.find((x) => String(x.resolved) === String(cur))
                             const customMode = (hasCur && !matched) || !!deviceCustom[token]
+                            // 时长类参数：type=duration，或设备 schema 标为 string 但参数名是 duration/expire/ttl/age
                             const isDur = String(p.type || '').toLowerCase() === 'duration'
+                              || ['duration', 'expire', 'ttl', 'age'].includes(String(p.name || '').toLowerCase())
                             // 展示方式（模板设计者经 param_config 配置）：hidden 不渲染，按解析后的默认值提交；readonly 只读展示
                             if (p.display === 'hidden') return null
                             const isReadOnly = p.display === 'readonly'
                             const renderCustom = () => (isDur ? (
-                              <DeviceDurationInput value={cur ?? ''} disabled={false} onChange={(v) => setP(p.name, v)} />
+                              <div className="flex items-center gap-2">
+                                <input type="number" min="-1" step="1"
+                                  max={p.max ? Number(p.max) : undefined}
+                                  className={`${inputBaseCls} min-w-0 flex-1`}
+                                  value={durationValueToSeconds(cur)}
+                                  placeholder="请输入秒数"
+                                  title={p.max ? `单位为秒，-1 表示永久，上限 ${p.max} 秒` : '单位为秒，-1 表示永久'}
+                                  onChange={(e) => setP(p.name, e.target.value)} />
+                                <span className="shrink-0 text-sm text-muted-foreground">秒</span>
+                              </div>
                             ) : p.options?.length ? (
                               <CompactSelect size="lg" block value={cur ?? ''} onChange={(e) => setP(p.name, e.target.value)}>
                                 <option value="">请选择</option>
@@ -1801,8 +2210,6 @@ export default function TicketDetail() {
                                 }} />
                             ))
                             const defVal = (p.default !== undefined && p.default !== null && String(p.default) !== '') ? p.default : null
-                            const defText = defVal === null ? '' : (isDur ? (deviceDurationLabel(defVal) || String(defVal)) : String(defVal))
-                            const changed = defVal !== null && String(cur ?? '') !== String(defVal)
                             // 只读展示服务端定稿结果：模板实时预览优先，否则动作默认值
                             const readonlyText = tplPreview || (defVal === null ? '' : String(defVal))
                             return (
@@ -1811,37 +2218,17 @@ export default function TicketDetail() {
                                   <label className={labelCls}>
                                     {p.description || p.name}
                                     {p.required && <span className="text-red-500">*</span>}
-                                    <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">{p.name}</span>
                                   </label>
-                                  {defVal !== null && !isReadOnly && (
-                                    <div className="flex shrink-0 items-center gap-1.5">
-                                      {changed && (
-                                        <button type="button"
-                                          onClick={() => {
-                                            setP(p.name, defVal)
-                                            setDeviceCustom((m) => ({ ...m, [token]: false }))
-                                          }}
-                                          className="rounded px-1.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/10"
-                                          title="恢复为该参数的默认值">
-                                          恢复默认
-                                        </button>
-                                      )}
-                                      <span className="text-[10px] text-muted-foreground" title="未修改时按该默认值提交">
-                                        默认 {defText}
-                                      </span>
-                                    </div>
-                                  )}
                                 </div>
                                 {isReadOnly ? (
                                   <div className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-2">
                                     <Lock className="h-3 w-3 shrink-0 text-muted-foreground" />
                                     <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={readonlyText}>{readonlyText}</span>
-                                    <span className="shrink-0 text-[10px] text-muted-foreground">只读</span>
                                   </div>
                                 ) : presets.length ? (
                                   <div>
                                     <CompactSelect size="lg" block
-                                      value={matched ? matched.label : (customMode ? '__custom' : '')}
+                                      value={customMode ? '__custom' : (matched ? matched.label : '')}
                                       onChange={(e) => {
                                         const v = e.target.value
                                         if (v === '__custom') {
@@ -1865,9 +2252,6 @@ export default function TicketDetail() {
                               </div>
                             )
                           })}
-                          {!(it.params || []).length && (
-                            <p className="text-xs text-muted-foreground">该动作无需参数，提交后直接调用</p>
-                          )}
                         </div>
                     </div>
                   )
@@ -1886,7 +2270,10 @@ export default function TicketDetail() {
                     <span>{formErrorText}</span>
                   </div>
                 )}
-                <Button variant="primary" className="w-full" loading={submitting} onClick={handleSubmit}>
+                <Button variant="primary" className="w-full" loading={submitting}
+                  disabled={deviceNeedsPermission && !ticket.can_execute_device}
+                  title={deviceNeedsPermission && !ticket.can_execute_device ? '无设备动作执行权限（ticket:execute）' : undefined}
+                  onClick={handleSubmit}>
                   <SendHorizonal className="mr-1 h-4 w-4" />提交流转
                 </Button>
                 {canRollback && (

@@ -38,6 +38,7 @@ import SystemMonitor from './pages/SystemMonitor'
 import AuditLogs from './pages/audit/AuditLogs'
 import NotificationCenter from './pages/NotificationCenter'
 import BackupManagement from './pages/BackupManagement'
+import ApiOpenManage from './pages/openapi/ApiOpenManage'
 import Assets from './pages/Assets'
 import AssetOverview from './pages/AssetOverview'
 import AssetList from './pages/AssetList'
@@ -173,6 +174,7 @@ const router = createBrowserRouter([
           { path: '/system-settings', element: <RequirePermission perm={['system_config', 'view']} label="系统设置"><SystemSettings /></RequirePermission> },
           { path: '/system-monitor', element: <RequirePermission perm={['system_monitor', 'view']} label="系统监控"><SystemMonitor /></RequirePermission> },
           { path: '/audit-logs', element: <RequirePermission perm={['audit_log', 'view']} label="审计日志"><AuditLogs /></RequirePermission> },
+          { path: '/api-open', element: <RequirePermission perm={['open_api', 'view']} label="API开放平台"><ApiOpenManage /></RequirePermission> },
           { path: '/notifications', element: <RequirePermission perm={['notification', 'view']} label="通知中心"><NotificationCenter /></RequirePermission> },
           { path: '/backup', element: <RequirePermission perm={['system_config', 'view']} label="备份恢复"><BackupManagement /></RequirePermission> },
           { path: '/about', element: <RequirePermission perm={['system_config', 'view']} label="关于"><About /></RequirePermission> },

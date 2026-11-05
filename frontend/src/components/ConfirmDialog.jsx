@@ -72,7 +72,12 @@ export function ConfirmDialog({
     >
       <div className="flex items-start gap-3 py-2">
         <span className="shrink-0">{VARIANT_ICON[variant] || <Info className="h-5 w-5 text-primary" />}</span>
-        <p className="flex-1 text-sm text-muted-foreground">{message}</p>
+        {/* message 支持字符串或 ReactNode（结构化确认摘要） */}
+        {typeof message === 'string' ? (
+          <p className="flex-1 text-sm text-muted-foreground">{message}</p>
+        ) : (
+          <div className="min-w-0 flex-1 text-sm text-muted-foreground">{message}</div>
+        )}
       </div>
     </Modal>
   )

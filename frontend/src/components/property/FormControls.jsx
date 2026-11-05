@@ -171,16 +171,17 @@ export function Section({ title, children, hint }) {
 }
 
 // 文本输入
-export function TextInput({ label, value, onChange, placeholder, hint, required, maxLength }) {
+export function TextInput({ label, value, onChange, placeholder, hint, required, maxLength, disabled }) {
   const len = (value ?? '').length
   return (
     <div>
       <LabelWithTip label={label} hint={hint} required={required} />
       <input
-        className={inputCls}
+        className={`${inputCls} disabled:cursor-not-allowed disabled:opacity-60`}
         value={value ?? ''}
         placeholder={placeholder}
         maxLength={maxLength}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
       />
       {maxLength && (
@@ -211,13 +212,14 @@ export function NumberInput({ label, value, onChange, min, max, step, hint }) {
 }
 
 // 下拉选择
-export function SelectInput({ label, value, onChange, options, hint }) {
+export function SelectInput({ label, value, onChange, options, hint, disabled }) {
   return (
     <div>
       <LabelWithTip label={label} hint={hint} />
       <CompactSelect
         size="lg"
         block
+        disabled={disabled}
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
       >

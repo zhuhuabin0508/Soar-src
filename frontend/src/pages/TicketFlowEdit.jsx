@@ -73,6 +73,21 @@ const nextDeviceActionId = () => {
   return `da${Date.now().toString(36)}${deviceActionSeq.toString(36)}`
 }
 
+// 参数默认值提示：按参数类型/动作语义给出不同示例，避免所有参数显示同一句模板提示
+const paramDefaultPlaceholder = (p, actionType) => {
+  const name = String((p && p.name) || '')
+  const type = String((p && p.type) || '').toLowerCase()
+  const def = p && p.default !== undefined && p.default !== null && String(p.default).trim() !== ''
+    ? String(p.default)
+    : ''
+  if (name === 'reason' && actionType === 'block_ip') return '如：工单同步：{ticket_no}'
+  if (type === 'ip' || type === 'cidr') return '必填，可填模板，如：{f:源IP字段key}'
+  if (type === 'duration') return `留空用动作默认 ${def || '-1'}（-1=永久）`
+  if (Array.isArray(p?.options) && p.options.length) return def ? `留空用动作默认 ${def}` : `如：${p.options[0]}`
+  if (def) return `留空用动作默认 ${def}，可填模板覆盖`
+  return '可填模板，如：{ticket_no}'
+}
+
 // 平铺节点全部字段（顶层 + 匹配规则扩展字段）：key 唯一性集合与路由条件字段选择共用
 const flatFields = (fields) => {
   const out = []
@@ -705,6 +720,18 @@ export default function TicketFlowEdit() {
   const removeField = (fkey) => {
     if (!selected) return
     patchNode(selected.key, { fields: (selected.fields || []).filter((f) => f.key !== fkey) })
+  }
+
+  // 字段顺序即填写工单时的展示顺序：支持上移/下移调整位置
+  const moveField = (fkey, dir) => {
+    if (!selected) return
+    const fields = [...(selected.fields || [])]
+    const idx = fields.findIndex((f) => f.key === fkey)
+    const to = idx + dir
+    if (idx < 0 || to < 0 || to >= fields.length) return
+    const [moved] = fields.splice(idx, 1)
+    fields.splice(to, 0, moved)
+    patchNode(selected.key, { fields })
   }
 
   // ===== 匹配规则操作（下拉/开关字段：选中某值后展开扩展字段） =====
@@ -1629,8 +1656,28 @@ export default function TicketFlowEdit() {
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {(selected.fields || []).map((f) => (
+                        {(selected.fields || []).map((f, idx) => (
                           <div key={f.key} className="rounded-md border border-border p-4">
+                            <div className="mb-2 flex items-center justify-between">
+                              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                                <List className="h-3.5 w-3.5" />字段 {idx + 1}
+                                {f.label && <span className="truncate text-foreground">{f.label}</span>}
+                              </span>
+                              {canEdit && (
+                                <div className="flex items-center gap-0.5">
+                                  <button type="button" onClick={() => moveField(f.key, -1)} disabled={idx === 0}
+                                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+                                    title="上移（提前填写顺序）">
+                                    <ArrowUp className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button type="button" onClick={() => moveField(f.key, 1)} disabled={idx === (selected.fields || []).length - 1}
+                                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+                                    title="下移（延后填写顺序）">
+                                    <ArrowDown className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                             <div className="grid grid-cols-4 gap-3">
                               <div>
                                 <label className={labelCls}>显示名<span className="text-red-500">*</span></label>
@@ -1911,8 +1958,8 @@ export default function TicketFlowEdit() {
                                                     </CompactSelect>
                                                     <span className="text-[10px] text-muted-foreground">默认值</span>
                                                     <input className={`${inputCls} h-8 min-w-0 text-xs`} disabled={!canEdit}
-                                                      placeholder="值模板，如：工单同步：{ticket_no}"
-                                                      title="支持变量：{ticket_no} 工单号、{ticket_title} 标题、{creator} 发起人、{f:字段key} 取工单字段值"
+                                                      placeholder={paramDefaultPlaceholder(p, picked?.action_type)}
+                                                      title={`默认值模板。支持变量：{ticket_no} 工单号、{ticket_title} 标题、{creator} 发起人、{f:字段key} 取工单字段值；${paramDefaultPlaceholder(p, picked?.action_type)}`}
                                                       value={template}
                                                       onChange={(e) => patchEntry({ default_template: e.target.value })} />
                                                   </div>

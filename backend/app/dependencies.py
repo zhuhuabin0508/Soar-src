@@ -214,6 +214,11 @@ def _check_matrix_permission(db: Session, user: User, module: str, action: str) 
     return False
 
 
+def has_permission_for_user(db: Session, user: User, module: str, action: str) -> bool:
+    """非抛异常版本：判断当前用户是否拥有 ``module:action`` 权限（供详情/条件分支使用）。"""
+    return _check_matrix_permission(db, user, module, action)
+
+
 def require_permission(module: str, action: str) -> Callable:
     """权限矩阵校验依赖工厂（基于 Role.permissions）。
 

@@ -4,7 +4,7 @@
 // 明暗主题切换零改动。提炼自 soar-ui-design skill。
 import { isValidElement, createElement, Fragment, useState, useRef, useEffect, useMemo, Children } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, ChevronLeft, ChevronRight, Calendar, Clock } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Calendar, Clock, Search, X } from 'lucide-react'
 import { useDensityStore, DENSITY_CLASS } from '../store/densityStore'
 import DensitySwitcher from './DensitySwitcher'
 
@@ -659,6 +659,18 @@ export function Pagination({
 // 背景：原生 select 弹层由系统渲染——深色主题下弹浅色列表且错位，Windows Chromium
 // 打开首帧还会黑闪（color-scheme 无法修复）。菜单 portal 到 body 并跟随主题令牌渲染。
 // children 传 <option>（与原生一致）；size: sm | md | lg；variant: field | ghost。
+// searchable：默认 auto——选项数达到阈值时菜单顶部出现搜索框（选项很多时快速定位）；
+// 传 true 强制开启、false 关闭。
+const SELECT_SEARCH_MIN_OPTIONS = 8
+
+// 递归提取 option 的纯文本（支持 label 为数组/React 元素，供搜索匹配）
+function optionText(label) {
+  if (typeof label === 'string' || typeof label === 'number') return String(label)
+  if (Array.isArray(label)) return label.map(optionText).join('')
+  if (isValidElement(label)) return optionText(label.props?.children)
+  return ''
+}
+
 export function CompactSelect({
   value,
   onChange,
@@ -671,10 +683,13 @@ export function CompactSelect({
   title,
   onClick,
   onMouseDown,
+  searchable,
 }) {
   const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
   const btnRef = useRef(null)
-  const [pos, setPos] = useState({ top: 0, left: 0, minWidth: 0 })
+  const searchRef = useRef(null)
+  const [pos, setPos] = useState({ top: 0, left: 0, minWidth: 0, placement: 'below', bottom: 0, maxHeight: 0 })
   const ghost = variant === 'ghost'
   const empty = value === '' || value == null
 
@@ -683,6 +698,7 @@ export function CompactSelect({
     const toOpt = (el, group = null) => ({
       value: el.props.value == null ? '' : String(el.props.value),
       label: el.props.children,
+      text: optionText(el.props.children),
       disabled: Boolean(el.props.disabled),
       group,
     })
@@ -697,6 +713,15 @@ export function CompactSelect({
       return []
     })
   }, [children])
+
+  // 是否展示搜索框：显式传参优先，未传时按选项数量自动决定
+  const needSearch = searchable === true
+    || (searchable !== false && options.length >= SELECT_SEARCH_MIN_OPTIONS)
+  const kw = query.trim().toLowerCase()
+  const filteredOptions = useMemo(() => {
+    if (!needSearch || !kw) return options
+    return options.filter((o) => o.text.toLowerCase().includes(kw) || o.value.toLowerCase().includes(kw))
+  }, [needSearch, options, kw])
 
   const selected = options.find((o) => o.value === String(value ?? ''))
   const label = selected?.label ?? '请选择'
@@ -731,7 +756,10 @@ export function CompactSelect({
         ? 'right-2.5 h-3.5 w-3.5'
         : 'right-2 h-3.5 w-3.5'
 
-  const close = () => setOpen(false)
+  const close = () => {
+    setOpen(false)
+    setQuery('')
+  }
 
   const toggle = (e) => {
     e.stopPropagation()
@@ -739,20 +767,32 @@ export function CompactSelect({
     if (disabled) return
     if (!open && btnRef.current) {
       const rect = btnRef.current.getBoundingClientRect()
-      const menuH = Math.min(options.length * 32 + 8, 280)
-      let top = rect.bottom + 4
-      if (top + menuH > window.innerHeight - 8) {
-        top = Math.max(8, rect.top - menuH - 4)
-      }
+      const menuH = Math.min(options.length * 32 + 8 + (needSearch ? 44 : 0), needSearch ? 320 : 280)
       let left = rect.left
       const minWidth = Math.max(rect.width, size === 'xs' ? 72 : size === 'sm' ? 112 : size === 'lg' ? 148 : 132)
       if (left + minWidth > window.innerWidth - 8) {
         left = Math.max(8, window.innerWidth - minWidth - 8)
       }
-      setPos({ top, left, minWidth })
+      // 下方空间不足时向上展开：用 bottom 锚定，菜单过滤变矮后不会与触发器之间出现空档
+      const placement = rect.bottom + 4 + menuH > window.innerHeight - 8 ? 'above' : 'below'
+      const aboveMaxHeight = Math.max(96, rect.top - 12)
+      setPos({
+        top: rect.bottom + 4,
+        bottom: window.innerHeight - rect.top + 4,
+        left,
+        minWidth,
+        placement,
+        maxHeight: placement === 'above' ? aboveMaxHeight : 0,
+      })
+      setQuery('')
     }
     setOpen((v) => !v)
   }
+
+  // 打开菜单后自动聚焦搜索框，用户可直接输入过滤
+  useEffect(() => {
+    if (open && needSearch) searchRef.current?.focus()
+  }, [open, needSearch])
 
   useEffect(() => {
     if (!open) return undefined
@@ -808,13 +848,57 @@ export function CompactSelect({
         <div
           data-compact-select-menu
           data-allow-scroll
-          className="fixed z-[10000] max-h-[280px] overflow-y-auto overscroll-contain rounded-md border border-border bg-card py-1 text-foreground shadow-2xl"
-          style={{ top: pos.top, left: pos.left, minWidth: pos.minWidth }}
+          className={`fixed z-[10000] overflow-y-auto overscroll-contain rounded-md border border-border bg-card py-1 text-foreground shadow-2xl ${needSearch ? 'max-h-[320px]' : 'max-h-[280px]'}`}
+          style={{
+            left: pos.left,
+            minWidth: pos.minWidth,
+            ...(pos.placement === 'above'
+              ? { bottom: pos.bottom, maxHeight: pos.maxHeight }
+              : { top: pos.top }),
+          }}
           role="listbox"
         >
-          {options.map((opt, i) => {
+          {needSearch && (
+            <div className="sticky top-0 z-10 border-b border-border bg-card px-1.5 py-1.5">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  ref={searchRef}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.stopPropagation()
+                      close()
+                    } else if (e.key === 'Enter') {
+                      const first = filteredOptions.find((o) => !o.disabled)
+                      if (first) pick(first)
+                    }
+                  }}
+                  placeholder="搜索选项…"
+                  aria-label="搜索选项"
+                  autoComplete="off"
+                  className="h-7 w-full rounded border border-input bg-background pl-7 pr-7 text-xs text-foreground outline-none transition placeholder:text-muted-foreground focus:border-primary"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    aria-label="清空搜索"
+                    onClick={() => {
+                      setQuery('')
+                      searchRef.current?.focus()
+                    }}
+                    className="absolute right-1 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {filteredOptions.map((opt, i) => {
             const active = opt.value === String(value ?? '')
-            const showGroup = opt.group && opt.group !== options[i - 1]?.group
+            const showGroup = opt.group && opt.group !== filteredOptions[i - 1]?.group
             return (
             // key 必须唯一：同组内可能同时存在多个空值选项（占位 + 「全部」），
             // 仅用 group+value 会撞 key，导致 React 复用错 DOM 节点、
@@ -842,6 +926,9 @@ export function CompactSelect({
               </Fragment>
             )
           })}
+          {needSearch && kw && filteredOptions.length === 0 && (
+            <div className="px-3 py-2 text-xs text-muted-foreground">无匹配选项</div>
+          )}
         </div>,
         document.body,
       )}
@@ -1152,6 +1239,7 @@ export function DatePicker({
     <div className={`flex items-center justify-center gap-1 pt-1.5 ${timeOnly ? '' : 'mt-1 border-t border-border'}`}>
       <CompactSelect
         size="xs"
+        searchable={false}
         value={String(selHour)}
         onChange={(e) => setTime(Number(e.target.value), selMinute)}
       >
@@ -1162,6 +1250,7 @@ export function DatePicker({
       <span className="text-xs text-muted-foreground">:</span>
       <CompactSelect
         size="xs"
+        searchable={false}
         value={String(selMinute)}
         onChange={(e) => setTime(selHour, Number(e.target.value))}
       >

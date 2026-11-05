@@ -106,6 +106,8 @@ _RESOURCE_MAP = {
     # 日志采集相关：接收器 / 解析模板（ingest 前缀下主要是 strategies 写操作）
     "log-receivers": "log_receiver",
     "ingest": "strategy",
+    # API 开放平台管理操作（应用/密钥/授权）
+    "open-admin": "open_api_app",
 }
 
 
@@ -261,10 +263,22 @@ def _record_request_audit(
 
         db = SessionLocal()
         try:
+            # 用户名以数据库当前值为准：JWT 中的 username 在改名后会变成旧值，
+            # 直接采用会让改名后的审计身份与账号实际用户名不一致。
+            resolved_username = username
+            if user_id and str(user_id).isdigit():
+                try:
+                    from app.models.user import User
+
+                    row = db.query(User.username).filter(User.id == int(user_id)).first()
+                    if row and row[0]:
+                        resolved_username = row[0]
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("审计用户名回查失败，回退 token 中的用户名: %s", exc)
             log_audit(
                 db,
                 user_id=int(user_id) if user_id and str(user_id).isdigit() else None,
-                username=username,
+                username=resolved_username,
                 action=action,
                 resource_type=resource_type or None,
                 resource_id=resource_id or None,
