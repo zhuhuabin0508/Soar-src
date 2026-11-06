@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.timezone import beijing_now
-from app.database import SessionLocal
+from app.database import LinkageSessionLocal, SessionLocal
 from app.models.alert_event import AlertEvent
 from app.models.system_config import SystemConfig
 from app.models.workflow_ban import WorkflowInstance, WorkflowTriggerRule
@@ -240,7 +240,9 @@ def _process_event(event: dict[str, Any]) -> None:
     """处理单条入库事件：规则匹配 → 去重/冷却/限频/熔断 → 建实例 → 执行。"""
     from app.workflow.engine import run_instance
 
-    db = SessionLocal()
+    # run_instance 会跨越整个工作流执行（含 LLM 研判/设备调用，分钟级），
+    # 必须用联动专用池，避免长时间占用主池拖垮 API 请求
+    db = LinkageSessionLocal()
     try:
         alert = db.query(AlertEvent).filter(AlertEvent.id == event.get("alert_id")).first()
         if alert is None:

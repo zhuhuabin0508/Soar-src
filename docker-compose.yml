@@ -58,6 +58,8 @@ services:
         exec uvicorn app.main:app --timeout-graceful-shutdown 10 --host 0.0.0.0 --port 8000
     volumes:
       - ./backend/app:/app/app
+      # 一次性运维脚本目录（迁移脚本等），便于 docker exec 执行
+      - ./backend/scripts:/app/scripts:ro
       - ./backend/entrypoint.sh:/app/entrypoint.sh:ro
       - ./backend/requirements.txt:/app/requirements.txt:ro
       - uploads:/app/uploads
@@ -133,6 +135,12 @@ services:
       WORKFLOW_SOC_AGENT_ID: ${WORKFLOW_SOC_AGENT_ID:-0}
       WORKFLOW_SYSTEM_USER_ID: ${WORKFLOW_SYSTEM_USER_ID:-0}
       BAN_ANALYST_AGENT_ID: ${BAN_ANALYST_AGENT_ID:-0}
+      # worker 连接池调小（默认 20+40 为 backend 量级）：celery 多进程叠加
+      # 会逼近 Postgres max_connections=100，留足 backend 主池余量
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
+      DB_LINKAGE_POOL_SIZE: "5"
+      DB_LINKAGE_MAX_OVERFLOW: "10"
     depends_on:
       redis:
         condition: service_healthy
@@ -159,6 +167,11 @@ services:
       TZ: Asia/Shanghai
       # 同 worker-dev：JWT_SECRET 用于设备凭据解密，必须与 backend 一致
       JWT_SECRET: ${JWT_SECRET}
+      # beat 单进程，连接池同样调小
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "5"
+      DB_LINKAGE_POOL_SIZE: "2"
+      DB_LINKAGE_MAX_OVERFLOW: "5"
     depends_on:
       redis:
         condition: service_healthy

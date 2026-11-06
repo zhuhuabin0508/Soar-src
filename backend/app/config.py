@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_NAME: str = "soar"
+    # 连接池参数：backend 用默认值（大池）；worker/beat 通过环境变量调小，
+    # 避免多进程叠加后超出 Postgres max_connections
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 40
+    DB_LINKAGE_POOL_SIZE: int = 10
+    DB_LINKAGE_MAX_OVERFLOW: int = 20
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"

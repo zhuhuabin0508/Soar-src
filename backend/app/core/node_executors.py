@@ -260,11 +260,11 @@ async def execute_ai_agent(
                 "messages": [],
             }
 
-    from app.database import SessionLocal
+    from app.database import LinkageSessionLocal
     from app.models.agent import Agent
     from app.platform.agent_runtime import invoke_agent_for_workflow
 
-    db = SessionLocal()
+    db = LinkageSessionLocal()
     try:
         agent = db.query(Agent).filter(Agent.id == int(agent_id)).first()
         if agent is None:
@@ -619,7 +619,7 @@ async def execute_tool_node(
     """
     # 延迟导入避免循环依赖
     from app.core.tool_runner import run_tool
-    from app.database import SessionLocal
+    from app.database import LinkageSessionLocal
     from app.models.tool import Tool
 
     nid = _node_id(node_data)
@@ -637,7 +637,7 @@ async def execute_tool_node(
 
     log(nid, _INFO, f"执行工具节点: tool={tool_name}, params={resolved}")
 
-    db = SessionLocal()
+    db = LinkageSessionLocal()
     try:
         tool = db.query(Tool).filter(Tool.name == tool_name, Tool.enabled.is_(True)).first()
     finally:
@@ -677,13 +677,13 @@ async def execute_human_review_node(
     # 创建审批工单到数据库（使工作台可见）
     from datetime import datetime
     from app.core.timezone import beijing_now
-    from app.database import SessionLocal
+    from app.database import LinkageSessionLocal
     from app.models import Execution
 
     workflow_id = ctx.get("workflow_id")
     execution_id = None
     try:
-        db = SessionLocal()
+        db = LinkageSessionLocal()
         execution = Execution(
             workflow_id=workflow_id,
             status="waiting_for_approval",
@@ -709,7 +709,7 @@ async def execute_human_review_node(
         try:
             from app.core.notification_dispatch import dispatch_notification
 
-            db2 = SessionLocal()
+            db2 = LinkageSessionLocal()
             try:
                 dispatch_notification(
                     db2,
@@ -760,11 +760,11 @@ async def execute_device_action(
         log(nid, _ERROR, "设备动作节点：未配置设备或动作")
         return {"error": "未配置设备或动作", "output": None}
 
-    from app.database import SessionLocal
+    from app.database import LinkageSessionLocal
     from app.models.device import Device, DeviceAction
     from app.devices.action_executor import execute_device_action
 
-    db = SessionLocal()
+    db = LinkageSessionLocal()
     try:
         device = db.query(Device).filter(Device.id == device_id).first()
         action = db.query(DeviceAction).filter(DeviceAction.id == action_id, DeviceAction.device_id == device_id).first()
@@ -1097,10 +1097,10 @@ async def execute_llm(
         return {"text": "", "error": "user_prompt is empty"}
 
     # 加载 LLM 配置
-    from app.database import SessionLocal
+    from app.database import LinkageSessionLocal
     from app.models.llm_config import LLMConfig
 
-    db = SessionLocal()
+    db = LinkageSessionLocal()
     try:
         cfg = None
         if model_config_id:
@@ -1292,7 +1292,7 @@ async def execute_sub_workflow(
     import json
 
     from app.core.workflow_runner import run_workflow
-    from app.database import SessionLocal
+    from app.database import LinkageSessionLocal
     from app.models.workflow import Workflow
 
     nid = _node_id(node_data)
@@ -1317,7 +1317,7 @@ async def execute_sub_workflow(
     else:
         sub_payload = dict(input_data) if isinstance(input_data, dict) else {"input": input_data}
 
-    db = SessionLocal()
+    db = LinkageSessionLocal()
     try:
         wf = db.query(Workflow).filter(Workflow.id == int(sub_id)).first()
         if wf is None:
