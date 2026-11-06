@@ -28,6 +28,50 @@ _PROMPT_LENGTH_WARN = 32000
 _DEFAULT_FALLBACK = "你是一个智能助手，请根据用户输入给出有帮助的回答。"
 
 
+def _current_time_block() -> str:
+    """构造当前时间上下文块（北京时间 + 常用秒级时间戳）。
+
+    LLM 无法感知真实时间，遇到「今天/本周」等相对时间时会用训练记忆或
+    文档示例日期猜测；即便给出当前日期，手算 Unix 时间戳也极易出错
+    （实测：XDR 智能体把今日 0 点算成差一年/差一天的时间戳，导致查询为空）。
+    因此除当前时间外，直接给出常用边界的秒级时间戳，模型零计算取用。
+    """
+    from datetime import datetime, timedelta
+
+    from app.core.timezone import beijing_now
+
+    now = beijing_now()
+
+    def _ts(dt: datetime) -> int:
+        # naive 北京时间 → 秒级 Unix 时间戳。
+        # 北京 = UTC+8：epoch = naive_diff - 8h（北京 0 点 = 前一天 UTC 16 点）
+        return int((dt - datetime(1970, 1, 1)).total_seconds()) - 8 * 3600
+
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    weekday = "一二三四五六日"[now.weekday()]
+    return (
+        "【当前时间】"
+        f"{now.strftime('%Y-%m-%d %H:%M:%S')}（星期{weekday}，北京时间 UTC+8）\n"
+        "【参考时间戳（秒级 Unix）】以下值可直接取用，禁止另行手算或凭记忆编造：\n"
+        f"- 当前时刻：{_ts(now)}\n"
+        f"- 今日 00:00:00：{_ts(today)}；今日 23:59:59：{_ts(today) + 86399}\n"
+        f"- 昨日 00:00:00：{_ts(today - timedelta(days=1))}\n"
+        f"- 本周一 00:00:00：{_ts(today - timedelta(days=now.weekday()))}\n"
+        f"- 本月1日 00:00:00：{_ts(today.replace(day=1))}\n"
+        "用户提到「今天/昨天/本周/本月/现在」等相对时间时，必须基于上述时间与时间戳取值，"
+        "禁止把文档示例日期或模型记忆中的日期当作当前时间，禁止自己换算日期到时间戳。"
+    )
+
+
+def _append_time_block(prompt: str) -> str:
+    """把当前时间块拼到 prompt 末尾（所有返回路径统一走这里）。
+
+    放在末尾而非顶部：LLM 前缀缓存按 token 前缀命中，时间块每秒都在变化，
+    放在顶部会让整段 system prompt 每轮都缓存失效；放尾部只影响最后几个 token。
+    """
+    return f"{prompt}\n\n{_current_time_block()}"
+
+
 def render_variables(text: str | None, variables: dict[str, Any] | None) -> str:
     """把 ``{{key}}`` 替换为 ``variables`` 中的值。
 
@@ -150,8 +194,8 @@ def assemble_system_prompt(
         else:
             # 无技能且无 base：纯对话路径用 fallback
             base = fallback_prompt or _DEFAULT_FALLBACK
-            # fallback 不做变量替换（它不含 {{key}}），直接返回
-            return base
+            # fallback 不做变量替换（它不含 {{key}}），但同样注入当前时间
+            return _append_time_block(base)
 
     # 4. 对 base 做变量替换
     variables = agent.variables or {}
@@ -159,7 +203,7 @@ def assemble_system_prompt(
 
     # 5. 无技能：返回替换后的 base
     if not skills:
-        return base
+        return _append_time_block(base)
 
     # 6. 组装技能段
     skill_blocks: list[str] = []
@@ -176,7 +220,7 @@ def assemble_system_prompt(
 
     if not skill_blocks:
         # 所有技能内容都为空，退化为仅 base
-        return base
+        return _append_time_block(base)
 
     skill_section = "=== 启用技能 ===\n" + "\n\n".join(skill_blocks) + "\n=== 启用技能结束 ==="
 
@@ -186,6 +230,9 @@ def assemble_system_prompt(
     else:
         # base 为空但有技能：技能段作为完整 prompt
         final_prompt = skill_section
+
+    # 顶部注入当前时间块（与早期返回路径保持一致）
+    final_prompt = _append_time_block(final_prompt)
 
     # 8. 长度告警（不阻断）
     length = len(final_prompt)

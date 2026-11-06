@@ -87,6 +87,12 @@ services:
       BAN_ANALYST_AGENT_ID: ${BAN_ANALYST_AGENT_ID:-0}
       # 卡死时输出 C 层/全线程堆栈，便于定位阻塞点
       PYTHONFAULTHANDLER: "1"
+      # ===== XDR 开放性 OpenAPI（query_xdr_openapi 工具使用；真实值在 .env.dev）=====
+      XDR_OPENAPI_HOST: ${XDR_OPENAPI_HOST:-}
+      XDR_OPENAPI_AUTH_CODE: ${XDR_OPENAPI_AUTH_CODE:-}
+      XDR_OPENAPI_TIMEOUT: ${XDR_OPENAPI_TIMEOUT:-20}
+      XDR_OPENAPI_VERIFY_SSL: ${XDR_OPENAPI_VERIFY_SSL:-true}
+      XDR_OPENAPI_ALLOW_WRITE: ${XDR_OPENAPI_ALLOW_WRITE:-false}
       # 事件循环看门狗阈值（秒）：超时未响应即打印线程栈并退出，由 restart 策略拉起
       LOOP_WATCHDOG_TIMEOUT: ${LOOP_WATCHDOG_TIMEOUT:-90}
       # 心跳探测间隔（秒；代码内限制不超过阈值的一半）
@@ -132,6 +138,12 @@ services:
       # 与 backend-dev 一致的 JWT_SECRET：设备凭据用它派生密钥解密，
       # 缺失会导致 Worker 解密出空凭据，设备调用 401 登录失败
       JWT_SECRET: ${JWT_SECRET}
+      # ===== XDR 开放性 OpenAPI（工作流内智能体工具调用同样需要）=====
+      XDR_OPENAPI_HOST: ${XDR_OPENAPI_HOST:-}
+      XDR_OPENAPI_AUTH_CODE: ${XDR_OPENAPI_AUTH_CODE:-}
+      XDR_OPENAPI_TIMEOUT: ${XDR_OPENAPI_TIMEOUT:-20}
+      XDR_OPENAPI_VERIFY_SSL: ${XDR_OPENAPI_VERIFY_SSL:-true}
+      XDR_OPENAPI_ALLOW_WRITE: ${XDR_OPENAPI_ALLOW_WRITE:-false}
       WORKFLOW_SOC_AGENT_ID: ${WORKFLOW_SOC_AGENT_ID:-0}
       WORKFLOW_SYSTEM_USER_ID: ${WORKFLOW_SYSTEM_USER_ID:-0}
       BAN_ANALYST_AGENT_ID: ${BAN_ANALYST_AGENT_ID:-0}

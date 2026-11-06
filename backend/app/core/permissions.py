@@ -63,7 +63,8 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "duty_log": ["view", "edit", "delete"],
     "duty_dashboard": ["view"],
     # 工单（工单中心 + 工单监控大屏 + 工单配置：分组/流程模板）
-    "ticket": ["view", "edit", "delete", "execute"],
+    # pause=暂停/恢复（临时挂起），独立于流转编辑权限
+    "ticket": ["view", "edit", "delete", "execute", "pause"],
     "ticket_monitor": ["view"],
     "ticket_config": ["view", "edit"],
 }
@@ -199,6 +200,10 @@ def migrate_permissions(perms: dict[str, list[str]] | None) -> dict[str, list[st
     _inherit_module_actions(result, "bigscreen2", "dashboard")
     # 已有工单中心查看权限的角色自动补工单监控大屏（未显式配置时）
     _inherit_module_actions(result, "ticket_monitor", "ticket")
+    # 工单暂停为新增动作：已有编辑权限的角色自动补 pause，避免升级后无法暂停/恢复
+    ticket_actions = result.get("ticket")
+    if ticket_actions and "edit" in ticket_actions and "pause" not in ticket_actions:
+        result["ticket"] = [*ticket_actions, "pause"]
     # 已有系统设置权限的角色自动补 API 开放平台（动作取交集：view→view，edit→view+edit）
     _inherit_module_actions(result, "open_api", "system_config")
 
@@ -249,7 +254,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "feedback": ["view"],
             "system_monitor": ["view"],
             "audit_log": ["view"],
-            "ticket": ["view", "edit"],
+            "ticket": ["view", "edit", "pause"],
             "ticket_monitor": ["view"],
             "ticket_config": ["view", "edit"],
         },

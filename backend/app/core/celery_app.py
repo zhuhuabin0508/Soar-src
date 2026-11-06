@@ -62,6 +62,11 @@ celery_app.conf.beat_schedule = {
         "task": "scan_ticket_timeouts",
         "schedule": crontab(minute="*/5"),
     },
+    # 工单暂停扫描：到期前提醒 + 到期自动恢复/升级/转办
+    "scan-ticket-pauses": {
+        "task": "scan_ticket_pauses",
+        "schedule": crontab(minute="*/5"),
+    },
 }
 
 # 自动发现 app 包下的 tasks 模块（即 app.tasks）

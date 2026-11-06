@@ -81,6 +81,17 @@ export const ticketApi = {
   transferTicket: (id, body) => request(`/tickets/${id}/transfer`, { method: 'POST', body }),
   // 认领：组内先到先得，认领后仅认领人/admin 可提交（流转/回退/转组自动释放）
   claimTicket: (id) => request(`/tickets/${id}/claim`, { method: 'POST' }),
+  // 暂停（临时挂起）：body={pause_type, reason, expected_resume_at, detail, necessity}
+  pauseTicket: (id, body) => request(`/tickets/${id}/pause`, { method: 'POST', body }),
+  // 恢复：body={comment, force}；force 仅管理员可用
+  resumeTicket: (id, body = {}) => request(`/tickets/${id}/resume`, { method: 'POST', body }),
+  // 批量暂停/恢复：逐单校验，返回 {total, success, skipped, failed, results}
+  batchPauseTickets: (body) => request('/tickets/batch/pause', { method: 'POST', body }),
+  batchResumeTickets: (body) => request('/tickets/batch/resume', { method: 'POST', body }),
+  // 暂停类型选项（启用中的分类，含必填信息键）与暂停策略配置
+  pauseOptions: () => request('/tickets/pause-options'),
+  getPauseConfig: () => request('/tickets/pause-config'),
+  updatePauseConfig: (config) => request('/tickets/pause-config', { method: 'PUT', body: config }),
   // 时间线内部评论（区别于处置意见，不产生流转副作用）
   addComment: (id, content) => request(`/tickets/${id}/comments`, { method: 'POST', body: { content } }),
   // 相似工单推荐：发起时按首节点 源/目的 IP 匹配同流程历史工单（处置中/已完成）
@@ -88,6 +99,11 @@ export const ticketApi = {
   similarTickets: (body) => request('/tickets/similar', { method: 'POST', body }),
   // 封禁状态查询：批量查 IP 是否处于封禁期间（安全上下文封禁查询，最多 20 个）
   banStatus: (ips) => request(`/tickets/ban-status${_qs({ ips: ips.join(',') })}`),
+  // 重新研判安全上下文指定 IP（资产匹配 + 威胁情报重查，升级完整档）；
+  // ≤20 同步返回 {ok, updated, unknown, pending, ticket}，>20 转
+  // 后台返回 pending=true（前端轮询工单详情至 stats.pending 变 false）
+  requeryEnrichment: (id, ips) =>
+    request(`/tickets/${id}/enrichment/requery`, { method: 'POST', body: { ips } }),
   // 导出 CSV：按当前筛选条件（UTF-8 BOM，Excel 直接打开），blob 触发下载
   exportTickets: (params) => {
     const token = localStorage.getItem('soar_token')

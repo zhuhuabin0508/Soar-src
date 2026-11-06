@@ -3,29 +3,43 @@
 // - 处理权限由服务端返回（can_handle：当前节点分组成员或 admin；先到先得）
 // - 流转去向：按条件路由自动建议，处理人可确认调整；到达结束节点后工单完成
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft, CheckCircle2, XCircle, Clock, Paperclip, X,
   SendHorizonal, Ban, UserRound, ChevronRight, Flag, Link2, Archive, ArchiveRestore,
   ShieldCheck, ShieldBan, Database, AlertTriangle, ClipboardList, Plus, UsersRound, Users,
   Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2, Info, Lock,
+  Pause, Play,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputBaseCls, inputCls, labelCls, hintCls } from '../components/property/FormControls'
 import {Button, PageContainer, CompactSelect, ComboInput, DatePicker, AutoGrowTextarea } from '../components/ui'
-import { hasPermission, guardNavPermission } from '../utils/permissions'
+import { hasPermission, guardNavPermission, isAdmin } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS, evalParamExpr, deviceDurationLabel } from '../utils/ticketFlow'
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
+import TicketEnrichment from '../components/TicketEnrichment'
 import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
   processing: { label: '进行中', cls: 'bg-blue-500/10 text-blue-500', Icon: Clock },
+  paused: { label: '已暂停', cls: 'bg-amber-500/10 text-amber-500', Icon: Pause },
   completed: { label: '已完成', cls: 'bg-emerald-500/10 text-emerald-500', Icon: CheckCircle2 },
   cancelled: { label: '已取消', cls: 'bg-muted text-muted-foreground', Icon: XCircle },
+}
+// 各暂停类型的分类必填项（与后端 REQUIRED_DETAIL_KEYS 对应）
+const PAUSE_DETAIL_META = {
+  pending_info: [{ key: 'supplement_items', label: '需补充的信息', type: 'textarea' }],
+  external_coop: [{ key: 'partner', label: '协作方', type: 'text' }],
+  user_feedback: [{ key: 'feedback_items', label: '待确认事项', type: 'textarea' }],
+  business_window: [
+    { key: 'window_start', label: '窗口开始时间', type: 'datetime-local' },
+    { key: 'window_end', label: '窗口结束时间', type: 'datetime-local' },
+  ],
+  duplicate_merge: [{ key: 'master_ticket_no', label: '主工单号', type: 'text' }],
 }
 const PRIORITY_META = {
   low: { label: '低', cls: 'bg-muted text-muted-foreground' },
@@ -43,6 +57,12 @@ const ACTION_META = {
   claim: { label: '认领', cls: 'bg-violet-500/10 text-violet-500', dot: 'border-violet-500' },
   comment: { label: '评论', cls: 'bg-muted text-muted-foreground', dot: 'border-muted-foreground/50' },
   device_action: { label: '设备动作', cls: 'bg-cyan-500/10 text-cyan-500', dot: 'border-cyan-500' },
+  pause: { label: '暂停工单', cls: 'bg-amber-500/10 text-amber-500', dot: 'border-amber-500' },
+  resume: { label: '恢复工单', cls: 'bg-sky-500/10 text-sky-500', dot: 'border-sky-500' },
+  pause_remind: { label: '暂停到期提醒', cls: 'bg-amber-500/10 text-amber-600', dot: 'border-amber-500' },
+  pause_expire: { label: '暂停超期处置', cls: 'bg-red-500/10 text-red-500', dot: 'border-red-500' },
+  batch_pause: { label: '批量暂停', cls: 'bg-amber-500/10 text-amber-500', dot: 'border-amber-500' },
+  batch_resume: { label: '批量恢复', cls: 'bg-sky-500/10 text-sky-500', dot: 'border-sky-500' },
 }
 // 设备异步执行状态：排队/执行中/成功/失败/已撤销（旧记录无 status 时按 success 兼容）
 const DEVICE_RUN_STATUS = {
@@ -152,549 +172,15 @@ function FieldValueView({ field, value }) {
   return <span className="break-all text-sm text-foreground">{fieldValueText(field, value)}</span>
 }
 
-// 威胁情报严重程度中文
-const THREAT_SEVERITY_LABELS = { high: '高', medium: '中', low: '低' }
-
-// 自动研判单来源块：资产匹配 + 威胁情报全量字段逐项展示（空值统一显示 --）
-function EnrichRow({ label, children }) {
-  return (
-    <div className="flex min-w-0 items-start gap-2">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className="min-w-0 break-all">{children}</span>
-    </div>
-  )
-}
-
-// 智能体研判结果展示映射：风险等级徽章配色 + 处置动作中文
-const AGENT_RISK_CLS = {
-  严重: 'bg-red-500/10 text-red-500', 高危: 'bg-red-500/10 text-red-500', 高: 'bg-red-500/10 text-red-500',
-  中危: 'bg-amber-500/10 text-amber-500', 中: 'bg-amber-500/10 text-amber-500',
-  低危: 'bg-sky-500/10 text-sky-500', 低: 'bg-sky-500/10 text-sky-500',
-}
+// 智能体研判处置动作中文（fillFromAgent 使用；安全上下文展示已迁至 components/TicketEnrichment）
 const AGENT_ACTION_LABELS = { ban: '建议封禁', monitor: '观察监控', ignore: '忽略（暂不处置）' }
-
-// 决策依据兜底：reasons 非数组（字符串/空）时的展示文本
-function fmtAgentReasonText(reasons) {
-  if (Array.isArray(reasons)) return reasons.length ? null : '--'
-  if (reasons == null || reasons === '') return '--'
-  return String(reasons)
-}
-
-// 资产字段中文映射
-const ASSET_CRITICALITY_LABELS = { low: '低', medium: '中', high: '高', critical: '严重' }
-const ASSET_STATUS_LABELS = { in_use: '在用', idle: '闲置', repair: '维修', retired: '报废', lost: '丢失' }
-const ASSET_SOURCE_LABELS = { kb_ingest: '知识库梳理', manual: '手动录入', agent_add: '对话录入' }
-
-// 资产字段值格式化：数组连接、对象序列化；空值返回 null（展示时显示 --）
-function fmtAssetVal(v) {
-  if (v == null || v === '') return null
-  if (Array.isArray(v)) return v.length ? v.map(String).join('、') : null
-  if (typeof v === 'object') return JSON.stringify(v)
-  return String(v)
-}
-
-// 资产匹配结果字段网格：标准字段 + 自定义字段（extra_fields 逐项）+ 标签，全字段展示
-function AssetMatchFields({ asset, fallbackIp }) {
-  const na = <span className="text-muted-foreground">--</span>
-  const f = asset.fields
-  const rows = []
-  const push = (label, v) => {
-    const text = fmtAssetVal(v)
-    rows.push([label, text])
-  }
-  if (f) {
-    push('资产类型', f.asset_type)
-    push('IP 地址', f.ip || asset.asset_ip || fallbackIp)
-    push('所属部门', f.department)
-    push('负责人', f.owner)
-    push('位置', f.location)
-    push('重要性', f.criticality ? (ASSET_CRITICALITY_LABELS[f.criticality] || f.criticality) : null)
-    push('状态', f.status ? (ASSET_STATUS_LABELS[f.status] || f.status) : null)
-    push('来源', f.source ? (ASSET_SOURCE_LABELS[f.source] || f.source) : null)
-    push('来源知识库', f.kb_name)
-    // 自定义字段逐项展示（extra_fields 为对象）
-    const extra = f.extra_fields && typeof f.extra_fields === 'object' && !Array.isArray(f.extra_fields) ? f.extra_fields : {}
-    Object.entries(extra).forEach(([k, v]) => push(k, v))
-  } else {
-    // 旧结构工单（enrichment_data 无 fields）：退回冗余键展示基本信息
-    push('IP 地址', asset.asset_ip || fallbackIp)
-  }
-  const tags = f?.tags || []
-  return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
-      {rows.map(([label, text]) => (
-        <div key={label} className="flex min-w-0 items-start gap-2">
-          <span className="shrink-0 text-muted-foreground">{label}：</span>
-          <span className="min-w-0 break-all">{text != null ? text : na}</span>
-        </div>
-      ))}
-      <div className="col-span-2 flex min-w-0 items-start gap-2">
-        <span className="shrink-0 text-muted-foreground">标签：</span>
-        {tags.length ? (
-          <span className="flex min-w-0 flex-wrap gap-1">
-            {tags.map((tg) => (
-              <span key={tg.id} className="whitespace-nowrap rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{tg.name}</span>
-            ))}
-          </span>
-        ) : na}
-      </div>
-    </div>
-  )
-}
-
-// 资产发现命中字段展示映射（compact 结构通用字段；缺省键自动显示 --）
-const DISCOVERY_FIELD_LABELS = [
-  ['资源类型', 'resource_label'],
-  ['实例名称', 'instance_name'],
-  ['IP 地址', 'ip_address'],
-  ['浮动 IP', 'floatip_address'],
-  ['网段', 'cidr'],
-  ['所属部门', 'user_department'],
-  ['申请部门', 'applicant_department'],
-  ['操作系统', 'operating_system'],
-  ['主机状态', 'host_status'],
-  ['资源区域', 'biz_region_name'],
-  ['带宽(M)', 'bandwidth'],
-  ['绑定实例', 'bind_instance'],
-  ['CMDB ID', 'cmdb_id'],
-  ['实例 ID', 'instance_id'],
-  ['唯一标识', 'source_id'],
-]
-
-// 数据来源标签配色：浅底深字（80% 透明浅底 + 高对比文字），
-// 资产发现用青绿、资产清单用主色，两来源并列时一眼可辨且不喧宾夺主
-const SOURCE_TONES = {
-  discovery: {
-    box: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600',
-    dot: 'bg-emerald-500',
-    accent: 'border-l-emerald-500/70',
-  },
-  inventory: {
-    box: 'border-primary/30 bg-primary/10 text-primary',
-    dot: 'bg-primary',
-    accent: 'border-l-primary/70',
-  },
-}
-
-// 数据来源标签：着重展示「资产发现-裸金属资产」「资产清单-A会保持在线系统清单」
-// 这类到清单颗粒度的来源，避免处理人只看到笼统的「资产发现 / 资产清单」
-function SourceLabel({ tone = 'inventory', sm = false, children }) {
-  const c = SOURCE_TONES[tone] || SOURCE_TONES.inventory
-  return (
-    <span
-      className={`inline-flex max-w-full items-center gap-1.5 rounded border font-semibold ${
-        sm ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs'
-      } ${c.box}`}
-    >
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.dot}`} />
-      <span className="min-w-0 break-all">{children}</span>
-    </span>
-  )
-}
-
-// 资产发现匹配结果展示：asset 为 discovery 命中结构（matches 多命中逐条展示）
-function DiscoveryMatchFields({ asset, fallbackIp }) {
-  const na = <span className="text-muted-foreground">--</span>
-  const matches = Array.isArray(asset.matches) && asset.matches.length ? asset.matches : [asset]
-  const multi = matches.length > 1
-  return (
-    <div className="space-y-2">
-      {matches.map((m, idx) => (
-        <div
-          key={m.source_id || m.cmdb_id || idx}
-          className={multi ? 'rounded border border-border/60 bg-background/60 p-2' : ''}
-        >
-          {/* 多命中可能跨资源类型：逐条标注各自的详细来源 */}
-          {multi ? (
-            <div className="mb-1.5 flex flex-wrap items-center gap-2">
-              <SourceLabel tone="discovery" sm>
-                {m.source_label || m.resource_label || '资产发现'}
-              </SourceLabel>
-              <span className="text-[11px] text-muted-foreground">#{idx + 1}</span>
-            </div>
-          ) : null}
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
-            {DISCOVERY_FIELD_LABELS.map(([label, key]) => {
-              const raw = m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null)
-              const text = fmtAssetVal(raw)
-              return (
-                <div key={key} className="flex min-w-0 items-start gap-2">
-                  <span className="shrink-0 text-muted-foreground">{label}：</span>
-                  <span className="min-w-0 break-all">{text != null ? text : na}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      ))}
-      {asset.truncated ? (
-        <div className="text-xs text-muted-foreground">命中较多，仅展示前 {matches.length} 条，完整数据请点击资产名跳转资产发现查看</div>
-      ) : null}
-    </div>
-  )
-}
-
-function EnrichSourceView({ s, onFill }) {
-  const t = s.threat
-  const geo = t?.geo_info || {}
-  const geoText = [geo.country, geo.region, geo.city, geo.isp].filter(Boolean).join(' / ')
-  const na = <span className="text-muted-foreground">--</span>
-  const fmtTime = (v) => (v ? String(v).replace('T', ' ') : na)
-  // 资产匹配来源：资产发现优先并列展示；旧结构工单（无 discovery/inventory
-  // 键）按 asset.source 判定来源，缺失时按资产清单处理
-  const assetMatch = s.asset || {}
-  const legacyOnly = !assetMatch.discovery && !assetMatch.inventory
-  const legacyTone = legacyOnly && assetMatch.source === 'asset_discovery' ? 'discovery' : 'inventory'
-  const legacyLabel = legacyTone === 'discovery' ? '资产发现' : '资产清单'
-  const inventoryAsset = assetMatch.inventory || (legacyOnly ? assetMatch : null)
-  const inventoryLabel = assetMatch.inventory?.source_label || assetMatch.source_label || legacyLabel
-  return (
-    <div className="rounded-md border border-border p-4">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="whitespace-nowrap rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{s.label || s.role}</span>
-        <span className="font-mono text-sm font-medium text-foreground">{s.ip}</span>
-        {t?.is_malicious ? (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-500">
-            <AlertTriangle className="h-3 w-3" />恶意
-          </span>
-        ) : t ? (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-500">
-            <ShieldCheck className="h-3 w-3" />非恶意
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">威胁情报查询失败</span>
-        )}
-      </div>
-      {/* 资产匹配 / 威胁情报 / 智能体研判分区展示（窄屏自动上下排列） */}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        {/* 资产匹配子卡：资产发现与资产清单两来源都查，发现优先、并列展示 */}
-        <div className="min-w-0 rounded-md border border-border bg-secondary p-3">
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-foreground">
-            <Database className="h-3.5 w-3.5 shrink-0 text-primary" />资产匹配
-            {s.asset?.matched ? (
-              s.asset.source === 'asset_discovery' ? (
-                <Link
-                  to={`/assets/discovery?keyword=${encodeURIComponent(s.asset.asset_ip || s.ip)}${s.asset.resource_type ? `&table=${encodeURIComponent(s.asset.resource_type)}` : ''}`}
-                  onClick={(e) => { if (!guardNavPermission('asset_discovery', 'view', '资产发现')) e.preventDefault() }}
-                  className="min-w-0 break-all font-normal text-primary hover:underline"
-                  title={`在资产发现中查看：${s.asset.asset_name || '--'}（${s.asset.asset_ip || s.ip}）`}
-                >
-                  {s.asset.asset_name || '--'}
-                </Link>
-              ) : (
-                <Link
-                  to={`/assets/list?keyword=${encodeURIComponent(s.asset.asset_ip || s.ip)}`}
-                  onClick={(e) => { if (!guardNavPermission('asset_list', 'view', '资产清单')) e.preventDefault() }}
-                  className="min-w-0 break-all font-normal text-primary hover:underline"
-                  title={`在资产清单中查看：${s.asset.asset_name || '--'}（${s.asset.asset_ip || s.ip}）`}
-                >
-                  {s.asset.asset_name || '--'}
-                </Link>
-              )
-            ) : (
-              <span className="font-normal text-muted-foreground">资产库未匹配</span>
-            )}
-          </div>
-          {s.asset?.matched ? (
-            <div className="space-y-2.5">
-              {/* 资产发现结果（优先）：头部着重展示详细数据来源 */}
-              {assetMatch.discovery ? (
-                <div className={`min-w-0 rounded-md border border-border/60 border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES.discovery.accent}`}>
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <SourceLabel tone="discovery">
-                      {assetMatch.discovery.source_label || '资产发现'}
-                    </SourceLabel>
-                  </div>
-                  <DiscoveryMatchFields asset={assetMatch.discovery} fallbackIp={s.ip} />
-                </div>
-              ) : null}
-              {/* 资产清单结果：命中时展示资产全部字段（旧结构工单无
-                  discovery/inventory 键，退回 asset 本体渲染） */}
-              {inventoryAsset ? (
-                <div className={`min-w-0 rounded-md border border-border/60 border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES[legacyTone].accent}`}>
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <SourceLabel tone={legacyTone}>{inventoryLabel}</SourceLabel>
-                  </div>
-                  <AssetMatchFields asset={inventoryAsset} fallbackIp={s.ip} />
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="text-[13px] text-muted-foreground">资产发现与资产清单中均未找到与该 IP 匹配的资产</div>
-          )}
-        </div>
-        {/* 威胁情报子卡：查询结果全量字段 */}
-        <div className="min-w-0 rounded-md border border-border bg-secondary p-3">
-          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-            <AlertTriangle className="h-3.5 w-3.5 text-primary" />威胁情报
-          </div>
-          {t ? (
-            <>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[13px]">
-                <EnrichRow label="研判结论：">
-                  {t.is_malicious
-                    ? <span className="font-medium text-red-500">恶意</span>
-                    : <span className="font-medium text-emerald-500">非恶意</span>}
-                </EnrichRow>
-                <EnrichRow label="置信度：">
-                  {t.confidence != null ? `${Math.round(t.confidence * 100)}%` : na}
-                </EnrichRow>
-                <EnrichRow label="严重程度：">
-                  {t.severity ? (THREAT_SEVERITY_LABELS[t.severity] || t.severity) : na}
-                </EnrichRow>
-                <EnrichRow label="威胁标签：">
-                  {t.tags?.length ? (
-                    <span className="flex flex-wrap gap-1">
-                      {t.tags.map((tag) => (
-                        <span key={tag} className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs text-red-500">{tag}</span>
-                      ))}
-                    </span>
-                  ) : na}
-                </EnrichRow>
-                <EnrichRow label="威胁类型：">
-                  {t.threat_types?.length ? t.threat_types.join('、') : na}
-                </EnrichRow>
-                <EnrichRow label="首次发现：">{fmtTime(t.first_seen)}</EnrichRow>
-                <EnrichRow label="最近发现：">{fmtTime(t.last_seen)}</EnrichRow>
-                <EnrichRow label="地理/归属：">{geoText || na}</EnrichRow>
-                <EnrichRow label="关联恶意软件：">
-                  {t.related_malware?.length ? t.related_malware.join('、') : na}
-                </EnrichRow>
-                <EnrichRow label="情报来源：">{t.source || na}</EnrichRow>
-                <EnrichRow label="攻击模式：">
-                  {t.attack_patterns?.length ? t.attack_patterns.join('；') : na}
-                </EnrichRow>
-              </div>
-              <div className="mt-2 flex min-w-0 items-start gap-2 text-[13px]">
-                <span className="shrink-0 text-muted-foreground">情报描述：</span>
-                {t.description
-                  ? <span className="min-w-0 break-all rounded-md bg-muted px-3 py-1.5 leading-relaxed text-foreground">{t.description}</span>
-                  : na}
-              </div>
-            </>
-          ) : (
-            <div className="text-[13px] text-muted-foreground">威胁情报查询失败</div>
-          )}
-        </div>
-        {/* 智能体研判子卡：仅 auto_agent 开启的 IP 生成；占满整行，内部两列。
-            只展示风险等级 / 处置建议 / 决策依据，处置结果不落库不展示；
-            pending 为后台研判中（发起不阻塞，完成后轮询自动更新） */}
-        {s.agent !== undefined && (
-          <div className="min-w-0 rounded-md border border-border bg-secondary p-3 xl:col-span-2">
-            <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-              <Bot className="h-3.5 w-3.5 text-primary" />智能体研判
-              <span className="font-normal text-muted-foreground">IP风险智能研判与封禁决策</span>
-              {onFill && s.agent && !s.agent.pending && (
-                <button type="button" onClick={() => onFill(s)}
-                  className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[11px] font-normal text-primary transition hover:bg-primary/10"
-                  title="将智能体研判结果一键填入处理意见，可编辑后提交">
-                  <Sparkles className="h-3 w-3" />填入处置意见
-                </button>
-              )}
-            </div>
-            {s.agent?.pending ? (
-              <div className="flex items-center gap-2.5 text-[13px] text-muted-foreground">
-                <span className="flex items-end gap-1">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:0ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:150ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:300ms]" />
-                </span>
-                智能体正在思考中，研判结果将自动更新…
-              </div>
-            ) : s.agent ? (
-              <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-[13px] xl:grid-cols-2">
-                <div className="grid content-start gap-y-1.5">
-                  <EnrichRow label="风险等级：">
-                    <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${AGENT_RISK_CLS[s.agent.risk_level] || 'bg-muted text-muted-foreground'}`}>
-                      {s.agent.risk_level || '未知'}
-                    </span>
-                  </EnrichRow>
-                  <EnrichRow label="处置建议：">
-                    <span>
-                      {AGENT_ACTION_LABELS[s.agent.action] || s.agent.action || na}
-                      {s.agent.monitoring_advice ? `（${s.agent.monitoring_advice}）` : ''}
-                    </span>
-                  </EnrichRow>
-                </div>
-                <EnrichRow label="决策依据：">
-                  {Array.isArray(s.agent.reasons) && s.agent.reasons.length ? (
-                    <ul className="list-disc space-y-1 pl-5">
-                      {s.agent.reasons.map((r, i) => <li key={i} className="break-all">{String(r)}</li>)}
-                    </ul>
-                  ) : (
-                    <span className="text-muted-foreground">{fmtAgentReasonText(s.agent.reasons)}</span>
-                  )}
-                </EnrichRow>
-              </div>
-            ) : (
-              <div className="text-[13px] text-muted-foreground">智能体研判失败</div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// 自动研判卡片：发起时对 src_ip/dst_ip 按字段开关执行资产匹配（auto_asset）、
-// 威胁情报查询（auto_intel）与智能体研判（auto_agent），随工单流转只读展示
-function EnrichmentView({ enrichment, onFill }) {
-  if (!enrichment?.sources?.length) return null
-  return (
-    <div className="rounded-md border border-border bg-card p-5">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <ShieldCheck className="h-4 w-4 text-primary" />
-        <span className="font-semibold text-foreground">安全上下文（自动研判）</span>
-        <span className="text-xs text-muted-foreground">发起时按字段开关自动执行资产匹配、威胁情报查询与智能体研判，随工单流转只读展示</span>
-        {enrichment.enriched_at && (
-          <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">
-            研判时间：{new Date(enrichment.enriched_at).toLocaleString('zh-CN', { hour12: false })}
-          </span>
-        )}
-      </div>
-      <div className="space-y-3">
-        {enrichment.sources.map((s) => <EnrichSourceView key={`${s.role}-${s.ip}`} s={s} onFill={onFill} />)}
-      </div>
-      {!!enrichment.errors?.length && (
-        <div className="mt-2 break-all text-xs text-amber-500">部分研判失败：{enrichment.errors.join('；')}</div>
-      )}
-    </div>
-  )
-}
-
-// 封禁剩余时长格式化（毫秒 → X天X小时 / X小时X分 / X分钟）
-function fmtBanRemaining(ms) {
-  const m = Math.max(0, Math.floor(ms / 60000))
-  const d = Math.floor(m / 1440)
-  const h = Math.floor((m % 1440) / 60)
-  const mm = m % 60
-  if (d) return `${d}天${h}小时`
-  if (h) return `${h}小时${mm}分`
-  return `${mm}分钟`
-}
-
-// 安博通黑名单条目字段中文标签（未列出的键原样展示键名，保证设备新字段也能看到）
-const ANBOTONG_ENTRY_LABELS = {
-  blist: '黑名单条目', age: '封禁时长', leftTime: '剩余时长', effectTime: '生效时间',
-  reason: '封禁原因', policy_group_name: '策略组', state: '状态', enable: '启用',
-  hit_num: '命中次数', node_id: '节点 ID',
-}
-
-// 安博通条目字段值格式化：age/leftTime 秒值转中文时长（-1 为永久）；enable 0/1 转启用/停用
-function fmtBanEntryVal(key, v) {
-  if (v == null || v === '') return <span className="text-muted-foreground">--</span>
-  if (key === 'age' || key === 'leftTime') {
-    const n = Number(v)
-    if (!Number.isNaN(n)) return n < 0 ? '永久' : fmtBanRemaining(n * 1000)
-  }
-  if (key === 'enable') return v === 1 || v === '1' || v === true ? '启用' : '停用'
-  if (typeof v === 'object') return JSON.stringify(v)
-  return String(v)
-}
-
-// 安全上下文 · 封禁查询：进入 Tab 自动查询工单涉及的 IP（安博通阻断器「查询指定黑名单」实时查询）
-function BanStatusView({ autoIps }) {
-  const [query, setQuery] = useState(autoIps.join('，'))
-  const [result, setResult] = useState(null)
-  const [loading, setLoading] = useState(false)
-  // 请求序号 + 卸载守卫：连续查询时慢的旧响应不覆盖新结果；切 Tab 卸载后不再 setState
-  const reqSeq = useRef(0)
-  const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false }, [])
-  const doQuery = useCallback((ipsStr) => {
-    const ips = [...new Set(String(ipsStr).split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean))]
-    if (!ips.length) return
-    if (ips.length > 20) return toast.error('单次最多查询 20 个 IP')
-    const seq = ++reqSeq.current
-    const ok = () => mounted.current && reqSeq.current === seq
-    setLoading(true)
-    ticketApi.banStatus(ips)
-      .then((res) => { if (ok()) setResult(res) })
-      .catch((e) => { if (ok()) toast.error(e.message || '查询封禁状态失败') })
-      .finally(() => { if (ok()) setLoading(false) })
-  }, [])
-  useEffect(() => { if (autoIps.length) doQuery(autoIps.join(',')) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const results = result && result.results ? Object.entries(result.results) : []
-  return (
-    <div className="rounded-md border border-border bg-card p-5">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <ShieldBan className="h-4 w-4 text-primary" />
-        <span className="font-semibold text-foreground">封禁状态查询（安博通阻断器）</span>
-        <span className="text-xs text-muted-foreground">通过安博通阻断器「查询指定黑名单」动作实时查询设备侧黑名单信息</span>
-      </div>
-      {result?.device && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 font-medium text-foreground">
-            <ShieldCheck className="h-3.5 w-3.5 text-primary" />{result.device.name}
-          </span>
-          <span>共查询 {results.length} 个 IP，封禁中 {results.filter(([, st]) => st.banned).length} 个</span>
-        </div>
-      )}
-      {result?.device_error && (
-        <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-[13px] text-amber-600">
-          <div className="flex items-center gap-1.5 font-medium">
-            <AlertTriangle className="h-4 w-4 shrink-0" />安博通阻断器不可用
-          </div>
-          <p className="mt-1 break-all">{result.device_error}</p>
-        </div>
-      )}
-      <div className="mb-3 flex gap-2">
-        <input className={inputCls} placeholder="输入 IP 地址，多个 IP 用逗号分隔"
-          value={query} onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) doQuery(query) }} />
-        <Button size="sm" className="shrink-0" loading={loading} disabled={!query.trim()} onClick={() => doQuery(query)}>
-          <Search className="mr-1 h-3.5 w-3.5" />查询
-        </Button>
-      </div>
-      {!result && !loading && (
-        <p className={hintCls}>{autoIps.length ? '正在自动查询工单涉及的 IP…' : '暂无自动查询的 IP，可手动输入 IP 查询封禁状态'}</p>
-      )}
-      {!!results.length && (
-        <div className="space-y-2">
-          {results.map(([ip, st]) => (
-            <div key={ip} className="rounded-md border border-border p-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-sm font-medium text-foreground">{ip}</span>
-                {st.banned ? (
-                  <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
-                ) : (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">未封禁</span>
-                )}
-                {st.error && <span className="text-xs text-red-500">查询失败：{st.error}</span>}
-                {!st.error && st.note && <span className="text-xs text-amber-600">{st.note}</span>}
-              </div>
-              {st.entry ? (
-                <div className="mt-2 rounded-md bg-muted p-2.5 text-[13px]">
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
-                    {Object.entries(st.entry).map(([k, v]) => (
-                      <div key={k} className="flex min-w-0 items-start gap-2">
-                        <span className="shrink-0 text-muted-foreground">{ANBOTONG_ENTRY_LABELS[k] || k}：</span>
-                        <span className="min-w-0 break-all text-foreground">{fmtBanEntryVal(k, v)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (!st.error && (
-                <p className="mt-1.5 text-[13px] text-muted-foreground">设备上未找到该 IP 的黑名单条目</p>
-              ))}
-              {st.raw != null && (
-                <details className="mt-1.5">
-                  <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">设备原始响应</summary>
-                  <pre className="mt-1 max-h-56 overflow-auto rounded bg-muted p-2 text-xs leading-relaxed text-foreground">{JSON.stringify(st.raw, null, 2)}</pre>
-                </details>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
 
 export default function TicketDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const canDelete = hasPermission('ticket', 'delete')
+  const canPause = hasPermission('ticket', 'pause')
 
   const [ticket, setTicket] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -705,6 +191,15 @@ export default function TicketDetail() {
   const [cancelOpen, setCancelOpen] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
   const [cancelling, setCancelling] = useState(false)
+  // 暂停（临时挂起）：类型 + 原因 + 期望恢复时间 + 分类必填信息
+  const [pauseOpen, setPauseOpen] = useState(false)
+  const [pauseType, setPauseType] = useState('')
+  const [pauseReason, setPauseReason] = useState('')
+  const [pauseNecessity, setPauseNecessity] = useState('')
+  const [pauseExpected, setPauseExpected] = useState('')
+  const [pauseDetail, setPauseDetail] = useState({})
+  const [pausing, setPausing] = useState(false)
+  const [resuming, setResuming] = useState(false)
   // 回退上一步：弹窗 + 必填原因
   const [rollbackOpen, setRollbackOpen] = useState(false)
   const [rollbackReason, setRollbackReason] = useState('')
@@ -737,11 +232,16 @@ export default function TicketDetail() {
   const [deviceOverrides, setDeviceOverrides] = useState({})
   // 设备动作异步交互忙碌态：`${runId}:retry|compensate`、`batch:retry`
   const [deviceBusy, setDeviceBusy] = useState({})
+  // 详情数据版本：暂停/恢复等写操作成功后递增，使在途的旧详情响应失效
+  const ticketReqSeq = useRef(0)
 
   const load = useCallback(() => {
+    // 详情请求版本守卫：轮询与手动刷新并发时，仅最新请求可覆盖 ticket
+    const seq = ++ticketReqSeq.current
     setLoading(true)
     ticketApi.getTicket(id)
       .then((res) => {
+        if (ticketReqSeq.current !== seq) return
         setTicket(res)
         // 初始化当前节点表单（含匹配规则下的扩展字段 default）
         if (res.can_handle && res.current_node) {
@@ -770,15 +270,21 @@ export default function TicketDetail() {
 
   // 静默刷新：只更新 ticket 数据，不重置当前节点表单/意见（轮询、手动刷新共用）
   const refreshTicketSilently = useCallback(() => {
+    const seq = ++ticketReqSeq.current
     ticketApi.getTicket(id)
-      .then((res) => setTicket(res))
+      .then((res) => { if (ticketReqSeq.current === seq) setTicket(res) })
       .catch(() => {})
   }, [id])
 
-  // 智能体研判后台进行中（agent.pending）：静默轮询刷新研判结果
-  //（只更新 ticket，不重置当前节点表单/意见，完成后停止轮询）
+  // 智能体研判 / 多 IP 研判后台进行中（v2 ips[].agent.pending 或 stats.pending）：
+  // 静默轮询刷新研判结果（只更新 ticket，不重置当前节点表单/意见，完成后停止轮询）
   const hasPendingAgent = useMemo(
-    () => (ticket?.enrichment_data?.sources || []).some((s) => s?.agent?.pending),
+    () => {
+      const e = ticket?.enrichment_data
+      if (e?.stats?.pending) return true
+      const entries = e?.ips || e?.sources || []
+      return entries.some((s) => s?.agent?.pending || s?.pending || s?.requery_pending)
+    },
     [ticket],
   )
   // 设备动作异步执行中（排队/执行中）：轮询刷新时间线状态，完成后自动停止
@@ -922,22 +428,11 @@ export default function TicketDetail() {
     [ticket, values],
   )
 
-  // 工单涉及的 IP（安全上下文 Tab 自动封禁查询）：研判 IP + IP 类型字段已填的 IPv4 值
-  const ticketIps = useMemo(() => {
-    const out = []
-    const push = (v) => {
-      const s = String(v || '').trim()
-      if (/^(\d{1,3}\.){3}\d{1,3}$/.test(s) && !out.includes(s)) out.push(s)
-    }
-    ;(ticket?.enrichment_data?.sources || []).forEach((s) => push(s.ip))
-    const ipKeys = new Set()
-    ;(ticket?.flow_snapshot?.nodes || []).forEach((n) => {
-      flatFieldDefs(n.fields || []).forEach((f) => { if (f.type === 'ip') ipKeys.add(f.key) })
-    })
-    ;(ticket?.records || []).forEach((r) => {
-      Object.entries(r.field_values || {}).forEach(([k, v]) => { if (ipKeys.has(k)) push(v) })
-    })
-    return out.slice(0, 20)
+  // 安全上下文（多 IP v2）统计口径：右侧处理面板紧凑摘要展示
+  const enrichStats = useMemo(() => {
+    const e = ticket?.enrichment_data
+    if (!e?.ips) return null
+    return e.stats || null
   }, [ticket])
 
   // 步骤条节点顺序：处理节点 + 结束
@@ -1284,6 +779,97 @@ export default function TicketDetail() {
       .finally(() => setCancelling(false))
   }
 
+  // 暂停：可发起的类型由后端按角色/工单状态计算（ticket.pause_types）
+  const selectedPauseType = useMemo(
+    () => (ticket?.pause_types || []).find((t) => t.code === pauseType),
+    [ticket, pauseType],
+  )
+
+  const openPause = () => {
+    const first = (ticket?.pause_types || [])[0]
+    setPauseType(first?.code || '')
+    setPauseReason('')
+    setPauseNecessity('')
+    setPauseExpected('')
+    setPauseDetail({})
+    setPauseOpen(true)
+  }
+
+  // 列表页「暂停」快捷入口：携带 state.openPause 进入时自动打开发起暂停弹窗
+  useEffect(() => {
+    if (location.state?.openPause && ticket?.can_pause && canPause) {
+      openPause()
+      navigate(location.pathname, { replace: true, state: null })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ticket?.id, ticket?.can_pause])
+
+  const handlePause = () => {
+    if (!pauseType) return toast.error('请选择暂停类型')
+    if (!pauseReason.trim()) return toast.error('请填写暂停原因')
+    if (pauseReason.trim().length > 1000) return toast.error('暂停原因不能超过 1000 字')
+    if (selectedPauseType?.require_expected_resume && !pauseExpected) {
+      return toast.error('请填写期望恢复时间')
+    }
+    if (pauseExpected && new Date(pauseExpected) <= new Date()) {
+      return toast.error('期望恢复时间必须晚于当前时间')
+    }
+    const missing = (selectedPauseType?.required_detail_keys || []).find(
+      (key) => !String(pauseDetail[key] || '').trim(),
+    )
+    if (missing) return toast.error('请填写该暂停类型的必填信息')
+    if (pauseDetail.window_start && pauseDetail.window_end
+      && new Date(pauseDetail.window_end) <= new Date(pauseDetail.window_start)) {
+      return toast.error('窗口结束时间必须晚于窗口开始时间')
+    }
+    if (pauseType === 'duplicate_merge'
+      && String(pauseDetail.master_ticket_no || '').trim() === String(ticket?.ticket_no || '').trim()) {
+      return toast.error('主工单号不能与当前工单号相同')
+    }
+    if (ticket?.priority === 'critical' && !isAdmin() && !pauseNecessity.trim()) {
+      return toast.error('紧急工单暂停必须填写必要性说明')
+    }
+    if (pauseNecessity.trim().length > 1000) return toast.error('必要性说明不能超过 1000 字')
+    setPausing(true)
+    ticketApi.pauseTicket(id, {
+      pause_type: pauseType,
+      reason: pauseReason.trim(),
+      expected_resume_at: pauseExpected || null,
+      detail: pauseDetail,
+      necessity: pauseNecessity.trim() || null,
+    })
+      .then((res) => {
+        ticketReqSeq.current += 1
+        toast.success('工单已暂停')
+        setTicket(res)
+        setPauseOpen(false)
+      })
+      .catch((e) => toast.error(e.message || '暂停失败'))
+      .finally(() => setPausing(false))
+  }
+
+  const handleResume = () => {
+    const force = !ticket.can_resume && ticket.can_force_resume
+    confirm({
+      title: force ? '强制恢复工单' : '恢复工单',
+      message: force
+        ? '强制恢复将忽略暂停发起人限制，工单回到暂停前的节点继续处理。确认恢复？'
+        : '确认恢复该工单并回到暂停前的节点继续处理？',
+      confirmText: '确认恢复',
+    }).then((ok) => {
+      if (!ok) return
+      setResuming(true)
+      ticketApi.resumeTicket(id, force ? { force: true } : {})
+        .then((res) => {
+          ticketReqSeq.current += 1
+          toast.success('工单已恢复')
+          setTicket(res)
+        })
+        .catch((e) => toast.error(e.message || '恢复失败'))
+        .finally(() => setResuming(false))
+    })
+  }
+
   // 回退目标：白名单（rollback_to）→ 白名单内节点；缺省 → 自动上一节点
   // （来源 = 最近一条把工单送入当前节点的记录 create 发起 / submit 流转；
   //   会签中间提交 route_to 为空不影响判断；create 落在首节点时无上家可退）
@@ -1541,6 +1127,16 @@ export default function TicketDetail() {
               <Button variant="secondary" size="sm" loading={urging} onClick={handleUrge}
                 title="向当前节点处理分组发送催办提醒（30 分钟内仅可催办一次）">
                 <Zap className="mr-1 h-3.5 w-3.5" />催办
+              </Button>
+            )}
+            {ticket.can_pause && canPause && (
+              <Button variant="secondary" size="sm" onClick={openPause}>
+                <Pause className="mr-1 h-3.5 w-3.5" />暂停
+              </Button>
+            )}
+            {(ticket.can_resume || ticket.can_force_resume) && canPause && (
+              <Button variant="secondary" size="sm" loading={resuming} onClick={handleResume}>
+                <Play className="mr-1 h-3.5 w-3.5" />{ticket.can_resume ? '恢复' : '强制恢复'}
               </Button>
             )}
             {ticket.can_cancel && (
@@ -1895,10 +1491,17 @@ export default function TicketDetail() {
           </>
           )}
           {activeTab === 'enrich' && (
-            <>
-              <BanStatusView autoIps={ticketIps} />
-              <EnrichmentView enrichment={ticket.enrichment_data} onFill={ticket.can_handle ? fillFromAgent : undefined} />
-            </>
+            <TicketEnrichment
+              key={ticket.id}
+              ticket={ticket}
+              enrichment={ticket.enrichment_data}
+              onFill={ticket.can_handle ? fillFromAgent : undefined}
+              onTicketUpdate={(t) => {
+                if (!t) { refreshTicketSilently(); return }
+                ticketReqSeq.current += 1
+                setTicket(t)
+              }}
+            />
           )}
         </div>
 
@@ -2296,11 +1899,44 @@ export default function TicketDetail() {
                     <ArrowRightLeft className="mr-1 h-4 w-4" />转办 / 改派
                   </Button>
                 )}
+                {ticket.can_pause && canPause && (
+                  <Button variant="secondary" className="w-full" disabled={submitting} onClick={openPause}>
+                    <Pause className="mr-1 h-4 w-4" />暂停工单（临时挂起）
+                  </Button>
+                )}
               </div>
             </div>
           ) : (
             <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">
-              {ticket.status === 'processing' ? (
+              {ticket.status === 'paused' ? (
+                <div className="space-y-3">
+                  <div className="flex items-start gap-2">
+                    <Pause className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="font-medium text-foreground">
+                        工单已暂停{ticket.pause_label ? `（${ticket.pause_label}）` : ''}
+                      </div>
+                      <div className="break-all">原因：{ticket.pause?.reason || '--'}</div>
+                      <div>
+                        暂停人：{ticket.pause?.paused_by_name || '--'}
+                        {ticket.pause?.paused_at ? ` · ${new Date(ticket.pause.paused_at).toLocaleString('zh-CN', { hour12: false })}` : ''}
+                      </div>
+                      <div>
+                        到期时间：{ticket.pause?.expire_at ? new Date(ticket.pause.expire_at).toLocaleString('zh-CN', { hour12: false }) : '--'}
+                      </div>
+                      <div className="text-xs text-amber-600 dark:text-amber-400">
+                        暂停期间 SLA 与节点停留计时冻结，不可流转、回退、转办、认领或执行设备动作。
+                      </div>
+                    </div>
+                  </div>
+                  {(ticket.can_resume || ticket.can_force_resume) && canPause && (
+                    <Button variant="primary" className="w-full" loading={resuming} onClick={handleResume}>
+                      <Play className="mr-1 h-4 w-4" />
+                      {ticket.can_resume ? '恢复工单' : '强制恢复工单'}
+                    </Button>
+                  )}
+                </div>
+              ) : ticket.status === 'processing' ? (
                 <div className="flex items-start gap-2">
                   <Clock className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
                   <span>
@@ -2328,6 +1964,17 @@ export default function TicketDetail() {
           <div className="rounded-md border border-border bg-card p-5">
             <div className="mb-3 text-sm font-semibold text-foreground">工单信息</div>
             <div className="space-y-2 text-[13px]">
+              {enrichStats && (
+                <button type="button" title="点击查看安全上下文详情"
+                  className="flex w-full items-start justify-between gap-3 rounded text-left transition hover:text-primary"
+                  onClick={() => setActiveTab('enrich')}>
+                  <span className="shrink-0 text-muted-foreground">安全上下文</span>
+                  <span className="text-right leading-relaxed">
+                    IP {enrichStats.total} 个：恶意 {enrichStats.malicious} · 高危 {enrichStats.severity_high} · 重要资产 {enrichStats.asset_critical} · 未匹配 {Math.max(0, (enrichStats.total || 0) - (enrichStats.asset_matched || 0))}
+                    {enrichStats.pending ? ' · 研判中…' : ''}
+                  </span>
+                </button>
+              )}
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">工单号</span><span className="font-mono text-foreground">{ticket.ticket_no}</span></div>
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">流程模板</span><span className="text-foreground">{ticket.flow_name}</span></div>
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">快照版本</span><span className="text-foreground">{snapshot.version !== undefined ? `v${snapshot.version}` : '--'}</span></div>
@@ -2375,6 +2022,73 @@ export default function TicketDetail() {
             <AutoGrowTextarea className={`${inputCls} resize-y`} rows={3} placeholder="请说明取消该工单的原因" value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)} />
           </div>
+        </div>
+      </Modal>
+
+      {/* 暂停工单弹窗：分类 + 原因 + 期望恢复时间 + 分类必填信息 */}
+      <Modal
+        open={pauseOpen}
+        title="暂停工单（临时挂起）"
+        onClose={() => setPauseOpen(false)}
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setPauseOpen(false)}>返回</Button>
+            <Button variant="primary" size="sm" loading={pausing} onClick={handlePause}>确认暂停</Button>
+          </>
+        }
+      >
+        <div className="space-y-3 py-2">
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-500">
+            暂停期间 SLA 与节点停留计时冻结，工单不可流转、回退、转办、认领或执行设备动作；到期将按策略自动恢复。
+          </div>
+          <div>
+            <label className={labelCls}>暂停类型<span className="text-red-500">*</span></label>
+            <select className={inputCls} value={pauseType}
+              onChange={(e) => { setPauseType(e.target.value); setPauseDetail({}) }}>
+              {(ticket.pause_types || []).map((t) => (
+                <option key={t.code} value={t.code}>{t.label}</option>
+              ))}
+            </select>
+            {selectedPauseType?.max_minutes && (
+              <div className={`${hintCls} mt-1`}>该类型最长暂停 {Math.floor(selectedPauseType.max_minutes / 60)} 小时</div>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>暂停原因<span className="text-red-500">*</span></label>
+            <AutoGrowTextarea className={`${inputCls} resize-y`} rows={3} maxLength={1000}
+              placeholder="请说明暂停原因，便于协作者快速接手" value={pauseReason}
+              onChange={(e) => setPauseReason(e.target.value)} />
+          </div>
+          {ticket?.priority === 'critical' && (
+            <div>
+              <label className={labelCls}>
+                必要性说明{!isAdmin() && <span className="text-red-500">*</span>}
+              </label>
+              <AutoGrowTextarea className={`${inputCls} resize-y`} rows={2} maxLength={1000}
+                placeholder="紧急工单建议填写必要性说明" value={pauseNecessity}
+                onChange={(e) => setPauseNecessity(e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label className={labelCls}>
+              期望恢复时间{selectedPauseType?.require_expected_resume && <span className="text-red-500">*</span>}
+            </label>
+            <input type="datetime-local" className={inputCls} value={pauseExpected}
+              onChange={(e) => setPauseExpected(e.target.value)} />
+          </div>
+          {(PAUSE_DETAIL_META[pauseType] || []).map((f) => (
+            <div key={f.key}>
+              <label className={labelCls}>{f.label}<span className="text-red-500">*</span></label>
+              {f.type === 'textarea' ? (
+                <AutoGrowTextarea className={`${inputCls} resize-y`} rows={2} value={pauseDetail[f.key] || ''}
+                  onChange={(e) => setPauseDetail((m) => ({ ...m, [f.key]: e.target.value }))} />
+              ) : (
+                <input type={f.type} className={inputCls} value={pauseDetail[f.key] || ''}
+                  onChange={(e) => setPauseDetail((m) => ({ ...m, [f.key]: e.target.value }))} />
+              )}
+            </div>
+          ))}
         </div>
       </Modal>
 

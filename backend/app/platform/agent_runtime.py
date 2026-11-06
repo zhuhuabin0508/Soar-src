@@ -238,7 +238,10 @@ def _resolve_system_prompt(
     for_decision: bool = False,
 ) -> str | None:
     if override is not None and getattr(override, "system_prompt", None) is not None:
-        return override.system_prompt
+        # 自定义 system_prompt 也不能绕过当前时间块（与常规组装路径保持一致）
+        from app.agent.prompt_assembler import _append_time_block
+
+        return _append_time_block(override.system_prompt)
     if for_decision:
         return assemble_system_prompt(db, agent, allow_none=True)
     return assemble_system_prompt(

@@ -65,6 +65,20 @@ class Settings(BaseSettings):
     WORKFLOW_SYSTEM_USER_ID: int = 0
     WORKFLOW_SOC_AGENT_ID: int = 0
 
+    # ===== XDR 开放性 OpenAPI（联动码签名调用）=====
+    # XDR 平台地址，建议带协议（https://host[:port]）；不带协议时默认 https
+    XDR_OPENAPI_HOST: str = ""
+    # 联动码（等同访问凭证），仅允许通过部署环境变量注入，禁止入库/入提示词/入日志
+    XDR_OPENAPI_AUTH_CODE: str = ""
+    # 单次请求超时（秒）；须小于 Hermes 工具总超时 30s
+    XDR_OPENAPI_TIMEOUT: float = 20.0
+    # 默认校验 TLS 证书；自签证书环境需显式设为 false
+    XDR_OPENAPI_VERIFY_SSL: bool = True
+    # 是否允许非查询类方法（PUT/PATCH/DELETE），默认禁止
+    XDR_OPENAPI_ALLOW_WRITE: bool = False
+    # XDR 接口文档目录（search_xdr_api_docs / query_xdr_api_doc 工具读取）
+    XDR_DOCS_DIR: str = str(BASE_DIR / "app" / "data" / "xdr_skill_reference")
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",

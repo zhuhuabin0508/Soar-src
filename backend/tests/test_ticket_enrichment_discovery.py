@@ -26,6 +26,9 @@ class _FakeDB:
         # 资产清单命中后的记录回查：返回带空 tags 的 fake 记录
         return _FakeQuery(types.SimpleNamespace(tags=[]))
 
+    def commit(self):  # requery 后台路径需要
+        pass
+
 
 def _discovery_payload(count=1):
     return {
@@ -103,12 +106,15 @@ def test_match_discovery_asset_miss_returns_none(monkeypatch):
     assert te._match_discovery_asset(_FakeDB(), "100.66.1.25") is None
 
 
-def test_match_discovery_asset_error_returns_none(monkeypatch):
+def test_match_discovery_asset_error_returns_error_info(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("db down")
 
     monkeypatch.setattr("app.agent.discovery_search._search_token", _boom)
-    assert te._match_discovery_asset(_FakeDB(), "100.66.1.25") is None
+    result = te._match_discovery_asset(_FakeDB(), "100.66.1.25")
+    assert result is not None
+    assert result["matches"] == []
+    assert "db down" in result["error"]
 
 
 def _patch_sources(monkeypatch, inventory_hit=None, discovery_payload=None):
@@ -176,12 +182,21 @@ def test_build_ticket_enrichment_dual_source(monkeypatch):
         te, "_query_threat_intel_batch", lambda ips: [{"is_malicious": False}] * len(ips)
     )
     field_defs = [{"key": "src_ip", "label": "源IP地址"}]
-    data = te.build_ticket_enrichment(_FakeDB(), field_defs, {"src_ip": "100.66.1.25"}, "测试工单")
-    entry = data["sources"][0]
+    data, bg_plan, agent_ips = te.build_ticket_enrichment(
+        _FakeDB(), field_defs, {"src_ip": "100.66.1.25"}, "测试工单"
+    )
+    assert bg_plan is None and agent_ips == []
+    assert data["version"] == 2
+    entry = data["ips"][0]
+    assert entry["roles"] == ["src_ip"]
+    assert entry["detail"] == "full"
     asset = entry["asset"]
     assert asset["source"] == "asset_discovery"
     assert asset["discovery"] is not None and asset["inventory"] is not None
     assert entry["threat"] == {"is_malicious": False}
+    assert data["role_labels"]["src_ip"] == "源IP地址"
+    assert data["stats"]["total"] == 1
+    assert data["stats"]["asset_matched"] == 1
 
 
 # ============================================================================
@@ -311,6 +326,176 @@ def test_decorate_asset_source_labels_passthrough():
 
 
 def test_extract_ip_takes_first_valid():
-    assert te._extract_ip("10.99.0.1, 192.168.1.1") == "10.99.0.1"
-    assert te._extract_ip("无效; 8.8.8.8") == "8.8.8.8"
-    assert te._extract_ip("无 IP") is None
+    # v2：多值全量解析（v1 仅取第一个有效地址）
+    ips, skipped = te._extract_ips("10.99.0.1, 192.168.1.1")
+    assert ips == ["10.99.0.1", "192.168.1.1"] and skipped == []
+    ips, skipped = te._extract_ips("无效; 8.8.8.8")
+    assert ips == ["8.8.8.8"] and skipped == ["无效"]
+    # 分隔符/字段内去重/网段条目
+    ips, skipped = te._extract_ips("1.1.1.1;1.1.1.1, 10.0.0.0/8, 文本")
+    assert ips == ["1.1.1.1"] and skipped == ["10.0.0.0/8", "文本"]
+    assert te._extract_ips("无 IP") == ([], ["无 IP"])
+    assert te._extract_ips("") == ([], [])
+    assert te._extract_ips(None) == ([], [])
+
+
+# ============================================================================
+# v2 多 IP：去重合并 / 统计 / 分级存储 / 后台占位
+# ============================================================================
+
+def _field_defs():
+    return [
+        {"key": "src_ip", "label": "源IP地址"},
+        {"key": "dst_ip", "label": "目的IP地址"},
+    ]
+
+
+def test_build_multi_ip_dedup_and_stats(monkeypatch):
+    """同一 IP 跨角色只查一次，roles 记录全部出现角色，stats 按角色计数。"""
+    queried = []
+    monkeypatch.setattr(
+        te, "_query_assets",
+        lambda db, ips: queried.extend(ips) or {
+            ip: ({"matched": False}, None) for ip in ips
+        },
+    )
+    monkeypatch.setattr(
+        te, "_query_threat_intel_batch",
+        lambda ips: [
+            {"is_malicious": ip.endswith(".1"), "severity": "high" if ip.endswith(".1") else "low"}
+            for ip in ips
+        ],
+    )
+    data, bg_plan, agent_ips = te.build_ticket_enrichment(
+        _FakeDB(), _field_defs(),
+        {"src_ip": "1.1.1.1, 2.2.2.2", "dst_ip": "2.2.2.2, 3.3.3.3"},
+        "多IP工单",
+    )
+    assert bg_plan is None
+    assert [e["ip"] for e in data["ips"]] == ["1.1.1.1", "2.2.2.2", "3.3.3.3"]
+    assert queried.count("2.2.2.2") == 1  # 跨角色去重只查一次
+    assert data["ips"][1]["roles"] == ["src_ip", "dst_ip"]
+    assert data["stats"]["total"] == 3
+    assert data["stats"]["src"] == 2 and data["stats"]["dst"] == 2
+    assert data["stats"]["malicious"] == 1
+    assert data["stats"]["severity_high"] == 1
+
+
+def test_build_full_lite_tiering(monkeypatch):
+    """前 10 个 full；之后仅风险 IP 保留全字段，其余精简为 lite。"""
+    ips = [f"10.0.{i // 256}.{i % 256}" for i in range(12)]
+    monkeypatch.setattr(
+        te, "_query_assets", lambda db, ips_: {ip: ({"matched": False}, None) for ip in ips_}
+    )
+    monkeypatch.setattr(
+        te, "_query_threat_intel_batch",
+        lambda ips_: [{"is_malicious": False, "severity": "low", "confidence": 10, "tags": ["a"], "source": "x"} for _ in ips_],
+    )
+    data, _, _ = te.build_ticket_enrichment(
+        _FakeDB(), [{"key": "src_ip", "label": "源IP地址"}],
+        {"src_ip": ", ".join(ips)}, "分级工单",
+    )
+    assert len(data["ips"]) == 12
+    assert [e["detail"] for e in data["ips"]] == ["full"] * 10 + ["lite"] * 2
+    lite = data["ips"][10]
+    assert set(lite["threat"].keys()) == {
+        "ip", "is_malicious", "confidence", "severity", "tags", "geo_info", "source"
+    }
+
+
+def test_build_bg_shell_when_over_sync_limit():
+    """IP 数超过同步阈值：返回 pending 占位 + bg_plan，不触发任何查询。"""
+    ips = ", ".join(f"10.1.{i // 256}.{i % 256}" for i in range(25))
+    data, bg_plan, agent_ips = te.build_ticket_enrichment(
+        _FakeDB(), [{"key": "src_ip", "label": "源IP地址"}], {"src_ip": ips}, "后台工单",
+    )
+    assert bg_plan is not None and agent_ips == []
+    assert data["stats"]["pending"] is True
+    assert all(e.get("pending") for e in data["ips"])
+    assert len(bg_plan["ips"]) == 25
+    assert all("threat" not in e and "asset" not in e for e in data["ips"])
+
+
+class _FakeTicket:
+    def __init__(self, enrichment):
+        self.id = 1
+        self.enrichment_data = enrichment
+
+
+def test_requery_upgrades_entry_and_stats(monkeypatch):
+    """重新研判：重跑资产+情报、升级 full、stats 重算，agent 结果保留。"""
+    monkeypatch.setattr(
+        te, "_query_assets",
+        lambda db, ips: {
+            ip: ({"matched": True, "source": "asset_inventory", "asset_name": "srv",
+                  "source_label": "资产清单", "inventory": {"asset_id": 1, "fields": {}}}, None)
+            for ip in ips
+        },
+    )
+    monkeypatch.setattr(
+        te, "_query_threat_intel_batch",
+        lambda ips: [{"is_malicious": True, "severity": "high", "confidence": 90} for _ in ips],
+    )
+    monkeypatch.setattr(te, "flag_modified", lambda obj, key: None)
+    ticket = _FakeTicket({
+        "version": 2,
+        "ips": [{"ip": "1.1.1.1", "roles": ["src_ip"], "detail": "lite",
+                 "asset": {"matched": False},
+                 "threat": {"is_malicious": False},
+                 "agent": {"risk_level": "low"}}],
+        "stats": {"total": 1, "malicious": 0, "pending": False},
+        "errors": [],
+    })
+    result = te.requery_ticket_enrichment(_FakeDB(), ticket, ["1.1.1.1"])
+    assert result == {"updated": 1, "unknown": [], "pending": False}
+    entry = ticket.enrichment_data["ips"][0]
+    assert entry["detail"] == "full"
+    assert entry["threat"]["is_malicious"] is True
+    assert entry["agent"] == {"risk_level": "low"}  # 原智能体结果保留
+    assert ticket.enrichment_data["stats"]["malicious"] == 1
+    assert ticket.enrichment_data["stats"]["asset_matched"] == 1
+
+
+def test_requery_over_limit_marks_background(monkeypatch):
+    """选中 IP 超过同步阈值：打 requery_pending 标记并转后台。"""
+    monkeypatch.setattr(te, "start_requery_bg", lambda tid, ips: None)
+    monkeypatch.setattr(te, "flag_modified", lambda obj, key: None)
+    entries = [
+        {"ip": f"10.9.{i // 256}.{i % 256}", "roles": ["src_ip"], "detail": "lite"}
+        for i in range(25)
+    ]
+    ticket = _FakeTicket({"version": 2, "ips": entries, "stats": {"total": 25}, "errors": []})
+    result = te.requery_ticket_enrichment(_FakeDB(), ticket, [e["ip"] for e in entries])
+    assert result["pending"] is True
+    assert all(e.get("requery_pending") for e in ticket.enrichment_data["ips"])
+    assert ticket.enrichment_data["stats"]["pending"] is True
+
+
+def test_requery_rejects_legacy_structure():
+    ticket = _FakeTicket({"sources": [{"ip": "1.1.1.1", "role": "src_ip"}]})
+    try:
+        te.requery_ticket_enrichment(_FakeDB(), ticket, ["1.1.1.1"])
+        raise AssertionError("存量 v1 结构应拒绝重新研判")
+    except ValueError as exc:
+        assert "存量结构" in str(exc)
+
+
+def test_decorate_asset_source_labels_v2(monkeypatch):
+    """v2（ips 扁平结构）同样按来源补齐 source_label。"""
+    monkeypatch.setattr(te, "_template_name_map", lambda db: {"host_asset": "主机资产"})
+    stored = {
+        "version": 2,
+        "ips": [
+            {"ip": "10.0.0.9", "roles": ["src_ip"], "asset": {
+                "matched": True, "source": "asset_discovery", "asset_name": "bm-01",
+                "discovery": {
+                    "resource_type": "bare_metal", "resource_label": "裸金属资产",
+                    "matches": [{"resource_type": "bare_metal", "resource_label": "裸金属资产"}],
+                },
+                "inventory": None,
+            }},
+        ],
+    }
+    out = te.decorate_asset_source_labels(_FakeDB(), stored)
+    assert out["ips"][0]["asset"]["source_label"] == "资产发现-裸金属资产"
+    assert out["ips"][0]["asset"]["discovery"]["matches"][0]["source_label"] == "资产发现-裸金属资产"

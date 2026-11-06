@@ -95,12 +95,42 @@ def save_sla_config(db: Session, config: dict) -> dict:
     return normalized
 
 
+def paused_minutes_between(records, start, end) -> float:
+    """统计 ``[start, end]`` 区间内处于暂停状态的分钟数。
+
+    依据时间线中的 pause / resume 记录；未闭合的暂停计算到 ``end``。
+    用于 SLA 计算时扣除暂停时长（暂停期间不计入响应/解决耗时）。
+    """
+    if not start or not end or end <= start:
+        return 0.0
+    events = sorted(
+        (r for r in records if r.action in ("pause", "resume") and r.created_at),
+        key=lambda r: r.created_at,
+    )
+    total = 0.0
+    open_at = None
+    for record in events:
+        if record.action == "pause":
+            if open_at is None:
+                open_at = record.created_at
+        elif open_at is not None:
+            seg_start, seg_end = max(open_at, start), min(record.created_at, end)
+            if seg_end > seg_start:
+                total += (seg_end - seg_start).total_seconds() / 60
+            open_at = None
+    if open_at is not None:
+        seg_start = max(open_at, start)
+        if end > seg_start:
+            total += (end - seg_start).total_seconds() / 60
+    return total
+
+
 def evaluate_ticket_sla(ticket, records, now, config: dict) -> dict:
-    """评估单个工单的 SLA 时效。
+    """评估单个工单的 SLA 时效（暂停期间不计入耗时）。
 
     :param ticket: Ticket 工单
     :param records: 该工单的节点记录（按时间升序）
-    :param now: 当前时间（datetime）
+    :param now: 当前时间（暂停中应传暂停时刻，实现冻结）
     :param config: get_sla_config 产出的配置
     :return: {response_minutes, resolve_minutes, response_breach, resolve_breach,
              timeout, has_target}
@@ -108,40 +138,53 @@ def evaluate_ticket_sla(ticket, records, now, config: dict) -> dict:
     creates = [r for r in records if r.action == "create"]
     submits = [r for r in records if r.action == "submit"]
 
+    created_at = creates[0].created_at if creates and creates[0].created_at else None
+    submit_at = submits[0].created_at if submits and submits[0].created_at else None
+
     response_minutes = None
-    if creates and submits and creates[0].created_at and submits[0].created_at:
-        response_minutes = (submits[0].created_at - creates[0].created_at).total_seconds() / 60
+    if created_at and submit_at:
+        raw = (submit_at - created_at).total_seconds() / 60
+        response_minutes = max(0.0, raw - paused_minutes_between(records, created_at, submit_at))
 
     resolve_minutes = None
     if ticket.status == "completed" and ticket.created_at and ticket.closed_at:
-        resolve_minutes = (ticket.closed_at - ticket.created_at).total_seconds() / 60
+        raw = (ticket.closed_at - ticket.created_at).total_seconds() / 60
+        resolve_minutes = max(
+            0.0, raw - paused_minutes_between(records, ticket.created_at, ticket.closed_at)
+        )
 
     target = config.get(ticket.priority) or {}
     resp_target = target.get("response")
     res_target = target.get("resolve")
 
     # 发起时间基准：优先 create 记录时间，回退工单创建时间
-    started_at = (creates[0].created_at if creates and creates[0].created_at else None) or ticket.created_at
+    started_at = created_at or ticket.created_at
 
     # —— 响应超时 ——
     response_breach = False
     if resp_target and started_at:
         if response_minutes is not None:
             response_breach = response_minutes > resp_target
-        elif ticket.status == "processing":
-            response_breach = (now - started_at).total_seconds() / 60 > resp_target
+        elif ticket.status in ("processing", "paused"):
+            elapsed = (now - started_at).total_seconds() / 60
+            elapsed -= paused_minutes_between(records, started_at, now)
+            response_breach = elapsed > resp_target
         elif ticket.status == "cancelled":
             # 从未提交即取消：取消时点距发起超过目标即响应超时
             end = ticket.closed_at or now
-            response_breach = (end - started_at).total_seconds() / 60 > resp_target
+            elapsed = (end - started_at).total_seconds() / 60
+            elapsed -= paused_minutes_between(records, started_at, end)
+            response_breach = elapsed > resp_target
 
     # —— 解决超时 ——
     resolve_breach = False
     if res_target and ticket.created_at:
         if ticket.status == "completed":
             resolve_breach = resolve_minutes is not None and resolve_minutes > res_target
-        elif ticket.status == "processing":
-            resolve_breach = (now - ticket.created_at).total_seconds() / 60 > res_target
+        elif ticket.status in ("processing", "paused"):
+            elapsed = (now - ticket.created_at).total_seconds() / 60
+            elapsed -= paused_minutes_between(records, ticket.created_at, now)
+            resolve_breach = elapsed > res_target
 
     return {
         "response_minutes": response_minutes,

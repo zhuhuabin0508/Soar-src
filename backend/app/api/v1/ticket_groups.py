@@ -171,7 +171,10 @@ def delete_group(
     group = _get_group_or_404(db, group_id)
     pending = (
         db.query(func.count(Ticket.id))
-        .filter(Ticket.status == "processing", Ticket.current_group_id == group_id)
+        .filter(
+            Ticket.status.in_(("processing", "paused")),
+            Ticket.current_group_id == group_id,
+        )
         .scalar()
     )
     if pending:

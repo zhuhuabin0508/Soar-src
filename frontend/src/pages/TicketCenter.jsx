@@ -7,14 +7,14 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   TicketCheck, Plus, Search, Paperclip, X, Eye, Rocket, ChevronRight, Archive, ArchiveRestore, Monitor, Trash2,
-  RefreshCw, AlertTriangle, Download, Zap, Lightbulb,
+  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls, hintCls } from '../components/property/FormControls'
 import { Button, PageContainer, DataTable, Pagination, CompactSelect, ComboInput, DatePicker } from '../components/ui'
-import { hasPermission } from '../utils/permissions'
+import { hasPermission, isAdmin } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
@@ -23,6 +23,7 @@ import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
   processing: { label: '进行中', cls: 'bg-blue-500/10 text-blue-500' },
+  paused: { label: '已暂停', cls: 'bg-amber-500/10 text-amber-500' },
   completed: { label: '已完成', cls: 'bg-emerald-500/10 text-emerald-500' },
   cancelled: { label: '已取消', cls: 'bg-muted text-muted-foreground' },
 }
@@ -49,13 +50,37 @@ const VIEWS = [
 // 状态指标条 chips：与工单状态枚举同色系，点击联动状态筛选
 const STATUS_CHIPS = [
   { key: 'processing', label: '进行中', dot: 'bg-blue-500', active: 'bg-blue-500/15 text-blue-500 ring-blue-500/40', pulse: true },
+  { key: 'paused', label: '已暂停', dot: 'bg-amber-500', active: 'bg-amber-500/15 text-amber-500 ring-amber-500/40' },
   { key: 'completed', label: '已完成', dot: 'bg-emerald-500', active: 'bg-emerald-500/15 text-emerald-500 ring-emerald-500/40' },
   { key: 'cancelled', label: '已取消', dot: 'bg-zinc-500', active: 'bg-zinc-500/15 text-zinc-400 ring-zinc-500/40' },
+  // 派生筛选（非状态枚举）：SLA 目标已到期且仍未被处理的工单
+  { key: 'timeout', label: '已超时', dot: 'bg-red-500', active: 'bg-red-500/15 text-red-500 ring-red-500/40' },
 ]
+// 批量操作结果摘要：成功/跳过/失败计数 + 前几条失败原因，避免只看到「失败 N」无法定位
+const batchSummary = (res) => {
+  const base = `成功 ${res.success} / 跳过 ${res.skipped} / 失败 ${res.failed}`
+  const bad = (res.results || []).filter(
+    (r) => r.result !== 'success' && (r.message || r.reason),
+  )
+  if (!bad.length) return { text: base, ok: res.failed === 0 && res.success > 0 }
+  const detail = bad.slice(0, 3).map((r) => r.message || r.reason).join('；')
+  return { text: `${base}：${detail}${bad.length > 3 ? '…' : ''}`, ok: res.failed === 0 && res.success > 0 }
+}
+
+// 暂停分类必填字段（与后端 REQUIRED_DETAIL_KEYS 对应，批量暂停弹窗使用）
+const PAUSE_DETAIL_FIELDS = {
+  supplement_items: { label: '需补充的信息', type: 'textarea' },
+  partner: { label: '协作方', type: 'text' },
+  feedback_items: { label: '待确认事项', type: 'textarea' },
+  window_start: { label: '窗口开始时间', type: 'datetime-local' },
+  window_end: { label: '窗口结束时间', type: 'datetime-local' },
+  master_ticket_no: { label: '主工单号', type: 'text' },
+}
 
 export default function TicketCenter() {
   const canEdit = hasPermission('ticket', 'edit')
   const canDelete = hasPermission('ticket', 'delete')
+  const canPause = hasPermission('ticket', 'pause')
   const canMonitor = hasPermission('ticket_monitor', 'view')
   const navigate = useNavigate()
   const location = useLocation()
@@ -72,6 +97,8 @@ export default function TicketCenter() {
   const [size, setSize] = useState(20)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState(() => searchParams.get('status') || '')
+  // 已超时筛选（SLA 目标已到期且未处理），与状态筛选互斥切换、可与其他筛选组合
+  const [timeoutOnly, setTimeoutOnly] = useState(() => searchParams.get('timeout') === '1')
   const [priority, setPriority] = useState(() => searchParams.get('priority') || '')
   // 筛选：流程模板（与发起弹窗的 flowId/flows 状态无关，独立维护）
   const [filterFlowId, setFilterFlowId] = useState(() => searchParams.get('flow') || '')
@@ -80,6 +107,17 @@ export default function TicketCenter() {
   const [searchKw, setSearchKw] = useState(() => searchParams.get('q') || '')
   const [deletingId, setDeletingId] = useState(null)
   const [urgingId, setUrgingId] = useState(null)
+  const [resumingId, setResumingId] = useState(null)
+  // 批量暂停/恢复：列表多选 + 批量弹窗
+  const [selectedIds, setSelectedIds] = useState([])
+  const [batchPauseOpen, setBatchPauseOpen] = useState(false)
+  const [batchType, setBatchType] = useState('')
+  const [batchReason, setBatchReason] = useState('')
+  const [batchNecessity, setBatchNecessity] = useState('')
+  const [batchExpected, setBatchExpected] = useState('')
+  const [batchDetail, setBatchDetail] = useState({})
+  const [batchSubmitting, setBatchSubmitting] = useState(false)
+  const [pauseOptions, setPauseOptions] = useState([])
   const [exporting, setExporting] = useState(false)
 
   // 发起弹窗
@@ -105,20 +143,31 @@ export default function TicketCenter() {
   // 相似工单：800ms 防抖按首节点 源/目的 IP 匹配同流程历史工单（静默失败不阻塞发起）
   // 请求序号守卫：防抖只清定时器，已发出的旧请求返回时不得覆盖新流程/新字段值的展示
   const similarReqSeq = useRef(0)
+  // 列表请求序号守卫：分页/筛选/超时筛选快速切换时，仅最新请求可写回列表
+  const listReqSeq = useRef(0)
 
   const load = useCallback(() => {
+    const seq = ++listReqSeq.current
     setLoading(true)
     // 已归档 Tab = view:all + archived:only；其余视图默认排除归档
     ticketApi.listTickets({
       view: view === 'archived' ? 'all' : view,
       archived: view === 'archived' ? 'only' : 'exclude',
       status, priority, q: searchKw, page, size,
+      timeout_only: timeoutOnly || undefined,
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
     })
-      .then((res) => { setList(res.items || []); setTotal(res.total || 0) })
-      .catch((e) => toast.error(e.message || '加载工单列表失败'))
-      .finally(() => setLoading(false))
-  }, [view, status, priority, searchKw, page, size, filterFlowId])
+      .then((res) => {
+        if (listReqSeq.current !== seq) return
+        setList(res.items || [])
+        setTotal(res.total || 0)
+      })
+      .catch((e) => {
+        if (listReqSeq.current !== seq) return
+        toast.error(e.message || '加载工单列表失败')
+      })
+      .finally(() => { if (listReqSeq.current === seq) setLoading(false) })
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly])
 
   useEffect(() => { load() }, [load])
 
@@ -135,9 +184,15 @@ export default function TicketCenter() {
     if (priority) p.priority = priority
     if (filterFlowId) p.flow = filterFlowId
     if (searchKw) p.q = searchKw
+    if (timeoutOnly) p.timeout = '1'
     setSearchParams(p, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, status, priority, filterFlowId, searchKw])
+  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly])
+
+  // 视图/筛选/翻页变化时清空多选，避免批量操作误伤不在当前页的工单
+  useEffect(() => {
+    setSelectedIds([])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly])
 
   // 告警一键发起：携带 state.alertPrefill 自动打开发起弹窗并预填
   useEffect(() => {
@@ -398,6 +453,130 @@ export default function TicketCenter() {
       .finally(() => setUrgingId(null))
   }
 
+  // 列表快捷暂停：类型/原因等必填信息在详情弹窗内填写，这里仅跳转并自动打开发起暂停
+  const handlePause = (r, e) => {
+    e.stopPropagation()
+    navigate(`/tickets/${r.id}`, { state: { openPause: true } })
+  }
+
+  // 列表快捷恢复：有权限的暂停工单直接恢复（完成后刷新列表）
+  const handleResume = async (r, e) => {
+    e.stopPropagation()
+    const ok = await confirm({
+      title: '恢复工单',
+      message: `确认恢复工单 ${r.ticket_no}？恢复后 SLA 与节点停留计时继续累计。`,
+      confirmText: '恢复',
+    })
+    if (!ok) return
+    setResumingId(r.id)
+    ticketApi.resumeTicket(r.id, {})
+      .then(() => { toast.success(`工单已恢复：${r.ticket_no}`); load() })
+      .catch((err) => toast.error(err.message || '恢复失败'))
+      .finally(() => setResumingId(null))
+  }
+
+  // 批量操作：仅对本页已勾选且当前状态可操作、且有权限的工单生效
+  const selectedRows = useMemo(
+    () => list.filter((r) => selectedIds.includes(r.id)),
+    [list, selectedIds],
+  )
+  const batchPausable = selectedRows.filter((r) => r.status === 'processing' && r.can_pause)
+  const batchResumable = selectedRows.filter((r) => r.status === 'paused' && r.can_resume)
+  const currentPauseOption = pauseOptions.find((o) => o.code === batchType)
+
+  const openBatchPause = () => {
+    ticketApi.pauseOptions()
+      .then((res) => {
+        const items = (res.items || []).filter((o) => o.allow_batch !== false)
+        if (!items.length) {
+          toast.warning('暂无可批量暂停的类型')
+          return
+        }
+        setPauseOptions(items)
+        setBatchType(items[0]?.code || '')
+        setBatchReason('')
+        setBatchNecessity('')
+        setBatchExpected('')
+        setBatchDetail({})
+        setBatchPauseOpen(true)
+      })
+      .catch((e) => toast.error(e.message || '加载暂停类型失败'))
+  }
+
+  const handleBatchPause = () => {
+    const ids = batchPausable.map((r) => r.id)
+    if (!ids.length) { toast.warning('所选工单中没有可暂停的工单'); return }
+    if (!batchType) { toast.warning('请选择暂停类型'); return }
+    if (!batchReason.trim()) { toast.warning('请填写暂停原因'); return }
+    if (batchReason.trim().length > 1000) { toast.warning('暂停原因不能超过 1000 字'); return }
+    if (currentPauseOption?.require_expected_resume && !batchExpected) {
+      toast.warning('该暂停类型必须填写期望恢复时间')
+      return
+    }
+    if (batchExpected && new Date(batchExpected) <= new Date()) {
+      toast.warning('期望恢复时间必须晚于当前时间')
+      return
+    }
+    if (batchPausable.some((r) => r.priority === 'critical') && !isAdmin() && !batchNecessity.trim()) {
+      toast.warning('所选工单包含紧急工单，必须填写必要性说明')
+      return
+    }
+    if (batchNecessity.trim().length > 1000) { toast.warning('必要性说明不能超过 1000 字'); return }
+    const missing = (currentPauseOption?.required_detail_keys || []).filter(
+      (k) => !String(batchDetail[k] ?? '').trim(),
+    )
+    if (missing.length) {
+      toast.warning(`请填写：${missing.map((k) => PAUSE_DETAIL_FIELDS[k]?.label || k).join('、')}`)
+      return
+    }
+    if (batchDetail.window_start && batchDetail.window_end
+      && new Date(batchDetail.window_end) <= new Date(batchDetail.window_start)) {
+      toast.warning('窗口结束时间必须晚于窗口开始时间')
+      return
+    }
+    setBatchSubmitting(true)
+    ticketApi.batchPauseTickets({
+      ticket_ids: ids,
+      pause_type: batchType,
+      reason: batchReason.trim(),
+      expected_resume_at: batchExpected || null,
+      detail: batchDetail,
+      necessity: batchNecessity.trim() || null,
+    })
+      .then((res) => {
+        setBatchPauseOpen(false)
+        setSelectedIds([])
+        const s = batchSummary(res)
+        const show = s.ok ? toast.success : toast.warning
+        show(`批量暂停完成：${s.text}`)
+        load()
+      })
+      .catch((e) => toast.error(e.message || '批量暂停失败'))
+      .finally(() => setBatchSubmitting(false))
+  }
+
+  const handleBatchResume = async () => {
+    const ids = batchResumable.map((r) => r.id)
+    if (!ids.length) { toast.warning('所选工单中没有可恢复的工单'); return }
+    const ok = await confirm({
+      title: '批量恢复工单',
+      message: `确认恢复 ${ids.length} 个暂停工单？恢复后 SLA 与节点停留计时继续累计。`,
+      confirmText: '恢复',
+    })
+    if (!ok) return
+    setBatchSubmitting(true)
+    ticketApi.batchResumeTickets({ ticket_ids: ids })
+      .then((res) => {
+        setSelectedIds([])
+        const s = batchSummary(res)
+        const show = s.ok ? toast.success : toast.warning
+        show(`批量恢复完成：${s.text}`)
+        load()
+      })
+      .catch((e) => toast.error(e.message || '批量恢复失败'))
+      .finally(() => setBatchSubmitting(false))
+  }
+
   // 导出：按当前视图与筛选条件导出 CSV（Excel 可直接打开）
   const handleExport = () => {
     setExporting(true)
@@ -405,6 +584,7 @@ export default function TicketCenter() {
       view: view === 'archived' ? 'all' : view,
       archived: view === 'archived' ? 'only' : 'exclude',
       status, priority, q: searchKw,
+      timeout_only: timeoutOnly || undefined,
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
     })
       .then(() => toast.success('工单导出已开始下载'))
@@ -414,17 +594,20 @@ export default function TicketCenter() {
 
   // 状态指标条统计：从当前列表派生（不新增请求）
   const listStats = useMemo(() => {
-    const s = { processing: 0, completed: 0, cancelled: 0, critical: 0 }
+    const s = { processing: 0, paused: 0, completed: 0, cancelled: 0, critical: 0, timeout: 0 }
     list.forEach((r) => {
       if (s[r.status] !== undefined) s[r.status] += 1
       if (r.priority === 'critical') s.critical += 1
+      if (r.sla_overdue) s.timeout += 1
     })
     return s
   }, [list])
 
   // 是否存在生效的筛选条件（用于区分空态文案与「清除筛选」引导）
-  const hasActiveFilters = !!(status || priority || searchKw)
-  const clearFilters = () => { setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setPage(1) }
+  const hasActiveFilters = !!(status || priority || searchKw || timeoutOnly)
+  const clearFilters = () => {
+    setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setTimeoutOnly(false); setPage(1)
+  }
 
   // 右侧相似工单面板：有结果且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
   const showSimilarPanel = !!(similar && similar.length > 0 && !similarHidden)
@@ -445,7 +628,7 @@ export default function TicketCenter() {
     },
     {
       key: 'current_node', header: '当前节点', width: '140px',
-      render: (r) => r.status === 'processing'
+      render: (r) => (r.status === 'processing' || r.status === 'paused')
         ? <span title={`${r.current_node_name || '--'}${r.current_group_name ? `（${r.current_group_name}）` : ''}`}>{r.current_node_name || '--'}<span className="ml-1 text-xs text-muted-foreground">{r.current_group_name ? `（${r.current_group_name}）` : ''}</span></span>
         : <span className="text-xs text-muted-foreground">--</span>,
     },
@@ -460,8 +643,14 @@ export default function TicketCenter() {
       // SLA 剩余倒计时（处理中工单）：超时红色高亮，未配目标显示 --
       key: 'sla', header: 'SLA', width: '110px',
       render: (r) => {
-        if (r.status !== 'processing' || !r.sla_text) {
+        const active = r.status === 'processing' || r.status === 'paused'
+        if (!active || !r.sla_text) {
           return <span className="text-xs text-muted-foreground" title="按优先级 SLA 目标（响应/解决时限）计算，未配置目标或已完结">--</span>
+        }
+        // 暂停中 SLA 冻结：展示暂停时刻的剩余时间，避免误判为仍在倒计时
+        if (r.sla_frozen) {
+          return <span className="whitespace-nowrap rounded bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-600 dark:text-amber-400"
+            title="工单暂停中，SLA 计时已冻结">{r.sla_text}</span>
         }
         return r.sla_overdue ? (
           <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-1 text-xs font-medium text-red-500"
@@ -480,7 +669,10 @@ export default function TicketCenter() {
         const m = STATUS_META[r.status] || { label: r.status || '--', cls: 'bg-muted text-muted-foreground' }
         return (
           <span className="flex items-center gap-1.5">
-            <span className={`inline-flex whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ${m.cls}`}>{m.label}</span>
+            <span className={`inline-flex whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ${m.cls}`}
+              title={r.status === 'paused' && r.pause_label ? `暂停类型：${r.pause_label}` : undefined}>
+              {m.label}
+            </span>
             {r.archived && (
               <span className="inline-flex whitespace-nowrap rounded bg-muted px-1.5 py-1 text-xs text-muted-foreground" title="已归档：从默认列表隐藏，可在已归档 Tab 查看">
                 <Archive className="mr-0.5 h-3 w-3" />已归档
@@ -507,6 +699,18 @@ export default function TicketCenter() {
             <button onClick={(e) => { e.stopPropagation(); handleUrge(r) }} disabled={urgingId === r.id}
               className="btn-secondary btn-sm" title="催办当前节点处理分组（30 分钟内仅可催办一次）">
               <Zap className="h-3 w-3" />{urgingId === r.id ? '催办中' : '催办'}
+            </button>
+          )}
+          {r.status === 'processing' && r.can_pause && canPause && (
+            <button onClick={(e) => handlePause(r, e)}
+              className="btn-secondary btn-sm" title="暂停工单：进入详情填写暂停类型与原因">
+              <Pause className="h-3 w-3" />暂停
+            </button>
+          )}
+          {r.status === 'paused' && r.can_resume && canPause && (
+            <button onClick={(e) => handleResume(r, e)} disabled={resumingId === r.id}
+              className="btn-secondary btn-sm" title="恢复工单，SLA 与节点停留计时继续累计">
+              <Play className="h-3 w-3" />{resumingId === r.id ? '恢复中' : '恢复'}
             </button>
           )}
           {canDelete && r.archived && (
@@ -591,9 +795,11 @@ export default function TicketCenter() {
           </CompactSelect>
         </div>
         <div className="w-28 shrink-0">
-          <CompactSelect size="lg" block value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
+          <CompactSelect size="lg" block value={status}
+            onChange={(e) => { setStatus(e.target.value); setTimeoutOnly(false); setPage(1) }}>
             <option value="">全部状态</option>
             <option value="processing">进行中</option>
+            <option value="paused">已暂停</option>
             <option value="completed">已完成</option>
             <option value="cancelled">已取消</option>
           </CompactSelect>
@@ -622,20 +828,35 @@ export default function TicketCenter() {
 
       {/* 状态指标条：当前页状态分布统计 + 快捷筛选（与筛选行状态下拉联动，点击可取消）；
           结果为空但状态筛选生效时保持显示，便于识别并取消当前筛选；右侧仅保留紧急计数 */}
-      {!loading && (list.length > 0 || status) && (
+      {!loading && (list.length > 0 || status || timeoutOnly) && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {STATUS_CHIPS.map((chip) => {
-            const active = status === chip.key
-            const count = listStats[chip.key] || 0
+            // 已超时为派生筛选：与状态筛选互斥，点击在开启/关闭之间切换
+            const active = chip.key === 'timeout' ? timeoutOnly : status === chip.key
+            const count = chip.key === 'timeout'
+              ? listStats.timeout
+              : (listStats[chip.key] || 0)
+            const onClick = () => {
+              if (chip.key === 'timeout') {
+                setTimeoutOnly(!active)
+                setStatus('')
+              } else {
+                setStatus(active ? '' : chip.key)
+                setTimeoutOnly(false)
+              }
+              setPage(1)
+            }
             return (
               <button key={chip.key} type="button"
-                onClick={() => { setStatus(active ? '' : chip.key); setPage(1) }}
+                onClick={onClick}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
                   active
                     ? `border-transparent ring-1 ${chip.active}`
                     : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
                 } ${count === 0 && !active ? 'text-muted-foreground' : ''}`}
-                title={active ? '点击取消该筛选' : `点击筛选「${chip.label}」的工单`}
+                title={chip.key === 'timeout'
+                  ? (active ? '点击取消超时筛选' : '筛选 SLA 目标已到期且未被处理的工单')
+                  : (active ? '点击取消该筛选' : `点击筛选「${chip.label}」的工单`)}
               >
                 <span className={`h-1.5 w-1.5 rounded-full ${chip.dot} ${chip.pulse && count > 0 ? 'animate-pulse' : ''}`} />
                 {chip.label}
@@ -655,6 +876,30 @@ export default function TicketCenter() {
         </div>
       )}
 
+      {/* 批量操作条：勾选工单后出现，按所选工单状态与权限展示可执行的批量动作 */}
+      {selectedIds.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
+          <span className="text-xs text-foreground">
+            已选择 <span className="font-semibold text-primary">{selectedIds.length}</span> 个工单
+            {batchPausable.length > 0 && <span className="ml-2 text-muted-foreground">可暂停 {batchPausable.length}</span>}
+            {batchResumable.length > 0 && <span className="ml-2 text-muted-foreground">可恢复 {batchResumable.length}</span>}
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            {canPause && (
+              <Button variant="secondary" size="sm" onClick={openBatchPause}
+                disabled={!batchPausable.length || batchSubmitting}>
+                <Pause className="mr-1 h-3.5 w-3.5" />批量暂停
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={handleBatchResume}
+              disabled={!canPause || !batchResumable.length || batchSubmitting}>
+              <Play className="mr-1 h-3.5 w-3.5" />批量恢复
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>取消选择</Button>
+          </div>
+        </div>
+      )}
+
       {/* 表格独立横滚容器：无论状态 chips 行是否展示，与上方内容保持稳定间距 */}
       <div className="mt-4 overflow-hidden rounded-lg border border-border">
         <DataTable
@@ -663,6 +908,9 @@ export default function TicketCenter() {
           data={list}
           loading={loading}
           rowKey="id"
+          selectable
+          selectedKeys={selectedIds}
+          onSelectChange={setSelectedIds}
           onRowClick={(r) => navigate(`/tickets/${r.id}`)}
           rowClassName={() => 'h-12 cursor-pointer'}
           emptyIcon={TicketCheck}
@@ -692,6 +940,83 @@ export default function TicketCenter() {
         />
       </div>
       <Pagination page={page} pageSize={size} total={total} onPageChange={setPage} onPageSizeChange={(s) => { setSize(s); setPage(1) }} />
+
+      {/* 批量暂停弹窗：暂停类型 + 原因 + 期望恢复时间 + 分类必填信息（逐单服务端校验） */}
+      <Modal
+        open={batchPauseOpen}
+        title="批量暂停工单"
+        onClose={() => setBatchPauseOpen(false)}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setBatchPauseOpen(false)}>取消</Button>
+            <Button variant="primary" size="sm" loading={batchSubmitting} onClick={handleBatchPause}>
+              <Pause className="mr-1 h-3.5 w-3.5" />确认暂停
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4 py-2">
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+            将对所选 <span className="font-semibold text-foreground">{batchPausable.length}</span> 个「进行中」工单执行暂停；
+            无权限或状态不匹配的工单会被跳过，暂停期间 SLA 与节点停留计时冻结。
+          </div>
+          <div>
+            <label className={labelCls}>暂停类型<span className="text-red-500">*</span></label>
+            <CompactSelect block size="lg" value={batchType}
+              onChange={(e) => { setBatchType(e.target.value); setBatchDetail({}) }}>
+              {pauseOptions.map((o) => (
+                <option key={o.code} value={o.code}>{o.label}</option>
+              ))}
+            </CompactSelect>
+          </div>
+          <div>
+            <label className={labelCls}>暂停原因<span className="text-red-500">*</span></label>
+            <textarea className={`${inputCls} min-h-[72px]`} value={batchReason} maxLength={1000}
+              onChange={(e) => setBatchReason(e.target.value)}
+              placeholder="说明暂停背景与恢复条件，将同步到每个所选工单的流转时间线" />
+          </div>
+          {batchPausable.some((r) => r.priority === 'critical') && (
+            <div>
+              <label className={labelCls}>
+                必要性说明{!isAdmin() && <span className="text-red-500">*</span>}
+              </label>
+              <textarea className={`${inputCls} min-h-[64px]`} value={batchNecessity} maxLength={1000}
+                onChange={(e) => setBatchNecessity(e.target.value)}
+                placeholder="紧急工单建议填写必要性说明" />
+            </div>
+          )}
+          <div>
+            <label className={labelCls}>
+              期望恢复时间
+              {currentPauseOption?.require_expected_resume && <span className="text-red-500">*</span>}
+            </label>
+            <input type="datetime-local" className={inputCls} value={batchExpected}
+              onChange={(e) => setBatchExpected(e.target.value)} />
+            <p className={hintCls}>
+              {currentPauseOption?.require_expected_resume
+                ? '该暂停类型必须填写期望恢复时间，且需晚于当前时间'
+                : '不填则按暂停类型的最大时效自动计算到期时间'}
+            </p>
+          </div>
+          {(currentPauseOption?.required_detail_keys || []).map((key) => {
+            const meta = PAUSE_DETAIL_FIELDS[key] || { label: key, type: 'text' }
+            return (
+              <div key={key}>
+                <label className={labelCls}>{meta.label}<span className="text-red-500">*</span></label>
+                {meta.type === 'textarea' ? (
+                  <textarea className={`${inputCls} min-h-[64px]`} value={batchDetail[key] || ''}
+                    onChange={(e) => setBatchDetail((v) => ({ ...v, [key]: e.target.value }))} />
+                ) : (
+                  <input type={meta.type === 'datetime-local' ? 'datetime-local' : 'text'}
+                    className={inputCls} value={batchDetail[key] || ''}
+                    onChange={(e) => setBatchDetail((v) => ({ ...v, [key]: e.target.value }))} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </Modal>
 
       {/* 发起工单弹窗：相似工单推荐从右侧滑出面板展示（按 源/目的 IP 匹配历史工单） */}
       <Modal

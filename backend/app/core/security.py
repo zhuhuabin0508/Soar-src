@@ -1427,6 +1427,16 @@ def run_lightweight_migrations(engine) -> None:
                 "claimed_by_id": "INTEGER",
                 # 并行会签：当前待处理分组 CSV（",3,5,"），普通节点为单分组
                 "current_group_ids": "VARCHAR(255)",
+                # 暂停（临时挂起）：状态 paused + 活动暂停记录 + 冻结计时快照
+                "pause_type": "VARCHAR(32)",
+                "active_pause_id": "INTEGER",
+                "paused_at": "TIMESTAMP WITHOUT TIME ZONE",
+                "pause_expire_at": "TIMESTAMP WITHOUT TIME ZONE",
+                "paused_by_id": "INTEGER",
+                "paused_by_name": "VARCHAR(64) DEFAULT ''",
+                "pause_count": "INTEGER NOT NULL DEFAULT 0",
+                "pause_total_minutes": "INTEGER NOT NULL DEFAULT 0",
+                "pause_snapshot": "JSON",
             },
         )
         ensure_columns(
@@ -1434,6 +1444,20 @@ def run_lightweight_migrations(engine) -> None:
             "ticket_node_records",
             {"device_result": "JSON"},
         )
+        # 暂停到期扫描索引（ticket_pauses 为新表，create_all 自动建表建索引）
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_tickets_status_pause_expire "
+                    "ON tickets (status, pause_expire_at)"
+                ))
+                # "已超时"筛选按 ticket_id + action 做相关子查询
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_ticket_node_records_ticket_action "
+                    "ON ticket_node_records (ticket_id, action)"
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("tickets 暂停到期索引创建失败（忽略）: %s", exc)
         # 存量工单回填 current_group_ids（幂等：仅补 NULL 行），
         # 使旧工单的"待我处理"筛选走 CSV 条件
         try:

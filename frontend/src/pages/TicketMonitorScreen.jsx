@@ -1174,12 +1174,14 @@ const PRIORITY_PILL = {
 }
 
 // 状态筛选项（与工单状态枚举、列表「状态」列文案一致；计数按筛选前全量口径）
+// 统计口径与 KPI/下钻一致：优先用后端 status_group（paused → processing）
 const LIVE_FILTERS = [
   { key: 'all', label: '全部' },
   { key: 'processing', label: '进行中' },
   { key: 'completed', label: '已完成' },
   { key: 'cancelled', label: '已取消' },
 ]
+const statusGroupOf = (r) => r.status_group || r.status
 const ROW_UNIT = 52        // 单行占位高度 = 48px 行高 + 4px 行间距（滚动位移按此整数倍计算）
 const LIVE_MAX_ROWS = 100  // 最多渲染行数（防超长 DOM；筛选计数仍展示全量）
 
@@ -1230,8 +1232,9 @@ function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
   const counts = useMemo(() => {
     const c = { all: pool.length, processing: 0, completed: 0, cancelled: 0, timeout: 0, critical: 0, watch: 0 }
     for (const r of pool) {
-      if (Object.prototype.hasOwnProperty.call(c, r.status)) c[r.status] += 1
-      if (r.timeout && r.status === 'processing') c.timeout += 1
+      const sg = statusGroupOf(r)
+      if (Object.prototype.hasOwnProperty.call(c, sg)) c[sg] += 1
+      if (r.timeout && sg === 'processing') c.timeout += 1
       if (r.priority === 'critical') c.critical += 1
       if (watchSet.has(r.id)) c.watch += 1
     }
@@ -1239,8 +1242,8 @@ function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
   }, [pool, watchSet])
 
   const filtered = useMemo(
-    () => pool.filter((r) => (status === 'all' || r.status === status)
-      && (!quick.timeout || (r.timeout && r.status === 'processing'))
+    () => pool.filter((r) => (status === 'all' || statusGroupOf(r) === status)
+      && (!quick.timeout || (r.timeout && statusGroupOf(r) === 'processing'))
       && (!quick.critical || r.priority === 'critical')
       && (!quick.watch || watchSet.has(r.id))),
     [pool, status, quick, watchSet],
@@ -2046,7 +2049,7 @@ function MarqueeBar({ latest }) {
 // （演示阶段为内置演示工单集，后端接入后为聚合接口返回的 tickets）。
 
 // 状态展示色（弹窗表格与实时列表同语义）
-const STATUS_COLOR = { processing: C.lightBlue, completed: C.green, cancelled: C.subText }
+const STATUS_COLOR = { processing: C.lightBlue, paused: C.orange, completed: C.green, cancelled: C.subText }
 
 // 下钻筛选谓词：filters → 工单匹配条件（全部可选，字段口径与各面板统计一致）
 // team=提交团队 / platform=来源平台 / type=告警类型 / status=工单状态 / priority=等级 /
@@ -2059,18 +2062,20 @@ const STATUS_COLOR = { processing: C.lightBlue, completed: C.green, cancelled: C
 // 下钻：进行中且停留节点不在当前模板定义中）/ closedAll=已关闭（closed_at 非空）/
 // from,to=创建时间范围（ISO 本地字符串，闭开区间）/ closedOnly+from,to=关闭时间范围（趋势图「关闭工单」）
 function matchDrill(t, f = {}) {
+  // 统计分组：暂停工单计入「处理中」（与后端 KPI / 各分区口径一致）
+  const statusGroup = t.status_group || t.status
   if (f.flowId != null && t.flow_id !== f.flowId) return false
   if (f.excludeFlowIds && f.excludeFlowIds.includes(t.flow_id)) return false
   if (f.excludeNodeKeys && t.current_node_key != null && f.excludeNodeKeys.includes(t.current_node_key)) return false
   if (f.team && t.team !== f.team) return false
   if (f.platform && t.platform !== f.platform) return false
   if (f.type && t.alert_type !== f.type) return false
-  if (f.status && t.status !== f.status) return false
+  if (f.status && statusGroup !== f.status) return false
   if (f.priority && t.priority !== f.priority) return false
   if (f.activeToday && !t.active_today) return false
-  if (f.timeoutOnly && !(t.timeout && t.status === 'processing')) return false
+  if (f.timeoutOnly && !(t.timeout && statusGroup === 'processing')) return false
   if (f.slaTimeout && !t.timeout) return false
-  if (f.nodeKey && (t.status !== 'processing' || t.current_node_key !== f.nodeKey)) return false
+  if (f.nodeKey && (statusGroup !== 'processing' || t.current_node_key !== f.nodeKey)) return false
   if (f.closedAll && !t.closed_at) return false
   if (f.closedOnly) {
     if (!t.closed_at) return false

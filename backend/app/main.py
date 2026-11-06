@@ -256,6 +256,18 @@ async def lifespan(app: FastAPI):
             _db.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("恢复封禁同步占位失败（忽略）: %s", exc)
+    # 恢复上次进程遗留的工单研判后台任务（pending / requery_pending）
+    try:
+        from app.core.ticket_enrichment import resume_pending_enrichments
+        from app.database import SessionLocal
+
+        _db = SessionLocal()
+        try:
+            resume_pending_enrichments(_db)
+        finally:
+            _db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("恢复工单研判后台任务失败（忽略）: %s", exc)
     # 推送系统更新通知（版本变化时广播到通知中心）
     try:
         from app.core.changelog import notify_system_update

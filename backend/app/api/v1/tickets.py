@@ -34,7 +34,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -43,9 +43,25 @@ from app.core.audit import get_client_ip
 from app.core.ticket_enrichment import (
     build_ticket_enrichment,
     decorate_asset_source_labels,
+    requery_ticket_enrichment,
     start_agent_analysis_bg,
+    start_enrichment_bg,
 )
-from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config
+from app.core.ticket_pause import (
+    REQUIRED_DETAIL_KEYS,
+    PauseError,
+    can_pause_ticket,
+    can_resume_ticket,
+    create_pause,
+    force_resume_for_cancel,
+    get_active_pause,
+    get_pause_config,
+    is_ticket_handler,
+    pause_type_label,
+    resume_pause,
+    save_pause_config,
+)
+from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config, paused_minutes_between
 from app.core.ticket_device_action import (
     annotate_device_form,
     build_device_action_form,
@@ -84,13 +100,15 @@ from app.models.device import Device, DeviceAction
 from app.models.notification import Notification
 from app.models.ticket import (
     Ticket, TicketCc, TicketDeviceRun, TicketFlow, TicketGroup, TicketGroupMember,
-    TicketNodeRecord,
+    TicketNodeRecord, TicketPause,
 )
 from app.models.user import User
 from app.models.workflow_ban import BanRecord
 from app.schemas.ticket import (
-    TicketAdvance, TicketCancel, TicketCcAdd, TicketComment, TicketCreate,
-    TicketDeviceActionExecute, TicketRollback, TicketSimilar, TicketTransfer,
+    TicketAdvance, TicketBatchPause, TicketBatchResume, TicketCancel,
+    TicketCcAdd, TicketComment, TicketCreate, TicketDeviceActionExecute,
+    TicketEnrichmentRequery, TicketPauseConfigUpdate, TicketPauseCreate,
+    TicketResume, TicketRollback, TicketSimilar, TicketTransfer,
 )
 from app.workflow.audit import write_audit
 
@@ -117,7 +135,7 @@ def _ticket_device_action_form(db, node, records) -> dict:
     return annotate_device_form(build_device_action_form(db, node), records)
 
 # 状态中文
-STATUS_LABELS = {"processing": "进行中", "completed": "已完成", "cancelled": "已取消"}
+STATUS_LABELS = {"processing": "进行中", "paused": "已暂停", "completed": "已完成", "cancelled": "已取消"}
 PRIORITY_LABELS = {"low": "低", "medium": "中", "high": "高", "critical": "紧急"}
 
 # 附件：扩展名白名单（与反馈附件一致，拒绝一切可执行文件）；元组保序用于报错提示
@@ -368,12 +386,77 @@ def _sla_remaining(ticket: Ticket, records: list, now, config: dict) -> tuple[fl
     has_submit = any(r.action == "submit" for r in records)
     started = (creates[0].created_at if creates and creates[0].created_at else None) or ticket.created_at
     if not has_submit and resp_target and started:
-        remaining = resp_target - (now - started).total_seconds() / 60
+        elapsed = (now - started).total_seconds() / 60
+        elapsed -= paused_minutes_between(records, started, now)
+        remaining = resp_target - elapsed
     elif res_target and ticket.created_at:
-        remaining = res_target - (now - ticket.created_at).total_seconds() / 60
+        elapsed = (now - ticket.created_at).total_seconds() / 60
+        elapsed -= paused_minutes_between(records, ticket.created_at, now)
+        remaining = res_target - elapsed
     else:
         return None, False, True
     return remaining, remaining < 0, True
+
+
+def _sla_overdue_conditions(db: Session, config: dict, now) -> list:
+    """SLA 已超时的 SQL 过滤条件（处理中/暂停中且响应或解决目标已到期）。
+
+    与 ``_sla_remaining`` 判定保持一致：
+    - 尚未提交过节点（无 submit 记录）：按响应目标（create 时间 + response）判定；
+    - 已提交过节点：按解决目标（ticket.created_at + resolve）判定；
+    - 暂停中：以 ``paused_at`` 作为评估时点（SLA 冻结）。
+    """
+    started = func.coalesce(
+        db.query(func.min(TicketNodeRecord.created_at))
+        .filter(
+            TicketNodeRecord.ticket_id == Ticket.id,
+            TicketNodeRecord.action == "create",
+        )
+        .correlate(Ticket)
+        .scalar_subquery(),
+        Ticket.created_at,
+    )
+    has_submit = (
+        db.query(TicketNodeRecord.id)
+        .filter(
+            TicketNodeRecord.ticket_id == Ticket.id,
+            TicketNodeRecord.action == "submit",
+        )
+        .correlate(Ticket)
+        .exists()
+    )
+    eval_now = func.coalesce(Ticket.paused_at, now)
+    # 扣除已完成暂停时长：暂停期间不计入 SLA 耗时
+    pause_interval = func.make_interval(
+        0, 0, 0, 0, 0, func.coalesce(Ticket.pause_total_minutes, 0)
+    )
+    priority_conds = []
+    for pr, target in (config or {}).items():
+        resp_target = (target or {}).get("response")
+        res_target = (target or {}).get("resolve")
+        pr_conds = []
+        if resp_target:
+            pr_conds.append(and_(
+                ~has_submit,
+                started + timedelta(minutes=resp_target) + pause_interval < eval_now,
+            ))
+        if res_target:
+            resolve_cond = (
+                Ticket.created_at + timedelta(minutes=res_target) + pause_interval < eval_now
+            )
+            # 有响应目标时，解决时限仅在已响应后生效；无响应目标时与列表口径一致
+            if resp_target:
+                resolve_cond = and_(has_submit, resolve_cond)
+            pr_conds.append(resolve_cond)
+        if pr_conds:
+            priority_conds.append(and_(Ticket.priority == pr, or_(*pr_conds)))
+    if not priority_conds:
+        return [Ticket.id.is_(None)]
+    return [
+        # 未被处理：仍在处理中或已暂停；已完成/已取消不计入超时
+        Ticket.status.in_(("processing", "paused")),
+        or_(*priority_conds),
+    ]
 
 
 def _apply_ticket_filters(
@@ -385,6 +468,7 @@ def _apply_ticket_filters(
     priority: str | None,
     archived: str,
     q: str | None,
+    timeout_only: bool = False,
 ):
     """列表/导出共用的筛选逻辑：视图 + 归档 + 状态/流程/优先级/关键词。"""
     query = db.query(Ticket)
@@ -403,7 +487,8 @@ def _apply_ticket_filters(
             ],
         )
         query = query.filter(
-            Ticket.status == "processing",
+            # 暂停工单仍属于当前处理组的"待我处理"，展示为已暂停
+            Ticket.status.in_(("processing", "paused")),
             group_cond,
         )
     elif view == "created":
@@ -444,6 +529,9 @@ def _apply_ticket_filters(
     if q:
         kw = f"%{q.strip()}%"
         query = query.filter(or_(Ticket.ticket_no.like(kw), Ticket.title.like(kw)))
+    if timeout_only:
+        # 已超时：SLA 目标已到期且工单仍未被处理（处理中/暂停中）
+        query = query.filter(*_sla_overdue_conditions(db, get_sla_config(db), beijing_now()))
     return query
 
 
@@ -568,6 +656,77 @@ def _notify_user_ids(db: Session, ticket: Ticket, user_ids: list[int], title: st
             related_id=ticket.id,
             created_by="system",
         ))
+
+
+def _reject_if_paused(ticket: Ticket, action_label: str) -> None:
+    """暂停中的工单禁止流转类操作，需先恢复。"""
+    if ticket.status == "paused":
+        raise HTTPException(
+            status_code=409,
+            detail=f"工单已暂停，请先恢复后再{action_label}",
+        )
+
+
+def _pause_error(exc: PauseError) -> HTTPException:
+    """暂停领域异常 → HTTP 响应（错误码写入日志，便于前端提示定位）。"""
+    logger.warning("工单暂停操作被拒绝: code=%s status=%s message=%s",
+                   exc.code, exc.status_code, exc.message)
+    return HTTPException(status_code=exc.status_code, detail=exc.message)
+
+
+def _pause_notify_ids(db: Session, ticket: Ticket, exclude_id: int | None = None) -> list[int]:
+    """暂停/恢复通知对象：发起人 + 抄送人 + 当前待处理分组成员 + 认领人。"""
+    ids: set[int] = set()
+    if ticket.created_by_id:
+        ids.add(ticket.created_by_id)
+    ids.update(_resolve_cc_user_ids(db, _cc_rows(db, ticket.id)))
+    for gid in _csv_group_ids(ticket):
+        ids.update(_group_member_ids(db, gid))
+    if ticket.claimed_by_id:
+        ids.add(ticket.claimed_by_id)
+    if exclude_id:
+        ids.discard(exclude_id)
+    return sorted(uid for uid in ids if uid)
+
+
+def _notify_pause_created(
+    db: Session, ticket: Ticket, pause: TicketPause, operator_name: str,
+) -> None:
+    """暂停成功通知：发起人 + 抄送人 + 当前分组成员 + 认领人。"""
+    label = pause_type_label(get_pause_config(db), pause.pause_type)
+    recipients = _pause_notify_ids(db, ticket, exclude_id=pause.paused_by_id)
+    if not recipients:
+        return
+    expire_text = pause.expire_at.strftime("%Y-%m-%d %H:%M") if pause.expire_at else "--"
+    visibility = (pause.policy_snapshot or {}).get("reason_visibility", "participants")
+    reason_text = "（原因内部可见）" if visibility == "internal" else pause.reason
+    _notify_user_ids(
+        db, ticket, recipients,
+        title=f"工单已暂停：{ticket.ticket_no}",
+        content=(
+            f"工单「{ticket.title}」已由 {operator_name} 暂停（{label}），"
+            f"原因：{reason_text}；到期时间：{expire_text}。"
+            f"暂停期间不可流转，请联系暂停人或管理员恢复。"
+        ),
+    )
+
+
+def _notify_ticket_resumed(
+    db: Session, ticket: Ticket, pause: TicketPause, operator_name: str,
+) -> None:
+    """恢复通知：发起人 + 抄送人 + 当前分组成员 + 认领人。"""
+    recipients = _pause_notify_ids(db, ticket, exclude_id=pause.resumed_by_id)
+    if not recipients:
+        return
+    _notify_user_ids(
+        db, ticket, recipients,
+        title=f"工单已恢复：{ticket.ticket_no}",
+        content=(
+            f"工单「{ticket.title}」已由 {operator_name} 恢复，"
+            f"暂停时长 {pause.duration_minutes or 0} 分钟，"
+            f"当前节点：{ticket.current_node_name or '--'}，请继续处理。"
+        ),
+    )
 
 
 def _notify_cc_added(db: Session, ticket: Ticket, rows: list[TicketCc], operator: User, *, finished: bool = False) -> None:
@@ -718,10 +877,78 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
             ],
         }
 
+    # 暂停：活动记录 + 历史 + 当前用户可发起的分类 + 操作权限
+    pause_config = get_pause_config(db)
+    active_pause = get_active_pause(db, ticket) if ticket.status == "paused" else None
+    pause_history = (
+        db.query(TicketPause)
+        .filter(TicketPause.ticket_id == ticket.id)
+        .order_by(TicketPause.id.desc())
+        .limit(20)
+        .all()
+    )
+    allowed_pause_types: list[dict] = []
+    if ticket.status == "processing" and pause_config.get("enabled", True):
+        for code, item in (pause_config.get("types") or {}).items():
+            if not isinstance(item, dict) or not item.get("enabled", True):
+                continue
+            if can_pause_ticket(
+                ticket, current_user.id, my_groups,
+                is_admin_user=admin, pause_type=code, config=pause_config,
+            ):
+                allowed_pause_types.append({
+                    "code": code,
+                    "label": item.get("label") or code,
+                    "max_minutes": item.get("max_minutes"),
+                    "require_expected_resume": bool(item.get("require_expected_resume")),
+                    "required_detail_keys": list(REQUIRED_DETAIL_KEYS.get(code, ())),
+                })
+    can_resume = bool(
+        active_pause
+        and can_resume_ticket(
+            ticket, active_pause, current_user.id, my_groups,
+            is_admin_user=admin,
+        )
+    )
+    # 暂停原因可见性：reason_visibility=internal 时仅处理人与管理员可见原文，
+    # 发起人/抄送人仅看到"已暂停（原因内部可见）"
+    viewer_is_handler = is_ticket_handler(ticket, current_user.id, my_groups)
+
+    def _pause_payload(p: TicketPause) -> dict:
+        payload = p.to_dict()
+        visibility = (p.policy_snapshot or {}).get("reason_visibility", "participants")
+        if visibility == "internal" and not (admin or viewer_is_handler):
+            payload["reason"] = "已暂停（原因内部可见）"
+            payload["detail"] = {}
+        return payload
+
+    def _record_payload(r: TicketNodeRecord) -> dict:
+        """时间线记录：内部可见的暂停原因对发起人/抄送人脱敏。"""
+        item = r.to_dict()
+        if r.action == "pause":
+            values = dict(item.get("field_values") or {})
+            visibility = values.get("reason_visibility")
+            if visibility is None:
+                matched = next(
+                    (p for p in pause_history if p.pause_type == values.get("pause_type")),
+                    None,
+                )
+                visibility = (
+                    (matched.policy_snapshot or {}).get("reason_visibility", "participants")
+                    if matched else "participants"
+                )
+            if visibility == "internal" and not (admin or viewer_is_handler):
+                values.pop("reason", None)
+                values.pop("necessity", None)
+                values["reason"] = "已暂停（原因内部可见）"
+                item["field_values"] = values
+                item["comment"] = None
+        return item
+
     data = _ticket_list_item(ticket, group_names)
     data.update({
         "flow_snapshot": snapshot,
-        "records": [r.to_dict() for r in records],
+        "records": [_record_payload(r) for r in records],
         # 自动研判结果随详情返回（列表已剔除）：资产匹配 + 威胁情报
         # 资产匹配各来源补详细来源标签（资产发现-裸金属资产 /
         # 资产清单-A会保持在线系统清单），存量工单按当前模板名推导
@@ -742,9 +969,21 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         # 排队/执行中的设备任务数（>0 时前端轮询刷新时间线）
         "pending_device_runs": pending_device_runs,
         "can_cancel": (
-            ticket.status == "processing"
+            ticket.status in ("processing", "paused")
             and (admin or ticket.created_by_id == current_user.id)
         ),
+        # —— 暂停（临时挂起）——
+        "pause": _pause_payload(active_pause) if active_pause else None,
+        "pause_label": pause_type_label(pause_config, ticket.pause_type),
+        "pause_history": [_pause_payload(p) for p in pause_history],
+        "pause_types": allowed_pause_types,
+        "pause_reason_visibility": (
+            (pause_config.get("types") or {}).get(ticket.pause_type or "", {}).get("reason_visibility")
+            if ticket.pause_type else None
+        ),
+        "can_pause": bool(ticket.status == "processing" and allowed_pause_types),
+        "can_resume": can_resume,
+        "can_force_resume": bool(admin and active_pause),
         # 并行会签进度（非会签节点为 null）
         "sign_progress": sign_progress,
         # 设备动作表单：default_template 原样下发，前端按 display 渲染并用历史 + 当前表单实时预览；
@@ -894,15 +1133,19 @@ def create_ticket(
     }
 
     end = is_end_node(target)
-    # 自动研判：对 src_ip/dst_ip 做资产匹配 + 威胁情报查询 + 智能体研判
-    #（按字段开关，失败不阻塞发起）
+    # 自动研判：对 src_ip/dst_ip 全部有效 IP 做资产匹配 + 威胁情报 + 智能体
+    # 研判（按字段开关，失败不阻塞发起）；IP 数 > 同步阈值时返回 pending
+    # 占位（bg_plan 非空），工单落库后由后台线程补全
+    enrichment = None
+    enrich_bg_plan = None
+    enrich_agent_ips: list[str] = []
     try:
-        enrichment = build_ticket_enrichment(
+        enrichment, enrich_bg_plan, enrich_agent_ips = build_ticket_enrichment(
             db, start_node.get("fields") or [], values, title=body.title
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("工单自动研判失败（忽略，不阻塞发起）: %s", exc)
-        enrichment = None
+        enrichment, enrich_bg_plan, enrich_agent_ips = None, None, []
     # 并发取号保护：max+1 非原子操作，多人同时发起可能读到相同最大序号而撞号；
     # 撞号时整体回滚（此前仅只读查询，无副作用）重新取号，最多重试 5 次
     ticket: Ticket | None = None
@@ -994,15 +1237,15 @@ def create_ticket(
         _notify_next_group(db, ticket, target.get("name") or route_to, sorted(_csv_group_ids(ticket)))
     db.commit()
     db.refresh(ticket)
-    # 智能体研判后台异步执行（LLM 耗时较长，不阻塞发起；完成后回写 enrichment_data）
-    if isinstance(enrichment, dict):
-        pending = [
-            (s.get("role"), s.get("label"), s.get("ip"))
-            for s in enrichment.get("sources") or []
-            if isinstance(s.get("agent"), dict) and s["agent"].get("pending")
-        ]
-        if pending:
-            start_agent_analysis_bg(ticket.id, pending, body.title)
+    # 自动研判后台异步执行（不阻塞发起，完成后回写 enrichment_data）：
+    # - IP 数超同步阈值：enrichment 后台线程先补全资产/情报（bg_plan 内
+    #   含 agent 标记，worker 完成后同线程链式执行智能体研判，避免双线
+    #   程并发回写相互覆盖）；
+    # - 同步路径：仅智能体研判（LLM 耗时）转后台线程。
+    if enrich_bg_plan is not None:
+        start_enrichment_bg(ticket.id, enrich_bg_plan, body.title)
+    elif enrich_agent_ips:
+        start_agent_analysis_bg(ticket.id, enrich_agent_ips, body.title)
     write_audit(
         db, action="ticket_create", resource_type="ticket", resource_id=ticket.id,
         detail={
@@ -1021,11 +1264,12 @@ def create_ticket(
 @router.get("")
 def list_tickets(
     view: str = Query(default="my_pending", pattern="^(my_pending|created|handled|cc|all)$"),
-    status: str | None = Query(default=None, pattern="^(processing|completed|cancelled)$"),
+    status: str | None = Query(default=None, pattern="^(processing|paused|completed|cancelled)$"),
     flow_id: int | None = Query(default=None),
     priority: str | None = Query(default=None, pattern="^(low|medium|high|critical)$"),
     archived: str = Query(default="exclude", pattern="^(exclude|only|include)$"),
     q: str | None = Query(default=None, max_length=100),
+    timeout_only: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -1037,7 +1281,10 @@ def list_tickets(
     每项附 ``sla_text``/``sla_overdue``（处理中工单的 SLA 倒计时，超时标记）
     与 ``can_urge``（发起人/抄送人/admin 可催办）。
     """
-    query = _apply_ticket_filters(db, current_user, view, status, flow_id, priority, archived, q)
+    query = _apply_ticket_filters(
+        db, current_user, view, status, flow_id, priority, archived, q,
+        timeout_only=timeout_only,
+    )
     if query is None:  # my_pending 且不在任何分组
         return {"items": [], "total": 0, "page": page, "size": size, "pages": 0}
 
@@ -1066,21 +1313,59 @@ def list_tickets(
     # 催办权限：admin / 发起人直判，其余查本页抄送关系（一次查询）
     admin = is_admin(current_user, db)
     cc_ids = set() if admin else _cc_ticket_ids_for_user(db, current_user, page_ids)
+    # 暂停权限：策略配置与本页活动暂停记录各取一次，逐单按角色判定
+    pause_config = get_pause_config(db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    enabled_pause_types = [
+        code for code, item in (pause_config.get("types") or {}).items()
+        if isinstance(item, dict) and item.get("enabled", True)
+    ]
+    active_pause_ids = [t.active_pause_id for t in tickets if t.active_pause_id]
+    active_pauses = {
+        p.id: p
+        for p in db.query(TicketPause).filter(TicketPause.id.in_(active_pause_ids)).all()
+    } if active_pause_ids else {}
 
     items = []
     for t in tickets:
         item = _ticket_list_item(t, group_names)
-        if t.status == "processing":
-            remaining, overdue, has_target = _sla_remaining(t, rec_map.get(t.id, []), now, sla_config)
+        if t.status in ("processing", "paused"):
+            # 暂停中 SLA 冻结：以暂停时间作为"当前时间"计算剩余
+            sla_now = (t.paused_at or now) if t.status == "paused" else now
+            remaining, overdue, has_target = _sla_remaining(t, rec_map.get(t.id, []), sla_now, sla_config)
             if remaining is not None:
                 item["sla_text"] = ("超时 " if overdue else "剩余 ") + _fmt_duration(remaining)
                 item["sla_overdue"] = overdue
             elif has_target:
                 item["sla_text"] = None
                 item["sla_overdue"] = False
+            item["sla_frozen"] = t.status == "paused"
         item["can_urge"] = bool(
             t.status == "processing"
             and (admin or t.created_by_id == current_user.id or t.id in cc_ids)
+        )
+        # 暂停/恢复入口权限（列表行快捷操作）
+        item["can_pause"] = bool(
+            t.status == "processing"
+            and pause_config.get("enabled", True)
+            and any(
+                can_pause_ticket(
+                    t, current_user.id, my_groups,
+                    is_admin_user=admin, pause_type=code, config=pause_config,
+                )
+                for code in enabled_pause_types
+            )
+        )
+        active_pause = active_pauses.get(t.active_pause_id) if t.active_pause_id else None
+        item["can_resume"] = bool(
+            t.status == "paused"
+            and active_pause
+            and can_resume_ticket(
+                t, active_pause, current_user.id, my_groups, is_admin_user=admin,
+            )
+        )
+        item["pause_label"] = (
+            pause_type_label(pause_config, t.pause_type) if t.status == "paused" else None
         )
         items.append(item)
     return {
@@ -1103,6 +1388,8 @@ def _monitor_light(db: Session, now, today_start) -> dict:
     """
     active_filter = or_(Ticket.archived.is_(False), Ticket.archived.is_(None))
     base = db.query(Ticket).filter(active_filter)
+    # 统计口径：暂停工单仍属于「处理中」（SLA 计时冻结但不脱离待办）
+    active_statuses = ("processing", "paused")
 
     kpi = {
         "total": base.count(),
@@ -1110,13 +1397,13 @@ def _monitor_light(db: Session, now, today_start) -> dict:
         "today_closed": base.filter(
             Ticket.closed_at.isnot(None), Ticket.closed_at >= today_start,
         ).count(),
-        "pending": base.filter(Ticket.status == "processing").count(),
+        "pending": base.filter(Ticket.status.in_(active_statuses)).count(),
         "processing_active": (
             db.query(Ticket.id)
             .join(TicketNodeRecord, TicketNodeRecord.ticket_id == Ticket.id)
             .filter(
                 active_filter,
-                Ticket.status == "processing",
+                Ticket.status.in_(active_statuses),
                 TicketNodeRecord.action == "submit",
                 TicketNodeRecord.created_at >= today_start,
             )
@@ -1128,7 +1415,7 @@ def _monitor_light(db: Session, now, today_start) -> dict:
         "timeout_warning": 0,  # 下方按处理中工单 SLA 评估后回填
     }
 
-    processing = base.filter(Ticket.status == "processing").all()
+    processing = base.filter(Ticket.status.in_(active_statuses)).all()
     latest_tickets = base.order_by(Ticket.created_at.desc()).limit(20).all()
     eval_tickets: dict[int, Ticket] = {t.id: t for t in processing}
     eval_tickets.update({t.id: t for t in latest_tickets})
@@ -1143,8 +1430,13 @@ def _monitor_light(db: Session, now, today_start) -> dict:
         for r in records:
             by_ticket.setdefault(r.ticket_id, []).append(r)
     sla_config = get_sla_config(db)
+    # 暂停中 SLA 冻结：以暂停时刻作为评估基准，避免暂停期间被判超时
     sla_eval = {
-        tid: evaluate_ticket_sla(t, by_ticket.get(tid, []), now, sla_config)
+        tid: evaluate_ticket_sla(
+            t, by_ticket.get(tid, []),
+            (t.paused_at or now) if t.status == "paused" else now,
+            sla_config,
+        )
         for tid, t in eval_tickets.items()
     }
     kpi["timeout_warning"] = sum(1 for t in processing if sla_eval[t.id]["timeout"])
@@ -1391,15 +1683,21 @@ def ticket_monitor_payload(
         if r.action == "create" and r.ticket_id not in first_record:
             first_record[r.ticket_id] = r
 
-    processing = [t for t in tickets if t.status == "processing"]
+    # 统计口径：暂停工单仍属于「处理中」，SLA 计时冻结但不脱离待办
+    processing = [t for t in tickets if t.status in ("processing", "paused")]
     completed = [t for t in tickets if t.status == "completed"]
     cancelled = [t for t in tickets if t.status == "cancelled"]
     finished = [t for t in tickets if t.closed_at is not None]
 
     # —— SLA 目标口径评估（按优先级目标：响应=发起→首次提交，解决=创建→关闭）——
     sla_config = get_sla_config(db)
+    # 暂停中 SLA 冻结：以暂停时刻作为评估基准
     sla_eval: dict[int, dict] = {
-        t.id: evaluate_ticket_sla(t, by_ticket.get(t.id, []), now, sla_config)
+        t.id: evaluate_ticket_sla(
+            t, by_ticket.get(t.id, []),
+            (t.paused_at or now) if t.status == "paused" else now,
+            sla_config,
+        )
         for t in tickets
     }
 
@@ -1534,7 +1832,7 @@ def ticket_monitor_payload(
         row["total"] += 1
         if t.created_at and t.created_at >= today_start:
             row["today_new"] += 1
-        if t.status == "processing":
+        if t.status in ("processing", "paused"):
             row["pending"] += 1
             if t.id in today_submit_ids:
                 row["processing_active"] += 1
@@ -1550,7 +1848,9 @@ def ticket_monitor_payload(
         row = {"name": PRIORITY_LABELS.get(p, p), "processing": 0, "completed": 0, "cancelled": 0}
         for t in tickets:
             if t.priority == p:
-                row[t.status] = row.get(t.status, 0) + 1
+                # 暂停计入处理中（与 KPI 待处理口径一致）
+                key = "processing" if t.status == "paused" else t.status
+                row[key] = row.get(key, 0) + 1
         severity_status.append(row)
 
     # —— 封禁 IP 统计（大屏右栏「封禁IP统计」卡）：历史累计口径，按去重 IP 统计 ——
@@ -1710,10 +2010,12 @@ def ticket_monitor_payload(
                 "current_node_name": t.current_node_name,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
                 "closed_at": t.closed_at.isoformat() if t.closed_at else None,
+                # 统计分组：暂停工单归属「处理中」，供大屏下钻筛选与 KPI 同口径
+                "status_group": "processing" if t.status in ("processing", "paused") else t.status,
                 # SLA 超时预警（进行中工单超目标）
                 "timeout": ev["timeout"],
                 # 今日活跃（进行中且今日有提交流转），与 KPI processing_active 口径一致
-                "active_today": t.status == "processing" and t.id in today_submit_ids,
+                "active_today": t.status in ("processing", "paused") and t.id in today_submit_ids,
                 "response_minutes": ev["response_minutes"],
                 "resolve_minutes": ev["resolve_minutes"],
             })
@@ -1865,11 +2167,12 @@ def _csv_formula_safe(v) -> str:
 @router.get("/export")
 def export_tickets(
     view: str = Query(default="all", pattern="^(my_pending|created|handled|cc|all)$"),
-    status: str | None = Query(default=None, pattern="^(processing|completed|cancelled)$"),
+    status: str | None = Query(default=None, pattern="^(processing|paused|completed|cancelled)$"),
     flow_id: int | None = Query(default=None),
     priority: str | None = Query(default=None, pattern="^(low|medium|high|critical)$"),
     archived: str = Query(default="exclude", pattern="^(exclude|only|include)$"),
     q: str | None = Query(default=None, max_length=100),
+    timeout_only: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
@@ -1878,7 +2181,10 @@ def export_tickets(
     列：工单号/标题/流程/状态/优先级/发起人/当前节点/当前处理分组/发起时间/完结时间/
     处理时长分钟/SLA状态/表单字段内容（按节点·字段 label 汇总）/处置意见汇总。
     """
-    query = _apply_ticket_filters(db, current_user, view, status, flow_id, priority, archived, q)
+    query = _apply_ticket_filters(
+        db, current_user, view, status, flow_id, priority, archived, q,
+        timeout_only=timeout_only,
+    )
     # 筛选结果为 None（view=my_pending 且用户不属于任何分组）时导出空表，
     # 严禁回退为全量导出（越权泄露全部工单）
     tickets = (
@@ -1909,17 +2215,23 @@ def export_tickets(
     ])
     for t in tickets:
         records = rec_map.get(t.id, [])
-        # 处理时长：完结=创建→关闭；进行中=创建→现在
+        # 处理时长：完结=创建→关闭；进行中=创建→现在；暂停中冻结且扣除已暂停时长
         duration = ""
         if t.created_at:
-            end_at = t.closed_at or now
-            duration = str(int((end_at - t.created_at).total_seconds() // 60))
-        # SLA 状态：进行中显示倒计时，完结显示实际是否超时
+            end_at = t.paused_at if t.status == "paused" else (t.closed_at or now)
+            minutes = int((end_at - t.created_at).total_seconds() // 60) - int(t.pause_total_minutes or 0)
+            duration = str(max(0, minutes))
+        # SLA 状态：暂停中冻结，进行中显示倒计时，完结显示实际是否超时
         sla_text = ""
-        if t.status == "processing":
-            remaining, overdue, _ = _sla_remaining(t, records, now, sla_config)
+        if t.status in ("processing", "paused"):
+            sla_now = (t.paused_at or now) if t.status == "paused" else now
+            remaining, overdue, has_target = _sla_remaining(t, records, sla_now, sla_config)
             if remaining is not None:
                 sla_text = ("超时 " if overdue else "剩余 ") + _fmt_duration(remaining)
+                if t.status == "paused":
+                    sla_text = "暂停中（冻结）· " + sla_text
+            elif t.status == "paused" and has_target:
+                sla_text = "暂停中（冻结）"
         else:
             sla_text = "超时" if evaluate_ticket_sla(t, records, now, sla_config)["timeout"] else "达标"
         # 表单字段内容：按节点汇总 "【节点】label：value"
@@ -1942,8 +2254,10 @@ def export_tickets(
             STATUS_LABELS.get(t.status, t.status),
             PRIORITY_LABELS.get(t.priority, t.priority),
             _csv_formula_safe(t.created_by_name),
-            _csv_formula_safe(t.current_node_name) if t.status == "processing" else "",
-            _csv_formula_safe(group_names.get(t.current_group_id, "")) if t.status == "processing" else "",
+            (_csv_formula_safe(t.current_node_name) + ("（已暂停）" if t.status == "paused" else ""))
+            if t.status in ("processing", "paused") else "",
+            _csv_formula_safe(group_names.get(t.current_group_id, ""))
+            if t.status in ("processing", "paused") else "",
             t.created_at.strftime("%Y-%m-%d %H:%M:%S") if t.created_at else "",
             t.closed_at.strftime("%Y-%m-%d %H:%M:%S") if t.closed_at else "",
             duration,
@@ -2206,6 +2520,68 @@ def get_ban_status(
     }
 
 
+# ============ 暂停策略配置 ============
+# 注意：必须定义在 /{ticket_id} 之前，避免 "pause-config" 被当作工单 ID 解析
+
+@router.get("/pause-options")
+def get_ticket_pause_options(
+    db: Session = Depends(get_db),
+) -> dict:
+    """暂停类型选项（启用中的分类）：批量暂停弹窗等无工单上下文场景使用。"""
+    config = get_pause_config(db)
+    items = [
+        {
+            "code": code,
+            "label": item.get("label") or code,
+            "max_minutes": item.get("max_minutes"),
+            "require_expected_resume": bool(item.get("require_expected_resume")),
+            "required_detail_keys": list(REQUIRED_DETAIL_KEYS.get(code, ())),
+            "allow_batch": bool(item.get("allow_batch", True)),
+        }
+        for code, item in (config.get("types") or {}).items()
+        if isinstance(item, dict) and item.get("enabled", True)
+    ]
+    return {"enabled": bool(config.get("enabled", True)), "items": items}
+
+
+@router.get("/pause-config")
+def get_ticket_pause_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket_config", "view")),
+) -> dict:
+    """读取暂停策略（未配置时返回内置默认值）。"""
+    return get_pause_config(db)
+
+
+@router.put("/pause-config")
+def update_ticket_pause_config(
+    body: TicketPauseConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket_config", "edit")),
+) -> dict:
+    """保存暂停策略：分类时效、提醒阈值、到期处置与兜底分组。"""
+    try:
+        config = save_pause_config(db, body.model_dump())
+    except PauseError as exc:
+        db.rollback()
+        raise _pause_error(exc) from exc
+    write_audit(
+        db, action="ticket_pause_config_update", resource_type="ticket_config",
+        resource_id=0,
+        detail={
+            "enabled": config.get("enabled"),
+            "max_pause_minutes": config.get("max_pause_minutes"),
+            "types": {
+                code: {"enabled": item.get("enabled"), "max_minutes": item.get("max_minutes")}
+                for code, item in (config.get("types") or {}).items()
+            },
+        },
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("更新工单暂停策略: operator=%s", current_user.username)
+    return config
+
+
 # ============ 详情 ============
 
 @router.get("/{ticket_id}")
@@ -2346,6 +2722,7 @@ def advance_ticket(
       触发需独立权限 ``ticket:execute``，失败可在时间线重试，封禁成功可撤销
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    _reject_if_paused(ticket, "流转")
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能再流转")
 
@@ -2620,6 +2997,7 @@ def execute_ticket_device_action(
       未查询到目标），与封禁状态查询的 404=未封禁语义一致，不误报"执行失败"
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    _reject_if_paused(ticket, "执行设备动作")
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能再执行设备动作")
 
@@ -2764,6 +3142,7 @@ def retry_ticket_device_run(
 ) -> dict:
     """重试失败的设备动作：复用同一执行记录，不重复生成动作槽位。"""
     ticket = _get_ticket_or_404(db, ticket_id)
+    _reject_if_paused(ticket, "重试设备动作")
     run = _get_device_run_or_404(db, ticket_id, run_id, for_update=True)
     if run.status != "failed":
         raise HTTPException(status_code=400, detail="仅失败的设备动作可以重试")
@@ -2807,6 +3186,7 @@ def compensate_ticket_device_run(
     - 撤销动作写独立时间线记录（action=device_action），原记录标记为 compensated
     """
     ticket = _get_ticket_or_404(db, ticket_id)
+    _reject_if_paused(ticket, "撤销设备动作")
     run = _get_device_run_or_404(db, ticket_id, run_id, for_update=True)
     if run.kind != "execute" or run.status != "success":
         raise HTTPException(status_code=400, detail="仅执行成功的设备动作可以撤销")
@@ -2985,6 +3365,7 @@ def rollback_ticket(
     - 回退写入时间线（action=rollback）并精确通知上一节点分组成员（含回退原因）
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    _reject_if_paused(ticket, "回退")
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能再回退")
 
@@ -3127,7 +3508,18 @@ def cancel_ticket(
     admin = is_admin(current_user, db)
     if not admin and ticket.created_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="仅发起人或管理员可取消工单")
-    if ticket.status != "processing":
+    if ticket.status == "paused":
+        # 暂停中取消：先补记强制恢复，保证状态链完整（允许发起人/管理员）
+        try:
+            force_resume_for_cancel(
+                db, ticket,
+                user_id=current_user.id,
+                user_name=current_user.display_name or current_user.username,
+            )
+        except PauseError as exc:
+            db.rollback()
+            raise _pause_error(exc) from exc
+    elif ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能取消")
 
     db.add(TicketNodeRecord(
@@ -3170,6 +3562,7 @@ def urge_ticket(
     - 写入时间线（action=urge）与审计，不改变工单状态
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    _reject_if_paused(ticket, "催办")
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，无需催办")
 
@@ -3248,6 +3641,7 @@ def transfer_ticket(
     - 转办原因必填，写入时间线（action=transfer）+ 审计 + 通知目标
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    _reject_if_paused(ticket, "转办")
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能转办")
     if body.group_id is None and body.user_id is None:
@@ -3365,6 +3759,7 @@ def claim_ticket(
     - 写入时间线（action=claim）+ 审计；通知组内其他成员已被认领
     """
     ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    _reject_if_paused(ticket, "认领")
     if ticket.status != "processing":
         raise HTTPException(status_code=400, detail="工单已完结，不能认领")
 
@@ -3425,6 +3820,326 @@ def claim_ticket(
     return _ticket_detail(db, ticket, current_user)
 
 
+# ============ 批量暂停 / 恢复 ============
+# 注意：必须定义在 /{ticket_id}/pause 之前，避免 "batch" 被当作工单 ID 解析
+
+def _batch_error_result(exc: Exception, ticket_id: int) -> dict:
+    """批量操作单项失败归类：状态冲突/越权记为 skipped，其余为 failed。"""
+    if isinstance(exc, PauseError):
+        if exc.code in ("TICKET_PAUSED", "TICKET_NOT_PAUSED", "PAUSE_FORBIDDEN"):
+            return {"ticket_id": ticket_id, "result": "skipped", "reason": exc.code, "message": exc.message}
+        return {"ticket_id": ticket_id, "result": "failed", "reason": exc.code, "message": exc.message}
+    if isinstance(exc, HTTPException):
+        return {"ticket_id": ticket_id, "result": "failed", "reason": "HTTP_ERROR", "message": str(exc.detail)}
+    return {"ticket_id": ticket_id, "result": "failed", "reason": "INTERNAL_ERROR", "message": "处理失败"}
+
+
+def _batch_notify_operator(db: Session, operator_id: int, title: str, content: str) -> None:
+    from app.models.notification import Notification
+
+    db.add(Notification(
+        user_id=operator_id,
+        type="system_alert",
+        title=title,
+        content=content,
+        related_type=None,
+        related_id=None,
+        created_by="system",
+    ))
+
+
+@router.post("/batch/pause")
+def batch_pause_tickets(
+    body: TicketBatchPause,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "pause")),
+) -> dict:
+    """批量暂停：逐单校验、逐单事务、部分成功，单批上限取策略 max_batch_size。"""
+    config = get_pause_config(db)
+    max_batch = int(config.get("max_batch_size") or 200)
+    type_item = (config.get("types") or {}).get(body.pause_type) or {}
+    if not isinstance(type_item, dict) or not type_item.get("enabled", True):
+        raise HTTPException(status_code=400, detail="该暂停类型未启用")
+    if type_item.get("allow_batch") is False:
+        raise HTTPException(status_code=400, detail="该暂停类型不支持批量操作")
+    ticket_ids = list(dict.fromkeys(body.ticket_ids))
+    if len(ticket_ids) > max_batch:
+        raise HTTPException(status_code=400, detail=f"单批最多 {max_batch} 条，请分批操作")
+
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    operator_name = current_user.display_name or current_user.username
+    batch_id = f"bp-{beijing_now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:6]}"
+    results: list[dict] = []
+    success = skipped = failed = 0
+
+    for tid in ticket_ids:
+        try:
+            ticket = _get_ticket_or_404(db, tid, for_update=True)
+            pause, created = create_pause(
+                db, ticket,
+                user_id=current_user.id,
+                user_name=operator_name,
+                my_group_ids=my_groups,
+                is_admin_user=admin,
+                pause_type=body.pause_type,
+                reason=body.reason,
+                expected_resume_at=body.expected_resume_at,
+                detail=body.detail,
+                necessity=body.necessity,
+                batch_id=batch_id,
+            )
+            if not created:
+                db.rollback()
+                skipped += 1
+                results.append({
+                    "ticket_id": tid, "result": "skipped",
+                    "reason": "already_paused", "message": "工单已处于暂停状态",
+                })
+                continue
+            _notify_pause_created(db, ticket, pause, operator_name)
+            db.commit()
+            success += 1
+            results.append({
+                "ticket_id": tid, "ticket_no": ticket.ticket_no,
+                "result": "success", "pause_id": pause.id,
+            })
+        except PauseError as exc:
+            db.rollback()
+            item = _batch_error_result(exc, tid)
+            results.append(item)
+            skipped += 1 if item["result"] == "skipped" else 0
+            failed += 1 if item["result"] == "failed" else 0
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            results.append(_batch_error_result(exc, tid))
+            failed += 1
+            logger.exception("批量暂停失败: batch=%s ticket=%s", batch_id, tid)
+
+    _batch_notify_operator(
+        db, current_user.id,
+        title="批量暂停完成",
+        content=f"批次 {batch_id}：成功 {success} / 跳过 {skipped} / 失败 {failed}，共 {len(ticket_ids)} 条。",
+    )
+    db.commit()
+    write_audit(
+        db, action="ticket_batch_pause", resource_type="ticket", resource_id=0,
+        detail={
+            "batch_id": batch_id,
+            "pause_type": body.pause_type,
+            "total": len(ticket_ids),
+            "success": success,
+            "skipped": skipped,
+            "failed": failed,
+            "results": results,
+        },
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("批量暂停完成: batch=%s success=%s skipped=%s failed=%s",
+                batch_id, success, skipped, failed)
+    return {
+        "batch_id": batch_id, "total": len(ticket_ids),
+        "success": success, "skipped": skipped, "failed": failed,
+        "results": results,
+    }
+
+
+@router.post("/batch/resume")
+def batch_resume_tickets(
+    body: TicketBatchResume,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "pause")),
+) -> dict:
+    """批量恢复：逐单校验、逐单事务、部分成功；force 仅管理员可用于全部工单。"""
+    config = get_pause_config(db)
+    max_batch = int(config.get("max_batch_size") or 200)
+    ticket_ids = list(dict.fromkeys(body.ticket_ids))
+    if len(ticket_ids) > max_batch:
+        raise HTTPException(status_code=400, detail=f"单批最多 {max_batch} 条，请分批操作")
+    if body.force and not is_admin(current_user, db):
+        raise HTTPException(status_code=403, detail="仅管理员可批量强制恢复")
+
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    operator_name = current_user.display_name or current_user.username
+    batch_id = f"br-{beijing_now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:6]}"
+    results: list[dict] = []
+    success = skipped = failed = 0
+
+    for tid in ticket_ids:
+        try:
+            ticket = _get_ticket_or_404(db, tid, for_update=True)
+            pause = resume_pause(
+                db, ticket,
+                user_id=current_user.id,
+                user_name=operator_name,
+                my_group_ids=my_groups,
+                is_admin_user=admin,
+                comment=body.comment,
+                force=body.force,
+            )
+            _notify_ticket_resumed(db, ticket, pause, operator_name)
+            db.commit()
+            success += 1
+            results.append({
+                "ticket_id": tid, "ticket_no": ticket.ticket_no,
+                "result": "success", "pause_id": pause.id,
+                "duration_minutes": pause.duration_minutes,
+            })
+        except PauseError as exc:
+            db.rollback()
+            item = _batch_error_result(exc, tid)
+            results.append(item)
+            skipped += 1 if item["result"] == "skipped" else 0
+            failed += 1 if item["result"] == "failed" else 0
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            results.append(_batch_error_result(exc, tid))
+            failed += 1
+            logger.exception("批量恢复失败: batch=%s ticket=%s", batch_id, tid)
+
+    _batch_notify_operator(
+        db, current_user.id,
+        title="批量恢复完成",
+        content=f"批次 {batch_id}：成功 {success} / 跳过 {skipped} / 失败 {failed}，共 {len(ticket_ids)} 条。",
+    )
+    db.commit()
+    write_audit(
+        db, action="ticket_batch_resume", resource_type="ticket", resource_id=0,
+        detail={
+            "batch_id": batch_id,
+            "total": len(ticket_ids),
+            "success": success,
+            "skipped": skipped,
+            "failed": failed,
+            "force": body.force,
+            "results": results,
+        },
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("批量恢复完成: batch=%s success=%s skipped=%s failed=%s",
+                batch_id, success, skipped, failed)
+    return {
+        "batch_id": batch_id, "total": len(ticket_ids),
+        "success": success, "skipped": skipped, "failed": failed,
+        "results": results,
+    }
+
+
+# ============ 暂停 / 恢复（临时挂起） ============
+
+@router.post("/{ticket_id}/pause")
+def pause_ticket(
+    ticket_id: int,
+    body: TicketPauseCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "pause")),
+) -> dict:
+    """暂停工单（临时挂起）。
+
+    - 仅进行中工单可暂停；重复暂停幂等返回现有暂停记录
+    - 分类决定必填信息、最长时效与到期处置策略（见 app.core.ticket_pause）
+    - 暂停期间 SLA 与节点停留计时冻结，禁止流转/回退/转办/认领/设备动作
+    """
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    operator_name = current_user.display_name or current_user.username
+
+    try:
+        pause, created = create_pause(
+            db, ticket,
+            user_id=current_user.id,
+            user_name=operator_name,
+            my_group_ids=my_groups,
+            is_admin_user=admin,
+            pause_type=body.pause_type,
+            reason=body.reason,
+            expected_resume_at=body.expected_resume_at,
+            detail=body.detail,
+            necessity=body.necessity,
+        )
+    except PauseError as exc:
+        db.rollback()
+        raise _pause_error(exc) from exc
+
+    if created:
+        _notify_pause_created(db, ticket, pause, operator_name)
+        db.commit()
+        db.refresh(ticket)
+        write_audit(
+            db, action="ticket_pause", resource_type="ticket", resource_id=ticket.id,
+            detail={
+                "ticket_no": ticket.ticket_no,
+                "pause_type": pause.pause_type,
+                "pause_id": pause.id,
+                "reason": pause.reason,
+                "expire_at": pause.expire_at.isoformat() if pause.expire_at else None,
+            },
+            operator=current_user.username, user_id=current_user.id,
+        )
+        logger.info("暂停工单: id=%s no=%s type=%s operator=%s",
+                    ticket.id, ticket.ticket_no, pause.pause_type, current_user.username)
+    else:
+        db.commit()
+        db.refresh(ticket)
+
+    return _ticket_detail(db, ticket, current_user)
+
+
+@router.post("/{ticket_id}/resume")
+def resume_ticket(
+    ticket_id: int,
+    body: TicketResume,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "pause")),
+) -> dict:
+    """恢复暂停：回到暂停前的节点原地继续。
+
+    - 权限：管理员 / 暂停发起人 / 发起人（本人发起或用户反馈类）/ 当前处理人
+    - ``force=true`` 仅管理员可用，忽略发起人限制
+    - 恢复后节点停留计时顺延暂停时长，SLA 按扣除暂停时长重新计算
+    """
+    ticket = _get_ticket_or_404(db, ticket_id, for_update=True)
+    admin = is_admin(current_user, db)
+    my_groups = set(_my_group_ids(db, current_user.id))
+    operator_name = current_user.display_name or current_user.username
+
+    try:
+        pause = resume_pause(
+            db, ticket,
+            user_id=current_user.id,
+            user_name=operator_name,
+            my_group_ids=my_groups,
+            is_admin_user=admin,
+            comment=body.comment,
+            force=body.force,
+        )
+    except PauseError as exc:
+        db.rollback()
+        raise _pause_error(exc) from exc
+
+    _notify_ticket_resumed(db, ticket, pause, operator_name)
+    db.commit()
+    db.refresh(ticket)
+    write_audit(
+        db, action="ticket_resume", resource_type="ticket", resource_id=ticket.id,
+        detail={
+            "ticket_no": ticket.ticket_no,
+            "pause_id": pause.id,
+            "pause_type": pause.pause_type,
+            "duration_minutes": pause.duration_minutes,
+            "resume_mode": pause.resume_mode,
+            "conflict": pause.conflict_flag,
+        },
+        operator=current_user.username, user_id=current_user.id,
+    )
+    logger.info("恢复工单: id=%s no=%s duration=%s mode=%s operator=%s",
+                ticket.id, ticket.ticket_no, pause.duration_minutes,
+                pause.resume_mode, current_user.username)
+    return _ticket_detail(db, ticket, current_user)
+
+
 # ============ 内部评论（时间线，区别于处置意见） ============
 
 @router.post("/{ticket_id}/comments")
@@ -3459,7 +4174,7 @@ def add_ticket_comment(
         ticket_id=ticket.id,
         node_key=ticket.current_node_key or "",
         node_name=ticket.current_node_name or "",
-        group_id=ticket.current_group_id if ticket.status == "processing" else None,
+        group_id=ticket.current_group_id if ticket.status in ("processing", "paused") else None,
         handler_id=current_user.id,
         handler_name=operator_name,
         action="comment",
@@ -3468,7 +4183,7 @@ def add_ticket_comment(
     ))
     # 通知：发起人 + 当前节点全部待处理分组成员（处理中，含会签/转办后变化），排除评论人
     notify_ids: set[int] = set()
-    if ticket.status == "processing":
+    if ticket.status in ("processing", "paused"):
         notify_ids.update(
             uid for gid in _csv_group_ids(ticket) for uid in _group_member_ids(db, gid)
         )
@@ -3494,10 +4209,15 @@ def add_ticket_comment(
 
 # ============ 抄送（进行中工单：发起人/当前处理人/admin 可增减） ============
 
-def _require_cc_manage_permission(db: Session, ticket: Ticket, current_user: User) -> None:
-    """校验抄送管理权限：admin / 发起人 / 当前节点处理分组成员（仅进行中工单）。"""
+def _require_ticket_participant(
+    db: Session, ticket: Ticket, current_user: User, action: str
+) -> None:
+    """校验工单参与人权限：admin / 发起人 / 当前节点处理分组成员（仅进行中工单）。
+
+    action 参与错误文案（如「变更抄送」「重新研判安全上下文」）。
+    """
     if ticket.status != "processing":
-        raise HTTPException(status_code=400, detail="工单已完结，不能再变更抄送")
+        raise HTTPException(status_code=400, detail=f"工单已完结，不能再{action}")
     admin = is_admin(current_user, db)
     if admin or ticket.created_by_id == current_user.id:
         return
@@ -3506,7 +4226,52 @@ def _require_cc_manage_permission(db: Session, ticket: Ticket, current_user: Use
     my_groups = set(_my_group_ids(db, current_user.id))
     if current_node and current_node.get("group_id") in my_groups:
         return
-    raise HTTPException(status_code=403, detail="仅发起人、当前处理人或管理员可变更抄送")
+    raise HTTPException(status_code=403, detail=f"仅发起人、当前处理人或管理员可{action}")
+
+
+def _require_cc_manage_permission(db: Session, ticket: Ticket, current_user: User) -> None:
+    """校验抄送管理权限：admin / 发起人 / 当前节点处理分组成员（仅进行中工单）。"""
+    _require_ticket_participant(db, ticket, current_user, "变更抄送")
+
+
+# ============ 重新研判安全上下文（多 IP requery） ============
+
+@router.post("/{ticket_id}/enrichment/requery")
+def requery_ticket_enrichment_api(
+    ticket_id: int,
+    body: TicketEnrichmentRequery,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket", "edit")),
+) -> dict:
+    """重新研判安全上下文指定 IP：重跑资产匹配 + 威胁情报并升级为完整档。
+
+    - 参与人权限（发起人/当前节点处理人/admin，仅进行中工单）；
+    - 选中 IP ≤20 同步返回更新后的工单详情；>20 打 requery_pending
+      标记转后台线程补全（返回 pending=true，前端轮询工单详情）；
+    - 写审计 ticket_enrichment_requery。
+    """
+    ticket = _get_ticket_or_404(db, ticket_id)
+    _require_ticket_participant(db, ticket, current_user, "重新研判安全上下文")
+    try:
+        result = requery_ticket_enrichment(db, ticket, body.ips)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(ticket)
+    write_audit(
+        db, action="ticket_enrichment_requery", resource_type="ticket",
+        resource_id=ticket.id,
+        detail={
+            "ticket_no": ticket.ticket_no,
+            "ips_count": len(body.ips),
+            "ips_preview": body.ips[:20],
+            "updated": result.get("updated", 0),
+            "unknown": result.get("unknown", []),
+            "pending": result.get("pending", False),
+        },
+        operator=current_user.username, user_id=current_user.id,
+    )
+    return {"ok": True, **result, "ticket": _ticket_detail(db, ticket, current_user)}
 
 
 @router.post("/{ticket_id}/cc")
@@ -3657,6 +4422,7 @@ def delete_ticket(
     ticket_no = ticket.ticket_no
     ticket_title = ticket.title
     db.query(TicketCc).filter(TicketCc.ticket_id == ticket_id).delete(synchronize_session=False)
+    db.query(TicketPause).filter(TicketPause.ticket_id == ticket_id).delete(synchronize_session=False)
     db.query(TicketNodeRecord).filter(TicketNodeRecord.ticket_id == ticket_id).delete(synchronize_session=False)
     db.delete(ticket)
     db.commit()

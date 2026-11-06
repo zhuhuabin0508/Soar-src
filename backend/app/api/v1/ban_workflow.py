@@ -1457,7 +1457,12 @@ def get_banned_ip(record_id: int, db: Session = Depends(get_db)) -> dict:
     if not decision and record.ticket_id:
         tk = db.query(Ticket).filter(Ticket.id == record.ticket_id).first()
         if tk is not None and isinstance(tk.enrichment_data, dict):
-            for src in tk.enrichment_data.get("sources") or []:
+            # v2 多 IP：ips 扁平结构（每 IP 一条，roles 记录出现角色）；v1 存量：sources
+            for src in (
+                tk.enrichment_data.get("ips")
+                or tk.enrichment_data.get("sources")
+                or []
+            ):
                 if (
                     isinstance(src, dict)
                     and src.get("ip") == record.ip
@@ -1621,8 +1626,8 @@ def _rollback_dispatched_bans(
 def _issue_manual_ban(
     db: Session, *, user: User, ip: str, ban_level: str, ban_duration: int,
     is_permanent: bool, reason: str, region: str, client_ip: str,
-) -> list:
-    """下发一条手动封禁（校验 → 去重 → 下发封禁设备 → 写 ban_records → 同步 legacy 工作台）。
+) -> tuple[list, list]:
+    """下发一条手动封禁（校验 → 过滤已封禁 → 下发封禁设备 → 写 ban_records → 同步 legacy 工作台）。
 
     与导入同步链路共用 ``app.devices.ban_target``：设备下发失败抛 502，
     **不会**落「生效中」平台记录，避免平台与设备状态不一致。
@@ -1630,7 +1635,16 @@ def _issue_manual_ban(
     多值目标（逗号分隔的单 IP / CIDR / 范围 / 域名）拆成单目标逐个下发：设备接口
     一次只接受一个 blist 条目，整串下发会被设备静默丢弃（返回空条目）；
     平台侧也按目标逐条落 BanRecord，否则整串表达式无法逐 IP 解封 / 到期。
-    任一目标下发失败会回滚本次已成功的设备条目，保证「全成功才落库」。
+
+    已封禁跳过：处于「生效中」的目标**自动跳过**（不下发、不落库），仅对未封禁
+    目标执行；全部目标均已封禁时不调设备、不落库，直接返回跳过明细。
+
+    原子性：先全部校验再下发，任一目标下发失败立即停止并回滚本次已成功的
+    设备条目，保证「全成功才落库」。
+
+    Returns:
+        ``(records, skipped)``：新建的封禁记录列表与被跳过的目标明细
+        （``[{"ip", "ban_source", "source_label"}]``）。
     """
     from app.core.ip_validation import split_ip_expression, validate_ban_entry
 
@@ -1658,23 +1672,29 @@ def _issue_manual_ban(
             detail=(f"单次最多封禁 {_MANUAL_BAN_MAX_TARGETS} 个目标，当前 {len(targets)} 个，请分批提交"),
         )
 
-    # 已生效的封禁不重复下发：任何一个目标在封禁中就整体拒绝（先全部校验
-    # 再下发，避免一半目标已下发到设备才发现重复）
+    # 已封禁的目标自动跳过（不下发、不落库），仅对未封禁目标执行封禁；
+    # 全部目标均已封禁时不调设备直接返回，避免无意义的下发请求
     dup_map = {
         r.ip: r
         for r in db.query(BanRecord)
         .filter(BanRecord.ip.in_(targets), BanRecord.status == "active")
         .all()
     }
-    if dup_map:
-        dup_text = "、".join(
-            f"{t}（{_BAN_SOURCE_LABELS.get(dup_map[t].ban_source, '')}）"
-            for t in targets if t in dup_map
+    skipped = [
+        {
+            "ip": t,
+            "ban_source": dup_map[t].ban_source,
+            "source_label": _BAN_SOURCE_LABELS.get(dup_map[t].ban_source, dup_map[t].ban_source),
+        }
+        for t in targets if t in dup_map
+    ]
+    to_ban = [t for t in targets if t not in dup_map]
+    if not to_ban:
+        logger.info(
+            "手动封禁全部目标均已封禁，自动跳过（未执行下发）ip=%s targets=%s user=%s",
+            ip, [s["ip"] for s in skipped], user.username,
         )
-        raise HTTPException(
-            status_code=409,
-            detail=f"IP {dup_text} 已在封禁中，请先解封再重新封禁",
-        )
+        return [], skipped
 
     device, action, device_err = ban_target.resolve_default_device(db)
     if device_err or device is None or action is None:
@@ -1685,7 +1705,7 @@ def _issue_manual_ban(
     duration_seconds = 0 if is_permanent else ban_duration
     # 逐目标下发；中途失败立即停止并回滚已下发的目标（全成功才落库）
     dispatched: list = []
-    for target in targets:
+    for target in to_ban:
         result = ban_target.run_block(
             db, device, action, ip=target, duration_seconds=duration_seconds,
             reason=reason, source="ban_workbench", user_id=user.id, source_ip=client_ip,
@@ -1759,10 +1779,11 @@ def _issue_manual_ban(
                 },
                 "record_id": record.record_id, "device": device.name,
                 "status_code": result.get("status_code"),
+                "skipped_targets": [s["ip"] for s in skipped],
             },
             operator=user.username, ip_address=client_ip, user_id=user.id,
         )
-    return records
+    return records, skipped
 
 
 @router.post("/banned-ips", status_code=201, dependencies=[Depends(require_permission("ban_workflow", "edit"))])
@@ -1772,10 +1793,15 @@ def create_manual_ban(
 ) -> dict:
     """手动发起封禁：调用封禁工具下发 → 写 ban_records（ban_source=manual）→ 同步 legacy 工作台。
 
-    多值目标拆分逐个下发、逐条落记录；响应返回首条记录，并附
-    ``created_count``（实际创建的记录数）与 ``targets``（各目标列表）。
+    多值目标拆分逐个下发、逐条落记录；「生效中」的目标自动跳过（不下发、不落库），
+    仅对未封禁目标执行。响应包含：
+
+    - ``created_count`` / ``targets``：实际新建的记录数与目标列表；
+    - ``skipped_count`` / ``skipped_targets``：自动跳过的已封禁目标数及明细
+      （含原封禁来源标签）；全部目标均已封禁时 ``created_count=0``。
     """
-    records = _issue_manual_ban(
+    client_ip = request.client.host if request.client else ""
+    records, skipped = _issue_manual_ban(
         db,
         user=user,
         ip=body.ip,
@@ -1784,11 +1810,30 @@ def create_manual_ban(
         is_permanent=body.is_permanent,
         reason=body.reason.strip(),
         region=body.region.strip(),
-        client_ip=request.client.host if request.client else "",
+        client_ip=client_ip,
     )
+    if not records:
+        # 全部目标均已封禁：未执行任何下发，仍记审计以便追溯「谁在何时尝试封了什么」
+        write_audit(
+            db, action="manual_ban", resource_type="ban_record", resource_id=None,
+            detail={
+                "skipped_only": True, "ip": body.ip,
+                "skipped_targets": [s["ip"] for s in skipped],
+                "reason": body.reason.strip(),
+            },
+            operator=user.username, ip_address=client_ip, user_id=user.id,
+        )
+        return {
+            "created_count": 0,
+            "targets": [],
+            "skipped_count": len(skipped),
+            "skipped_targets": skipped,
+        }
     item = _record_item(db, records[0])
     item["created_count"] = len(records)
     item["targets"] = [r.ip for r in records]
+    item["skipped_count"] = len(skipped)
+    item["skipped_targets"] = skipped
     return item
 
 

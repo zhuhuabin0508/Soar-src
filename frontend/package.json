@@ -10,6 +10,7 @@
     "test:chat": "node --test src/utils/chatConversations.test.js src/utils/chatStorage.test.js src/utils/chatSync.test.js src/utils/docFiles.test.js"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.26",
     "docx-preview": "^0.4.0",
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.6",

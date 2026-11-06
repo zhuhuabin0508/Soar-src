@@ -60,6 +60,7 @@ from app.models.ticket import (
     Ticket,
     TicketNodeRecord,
     TicketDeviceRun,
+    TicketPause,
 )
 from app.models.knowledge_base import KnowledgeBase, KnowledgeDocument, KnowledgeSegment
 from app.models.llm_config import LLMConfig
@@ -156,6 +157,7 @@ __all__ = [
     "Ticket",
     "TicketNodeRecord",
     "TicketDeviceRun",
+    "TicketPause",
     "WorkflowTriggerRule",
     "WorkflowInstance",
     "WorkflowNodeLog",

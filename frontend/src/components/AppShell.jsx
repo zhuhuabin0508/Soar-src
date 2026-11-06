@@ -7,7 +7,7 @@ import {
   Settings, HeartPulse, DatabaseBackup, LogOut, ChevronLeft, ChevronRight,
   ChevronsRight, UserRound, PieChart, Boxes, Info, Bug, MessageSquareWarning, Inbox, PackageCheck,
   CalendarClock, CalendarRange, CalendarX, History, Monitor, FileJson, BellRing, Activity,
-  ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset, KeyRound,
+  ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset, KeyRound, PauseCircle,
 } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { hasPermission } from '../utils/permissions'
@@ -94,6 +94,7 @@ export const NAV_GROUPS = [
           { to: '/ticket-config/groups', icon: Users, label: '处理分组', end: true, perm: ['ticket_config', 'view'] },
           { to: '/ticket-config/flows', icon: GitGraph, label: '流程模板', end: true, perm: ['ticket_config', 'view'] },
           { to: '/ticket-config/sla', icon: TimerReset, label: 'SLA 目标', end: true, perm: ['ticket_config', 'view'] },
+          { to: '/ticket-config/pause', icon: PauseCircle, label: '暂停策略', end: true, perm: ['ticket_config', 'view'] },
         ],
       },
     ],
@@ -215,6 +216,7 @@ const BREADCRUMB_MAP = {
   '/tickets/:id': ['运营管理', '工单中心', '详情'],
   '/ticket-config/groups': ['运营管理', '工单配置', '处理分组'],
   '/ticket-config/sla': ['运营管理', '工单配置', 'SLA 目标'],
+  '/ticket-config/pause': ['运营管理', '工单配置', '暂停策略'],
   '/ticket-config/flows': ['运营管理', '工单配置', '流程模板'],
   '/ticket-config/flows/new': ['运营管理', '工单配置', '流程模板', '新建'],
   '/ticket-config/flows/:id/edit': ['运营管理', '工单配置', '流程模板', '编辑'],

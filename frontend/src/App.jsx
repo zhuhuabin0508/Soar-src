@@ -71,6 +71,7 @@ import TicketDetail from './pages/TicketDetail'
 import TicketGroupManage from './pages/TicketGroupManage'
 import TicketFlowList from './pages/TicketFlowList'
 import TicketSlaConfig from './pages/TicketSlaConfig'
+import TicketPauseConfig from './pages/TicketPauseConfig'
 import TicketFlowEdit from './pages/TicketFlowEdit'
 import TicketMonitorScreen from './pages/TicketMonitorScreen'
 
@@ -196,6 +197,7 @@ const router = createBrowserRouter([
           { path: '/tickets/:id', element: <RequirePermission perm={['ticket', 'view']} label="工单中心"><TicketDetail /></RequirePermission> },
           { path: '/ticket-config/groups', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketGroupManage /></RequirePermission> },
           { path: '/ticket-config/sla', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketSlaConfig /></RequirePermission> },
+          { path: '/ticket-config/pause', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketPauseConfig /></RequirePermission> },
           { path: '/ticket-config/flows', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketFlowList /></RequirePermission> },
           { path: '/ticket-config/flows/new', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketFlowEdit /></RequirePermission> },
           { path: '/ticket-config/flows/:id/edit', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketFlowEdit /></RequirePermission> },

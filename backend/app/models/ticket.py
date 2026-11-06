@@ -10,7 +10,10 @@
 
 处理模式：节点到达分组后组内全员可见，任一人提交即代表全组（先到先得）。
 """
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, JSON, func
+from sqlalchemy import (
+    Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text,
+    UniqueConstraint, JSON, func,
+)
 
 from app.core.timezone import beijing_now, to_beijing_iso
 from app.database import Base
@@ -180,6 +183,9 @@ class Ticket(Base):
     - ``enrichment_data``：发起时对 src_ip / dst_ip 自动研判的结果
       （资产库匹配 + 威胁情报查询，JSON 结构见 app.core.ticket_enrichment），
       随工单全程流转，各节点处理人只读可见
+    - 暂停（临时挂起）：``status`` 增加 paused，配合 ``active_pause_id`` 指向
+      ``ticket_pauses`` 中唯一的活动记录；``pause_snapshot`` 保存暂停瞬间的
+      节点/分组/认领人/到达时间，用于恢复与归属冲突检测
     """
 
     __tablename__ = "tickets"
@@ -216,6 +222,17 @@ class Ticket(Base):
     current_group_ids = Column(String(255), nullable=True)
     # 发起时自动研判结果（资产匹配 + 威胁情报，按 src_ip/dst_ip），随工单流转
     enrichment_data = Column(JSON, nullable=True)
+    # —— 暂停（临时挂起）：status=paused 时有效；active_pause_id 指向活动暂停记录 ——
+    pause_type = Column(String(32), nullable=True)
+    active_pause_id = Column(Integer, nullable=True)
+    paused_at = Column(DateTime, nullable=True)
+    pause_expire_at = Column(DateTime, nullable=True)
+    paused_by_id = Column(Integer, nullable=True)
+    paused_by_name = Column(String(64), nullable=True, default="")
+    pause_count = Column(Integer, nullable=False, default=0)
+    pause_total_minutes = Column(Integer, nullable=False, default=0)
+    # 暂停瞬间的节点/分组/认领人/arrived_at 快照，用于恢复与归属冲突检测
+    pause_snapshot = Column(JSON, nullable=True)
 
     def to_dict(self) -> dict:
         result = {}
@@ -226,6 +243,64 @@ class Ticket(Base):
 
     def __repr__(self) -> str:
         return f"<Ticket id={self.id} no={self.ticket_no!r} status={self.status!r}>"
+
+
+class TicketPause(Base):
+    """工单暂停（临时挂起）记录。
+
+    - 每次暂停一条，恢复后保留历史；``status``：active=暂停中 / resumed=已恢复 /
+      expired=到期自动处置 / cancelled=暂停期间取消
+    - ``active_key``：活动暂停时写入 ``ticket_id``，非活动为 NULL；唯一索引保证
+      同一工单同时最多一个活动暂停（数据库层兜底并发重复暂停）
+    - ``detail``：分类必填信息（补充事项/协作方/主工单号/窗口时间等）
+    - ``policy_snapshot``：暂停时的类型策略快照，配置变更不影响在途暂停
+    - ``conflict_flag``：恢复时检测到归属（分组/认领人）已变更
+    """
+
+    __tablename__ = "ticket_pauses"
+    # 到期提醒/自动处置扫描索引
+    __table_args__ = (
+        Index("ix_ticket_pauses_status_expire", "status", "expire_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)
+    pause_no = Column(Integer, nullable=False, default=1)
+    pause_type = Column(String(32), nullable=False, index=True)
+    reason = Column(Text, nullable=False)
+    detail = Column(JSON, nullable=True)
+    status = Column(String(16), nullable=False, default="active", index=True)
+    # 活动时 = ticket_id，非活动为 NULL（唯一索引允许多个 NULL）
+    active_key = Column(Integer, nullable=True, unique=True)
+    paused_by_id = Column(Integer, nullable=False)
+    paused_by_name = Column(String(64), nullable=False, default="")
+    paused_at = Column(DateTime, nullable=False, default=beijing_now)
+    expected_resume_at = Column(DateTime, nullable=True)
+    expire_at = Column(DateTime, nullable=False)
+    resumed_at = Column(DateTime, nullable=True)
+    resumed_by_id = Column(Integer, nullable=True)
+    resumed_by_name = Column(String(64), nullable=True, default="")
+    # manual=手动 / auto=到期自动 / timeout=超时处置 / force=管理员或取消前强制恢复
+    resume_mode = Column(String(16), nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
+    remind_stage = Column(Integer, nullable=False, default=0)
+    last_reminded_at = Column(DateTime, nullable=True)
+    policy_snapshot = Column(JSON, nullable=True)
+    batch_id = Column(String(64), nullable=True, index=True)
+    conflict_flag = Column(Boolean, nullable=False, default=False)
+    related_ticket_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    def to_dict(self) -> dict:
+        result = {}
+        for column in self.__table__.columns:
+            value = getattr(self, column.name)
+            result[column.name] = to_beijing_iso(value) if hasattr(value, "isoformat") else value
+        return result
+
+    def __repr__(self) -> str:
+        return f"<TicketPause id={self.id} ticket={self.ticket_id} type={self.pause_type!r} status={self.status!r}>"
 
 
 class TicketCc(Base):
@@ -278,6 +353,9 @@ class TicketNodeRecord(Base):
     """
 
     __tablename__ = "ticket_node_records"
+    __table_args__ = (
+        Index("ix_ticket_node_records_ticket_action", "ticket_id", "action"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False, index=True)

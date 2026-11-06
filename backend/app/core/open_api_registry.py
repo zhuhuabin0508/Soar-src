@@ -379,7 +379,9 @@ def get_dashboard_stats(db: Session, params: dict) -> tuple[dict, int]:
     ban_active = db.query(BannedIP).filter(BannedIP.status == "active").count()
     ticket_total = db.query(Ticket).filter(Ticket.archived.is_(False)).count()
     ticket_processing = (
-        db.query(Ticket).filter(Ticket.archived.is_(False), Ticket.status == "processing").count()
+        db.query(Ticket)
+        .filter(Ticket.archived.is_(False), Ticket.status.in_(("processing", "paused")))
+        .count()
     )
     exec_total = db.query(Execution).count()
     exec_success = db.query(Execution).filter(Execution.status == "success").count()

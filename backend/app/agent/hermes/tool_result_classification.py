@@ -31,11 +31,14 @@ FILE_MUTATING_TOOL_NAMES = frozenset({
 
 # 无副作用工具：中断/挂起后可安全丢弃（不会留下外部状态）
 # 未知/插件/MCP 工具默认 effect-capable
+# 注意：query_xdr_openapi 支持 PUT/PATCH/DELETE，可能修改外部状态，
+# 不能归入无副作用/可重试集合（保守按 effect-capable 处理）。
 NO_EFFECT_TOOL_NAMES = frozenset({
     "check_whitelist", "get_asset_info", "get_threat_intel", "check_subnet",
     "search_knowledge_base", "query_kb_file", "read_file", "session_search",
     "memory_search", "tool_search", "tool_describe", "list_workflow_skills",
     "web_search", "web_extract",
+    "search_xdr_api_docs", "query_xdr_api_doc",
 })
 
 

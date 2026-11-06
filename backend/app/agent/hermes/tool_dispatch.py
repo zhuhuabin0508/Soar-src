@@ -35,6 +35,8 @@ _NEVER_PARALLEL_TOOLS = frozenset({
 })
 
 # 并行安全的工具：只读查询类
+# XDR 工具（query_xdr_api_doc 等）同时匹配 query_/search_ 前缀，
+# 此处显式列入便于审计
 _PARALLEL_SAFE_TOOLS = frozenset({
     "check_whitelist",
     "get_asset_info",
@@ -49,10 +51,25 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "memory_search",
     "tool_search",
     "tool_describe",
+    "search_xdr_api_docs",
+    "query_xdr_api_doc",
 })
 
 # 前缀匹配（OpenAPI 动态工具默认 barrier，除非显式标记只读）
 _PARALLEL_SAFE_PREFIXES = ("query_", "get_", "list_", "search_")
+
+# XDR OpenAPI 工具支持 PUT/PATCH/DELETE：写方法必须串行（且不自动重试），
+# 查询类（GET/POST）仍可并行
+_XDR_OPENAPI_TOOL = "query_xdr_openapi"
+_XDR_WRITE_METHODS = frozenset({"PUT", "PATCH", "DELETE"})
+
+
+def _is_xdr_write_call(tool_call: "ToolCall") -> bool:
+    """按 method 参数判定 query_xdr_openapi 是否为写操作。"""
+    arguments = getattr(tool_call, "arguments", None)
+    if not isinstance(arguments, dict):
+        return False
+    return str(arguments.get("method") or "GET").upper() in _XDR_WRITE_METHODS
 
 
 def plan_tool_batch_segments(tool_calls: list["ToolCall"]) -> list[tuple[str, list["ToolCall"]]]:
@@ -106,6 +123,15 @@ def plan_tool_batch_segments(tool_calls: list["ToolCall"]) -> list[tuple[str, li
                 tool_name,
             )
             _add_sequential(tc)
+            continue
+
+        # XDR OpenAPI：写方法（PUT/PATCH/DELETE）→ barrier；查询类可并行
+        if tool_name == _XDR_OPENAPI_TOOL:
+            if _is_xdr_write_call(tc):
+                logger.info("XDR 写方法调用降级为 sequential: %s", tc.name)
+                _add_sequential(tc)
+            else:
+                current_parallel.append(tc)
             continue
 
         # 显式并行安全工具

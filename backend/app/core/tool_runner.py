@@ -467,7 +467,10 @@ def save_workbook_as_agent_file(
 
 
 def save_json_as_agent_file(
-    data: dict, suggested_name: str, agent_id: int | None = None, user_id: int | None = None
+    data: dict | list | str,
+    suggested_name: str,
+    agent_id: int | None = None,
+    user_id: int | None = None,
 ) -> dict:
     """把 JSON 字典保存到上传文件库并注册为 AgentFile，返回文件元数据。
 
@@ -489,7 +492,11 @@ def save_json_as_agent_file(
     stored = f"{uuid.uuid4().hex}.json"
     abs_path = os.path.join(upload_dir, stored)
     with open(abs_path, "w", encoding="utf-8") as f:
-        _json.dump(data, f, ensure_ascii=False, indent=2)
+        if isinstance(data, str):
+            # 已序列化的 JSON 直接写入，避免同一份数据重复 json.dumps
+            f.write(data)
+        else:
+            _json.dump(data, f, ensure_ascii=False, indent=2)
     db = SessionLocal()
     try:
         rec = AgentFile(
@@ -1129,6 +1136,23 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         )
     except ImportError:  # pragma: no cover
         logger.debug("action_executor 未安装，工具命名空间不注入 execute_device_action_by_id")
+    # XDR 开放性 OpenAPI 宿主能力注入：沙箱禁止 import 且无 hashlib/hmac/cryptography，
+    # 联动码解码 + HMAC-SHA256 签名 + 文档检索均在宿主模块实现，工具代码只传业务参数。
+    # 联动码（XDR_OPENAPI_AUTH_CODE）由部署环境变量注入，工具代码与日志均不接触凭据。
+    # 注入函数供 query_xdr_openapi / search_xdr_api_docs / query_xdr_api_doc 使用：
+    # - call_xdr_openapi(method, path, query, body, headers)：签名并请求，永不抛异常
+    # - summarize_xdr_data(data)：生成 total/returned/has_more 摘要
+    # - search_xdr_docs(keyword, domain, limit) / read_xdr_doc(path)：接口文档检索与读取
+    try:
+        from app.tools.xdr_docs import read_xdr_doc, search_xdr_docs
+        from app.tools.xdr_openapi import call_xdr_openapi, summarize_xdr_data
+
+        namespace["call_xdr_openapi"] = call_xdr_openapi
+        namespace["summarize_xdr_data"] = summarize_xdr_data
+        namespace["search_xdr_docs"] = search_xdr_docs
+        namespace["read_xdr_doc"] = read_xdr_doc
+    except ImportError:  # pragma: no cover
+        logger.debug("XDR OpenAPI 模块未安装，工具命名空间不注入 XDR 函数")
     try:
         import openpyxl  # noqa: F401
         namespace["openpyxl"] = openpyxl

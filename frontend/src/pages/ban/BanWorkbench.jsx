@@ -412,12 +412,22 @@ export default function BanWorkbench({ embedded = false }) {
       region: manualForm.region.trim(),
     })
       .then((rec) => {
-        const n = rec?.created_count || 1
-        toast.success(
-          n > 1
-            ? `${n} 个目标已全部下发封禁（已同步安博通阻断器，逐目标生成 ${n} 条封禁记录）`
-            : `目标 ${rec.ip} 已下发封禁（已同步安博通阻断器）`
-        )
+        // 后端自动跳过「生效中」目标：按 created/skipped 分别提示
+        const n = rec?.created_count ?? (rec?.ip ? 1 : 0)
+        const skippedList = (rec?.skipped_targets || []).map((s) => s.ip)
+        const s = rec?.skipped_count || 0
+        const skipText = s > 0 ? `，自动跳过已封禁目标 ${s} 个（${skippedList.join('、')}）` : ''
+        if (n > 0) {
+          toast.success(
+            n > 1
+              ? `${n} 个目标已全部下发封禁（已同步安博通阻断器，逐目标生成 ${n} 条封禁记录）${skipText}`
+              : `目标 ${rec.ip} 已下发封禁（已同步安博通阻断器）${skipText}`,
+          )
+        } else {
+          toast.warning(
+            `全部 ${s} 个目标均已在封禁中，已自动跳过（${skippedList.join('、')}），未执行封禁`,
+          )
+        }
         setManualOpen(false)
         setManualIpTouched(false)
         setManualReasonTouched(false)

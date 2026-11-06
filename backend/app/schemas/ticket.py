@@ -5,6 +5,7 @@
 - 流程模板：创建/更新（发布走专用 POST /{id}/publish）
 - 工单实例：发起/流转/取消
 """
+from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -104,6 +105,58 @@ class TicketCancel(BaseModel):
     comment: Optional[str] = None
 
 
+class TicketPauseCreate(BaseModel):
+    """暂停工单（临时挂起）：处理人/发起人/admin 按类型规则发起。
+
+    - ``pause_type``：暂停分类，决定必填信息、最长时效与到期策略
+    - ``detail``：分类必填信息（补充事项/协作方/主工单号/窗口时间等）
+    - ``expected_resume_at``：期望恢复时间，不得晚于系统到期时间
+    - ``necessity``：紧急工单非管理员暂停时的必要性说明
+    """
+
+    pause_type: str = Field(
+        ...,
+        pattern="^(pending_info|external_coop|user_feedback|business_window|duplicate_merge|other)$",
+        description="暂停分类",
+    )
+    reason: str = Field(..., min_length=1, max_length=1000, description="暂停原因（必填）")
+    expected_resume_at: Optional[datetime] = Field(None, description="期望恢复时间")
+    detail: dict[str, Any] = Field(default_factory=dict, description="分类必填信息")
+    necessity: Optional[str] = Field(None, max_length=1000, description="暂停必要性说明（紧急工单）")
+
+
+class TicketResume(BaseModel):
+    """恢复工单：``force=true`` 仅管理员可用，忽略暂停发起人限制。"""
+
+    comment: Optional[str] = Field(None, max_length=1000, description="恢复说明")
+    force: bool = Field(False, description="管理员强制恢复")
+
+
+class TicketBatchPause(TicketPauseCreate):
+    """批量暂停：逐单校验、部分成功，单批最多 200 条。"""
+
+    ticket_ids: list[int] = Field(..., min_length=1, max_length=200)
+
+
+class TicketBatchResume(TicketResume):
+    """批量恢复：逐单校验、部分成功，单批最多 200 条。"""
+
+    ticket_ids: list[int] = Field(..., min_length=1, max_length=200)
+
+
+class TicketPauseConfigUpdate(BaseModel):
+    """暂停策略配置：types 由 app.core.ticket_pause 统一校验与补全。"""
+
+    enabled: bool = True
+    max_pause_minutes: int = Field(10080, gt=0)
+    max_total_pause_minutes: int = Field(20160, gt=0)
+    max_pause_count: int = Field(5, gt=0)
+    max_batch_size: int = Field(200, gt=0)
+    remind_before_expire_minutes: int = Field(240, ge=0)
+    fallback_group_id: Optional[int] = None
+    types: dict[str, Any] = Field(default_factory=dict)
+
+
 class TicketRollback(BaseModel):
     """回退工单：当前节点处理人退回上一节点，必须填写回退原因。
 
@@ -158,3 +211,12 @@ class TicketSimilar(BaseModel):
     """
     flow_id: int
     field_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class TicketEnrichmentRequery(BaseModel):
+    """重新研判安全上下文指定 IP（资产匹配 + 威胁情报重查，升级完整档）。
+
+    - ips 必须是工单研判 IP 集合的子集（不在集合内的记入 unknown 忽略）；
+    - 超过同步阈值（20 个）自动转后台执行（响应 pending=true，前端轮询）。
+    """
+    ips: list[str] = Field(min_length=1, max_length=200, description="待重查 IP 列表")
