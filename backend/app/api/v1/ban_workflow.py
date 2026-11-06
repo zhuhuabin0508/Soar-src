@@ -1623,6 +1623,92 @@ def _rollback_dispatched_bans(
     return rolled, failed
 
 
+def _device_queryable_target(target: str) -> bool:
+    """目标能否用「查询指定黑名单」精确查询（单 IP / 域名）。
+
+    CIDR / 范围在设备侧是多条目语义，单条精确查询无法命中，预检同样跳过，
+    这里保持同口径，避免把「查不到」误判为「未封禁」而漏掉设备侧已有网段。
+    """
+    try:
+        ipaddress.ip_address(target)
+        return True
+    except ValueError:
+        pass
+    from app.core.ip_validation import validate_domain_token
+
+    try:
+        validate_domain_token(target)
+        return True
+    except ValueError:
+        return False
+
+
+def _skip_device_banned_targets(db: Session, targets: list) -> tuple[list, list]:
+    """逐目标查询设备黑名单，跳过设备侧已封禁的目标。
+
+    平台记录只反映本平台下发过的封禁；直接在安博通控制台封禁、或平台记录已
+    解封/清理但设备条目仍在的场景，``ban_records`` 查不到，重复下发会覆盖设备
+    条目并再落一条平台记录。这里复用弹窗预检的查询动作补齐该缺口。
+
+    查询失败（网络/超时/未配置查询动作）不阻断封禁流程：目标按未封禁处理，
+    只记告警日志，行为与改造前一致。
+
+    Returns:
+        ``(未在设备黑名单中的目标, 设备侧已封禁的跳过明细)``，
+        跳过明细格式同平台记录跳过：``[{"ip", "ban_source", "source_label"}]``。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.devices.anbotong import (
+        QUERY_TIMEOUT_CAP_SECONDS, find_anbotong_action, query_blacklist_entry,
+    )
+
+    queryable = [t for t in targets if _device_queryable_target(t)]
+    if not queryable:
+        return targets, []
+
+    device, action, err = find_anbotong_action(db, "query")
+    if err or device is None or action is None:
+        logger.warning(
+            "手动封禁跳过设备黑名单预检（%s），仅按平台封禁记录判断",
+            err or "查询动作不可用",
+        )
+        return targets, []
+
+    timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
+    found: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(len(queryable), 8)) as pool:
+        futures = {
+            t: pool.submit(query_blacklist_entry, device, action, t, timeout=timeout)
+            for t in queryable
+        }
+        for target, fut in futures.items():
+            try:
+                result = fut.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("手动封禁设备黑名单预检失败 ip=%s: %s", target, exc)
+                continue
+            if not result.get("success"):
+                logger.warning(
+                    "手动封禁设备黑名单预检失败 ip=%s: %s",
+                    target, result.get("error") or result.get("note"),
+                )
+                continue
+            if result.get("found"):
+                found[target] = result.get("entry") or {}
+
+    if not found:
+        return targets, []
+    logger.info(
+        "手动封禁目标已在设备黑名单中，自动跳过（不重复下发）targets=%s",
+        list(found),
+    )
+    skipped = [
+        {"ip": t, "ban_source": "device", "source_label": "设备黑名单"} for t in targets if t in found
+    ]
+    return [t for t in targets if t not in found], skipped
+
+
 def _issue_manual_ban(
     db: Session, *, user: User, ip: str, ban_level: str, ban_duration: int,
     is_permanent: bool, reason: str, region: str, client_ip: str,
@@ -1636,8 +1722,9 @@ def _issue_manual_ban(
     一次只接受一个 blist 条目，整串下发会被设备静默丢弃（返回空条目）；
     平台侧也按目标逐条落 BanRecord，否则整串表达式无法逐 IP 解封 / 到期。
 
-    已封禁跳过：处于「生效中」的目标**自动跳过**（不下发、不落库），仅对未封禁
-    目标执行；全部目标均已封禁时不调设备、不落库，直接返回跳过明细。
+    已封禁跳过：平台处于「生效中」的目标、以及设备黑名单中已存在的目标
+    **自动跳过**（不下发、不落库），仅对未封禁目标执行；全部目标均已封禁时
+    不下发、不落库，直接返回跳过明细。
 
     原子性：先全部校验再下发，任一目标下发失败立即停止并回滚本次已成功的
     设备条目，保证「全成功才落库」。
@@ -1702,6 +1789,17 @@ def _issue_manual_ban(
             status_code=502,
             detail=device_err or "未找到可用的安博通封禁设备，请先在设备管理中接入并启用",
         )
+    # 平台无生效记录但设备侧已封禁（直接在安博通控制台封禁、或记录已解封/清理
+    # 而设备条目仍在）：与弹窗预检口径一致，同样跳过，避免重复下发覆盖设备条目
+    to_ban, device_skipped = _skip_device_banned_targets(db, to_ban)
+    skipped.extend(device_skipped)
+    if not to_ban:
+        logger.info(
+            "手动封禁目标均已在设备黑名单中，自动跳过（未执行下发）ip=%s targets=%s user=%s",
+            ip, [s["ip"] for s in skipped], user.username,
+        )
+        return [], skipped
+
     duration_seconds = 0 if is_permanent else ban_duration
     # 逐目标下发；中途失败立即停止并回滚已下发的目标（全成功才落库）
     dispatched: list = []
