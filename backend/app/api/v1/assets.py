@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.core.audit import get_client_ip
@@ -406,13 +406,68 @@ def _parse_search_ip(keyword: str):
         return None, None
 
 
-def _ip_matches_stored(search_ip, search_net, stored: str) -> bool:
-    """判断搜索 IP/CIDR 是否命中资产 ip 字段中的存储值。
+_TEMPLATE_IP_KEYS_TTL = 60  # 秒
+_template_ip_keys_cache: dict = {"at": 0.0, "keys": None}
 
-    支持逗号分隔多值、CIDR、IP 范围、通配、单 IP（IPv4/IPv6）。
-    内部基于缓存的数值区间做包含/重叠判断（10 万级资产全量扫描也可控）。
+
+def _template_ip_extra_keys(db: Session) -> frozenset:
+    """全部资产类型模板中「ip/cidr 类型且映射为 extra」的字段 key 集合。
+
+    这些字段的值不进标准 ip 列（各自独立存 extra_fields，如 eip、出口地址——
+    中文 key 无法靠词元猜测），此前 IP 智能搜索扫不到；检索时把它们一并
+    纳入数值区间匹配。
+
+    模板变更频率极低，短 TTL 缓存避免每次 IP 搜索都全量查模板表。
     """
-    intervals = _cached_intervals(stored)
+    import time as _time
+
+    now = _time.monotonic()
+    cached = _template_ip_keys_cache
+    if cached["keys"] is not None and now - cached["at"] < _TEMPLATE_IP_KEYS_TTL:
+        return cached["keys"]
+    keys: set = set()
+    for tpl in db.query(AssetTypeTemplate).all():
+        for f in tpl.fields or []:
+            key = f.get("key")
+            if not key:
+                continue
+            if f.get("type") in ("ip", "cidr") and (f.get("mapped_to") or "extra") == "extra":
+                keys.add(key)
+    result = frozenset(keys)
+    cached["at"] = now
+    cached["keys"] = result
+    return result
+
+
+def _extra_ip_intervals(extra_fields, extra_keys: frozenset) -> list:
+    """extra_fields 中 IP 类字段解析出的数值区间。
+
+    key 满足以下任一条件即参与匹配：模板中定义为 ip/cidr 且映射为 extra 的
+    字段（``_template_ip_extra_keys``），或 key 本身像 IP 字段（ip/eip/cidr
+    等词元判断，覆盖无模板定义的历史数据）。
+    """
+    from app.core.asset_ip_index import is_ip_extra_key
+
+    out: list = []
+    if not isinstance(extra_fields, dict):
+        return out
+    for key, val in extra_fields.items():
+        if val is None or str(val).strip() == "":
+            continue
+        if key in extra_keys or is_ip_extra_key(key):
+            out.extend(_cached_intervals(str(val)))
+    return out
+
+
+def _ip_matches_asset(search_ip, search_net, ip_value, extra_fields, extra_keys) -> bool:
+    """判断搜索 IP/CIDR 是否命中资产的全部 IP 值。
+
+    覆盖标准 ip 列 + extra_fields 中的 IP 类字段（多值/CIDR/范围/通配
+    均支持，复用同一套宽容解析与缓存）。
+    """
+    # 注意不能写 `intervals +=`：_cached_intervals 返回的是模块级缓存的
+    # 同一列表对象，原地扩展会污染缓存导致跨行/跨请求误命中
+    intervals = _cached_intervals(ip_value or "") + _extra_ip_intervals(extra_fields, extra_keys)
     if not intervals:
         return False
     if search_ip is not None:
@@ -620,6 +675,169 @@ def _apply_asset_filters(
     return query
 
 
+# 词元正则缓存（惰性生成一次）：SQL 侧判断 extra_fields 的 key 是否像 IP 字段
+_EXTRA_IP_KEY_REGEX_CACHE: dict = {"pat": None}
+
+
+def _extra_ip_key_regex() -> str:
+    """构造「key 按非字母数字切词后含 IP 词元」的 Postgres 正则（配合 ``~*`` 使用）。
+
+    语义与 ``asset_ip_index.is_ip_extra_key`` 完全一致：key 按非字母数字切词
+    （大小写不敏感），任一词元整词命中 ``_IP_KEY_TOKENS`` 集合即视为 IP 类
+    key。词元动态取自 ``_IP_KEY_TOKENS``（长词元在前，避免 alternation 左
+    优先先匹配短前缀再靠边界回溯），两边永不漂移。
+    """
+    cached = _EXTRA_IP_KEY_REGEX_CACHE
+    if cached["pat"] is None:
+        from app.core.asset_ip_index import _IP_KEY_TOKENS
+
+        toks = "|".join(sorted(_IP_KEY_TOKENS, key=lambda t: (-len(t), t)))
+        cached["pat"] = rf"(^|[^a-z0-9])({toks})([^a-z0-9]|$)"
+    return cached["pat"]
+
+
+def _stage2_extra_ip_key_condition(db: Session, template_keys: frozenset):
+    """阶段2 SQL 过滤：只拉取 extra_fields 含「IP 类 key」的行。
+
+    key 判定与 ``_extra_ip_intervals`` 一致——key ∈ 模板 IP 键集合（存在性
+    判断，覆盖写入侧索引不收录的中文 key 如「出口地址」），或 key 本身像
+    IP 字段（词元正则整词匹配）。key 不满足任一条件的行其 extra 区间必为
+    空、不可能命中，在 SQL 层过滤掉可避免全表拉取 extra_fields 大字段，
+    只减数据传输量、不改匹配语义。
+
+    - Postgres + JSONB 列：``?|`` 批量存在性 + ``jsonb_object_keys`` 正则；
+    - Postgres + json 列（当前模型类型）：json 无 ``?|`` 操作符，改为单次
+      ``json_object_keys`` 展开 + 「key = ANY(模板键) OR 词元正则」合并判断
+      （OR 短路：命中模板键的 key 不再跑正则；单次 SRF 也避免 json 列被
+      反复解析——json 每次访问都要重新 parse 文本，拆成多个 ``->``/SRF
+      条件会让同一行被解析多次，实测合并写法快约一倍）；
+    - 非 Postgres 或无法识别的列类型：返回 None，调用方退化为拉取全部行的
+      id+extra_fields（与改造前语义一致，不做 key 过滤）。
+    - ``*_typeof(...) = 'object'`` 守卫：extra_fields 非对象（数组/标量/NULL）
+      时 ``*_object_keys`` 会报错，且这类行 Python 侧本就不参与匹配
+      （``_extra_ip_intervals`` 仅接受 dict）。
+    """
+    from sqlalchemy.dialects.postgresql import JSON, JSONB
+
+    if db.get_bind().dialect.name != "postgresql":
+        return None
+    col_type = Asset.extra_fields.type
+    if isinstance(col_type, JSONB):
+        typeof_fn, keys_fn = "jsonb_typeof", "jsonb_object_keys"
+    elif isinstance(col_type, JSON):
+        typeof_fn, keys_fn = "json_typeof", "json_object_keys"
+    else:
+        return None
+
+    params: dict = {}
+    keys = sorted(template_keys)
+    if isinstance(col_type, JSONB):
+        parts = []
+        if keys:
+            binds = [f":ipk{i}" for i in range(len(keys))]
+            params.update({f"ipk{i}": k for i, k in enumerate(keys)})
+            parts.append(f"assets.extra_fields ?| ARRAY[{', '.join(binds)}]")
+        parts.append(
+            f"EXISTS (SELECT 1 FROM {keys_fn}(assets.extra_fields) k "
+            "WHERE k ~* :ipkey_re)"
+        )
+        inner = " OR ".join(parts)
+    else:
+        key_eq = ""
+        if keys:
+            binds = [f":ipk{i}" for i in range(len(keys))]
+            params.update({f"ipk{i}": k for i, k in enumerate(keys)})
+            key_eq = f"k = ANY(ARRAY[{', '.join(binds)}]) OR "
+        inner = (
+            f"EXISTS (SELECT 1 FROM {keys_fn}(assets.extra_fields) k "
+            f"WHERE {key_eq}k ~* :ipkey_re)"
+        )
+    params["ipkey_re"] = _extra_ip_key_regex()
+    sql = f"({typeof_fn}(assets.extra_fields) = 'object' AND ({inner}))"
+    return text(sql).bindparams(**params)
+
+
+def _filter_ids_by_ip_search(
+    db: Session, search_ip, search_net,
+    kb_id, asset_type, department, criticality, source, status, tag_id, type_code,
+    template, parsed_field_filters,
+    order_by=None, limit=None,
+):
+    """IP/CIDR 智能搜索两阶段过滤（``GET /assets`` 与 ``GET /assets/ids`` 共用）。
+
+    匹配语义与改造前完全一致——ip 列区间命中 ∪ extra_fields 中 IP 类字段
+    区间命中 ∪ identifier 精确相等，仅减少 extra_fields 大字段的数据传输量：
+
+    - 阶段1：轻量查询不选 extra_fields，逐行做 ip 列区间匹配与 identifier
+      精确匹配（保持原有循环结构）；
+    - 阶段2：仅拉取「extra_fields 含 IP 类 key」的行（SQL 下推 key 过滤，
+      见 ``_stage2_extra_ip_key_condition``），对其做 extra 字段区间匹配，
+      命中的 id 并入结果。key 过滤只砍掉 extra 区间恒为空的行，不改语义。
+
+    - ``order_by``：排序列表达式（list_assets 传入以保持结果顺序与排序一致；
+      /ids 不传，按 DB 返回序）。
+    - ``limit``：结果条数上限（/ids 传 10000）。
+
+    返回 ``(ids, light_rows)``：light_rows 为阶段1轻量行（id/ip/identifier/
+    name/type_code），供 ``_nearest_ip_suggestions`` 使用（不需要 extra_fields）。
+    """
+    # ===== 阶段1：轻量列扫描（不含 extra_fields，避免全表拉取 JSON 大字段）=====
+    light_query = _apply_asset_filters(
+        db.query(Asset.id, Asset.ip, Asset.identifier, Asset.name, Asset.type_code),
+        kb_id, asset_type, department, criticality, source, "", status, tag_id, type_code,
+        template=template, field_filters=parsed_field_filters,
+    )
+    if order_by is not None:
+        light_query = light_query.order_by(order_by)
+    all_rows = light_query.all()
+    # extra 中 IP 类字段（模板定义的 eip/出口地址等）也参与数值匹配
+    ip_extra_keys = _template_ip_extra_keys(db)
+    matched: set = set()
+    for row in all_rows:
+        # extra_fields 传 None：阶段1只做 ip 列区间判断，extra 部分留给阶段2
+        if _ip_matches_asset(search_ip, search_net, row.ip, None, ip_extra_keys):
+            matched.add(row.id)
+        elif search_ip and row.identifier and str(search_ip) == row.identifier:
+            matched.add(row.id)
+
+    # ===== 阶段2：仅拉取 extra_fields 含 IP 类 key 的行，做 extra 区间匹配 =====
+    stage2_query = _apply_asset_filters(
+        db.query(Asset.id, Asset.extra_fields),
+        kb_id, asset_type, department, criticality, source, "", status, tag_id, type_code,
+        template=template, field_filters=parsed_field_filters,
+    )
+    key_cond = _stage2_extra_ip_key_condition(db, ip_extra_keys)
+    if key_cond is not None:
+        stage2_query = stage2_query.filter(key_cond)
+    for row in stage2_query.all():
+        # 直接对 _extra_ip_intervals 的区间做命中判断（search_ip / search_net
+        # 判断口径与 _ip_matches_asset 完全一致）。不借道 _ip_matches_asset：
+        # 其内部对 _cached_intervals 返回的缓存列表做 ``+=`` 原地扩展，若固定
+        # 传空 ip 值会让所有阶段2行共享 cache[""] 相互累积污染（误命中）。
+        intervals = _extra_ip_intervals(row.extra_fields, ip_extra_keys)
+        if not intervals:
+            continue
+        if search_ip is not None:
+            version = search_ip.version
+            ip_int = int(search_ip)
+            if any(ver == version and start <= ip_int <= end
+                   for ver, start, end in intervals):
+                matched.add(row.id)
+        else:
+            version = search_net.version
+            net_start = int(search_net.network_address)
+            net_end = int(search_net.broadcast_address)
+            if any(ver == version and start <= net_end and net_start <= end
+                   for ver, start, end in intervals):
+                matched.add(row.id)
+
+    # 按阶段1遍历序输出（与改造前单次查询的遍历序一致，保持分页/截断行为）
+    ids = [row.id for row in all_rows if row.id in matched]
+    if limit is not None:
+        ids = ids[:limit]
+    return ids, all_rows
+
+
 # 排序字段白名单（防 SQL 注入：仅允许这些列名参与排序）
 _SORT_BY_WHITELIST = {
     "id": Asset.id,
@@ -675,20 +893,16 @@ def list_assets(
         # 58.250.156.224-218.17.86.254），此前用"前三段前缀 LIKE"拉候选集会漏掉它们，
         # 导致按 IP 永远检索不到资产。改为：其余筛选条件仍走 SQL，ip 命中在 Python 层
         # 用数值区间判断（带模块级缓存，全量 10 万级资产扫描 < 1s）。
+        # 两阶段查询：阶段1轻量列不拉 extra_fields，阶段2只拉含 IP 类 key 的行
+        # （结果集合与单次全量拉取完全一致，仅减少传输量），见 _filter_ids_by_ip_search。
         sort_col = _SORT_BY_WHITELIST.get(sort_by, Asset.id)
         order_dir = sort_col.desc() if order.lower() == "desc" else sort_col.asc()
-        light_query = _apply_asset_filters(
-            db.query(Asset.id, Asset.ip, Asset.identifier, Asset.name, Asset.type_code),
-            kb_id, asset_type, department, criticality, source, "", status, tag_id, type_code,
-            template=template, field_filters=parsed_field_filters,
+        filtered_ids, all_rows = _filter_ids_by_ip_search(
+            db, search_ip, search_net,
+            kb_id, asset_type, department, criticality, source, status, tag_id, type_code,
+            template, parsed_field_filters,
+            order_by=order_dir,
         )
-        all_rows = light_query.order_by(order_dir).all()
-        filtered_ids: list[int] = []
-        for row in all_rows:
-            if _ip_matches_stored(search_ip, search_net, row.ip):
-                filtered_ids.append(row.id)
-            elif search_ip and row.identifier and str(search_ip) == row.identifier:
-                filtered_ids.append(row.id)
         total = len(filtered_ids)
         start = (page - 1) * page_size
         page_ids = filtered_ids[start:start + page_size]
@@ -826,20 +1040,14 @@ def list_asset_ids(
     parsed_field_filters = _parse_field_filters(field_filters)
     search_ip, search_net = _parse_search_ip(keyword)
     if search_ip or search_net:
-        light_query = _apply_asset_filters(
-            db.query(Asset.id, Asset.ip, Asset.identifier),
-            kb_id, asset_type, department, criticality, source, "", status, tag_id, type_code,
-            template=template, field_filters=parsed_field_filters,
+        # 两阶段 IP 过滤与列表端点同一实现（结果集合一致，/ids 不排序、上限 10000），
+        # 见 _filter_ids_by_ip_search
+        ids, _ = _filter_ids_by_ip_search(
+            db, search_ip, search_net,
+            kb_id, asset_type, department, criticality, source, status, tag_id, type_code,
+            template, parsed_field_filters,
+            limit=10000,
         )
-        all_rows = light_query.all()
-        ids = []
-        for row in all_rows:
-            if _ip_matches_stored(search_ip, search_net, row.ip):
-                ids.append(row.id)
-            elif search_ip and row.identifier and str(search_ip) == row.identifier:
-                ids.append(row.id)
-            if len(ids) >= 10000:
-                break
         return {"ids": ids, "total": len(ids)}
     query = _apply_asset_filters(
         db.query(Asset.id), kb_id, asset_type,

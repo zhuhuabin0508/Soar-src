@@ -242,6 +242,11 @@ def _is_ip_extra_key(key) -> bool:
     return any(tok in _IP_KEY_TOKENS for tok in re.split(r"[^a-z0-9]+", k) if tok)
 
 
+def is_ip_extra_key(key) -> bool:
+    """公开接口：extra_fields 的 key 是否像 IP 字段（检索侧与写入侧同一判断）。"""
+    return _is_ip_extra_key(key)
+
+
 def _versioned_intervals_from_fields(
     ip, identifier, extra_fields
 ) -> list[tuple[int, int, int]]:

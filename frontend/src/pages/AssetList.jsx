@@ -315,6 +315,16 @@ function DetailDrawer({ open, record, template, templates, onClose, onEdit, onDe
               字段信息
             </h3>
             <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+              {/* 唯一标识固定展示：IP 智能搜索会按 identifier 精确命中，详情需可见命中原因 */}
+              <div className="flex flex-col">
+                <span className="text-[11px] text-muted-foreground">唯一标识</span>
+                <span
+                  className="mt-0.5 break-all font-mono text-sm text-foreground"
+                  style={{ overflowWrap: 'anywhere' }}
+                >
+                  {record.identifier || '-'}
+                </span>
+              </div>
               {fieldDefs.map((f) => {
                 const v = getFieldValue(record, f)
                 const isStatus = f.key === 'status' || f.mapped_to === 'standard:status'
