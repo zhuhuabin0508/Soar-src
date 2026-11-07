@@ -1527,8 +1527,8 @@ function Dashboard() {
         </div>
       </header>
 
-      {/* 内容滚动区 */}
-      <div className={`flex-1 min-w-0 ${tab === 'duty' ? 'overflow-hidden' : 'bg-tech-grid overflow-y-auto p-6'}`}>
+      {/* 内容滚动区（四个大屏共用同一容器与底纹） */}
+      <div className="bg-tech-grid flex-1 min-w-0 overflow-y-auto p-6">
         {tab === 'operations' ? (
           <OperationsDashboard
             onRefresh={handleRefresh}
@@ -1539,7 +1539,7 @@ function Dashboard() {
         ) : tab === 'ai_usage' ? (
           <AiUsagePanel />
         ) : tab === 'duty' ? (
-          <DutyDashboard onSwitchTab={setTab} />
+          <DutyDashboard refreshing={refreshing} autoRefresh={autoRefresh} />
         ) : (
           <MaterialsDashboard
             refreshing={refreshing}
