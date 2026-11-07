@@ -66,6 +66,11 @@ export const ticketApi = {
   // 设备接口异常时后端仍返回 200 + ok=false + error，前端据此降级展示。
   getBanLiveStats: (periodStart, periodEnd) =>
     request(`/tickets/monitor/ban-live${_qs({ period_start: periodStart || undefined, period_end: periodEnd || undefined })}`),
+  // 重保期间每日拦截次数趋势（大屏右上「重保拦截趋势」卡独立轮询）：按日分桶统计
+  // 重保时间范围内产生条目的命中次数（逐日求和 = ban-live 的 period_hit_count）。
+  // periodStart/periodEnd 为 datetime-local 值，两者须同时传（未设置范围时前端不发请求）。
+  getBanInterceptTrend: (periodStart, periodEnd) =>
+    request(`/tickets/monitor/ban-intercept-trend${_qs({ period_start: periodStart || undefined, period_end: periodEnd || undefined })}`),
   // 执行当前节点设备动作（如安博通阻断器封禁/解封）：body={action_id, params, field_values}
   executeDeviceAction: (id, body) => request(`/tickets/${id}/device-actions/execute`, { method: 'POST', body }),
   // 设备动作异步执行：失败重试（复用同一执行记录，不重复生成动作槽位）

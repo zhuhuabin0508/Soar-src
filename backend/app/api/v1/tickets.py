@@ -1666,6 +1666,80 @@ def ticket_monitor_ban_live(
                     period_hit=period_hit_count, truncated=truncated)
 
 
+# 重保期间每日拦截趋势最大天数（避免误配超长范围时返回上千日桶；超出时仅保留最近 N 天）
+_INTERCEPT_TREND_MAX_DAYS = 366
+
+
+@router.get("/monitor/ban-intercept-trend")
+def ticket_monitor_ban_intercept_trend(
+    period_start: datetime | None = Query(default=None, description="重保时间范围起点（ISO 格式）"),
+    period_end: datetime | None = Query(default=None, description="重保时间范围终点（ISO 格式）"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("ticket_monitor", "view")),
+):
+    """重保期间每日拦截次数趋势（大屏右上「重保拦截趋势」卡专用）。
+
+    按日分桶统计重保时间范围内「产生」的黑名单条目命中（拦截）次数：
+    某日拦截次数 = effectTime 落在该日的条目 hit_num 之和，同时返回该日新增条目数
+    ban_count（辅助口径）。逐日求和与 ``/monitor/ban-live`` 的 ``period_hit_count``
+    完全一致（同一条目集合同一口径），两卡数字可互相核对。
+
+    - 起止必须同时提供且起点不晚于终点（否则 HTTP 400）；
+    - 范围终点晚于当前时间时截断到今天（未来天数无数据不返回）；
+    - 范围跨度超过 366 天时仅返回最近 366 天（window_truncated=true）。
+
+    设备接口异常时返回 200 + ok=false + error（前端降级保留最近快照）；
+    全量拉取结果与 ban-live 共享 10 秒缓存，两卡轮询不会重复打设备。
+    """
+    if period_start is None or period_end is None:
+        raise HTTPException(status_code=400, detail="重保时间范围需同时提供起止时间")
+    ps = period_start.replace(tzinfo=None) if period_start.tzinfo else period_start
+    pe = period_end.replace(tzinfo=None) if period_end.tzinfo else period_end
+    if pe < ps:
+        raise HTTPException(status_code=400, detail="重保时间范围终点不能早于起点")
+
+    def _payload(ok: bool, days=None, error=None, window_truncated=False) -> dict:
+        return {
+            "ok": ok,
+            "error": error,
+            "days": days or [],
+            "window_truncated": window_truncated,
+            "period_start": ps.isoformat(),
+            "period_end": pe.isoformat(),
+            "fetched_at": beijing_now().isoformat(),
+        }
+
+    items, err, _ = _fetch_full_blacklist(db)
+    if err:
+        logger.warning("大屏重保拦截趋势获取黑名单失败: %s", err)
+        return _payload(False, error=err)
+
+    # 日桶序列：从起点当日到 min(终点, 今天)；跨度超上限时仅保留最近 N 天
+    first_day = ps.replace(hour=0, minute=0, second=0, microsecond=0)
+    last_day = min(pe, beijing_now()).replace(hour=0, minute=0, second=0, microsecond=0)
+    total_days = (last_day - first_day).days + 1
+    window_truncated = total_days > _INTERCEPT_TREND_MAX_DAYS
+    if window_truncated:
+        first_day = last_day - timedelta(days=_INTERCEPT_TREND_MAX_DAYS - 1)
+        total_days = _INTERCEPT_TREND_MAX_DAYS
+
+    counts = [0] * total_days
+    bans = [0] * total_days
+    for it in items:
+        t = _parse_effect_time(it.get("effectTime"))
+        if t is None:
+            continue
+        idx = (t.replace(hour=0, minute=0, second=0, microsecond=0) - first_day).days
+        if 0 <= idx < total_days:
+            counts[idx] += _parse_hit_num(it.get("hit_num"))
+            bans[idx] += 1
+    days = []
+    for i in range(total_days):
+        d = first_day + timedelta(days=i)
+        days.append({"date": d.date().isoformat(), "count": counts[i], "ban_count": bans[i]})
+    return _payload(True, days=days, window_truncated=window_truncated)
+
+
 @router.get("/monitor")
 def ticket_monitor_stats(
     flow_id: int | None = Query(default=None, description="指定流程模板 ID；缺省时自动选取进行中工单最多的流程"),
