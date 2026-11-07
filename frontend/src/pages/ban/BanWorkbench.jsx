@@ -1202,7 +1202,7 @@ export default function BanWorkbench({ embedded = false }) {
               )}
             </div>
             <div className="border-t border-amber-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
-              预检仅对单 IP 精确查询设备黑名单，CIDR / 范围不做预检{dupCheck.fetchedAt && `；更新于 ${fmtTime(dupCheck.fetchedAt)}`}
+              预检仅对单 IP / 域名精确查询设备黑名单，CIDR / 范围不做预检{dupCheck.fetchedAt && `；更新于 ${fmtTime(dupCheck.fetchedAt)}`}
             </div>
           </aside>
         )}

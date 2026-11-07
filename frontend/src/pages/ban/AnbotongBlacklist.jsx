@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { ShieldBan, RotateCw, Inbox, Search, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { ShieldBan, RotateCw, Inbox, Search, X, LockOpen, Loader2 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
+import { confirm } from '../../components/ConfirmDialog'
 import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelect } from '../../components/ui'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
@@ -158,6 +159,64 @@ export default function AnbotongBlacklist({ embedded = false }) {
     setBlQueryIp('')
   }
 
+  // 行内解封（需 ban_workflow:edit）：二次确认 → 设备解封 → 刷新列表
+  const canEdit = hasPermission('ban_workflow', 'edit')
+  const [unbanningIp, setUnbanningIp] = useState('')
+  const doUnban = useCallback(async (row) => {
+    const ip = String(row?.blist || '').trim()
+    if (!ip || unbanningIp) return
+    const ok = await confirm({
+      title: `解封 IP ${ip}`,
+      message: `确认将 ${ip} 从安博通阻断器黑名单中移除？解封后该 IP 立即恢复访问；平台侧该 IP 生效中的封禁记录将同步置为已解封。操作会记录操作人与时间。`,
+      confirmText: '确认解封',
+      variant: 'warning',
+    })
+    if (!ok) return
+    setUnbanningIp(ip)
+    banWorkflowApi.unbanAnbotongBlacklist(ip, '工作台-安博通黑名单手动解封')
+      .then((res) => {
+        toast.success(res?.already_absent
+          ? `IP ${ip} 已不在黑名单中，已按解封处理`
+          : `IP ${ip} 已解封（已从安博通阻断器黑名单移除）`)
+        // 刷新当前页黑名单，更新设备侧数据状态
+        loadBlacklist()
+        // 单条查询模式下同步刷新该条结果（解封后应变更为「不在黑名单中」）
+        // 后端返回的 ip 已归一化为小写域名，这里忽略大小写比较，避免大写域名不刷新
+        if (blQuery && String(blQuery.ip || '').toLowerCase() === ip.toLowerCase()) {
+          banWorkflowApi.anbotongBlacklistQuery(ip).then(setBlQuery).catch(() => {})
+        }
+      })
+      .catch((e) => toast.error(e.message || '解封失败，列表数据保持不变'))
+      .finally(() => setUnbanningIp(''))
+  }, [unbanningIp, blQuery, loadBlacklist])
+
+  // 列表列：末尾追加解封操作（冻结右侧，与封禁工作台操作列同风格）
+  const columns = useMemo(() => {
+    if (!canEdit) return blacklistColumns
+    return [
+      ...blacklistColumns,
+      {
+        key: 'actions', header: '操作', width: '80px', sticky: 'right',
+        render: (r) => (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-success disabled:cursor-not-allowed disabled:opacity-50"
+              title={unbanningIp ? '解封中…' : '解封'}
+              aria-label={`解封 IP ${r.blist}`}
+              disabled={Boolean(unbanningIp)}
+              onClick={() => doUnban(r)}
+            >
+              {unbanningIp === r.blist
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <LockOpen className="h-4 w-4" />}
+            </button>
+          </div>
+        ),
+      },
+    ]
+  }, [canEdit, unbanningIp, doUnban])
+
   const content = (
     <Card>
       {/* 头部：标题 + 设备标识 ｜ 右侧工具区（自动刷新 + 立即刷新，均次级操作用 ghost） */}
@@ -249,7 +308,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
       {/* 表格主体：列表页主体区，独立横滚 + 给足纵向扫读空间（不再双重限高） */}
       <div className="mt-3">
         <DataTable
-          columns={blacklistColumns}
+          columns={columns}
           data={blQuery ? (blQuery.found && blQuery.entry ? [blQuery.entry] : []) : blacklist.items}
           loading={blQuery ? blQueryLoading : (blacklistLoading && !blacklist.items.length)}
           rowKey="blist"

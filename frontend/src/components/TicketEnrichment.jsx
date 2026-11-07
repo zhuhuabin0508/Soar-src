@@ -1,11 +1,11 @@
 // 工单安全上下文（自动研判 v2 多 IP）展示与交互组件。
 //
 // 设计（分层折叠，见 docs/工单多IP安全上下文分层展示与交互设计方案.md）：
-// - L1 统计头（默认折叠态唯一可见层）：IP 总数 + 黑名单/资产/情报三维风险
+// - L1 统计头（默认展开；仍可一键收起）：IP 总数 + 黑名单/资产/情报三维风险
 //   标签统计 chips（点击 chip = 展开并按该维度过滤）；
 // - L2 工具栏（展开后）：风险筛选 / 排序 / 全选 / 全部展开（≤50）/ 导出；
 // - L3 IP 列表（按 源/目的 分组）：
-//   · <50：手风琴内联展开详情（单开，全部展开可突破）；
+//   · <50：内联展开详情（初始化后默认全部展开，单行可独立折叠）；
 //   · ≥50：列表固定高度 + 虚拟滚动（@tanstack/react-virtual，行高 44px），
 //     行高统一保证窗口化成立，详情改走右侧抽屉；
 // - 批量操作（勾选后底部浮条）：查询封禁（20/批 × 并发 2 自动分批）、
@@ -17,7 +17,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ShieldCheck, ShieldBan, Database, AlertTriangle, Bot, Sparkles, Search,
-  Download, Copy, RefreshCw, ChevronDown, ChevronRight, X, Loader2, ListCollapse,
+  Download, Copy, Check, RefreshCw, ChevronDown, ChevronRight, X, Loader2, ListCollapse,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from './ConfirmDialog'
@@ -39,6 +39,80 @@ const AGENT_RISK_CLS = {
   低危: 'bg-sky-500/10 text-sky-500', 低: 'bg-sky-500/10 text-sky-500',
 }
 const AGENT_ACTION_LABELS = { ban: '建议封禁', monitor: '观察监控', ignore: '忽略（暂不处置）' }
+
+// ============ IP 一键复制 ============
+
+// 复制文本：优先异步剪贴板 API（仅 https / localhost 等安全上下文可用），
+// 其余情况（http 内网访问、旧浏览器）回退到隐藏 textarea + execCommand，
+// 不引入任何第三方依赖，兼容 Chrome/Edge/Firefox/Safari。
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 权限被拒 / 非安全上下文：走兼容方案
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-9999px'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, ta.value.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+// IP 复制图标：通用剪贴板样式，置于 IP 右侧；复制成功 1.5s 内切换为对勾 +
+// 悬浮「已复制」气泡（绝对定位，不撑开布局），hover/active 有明确反馈。
+// 行内使用时阻止冒泡，避免触发「展开详情 / 打开抽屉」。
+function CopyIpButton({ ip, className = '' }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef(null)
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+  const handleCopy = async (ev) => {
+    ev.stopPropagation()
+    const ok = await copyTextToClipboard(ip)
+    if (!ok) {
+      toast.error('复制失败，请手动选择 IP 复制')
+      return
+    }
+    setCopied(true)
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 1500)
+  }
+  return (
+    <span className={`relative inline-flex shrink-0 items-center ${className}`}>
+      <button
+        type="button"
+        onClick={handleCopy}
+        title={copied ? '已复制' : `复制 IP ${ip}`}
+        aria-label={copied ? `已复制 ${ip}` : `复制 IP ${ip}`}
+        className={`flex items-center justify-center rounded p-1 transition active:scale-90 ${
+          copied
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+        }`}
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+      {copied && (
+        <span className="pointer-events-none absolute -top-6 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background shadow-sm">
+          已复制
+        </span>
+      )}
+    </span>
+  )
+}
 const ASSET_CRITICALITY_LABELS = { low: '低', medium: '中', high: '高', critical: '严重' }
 const ASSET_STATUS_LABELS = { in_use: '在用', idle: '闲置', repair: '维修', retired: '报废', lost: '丢失' }
 const ASSET_SOURCE_LABELS = { kb_ingest: '知识库梳理', manual: '手动录入', agent_add: '对话录入' }
@@ -401,7 +475,6 @@ const banFromCache = (ticketId, ips) => {
 // ============ 主组件 ============
 
 const VIRTUAL_THRESHOLD = 50     // 超过后启用虚拟滚动 + 详情抽屉
-const EXPAND_STORAGE_KEY = 'ticket-enrich-expanded-v1'
 
 // 风险排序权重：恶意 > 封禁中 > 高危情报 > 重要资产 > 资产命中 > 其他
 const riskRank = (e, banMap) => {
@@ -496,18 +569,12 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
     return out.slice(0, 20)
   }, [isV2, enrichment, ticket])
 
-  // ===== 展开状态（localStorage 持久化）=====
-  const [expanded, setExpanded] = useState(() => localStorage.getItem(EXPAND_STORAGE_KEY) === '1')
-  const toggleExpanded = useCallback(() => {
-    setExpanded((v) => {
-      localStorage.setItem(EXPAND_STORAGE_KEY, v ? '0' : '1')
-      return !v
-    })
-  }, [])
+  // ===== 展开状态（初始化默认展开，可手动收起）=====
+  const [expanded, setExpanded] = useState(true)
+  const toggleExpanded = useCallback(() => setExpanded((v) => !v), [])
   const expandWithFilters = useCallback((filters) => {
     setFilters(new Set(filters))
     setExpanded(true)
-    localStorage.setItem(EXPAND_STORAGE_KEY, '1')
   }, [])
 
   // ===== 列表状态 =====
@@ -668,16 +735,26 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
     })
   }, [])
 
-  const toggleRow = useCallback((ip, singleOpen = true) => {
+  const toggleRow = useCallback((ip) => {
     setOpenRows((prev) => {
-      if (prev.has(ip)) {
-        const next = new Set(prev)
-        next.delete(ip)
-        return next
-      }
-      return singleOpen ? new Set([ip]) : new Set([...prev, ip])
+      const next = new Set(prev)
+      if (next.has(ip)) next.delete(ip)
+      else next.add(ip)
+      return next
     })
   }, [])
+
+  // 初始化加载完成后自动展开全部可折叠模块：列表本身默认展开（expanded），
+  // 分组默认展开（collapsedGroups 初始为空）；≤50 时行内详情一次性全展开。
+  // 仅执行一次：用户后续手动折叠/展开不会被数据轮询刷新覆盖。
+  const autoExpandedRef = useRef(false)
+  useEffect(() => {
+    if (autoExpandedRef.current || !expanded || !entries.length) return
+    autoExpandedRef.current = true
+    // ≥50 走虚拟滚动 + 右侧抽屉，行内无折叠态，无需展开行
+    if (entries.length > VIRTUAL_THRESHOLD) return
+    setOpenRows(new Set(entries.map((e) => e.ip)))
+  }, [expanded, entries])
 
   // ===== 批量操作 =====
   const requeryIps = useCallback(async (ips) => {
@@ -780,16 +857,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
         </span>
         <span className="min-w-0 shrink-0 font-mono text-[13px] font-medium text-foreground">{e.ip}</span>
         <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden">{ipBadges(e)}</span>
-        <button
-          type="button" title="复制 IP"
-          className="shrink-0 rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-          onClick={(ev) => {
-            ev.stopPropagation()
-            navigator.clipboard?.writeText(e.ip).then(() => toast.success(`已复制 ${e.ip}`))
-          }}
-        >
-          <Copy className="h-3.5 w-3.5" />
-        </button>
+        <CopyIpButton ip={e.ip} />
       </div>
     )
   }, [selection, roleLabels, toggleSelect, ipBadges])
@@ -817,8 +885,8 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
   if (!isV2) {
     return (
       <div className="space-y-4">
-        <LegacyEnrichmentView enrichment={enrichment} onFill={onFill} />
         <BanQueryBox autoIps={legacyAutoIps} autoQuery />
+        <LegacyEnrichmentView enrichment={enrichment} onFill={onFill} />
       </div>
     )
   }
@@ -880,6 +948,17 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
             <span className="text-amber-600" title={banDeviceError}>安博通阻断器不可用</span>
           )}
         </div>
+      </div>
+
+      {/* 封禁状态查询（置顶，进入即自动查询全部 IP；手动查询保留） */}
+      <div className="px-4 pt-3">
+        <BanQueryBox
+          ticketIps={entries.map((e) => e.ip)}
+          banMap={banMap}
+          progress={banProgress}
+          deviceError={banDeviceError}
+          onRetry={() => runBanQuery(entries.map((e) => e.ip))}
+        />
       </div>
 
       {/* L2 工具栏 + L3 列表（展开后） */}
@@ -1044,9 +1123,6 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
               研判时间：{new Date(enrichment.enriched_at).toLocaleString('zh-CN', { hour12: false })}
             </div>
           )}
-
-          {/* 手动黑名单查询兜底入口 */}
-          <BanQueryBox autoIps={[]} />
         </div>
       )}
 
@@ -1055,6 +1131,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
         title={drawerEntry ? (
           <span className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="break-words font-mono">{drawerEntry.ip}</span>
+            <CopyIpButton ip={drawerEntry.ip} />
             {(drawerEntry.roles || []).map((r) => roleLabels[r] || r).join('、')}
             {drawerEntry.detail === 'lite' && <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">精简档</span>}
           </span>
@@ -1140,9 +1217,12 @@ function BanStatusDetail({ ip, st }) {
   )
 }
 
-// ============ 手动黑名单查询框（兜底入口，迁自 BanStatusView） ============
+// ============ 封禁状态查询（置顶）：工单全部 IP 自动查询展示 + 手动查询兜底 ============
 
-function BanQueryBox({ autoIps, autoQuery = false }) {
+function BanQueryBox({
+  autoIps = [], autoQuery = false,
+  ticketIps = [], banMap = null, progress = null, deviceError = null, onRetry,
+}) {
   const [query, setQuery] = useState(autoIps.join('，'))
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -1166,13 +1246,76 @@ function BanQueryBox({ autoIps, autoQuery = false }) {
     if (autoQuery && autoIps.length) doQuery(autoIps.join(','))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const results = result && result.results ? Object.entries(result.results) : []
+
+  // v2：工单全部 IP 的封禁状态由父组件统一自动查询（20/批，会话缓存去重），此处只做展示
+  const autoTotal = ticketIps.length
+  const autoDone = ticketIps.filter((ip) => banMap?.has(ip)).length
+  const autoBanned = ticketIps.filter((ip) => banMap?.get(ip)?.banned).length
+  const autoLoading = !!progress?.loading
+  const failedChunks = progress?.failedChunks?.length || 0
+
   return (
-    <div className="mt-3 rounded-md border border-border bg-secondary/40 p-3">
+    <div className="rounded-md border border-border bg-secondary/40 p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <ShieldBan className="h-3.5 w-3.5 text-primary" />
         <span className="font-medium text-foreground">封禁状态查询（安博通阻断器）</span>
-        <span>如需查询研判列表之外的 IP，可在此手动输入（逗号分隔，单次最多 {BAN_CHUNK} 个）</span>
+        {autoTotal ? (
+          <span>已自动查询本工单全部 {autoTotal} 个 IP，也可手动查询列表之外的 IP（逗号分隔，单次最多 {BAN_CHUNK} 个）</span>
+        ) : (
+          <span>如需查询研判列表之外的 IP，可在此手动输入（逗号分隔，单次最多 {BAN_CHUNK} 个）</span>
+        )}
       </div>
+
+      {autoTotal > 0 && (
+        <div className="mb-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+              已查询 <span className="font-medium text-foreground">{autoDone}/{autoTotal}</span>
+            </span>
+            <span className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 ${autoBanned ? 'border-red-500/40 bg-red-500/10 text-red-500' : 'border-border bg-card text-muted-foreground'}`}>
+              封禁中 <span className="font-medium">{autoBanned}</span>
+            </span>
+            {autoLoading && (
+              <span className="inline-flex items-center gap-1 text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />查询中…
+              </span>
+            )}
+            {!autoLoading && !!failedChunks && onRetry && (
+              <button type="button" onClick={onRetry}
+                className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 transition hover:bg-amber-500/20">
+                <RefreshCw className="h-3 w-3" />重试失败批次（{failedChunks}）
+              </button>
+            )}
+            {deviceError && !autoLoading && (
+              <span className="break-all text-amber-600" title={deviceError}>安博通阻断器不可用</span>
+            )}
+          </div>
+          <div className="max-h-[220px] overflow-y-auto rounded border border-border/60 bg-background/40">
+            {ticketIps.map((ip) => {
+              const st = banMap?.get(ip)
+              return (
+                <div key={ip} className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 px-2 py-1.5 text-[13px] last:border-b-0">
+                  <span className="min-w-0 break-all font-mono font-medium text-foreground">{ip}</span>
+                  {st ? (
+                    st.banned ? (
+                      <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
+                    ) : (
+                      <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">未封禁</span>
+                    )
+                  ) : autoLoading ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />查询中
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">--</span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-2">
         <input className={inputCls} placeholder="输入 IP 地址，多个 IP 用逗号分隔"
           value={query} onChange={(e) => setQuery(e.target.value)}
@@ -1226,6 +1369,7 @@ function LegacyEnrichmentView({ enrichment, onFill }) {
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <span className="whitespace-nowrap rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">{s.label || s.role}</span>
               <span className="font-mono text-sm font-medium text-foreground">{s.ip}</span>
+              <CopyIpButton ip={s.ip} />
               {s.threat?.is_malicious ? (
                 <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-500">
                   <AlertTriangle className="h-3 w-3" />恶意

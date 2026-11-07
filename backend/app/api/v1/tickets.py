@@ -788,6 +788,53 @@ def _ticket_list_item(ticket: Ticket, group_names: dict[int, str]) -> dict:
     return data
 
 
+def _rollback_restore_values(current_node: dict | None, records: list) -> dict | None:
+    """回退回显：当前节点由「回退」重新到达时，返回该节点上次提交的字段值。
+
+    - 最后一次决定当前节点归属的记录（create/submit/rollback 且 route_to=当前节点）
+      必须是 rollback，才认定为回退回显场景；正常流转/首次进入不干预（返回 None）
+    - 取值来源：该节点最近一次 create/submit 记录的 field_values
+    - 仅保留当前节点字段定义内的 key（含匹配规则扩展字段），避免回带无关字段
+    """
+    if not current_node:
+        return None
+    node_key = str(current_node.get("key") or "")
+    if not node_key:
+        return None
+    arrival = next(
+        (
+            r for r in reversed(records)
+            if getattr(r, "action", None) in ("create", "submit", "rollback")
+            and getattr(r, "route_to", None) == node_key
+        ),
+        None,
+    )
+    if arrival is None or getattr(arrival, "action", None) != "rollback":
+        return None
+    prev = next(
+        (
+            r for r in reversed(records)
+            if getattr(r, "id", 0) < getattr(arrival, "id", 0)
+            and getattr(r, "node_key", None) == node_key
+            and getattr(r, "action", None) in ("create", "submit")
+        ),
+        None,
+    )
+    values = getattr(prev, "field_values", None) if prev is not None else None
+    if not isinstance(values, dict) or not values:
+        return None
+    allowed: set[str] = set()
+    for field in current_node.get("fields") or []:
+        if not isinstance(field, dict) or not field.get("key"):
+            continue
+        allowed.add(str(field["key"]))
+        for rule in field.get("rules") or []:
+            for rf in (rule or {}).get("fields") or []:
+                if isinstance(rf, dict) and rf.get("key"):
+                    allowed.add(str(rf["key"]))
+    return {k: v for k, v in values.items() if k in allowed}
+
+
 def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
     """工单详情：快照 + 节点时间线 + 当前用户操作权限。"""
     snapshot = ticket.flow_snapshot if isinstance(ticket.flow_snapshot, dict) else {}
@@ -955,6 +1002,8 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
         "enrichment_data": decorate_asset_source_labels(db, ticket.enrichment_data),
         "group_names": {str(k): v for k, v in group_names.items()},
         "current_node": current_node,
+        # 回退回显：当前节点由回退重新到达时，返回该节点上次提交的字段值（正常流转为 None）
+        "restore_values": _rollback_restore_values(current_node, records),
         "can_handle": can_handle,
         # 认领：未锁定且具备基础处理权时可认领（先到先得；并行会签节点不支持认领）
         "can_claim": bool(

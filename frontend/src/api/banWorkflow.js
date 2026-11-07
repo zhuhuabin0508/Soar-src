@@ -72,6 +72,11 @@ export const banWorkflowApi = {
   // 安博通黑名单单个 IP 精确查询（仅 admin）：404=未封禁属业务结果，异常按 502 报错
   anbotongBlacklistQuery: (ip) =>
     request(`/ban-workflow/anbotong/blacklist/query?ip=${encodeURIComponent(ip)}`),
+  // 安博通黑名单行内解封：从设备移除条目；设备 404 按幂等成功处理
+  unbanAnbotongBlacklist: (ip, reason) =>
+    request(`/ban-workflow/anbotong/blacklist/unban?ip=${encodeURIComponent(ip)}`, {
+      method: 'POST', body: { reason },
+    }),
   // 资产匹配预检（手动封禁弹窗）：双数据源并行（资产发现 + 资产清单），
   // 匹配规则与工单安全上下文完全同口径（发现优先、按来源去重）
   assetMatch: (ips) =>

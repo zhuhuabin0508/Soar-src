@@ -3,23 +3,26 @@
 // - 告警一键发起：从告警列表跳转携带 state.alertPrefill，自动选中流程并按映射预填字段
 // - 相似工单推荐：IP 字段填值后防抖查询，按 源/目的 IP 匹配同流程历史工单（处置中/已完成），
 //   从右侧滑出面板展示工单信息（源+目的均相同 > 仅源相同 > 仅目的相同），可收起/展开
+// - IP 黑名单预检：IP 字段填值后防抖查询安博通黑名单，命中时右侧滑出预检面板
+//   （交互/样式/文案与工作台「手动封禁」预检一致）
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   TicketCheck, Plus, Search, Paperclip, X, Eye, Rocket, ChevronRight, Archive, ArchiveRestore, Monitor, Trash2,
-  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play,
+  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play, Loader2,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls, hintCls } from '../components/property/FormControls'
-import { Button, PageContainer, DataTable, Pagination, CompactSelect, ComboInput, DatePicker } from '../components/ui'
+import { Button, PageContainer, DataTable, Pagination, CompactSelect, ComboInput, DatePicker, Badge } from '../components/ui'
 import { hasPermission, isAdmin } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
+import banWorkflowApi from '../api/banWorkflow'
 import { evalRoutes, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
-import { validateIPExpression } from '../utils/ipValidation'
+import { validateIPExpression, splitIPExpression, validateSingleIP, isBanDomain } from '../utils/ipValidation'
 
 const STATUS_META = {
   processing: { label: '进行中', cls: 'bg-blue-500/10 text-blue-500' },
@@ -38,6 +41,21 @@ const MATCH_META = {
   3: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   2: 'bg-blue-500/10 text-blue-500',
   1: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+}
+// 设备时长（秒）→ 可读文案，与工作台手动封禁预检面板同口径
+const fmtDeviceDuration = (sec) => {
+  if (sec == null || sec === '') return '--'
+  const n = Number(sec)
+  if (Number.isNaN(n)) return String(sec)
+  // 永久条目设备返回 uint64 最大值，超过 1e12 秒按永久展示
+  if (n < 0 || n > 1e12) return '永久'
+  const d = Math.floor(n / 86400)
+  const h = Math.floor((n % 86400) / 3600)
+  const m = Math.floor((n % 3600) / 60)
+  if (d > 0) return `${d}天${h}小时`
+  if (h > 0) return `${h}小时${m}分`
+  if (m > 0) return `${m}分钟`
+  return '不足1分钟'
 }
 const VIEWS = [
   { key: 'my_pending', label: '待我处理' },
@@ -281,6 +299,71 @@ export default function TicketCenter() {
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [createOpen, flowId, ipProbeKey])
+
+  // ===== 提交前安博通黑名单预检（口径与工作台「手动封禁」预检一致）=====
+  // 首节点 IP 字段填值后 700ms 防抖，逐目标精确查询设备黑名单；命中则弹窗加宽、
+  // 右侧平滑滑出「IP 封禁状态预检」面板（与相似工单推荐同区域上下叠放）。
+  // 仅对单 IP / 域名精确查询（CIDR / 范围设备按精确条目查询，跳过）；无
+  // ban_workflow:view 权限时不查询，避免 403 轮询。
+  const canCheckBan = hasPermission('ban_workflow', 'view')
+  const [banCheck, setBanCheck] = useState({ loading: false, results: [], fetchedAt: null, truncated: 0 })
+  // 用户手动收起面板后不再遮挡表单；IP 变化后查到新命中会重新滑出
+  const [banHidden, setBanHidden] = useState(false)
+  const banSeq = useRef(0)
+  useEffect(() => {
+    if (!createOpen || !canCheckBan) {
+      setBanCheck({ loading: false, results: [], fetchedAt: null, truncated: 0 })
+      setBanHidden(false)
+      return undefined
+    }
+    // 汇总所有 IP 字段中的可精确查询目标（单 IP / 域名），跨字段去重
+    const targets = []
+    for (const f of ipFields) {
+      const raw = String(values[f.key] ?? '').trim()
+      if (!raw) continue
+      // 字段表达式整体非法（多半还在输入）时不打设备接口
+      if (validateIPExpression(raw, f.label || 'IP')) continue
+      for (const t of splitIPExpression(raw)) {
+        if (!t || targets.includes(t)) continue
+        // 单 IP（无校验错误）或域名参与预检；CIDR / 范围跳过
+        if (!validateSingleIP(t, 'IP') || isBanDomain(t)) targets.push(t)
+      }
+    }
+    if (!targets.length) {
+      setBanCheck({ loading: false, results: [], fetchedAt: null, truncated: 0 })
+      setBanHidden(false)
+      return undefined
+    }
+    const seq = ++banSeq.current
+    // 单次预检最多查询 20 个目标，超出的显式提示，避免误以为已全部核对
+    const batch = targets.slice(0, 20)
+    const truncated = targets.length - batch.length
+    const timer = setTimeout(() => {
+      setBanCheck((s) => ({ ...s, loading: true }))
+      Promise.all(batch.map(async (target) => {
+        try {
+          // 404（未封禁）后端已归一为 found=false 业务结果，不会 reject
+          const res = await banWorkflowApi.anbotongBlacklistQuery(target)
+          return {
+            ip: target, found: Boolean(res?.found), entry: res?.entry || null,
+            note: res?.note || '', device: res?.device || null, error: '',
+          }
+        } catch (e) {
+          return { ip: target, found: false, entry: null, note: '', device: null, error: e?.message || '查询失败' }
+        }
+      })).then((results) => {
+        if (seq !== banSeq.current) return // 值已变化，丢弃旧结果
+        if (results.some((r) => r.found)) setBanHidden(false)
+        setBanCheck({ loading: false, results, fetchedAt: new Date().toISOString(), truncated })
+      })
+    }, 700)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createOpen, canCheckBan, ipProbeKey])
+  // 预检结果派生：命中 / 未命中 / 查询失败（弱提示 + 右侧面板共用）
+  const banFound = banCheck.results.filter((r) => r.found)
+  const banMissed = banCheck.results.filter((r) => !r.found && !r.error).map((r) => r.ip)
+  const banQueryErrors = banCheck.results.filter((r) => r.error)
 
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
@@ -611,6 +694,9 @@ export default function TicketCenter() {
 
   // 右侧相似工单面板：有结果且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
   const showSimilarPanel = !!(similar && similar.length > 0 && !similarHidden)
+  // 右侧黑名单预检面板：有命中且未被收起时展示
+  const showBanPanel = banFound.length > 0 && !banHidden
+  const showSidePanels = showBanPanel || showSimilarPanel
 
   const columns = [
     {
@@ -1023,7 +1109,7 @@ export default function TicketCenter() {
         open={createOpen}
         title="发起工单"
         onClose={() => setCreateOpen(false)}
-        size={showSimilarPanel ? 'xl' : 'lg'}
+        size={showSidePanels ? 'xl' : 'lg'}
         footer={
           <>
             <Button variant="secondary" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
@@ -1042,6 +1128,32 @@ export default function TicketCenter() {
               <Lightbulb className="h-3.5 w-3.5 text-amber-500" />
               相似工单推荐 · {similar.length} 条（点击展开）
             </button>
+          )}
+          {/* IP 字段黑名单预检弱提示（与手动封禁弹窗同文案）：查询中 / 命中但面板被收起
+              （点击展开）/ 命中详情见右侧 / 均未命中不打开展板 */}
+          {canCheckBan && banCheck.loading && (
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> 正在查询设备黑名单…
+            </div>
+          )}
+          {canCheckBan && !banCheck.loading && banFound.length > 0 && banHidden && (
+            <button type="button" onClick={() => setBanHidden(false)}
+              className="flex w-fit items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-amber-500/50"
+              title="展开右侧 IP 封禁状态预检面板">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+              IP 预检 · {banFound.length} 个 IP 已在黑名单中（点击展开）
+            </button>
+          )}
+          {canCheckBan && !banCheck.loading && banFound.length > 0 && !banHidden && (
+            <div className="flex items-center gap-1 text-[11px] text-amber-600">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              {banFound.length} 个 IP 已在设备黑名单中，详情见右侧
+            </div>
+          )}
+          {canCheckBan && !banCheck.loading && banCheck.results.length > 0 && banFound.length === 0 && banQueryErrors.length === 0 && (
+            <div className="text-[11px] text-muted-foreground">
+              已查询 {banCheck.results.length} 个 IP，均不在设备黑名单中{banCheck.truncated > 0 && `（另有 ${banCheck.truncated} 个目标超出单次预检上限未查询）`}
+            </div>
           )}
           {alertPrefill && (
             <div className="flex items-start gap-1.5 rounded-md border border-primary/30 bg-primary/5 p-2.5 text-xs text-foreground">
@@ -1306,9 +1418,69 @@ export default function TicketCenter() {
           </div>
           </div>
 
-          {/* 相似工单推荐：按 源/目的 IP 匹配同流程历史工单，右侧滑出面板展示工单信息 */}
-          {showSimilarPanel && (
-            <aside className="drawer-enter sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
+          {/* 右侧滑出面板列：IP 黑名单预检（命中时优先）+ 相似工单推荐，上下叠放
+              （形式与工作台手动封禁弹窗的预检面板一致，弹窗同步加宽为 xl） */}
+          {showSidePanels && (
+            <div className="sticky top-0 flex w-80 shrink-0 flex-col gap-3 self-start">
+            {showBanPanel && (
+              <aside className="panel-enter-soft h-fit overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
+                <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                  <span className="text-[13px] font-medium text-foreground">IP 封禁状态预检</span>
+                  <span className="text-[11px] tabular-nums text-muted-foreground">命中 {banFound.length}/{banCheck.results.length}</span>
+                  <button type="button" onClick={() => setBanHidden(true)}
+                    className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                    title="收起 IP 封禁状态预检面板（IP 变化后有新命中会重新滑出）">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div data-allow-scroll className="max-h-[52vh] space-y-2 overflow-y-auto overscroll-contain p-2.5">
+                  {banFound.map((r) => (
+                    <div key={r.ip} className="rounded-md border border-border bg-card p-2.5">
+                      <div className="mb-1.5 flex items-center gap-1.5">
+                        <span className="font-mono text-[13px] font-semibold text-foreground">{r.ip}</span>
+                        <span className="ml-auto"><Badge variant="danger">已在封禁中</Badge></span>
+                      </div>
+                      <dl className="space-y-1">
+                        {[
+                          ['封禁原因', r.entry?.reason],
+                          ['生效时间', r.entry?.effectTime],
+                          ['封禁时长', fmtDeviceDuration(r.entry?.age)],
+                          ['剩余时长', fmtDeviceDuration(r.entry?.leftTime)],
+                          ['策略组', r.entry?.policy_group_name],
+                          ['状态', r.entry?.state],
+                          ['启用', (r.entry?.enable === 1 || r.entry?.enable === '1') ? '启用' : '停用'],
+                          ['命中次数', r.entry?.hit_num],
+                        ].map(([label, value]) => (
+                          <div key={label} className="flex items-center justify-between gap-2">
+                            <dt className="shrink-0 text-[11px] text-muted-foreground">{label}</dt>
+                            <dd className="min-w-0 truncate font-mono text-[12px] text-foreground" title={String(value ?? '')}>
+                              {value == null || value === '' ? '--' : String(value)}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                      {r.device?.name && (
+                        <div className="mt-1.5 border-t border-border pt-1.5 text-[11px] text-muted-foreground">封堵设备：{r.device.name}</div>
+                      )}
+                    </div>
+                  ))}
+                  {banQueryErrors.length > 0 && (
+                    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                      {banQueryErrors.map((r) => `${r.ip}：${r.error}`).join('；')}
+                    </div>
+                  )}
+                  {banMissed.length > 0 && (
+                    <div className="px-0.5 text-[11px] text-muted-foreground">未在黑名单中：{banMissed.join('、')}</div>
+                  )}
+                </div>
+                <div className="border-t border-amber-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                  预检仅对单 IP / 域名精确查询设备黑名单，CIDR / 范围不做预检{banCheck.truncated > 0 && `；单次最多查询 20 个目标，另有 ${banCheck.truncated} 个未预检`}{banCheck.fetchedAt && `；更新于 ${fmtTime(banCheck.fetchedAt)}`}
+                </div>
+              </aside>
+            )}
+            {showSimilarPanel && (
+            <aside className="drawer-enter h-fit overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
               <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
                 <Lightbulb className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                 <span className="text-[13px] font-medium text-foreground">相似工单推荐</span>
@@ -1378,6 +1550,8 @@ export default function TicketCenter() {
                 按源/目的 IP 匹配同流程的历史工单（处置中/已完成），点击工单号可查看详情与处置结论
               </div>
             </aside>
+            )}
+            </div>
           )}
         </div>
       </Modal>

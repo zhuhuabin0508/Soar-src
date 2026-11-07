@@ -5,7 +5,8 @@
 - ``GET/POST/PUT/DELETE /ban-workflow/rules``：触发规则 CRUD（修改实时生效）
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/anbotong/blacklist`` + ``GET .../blacklist/query``：安博通黑名单
-  分页拉取与单个 IP 精确查询（需 ban_workflow:view）
+  分页拉取与单个 IP 精确查询（需 ban_workflow:view）；
+  ``POST .../blacklist/unban`` 行内解封（需 ban_workflow:edit）
 - ``GET /ban-workflow/asset-match``：手动封禁弹窗资产匹配预检（资产发现 +
   资产清单双源并行查询，复用工单安全上下文匹配规则，需 ban_workflow:view）
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
@@ -882,21 +883,30 @@ def get_anbotong_blacklist(
 
 @router.get("/anbotong/blacklist/query", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def query_anbotong_blacklist_entry(
-    ip: str = Query(..., min_length=1, max_length=64, description="要查询的 IP 地址"),
+    ip: str = Query(..., min_length=1, max_length=253, description="要查询的 IP 或域名"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
-    """在安博通阻断器黑名单中查询单个 IP 是否封禁（工作台「安博通黑名单」IP 查询）。
+    """在安博通阻断器黑名单中查询单个目标是否封禁（黑名单页查询 + 手动封禁弹窗预检）。
 
-    调用设备「查询指定黑名单」动作精确查询单个 IP：条目不存在时设备返回
+    调用设备「查询指定黑名单」动作精确查询单个条目：条目不存在时设备返回
     HTTP 404，已在设备侧归一为业务结果（found=False，note 说明），不视为
     查询失败；其余异常（超时/网络/5xx）按 502 报错，与「未封禁」区分。
+
+    目标接受单 IP 或域名（安博通 blist 同时存 IP 与域名条目，手动封禁支持
+    封禁域名，预检必须同口径，否则域名会被误判成查询失败而漏掉「已被封禁」
+    提示）；域名统一小写后再查，避免大小写差异漏判。CIDR / 范围是多条目语义，
+    单条精确查询无法命中，按 400 拒绝。
     """
     target = ip.strip()
+    if not _device_queryable_target(target):
+        raise HTTPException(status_code=400, detail="查询目标需为合法的 IP 或域名")
     try:
         ipaddress.ip_address(target)
     except ValueError:
-        raise HTTPException(status_code=400, detail="IP 地址格式不合法")
+        from app.core.ip_validation import validate_domain_token
+
+        target = validate_domain_token(target)
 
     from app.devices.anbotong import query_blacklist_on_anbotong
 
@@ -910,6 +920,88 @@ def query_anbotong_blacklist_entry(
         "entry": result.get("entry"),
         "note": result.get("note"),
         "fetched_at": beijing_now().isoformat(),
+    }
+
+
+class AnbotongUnbanBody(BaseModel):
+    reason: str = Field(
+        "工作台-安博通黑名单手动解封", max_length=500,
+        description="解封原因（可选，写入审计与封禁记录）",
+    )
+
+
+@router.post("/anbotong/blacklist/unban", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def unban_anbotong_blacklist_ip(
+    body: AnbotongUnbanBody, request: Request,
+    ip: str = Query(..., min_length=1, max_length=253, description="要解封的 IP 或域名"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """从安博通阻断器黑名单移除单个目标（工作台「安博通黑名单」行内解封）。
+
+    目标支持单 IP / 域名（设备黑名单可能含域名条目），域名按小写精确匹配。
+    以设备侧结果为准：HTTP 成功即解封完成；设备返回 404（条目本就不在黑名单中）
+    按幂等成功处理，支持重复解封。设备调用失败返回 502 且不改动任何平台数据；
+    成功后同步把该目标生效中的封禁记录置为已解封，避免设备与台账状态不一致。
+    """
+    target = ip.strip()
+    if not _device_queryable_target(target):
+        raise HTTPException(status_code=400, detail="解封目标需为合法的 IP 或域名")
+    try:
+        ipaddress.ip_address(target)
+    except ValueError:
+        from app.core.ip_validation import validate_domain_token
+
+        target = validate_domain_token(target)
+
+    from app.devices.anbotong import unblock_ip_on_anbotong
+
+    client_ip = request.client.host if request.client else ""
+    result = unblock_ip_on_anbotong(
+        db, target, source="workbench", user_id=user.id, source_ip=client_ip,
+    )
+    # 404 = 设备黑名单中已无该条目（重复解封/已被手动删除），业务目标已达成
+    already_absent = (not result.get("success")) and result.get("status_code") == 404
+    if not result.get("success") and not already_absent:
+        device_name = (result.get("device") or {}).get("name") or "安博通阻断器"
+        raise HTTPException(
+            status_code=502,
+            detail=f"设备「{device_name}」解封失败：{result.get('error') or '未知错误'}",
+        )
+
+    now = beijing_now()
+    reason = (body.reason or "").strip() or "工作台-安博通黑名单手动解封"
+    records = db.query(BanRecord).filter(
+        BanRecord.ip == target, BanRecord.status == "active",
+    ).all()
+    for record in records:
+        record.status = "unbanned"
+        record.unban_reason = reason
+        record.unban_operator = user.username
+        record.unban_time = now
+    legacy = db.query(BannedIP).filter(BannedIP.ip == target).first()
+    if legacy is not None:
+        legacy.status = "unbanned"
+    db.commit()
+
+    write_audit(
+        db, action="unban", resource_type="anbotong_blacklist", resource_id=target,
+        detail={
+            "ip": target, "reason": reason, "manual": True,
+            "already_absent": already_absent,
+            "device": (result.get("device") or {}).get("name", ""),
+            "status_code": result.get("status_code"),
+            "synced_records": len(records),
+        },
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+    )
+    return {
+        "ok": True,
+        "ip": target,
+        "already_absent": already_absent,
+        "synced_records": len(records),
+        "note": "设备返回 404：黑名单中已无该 IP，按已解封处理" if already_absent else None,
+        "unban_time": now,
     }
 
 
