@@ -10,8 +10,6 @@ from sqlalchemy.orm import Session
 from app.core.timezone import beijing_now
 from app.models import Agent, ChatMessage, Execution, ExecutionTrace, LLMConfig, ModelCallLog
 from app.models.workflow_ban import AgentInvocationLog, ApprovalTicket, WorkflowInstance
-from app.workflow import trigger as trigger_mod
-
 logger = logging.getLogger(__name__)
 
 
@@ -431,7 +429,7 @@ def compute_ai_usage_stats(db: Session, *, days: int = 7) -> dict[str, Any]:
 
 
 def compute_ban_workflow_stats(db: Session) -> dict[str, Any]:
-    """封禁工作台今日统计卡片（含熔断状态）。"""
+    """封禁工作台今日统计卡片（熔断状态由 API 进程现场附加，不写入 Redis）。"""
     today_start = beijing_now().replace(hour=0, minute=0, second=0, microsecond=0)
     q_today = db.query(WorkflowInstance).filter(WorkflowInstance.created_at >= today_start)
     today_instances = q_today.count()
@@ -460,7 +458,6 @@ def compute_ban_workflow_stats(db: Session) -> dict[str, Any]:
         "pending_approvals": pending_approvals,
         "approval_rate": approval_rate,
         "avg_agent_ms": avg_agent_ms,
-        "circuit": trigger_mod.get_circuit_state(),
     }
 
 

@@ -15,7 +15,7 @@ _REDIS_KEY = "soar:limit:workflow_inflight"
 
 def try_acquire_workflow_inflight() -> bool:
     """占用一个联动执行槽位，成功返回 True。"""
-    limit = int(getattr(settings, "WORKFLOW_INFLIGHT_LIMIT", 12) or 12)
+    limit = int(settings.WORKFLOW_INFLIGHT_LIMIT)
     if limit <= 0:
         return True
     try:

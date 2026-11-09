@@ -2285,8 +2285,11 @@ def workflow_stats(db: Session = Depends(get_db)) -> dict:
     from app.core.dashboard_cache import CacheKeys, resolve_cached_payload
     from app.core.dashboard_stats import compute_ban_workflow_stats
 
-    return resolve_cached_payload(
+    payload = resolve_cached_payload(
         CacheKeys.BAN_WORKFLOW_STATS,
         db,
         compute_ban_workflow_stats,
     )
+    # 熔断为本进程内存状态，不可使用 Celery 刷新快照中的字段
+    payload["circuit"] = trigger_mod.get_circuit_state()
+    return payload

@@ -43,9 +43,13 @@ def get_ai_usage_stats(
 ) -> dict[str, Any]:
     """获取智能体与大模型使用情况统计（默认最近 7 天）。"""
     days = max(1, min(int(days), 90))
+    if days != 7:
+        return {
+            **compute_ai_usage_stats(db, days=days),
+            "cache": {"stale": True, "source": "live", "enabled": True},
+        }
     return resolve_cached_payload(
-        CacheKeys.ai_usage(days),
+        CacheKeys.AI_USAGE_7,
         db,
         lambda session: compute_ai_usage_stats(session, days=days),
-        allow_live_cold_start=(days == 7),
     )

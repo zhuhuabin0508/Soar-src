@@ -171,9 +171,13 @@ def get_stats_overview(
     if workflow_id is not None:
         return compute_executions_overview(db, days=days, workflow_id=workflow_id)
 
+    if days != 7:
+        return {
+            **compute_executions_overview(db, days=days),
+            "cache": {"stale": True, "source": "live", "enabled": True},
+        }
     return resolve_cached_payload(
-        CacheKeys.executions_overview(days),
+        CacheKeys.EXECUTIONS_OVERVIEW_7,
         db,
         lambda session: compute_executions_overview(session, days=days),
-        allow_live_cold_start=(days == 7),
     )
