@@ -23,6 +23,8 @@ import io
 import ipaddress
 import json
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -37,6 +39,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_permission
 from app.devices import ban_target
 from app.models.alert_event import AlertEvent
+from app.models.anbotong_whitelist import AnbotongWhitelist
 from app.models.banned_ip import BannedIP
 from app.models.ticket import Ticket
 from app.models.user import User
@@ -791,7 +794,8 @@ def _apply_approval(
     db.commit()
 
     # 恢复实例：approval_result 节点按工单状态路由（同意→执行封禁；驳回/超时→持续监控；升级→终止）
-    run_instance(db, instance, start_key="approval_result")
+    run_instance(instance.id, start_key="approval_result")
+    db.refresh(instance)
     write_audit(
         db, action="approval", resource_type="approval_ticket", resource_id=ticket.id,
         detail={"result": result, "ip": ticket.ip, "comment": comment,
@@ -839,6 +843,66 @@ def escalate_ticket(
     """升级：转人工调查，实例终止（escalated）。"""
     return _apply_approval(db, ticket_id, result="escalated", user=user, request=request,
                            comment=str(body.get("comment") or "升级转人工调查"))
+
+
+# 安博通黑名单总条数缓存：设备列表接口不返回 total，需一次性拉全量在内存计数
+# （实测约 1 万条、2~3 秒）；缓存 60 秒，避免每次分页/自动刷新都触发全量扫描。
+_BLACKLIST_TOTAL_SCAN_LIMIT = 100000
+_BLACKLIST_TOTAL_TTL_SECONDS = 60.0
+_BLACKLIST_TOTAL_CACHE: dict = {}
+_BLACKLIST_TOTAL_LOCK = threading.Lock()
+
+
+def _invalidate_blacklist_total() -> None:
+    with _BLACKLIST_TOTAL_LOCK:
+        _BLACKLIST_TOTAL_CACHE.clear()
+
+
+@router.get("/anbotong/blacklist/count", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+def get_anbotong_blacklist_count(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """统计安博通阻断器黑名单总条数（黑名单页分页栏「总页数/总条数」展示）。
+
+    设备列表接口不返回 total：这里一次性按大页拉取全量条目后计数，结果缓存
+    60 秒（解封成功后主动失效）。条目数超过单次扫描上限时 total 返回 null，
+    前端降级为「第 X 页」展示，不影响列表本身。
+    """
+    from app.devices.anbotong import list_blacklist_on_anbotong
+
+    now_mono = time.monotonic()
+    with _BLACKLIST_TOTAL_LOCK:
+        cached = _BLACKLIST_TOTAL_CACHE.get("default")
+        if cached and (now_mono - cached["_mono"]) < _BLACKLIST_TOTAL_TTL_SECONDS:
+            return {**{k: v for k, v in cached.items() if k != "_mono"}, "cached": True}
+
+    started = time.perf_counter()
+    result = list_blacklist_on_anbotong(
+        db,
+        page=1,
+        count=_BLACKLIST_TOTAL_SCAN_LIMIT,
+        source="workbench",
+        user_id=user.id,
+        source_ip=request.client.host if request.client else "",
+    )
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail=result.get("error") or "安博通阻断器黑名单统计失败")
+
+    items = result.get("items") or []
+    exceeds_limit = bool(result.get("paginated", True) and result.get("page_full"))
+    payload = {
+        "device": result.get("device"),
+        "total": None if exceeds_limit else len(items),
+        "paginated": result.get("paginated", True),
+        "note": "设备条目数超过单次统计上限，暂无法统计总条数" if exceeds_limit else None,
+        "fetched_at": result.get("fetched_at"),
+        "took_ms": round((time.perf_counter() - started) * 1000),
+    }
+    with _BLACKLIST_TOTAL_LOCK:
+        _BLACKLIST_TOTAL_CACHE["default"] = {**payload, "_mono": time.monotonic()}
+    return {**payload, "cached": False}
 
 
 @router.get("/anbotong/blacklist", dependencies=[Depends(require_permission("ban_workflow", "view"))])
@@ -983,6 +1047,8 @@ def unban_anbotong_blacklist_ip(
     if legacy is not None:
         legacy.status = "unbanned"
     db.commit()
+    # 设备黑名单条目已变化：失效总条数缓存，下一次统计重新计算
+    _invalidate_blacklist_total()
 
     write_audit(
         db, action="unban", resource_type="anbotong_blacklist", resource_id=target,
@@ -1003,6 +1069,380 @@ def unban_anbotong_blacklist_ip(
         "note": "设备返回 404：黑名单中已无该 IP，按已解封处理" if already_absent else None,
         "unban_time": now,
     }
+
+
+# ----------------------------------------------------------------------
+# 安博通全局白名单：本地同步列表 / 手动增删 / 手动封禁匹配预检
+# ----------------------------------------------------------------------
+# 设备全局白名单生命周期上限（秒）：-1 永久，正数最长 30 天
+_WHITELIST_AGE_MAX = 2592000
+_WHITELIST_BATCH_LIMIT = 100
+
+
+class AnbotongWhitelistEntryBody(BaseModel):
+    wlist: str = Field(
+        ..., min_length=1, max_length=253,
+        description="白名单主机：单个 IPv4/IPv6 或 ASCII 域名（不支持 CIDR/地址段/MAC）",
+    )
+    age: int = Field(
+        -1, ge=-1, le=_WHITELIST_AGE_MAX,
+        description="有效期（秒）：-1 永久，正数 1~2592000",
+    )
+    enable: int = Field(1, ge=0, le=1, description="1 启用 / 0 停用")
+    reason: str = Field(
+        "工作台-安博通白名单手动添加", max_length=255,
+        description="添加方式/备注（写入设备 reason 字段）",
+    )
+
+
+class AnbotongWhitelistCreateBody(BaseModel):
+    entries: list[AnbotongWhitelistEntryBody] = Field(
+        ..., min_length=1, max_length=_WHITELIST_BATCH_LIMIT,
+        description="待新增的白名单条目（1~100 条）",
+    )
+
+
+class AnbotongWhitelistDeleteBody(BaseModel):
+    wlists: list[str] = Field(
+        ..., min_length=1, max_length=_WHITELIST_BATCH_LIMIT,
+        description="待删除的白名单条目（1~100 条）",
+    )
+    reason: str = Field(
+        "工作台-安博通白名单手动删除", max_length=500,
+        description="删除原因（写入审计）",
+    )
+
+
+def _normalize_whitelist_target(raw: str) -> str:
+    """校验并规范化白名单条目：仅支持单个 IP 或域名。"""
+    text = str(raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="白名单条目不能为空")
+    if len(text.encode("utf-8")) > 253:
+        raise HTTPException(status_code=400, detail=f"白名单条目「{text[:32]}…」超过 253 字节")
+    try:
+        return ipaddress.ip_address(text).compressed
+    except ValueError:
+        pass
+    from app.core.ip_validation import validate_domain_token
+
+    try:
+        return validate_domain_token(text, where="白名单条目")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{text}' 不是合法的白名单条目：{exc}"
+                "（仅支持单个 IPv4/IPv6 或域名，不支持 CIDR / 地址段 / MAC）"
+            ),
+        ) from None
+
+
+def _sanitize_whitelist_reason(reason: str) -> str:
+    """限制备注字符：单条新增按 JSON 模板拼装，避免引号/反斜杠破坏请求体。"""
+    text = str(reason or "").strip()
+    if len(text.encode("utf-8")) > 255:
+        raise HTTPException(status_code=400, detail="备注不能超过 255 字节")
+    if any(ch in text for ch in ('"', "\\")) or any(ord(ch) < 32 for ch in text):
+        raise HTTPException(
+            status_code=400, detail="备注不能包含英文引号、反斜杠或换行等控制字符",
+        )
+    return text or "工作台-安博通白名单手动添加"
+
+
+def _is_whitelist_matchable(token: str) -> bool:
+    """匹配预检可接受的目标：单 IP / CIDR / 范围 / 域名。"""
+    text = str(token or "").strip()
+    if not text:
+        return False
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        pass
+    if "/" in text:
+        try:
+            ipaddress.ip_network(text, strict=False)
+            return True
+        except ValueError:
+            return False
+    if text.count("-") == 1:
+        left, right = (part.strip() for part in text.split("-", 1))
+        try:
+            ipaddress.ip_address(left)
+            if right.isdigit():
+                return True
+            ipaddress.ip_address(right)
+            return True
+        except ValueError:
+            pass
+    from app.core.ip_validation import validate_domain_token
+
+    try:
+        validate_domain_token(text)
+        return True
+    except ValueError:
+        return False
+
+
+@router.get("/anbotong/whitelist", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+def get_anbotong_whitelist(
+    page: int = Query(1, ge=1, description="页码（1 起）"),
+    count: int = Query(50, ge=1, le=200, description="每页条数（1-200）"),
+    keyword: str = Query("", max_length=253, description="按条目/备注/策略组关键词过滤"),
+    enable: str = Query("", description="1 仅启用 / 0 仅停用 / 空 全部"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """安博通全局白名单本地同步列表（每 5 秒自动从设备拉取更新）。
+
+    列表读本地同步表，不直连设备：页面打开/翻页/搜索均为毫秒级；设备侧
+    最新数据由后台同步线程维护，响应中的 sync 字段给出最近同步时间与错误。
+    """
+    from app.core.anbotong_whitelist import get_sync_state, row_entry_view
+
+    query = db.query(AnbotongWhitelist)
+    text = keyword.strip()
+    if text:
+        like = f"%{text}%"
+        query = query.filter(or_(
+            AnbotongWhitelist.wlist.ilike(like),
+            AnbotongWhitelist.reason.ilike(like),
+            AnbotongWhitelist.policy_group_name.ilike(like),
+        ))
+    if enable in ("0", "1"):
+        query = query.filter(AnbotongWhitelist.enable == int(enable))
+    total = query.count()
+    rows = (
+        query.order_by(AnbotongWhitelist.id.asc())
+        .offset((page - 1) * count).limit(count).all()
+    )
+    return {
+        "items": [row_entry_view(row) for row in rows],
+        "total": total,
+        "page": page,
+        "count": count,
+        "sync": get_sync_state(),
+        "fetched_at": beijing_now().isoformat(),
+    }
+
+
+@router.post("/anbotong/whitelist/sync", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def sync_anbotong_whitelist(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """立即从安博通阻断器全量拉取白名单并刷新本地缓存（手动「立即同步」）。"""
+    from app.core.anbotong_whitelist import sync_now
+
+    client_ip = request.client.host if request.client else ""
+    result = sync_now(db, source="workbench")
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"安博通白名单同步失败：{result.get('error') or '未知错误'}",
+        )
+    write_audit(
+        db, action="sync", resource_type="anbotong_whitelist", resource_id="all",
+        detail={
+            "total": result.get("total"),
+            "changed": result.get("changed"),
+            "device": (result.get("device") or {}).get("name", ""),
+            "took_ms": result.get("took_ms"),
+        },
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+    )
+    return {
+        "ok": True,
+        "total": result.get("total", 0),
+        "changed": result.get("changed", False),
+        "device": result.get("device"),
+        "synced_at": result.get("last_success_at"),
+        "took_ms": result.get("took_ms"),
+    }
+
+
+@router.post("/anbotong/whitelist", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def create_anbotong_whitelist(
+    body: AnbotongWhitelistCreateBody, request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """手动新增安博通全局白名单（支持 1~100 条批量），成功后即时更新本地列表。
+
+    所有条目在调用设备前统一校验：非法条目/重复提交/本地已存在直接 400/409，
+    避免设备侧产生重复白名单；设备调用按条目返回结果，部分失败不回滚已成功项。
+    """
+    from app.core.anbotong_whitelist import apply_local_changes
+    from app.devices.anbotong import create_whitelist_entries_on_anbotong
+
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for item in body.entries:
+        wlist = _normalize_whitelist_target(item.wlist)
+        if wlist in seen:
+            raise HTTPException(status_code=400, detail=f"提交的条目重复：{wlist}")
+        seen.add(wlist)
+        entries.append({
+            "wlist": wlist,
+            "age": int(item.age),
+            "enable": int(item.enable),
+            "reason": _sanitize_whitelist_reason(item.reason),
+        })
+    existing = [
+        row.wlist for row in db.query(AnbotongWhitelist).filter(
+            AnbotongWhitelist.wlist.in_(list(seen)),
+        ).all()
+    ]
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"以下条目已在安博通白名单中，请勿重复添加：{'、'.join(sorted(existing))}",
+        )
+
+    client_ip = request.client.host if request.client else ""
+    result = create_whitelist_entries_on_anbotong(
+        db, entries, source="workbench", user_id=user.id, source_ip=client_ip,
+    )
+    ok_wlists = {
+        r["wlist"] for r in (result.get("results") or []) if r.get("success")
+    }
+    succeeded = [e for e in entries if e["wlist"] in ok_wlists]
+    local_total = None
+    if succeeded:
+        local_total = apply_local_changes(db, added=succeeded)
+
+    write_audit(
+        db, action="create", resource_type="anbotong_whitelist",
+        resource_id=",".join(e["wlist"] for e in entries)[:500],
+        detail={
+            "entries": entries,
+            "created_count": len(succeeded),
+            "failed_count": result.get("failed_count", len(entries) - len(succeeded)),
+            "results": result.get("results"),
+            "device": (result.get("device") or {}).get("name", ""),
+        },
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+        result="success" if result.get("success") else "failure",
+    )
+    if not succeeded:
+        detail = "；".join(
+            f"{r.get('wlist')}: {r.get('message')}" for r in (result.get("results") or [])
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"安博通白名单新增失败：{detail or result.get('error') or '未知错误'}",
+        )
+    return {
+        "ok": result.get("success"),
+        "created_count": len(succeeded),
+        "failed_count": result.get("failed_count", 0),
+        "results": result.get("results") or [],
+        "device": result.get("device"),
+        "total": local_total,
+    }
+
+
+@router.post("/anbotong/whitelist/delete", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def delete_anbotong_whitelist(
+    body: AnbotongWhitelistDeleteBody, request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """批量删除安博通全局白名单（设备逐条删除，404 按已删除幂等成功）。"""
+    from app.core.anbotong_whitelist import apply_local_changes
+    from app.devices.anbotong import delete_whitelist_entries_on_anbotong
+
+    targets: list[str] = []
+    seen: set[str] = set()
+    for raw in body.wlists:
+        wlist = _normalize_whitelist_target(raw)
+        if wlist in seen:
+            continue
+        seen.add(wlist)
+        targets.append(wlist)
+
+    client_ip = request.client.host if request.client else ""
+    reason = str(body.reason or "").strip() or "工作台-安博通白名单手动删除"
+    result = delete_whitelist_entries_on_anbotong(
+        db, targets, source="workbench", user_id=user.id, source_ip=client_ip,
+    )
+    ok_wlists = [
+        r["wlist"] for r in (result.get("results") or []) if r.get("success")
+    ]
+    local_total = None
+    if ok_wlists:
+        local_total = apply_local_changes(db, deleted=ok_wlists)
+
+    write_audit(
+        db, action="delete", resource_type="anbotong_whitelist",
+        resource_id=",".join(targets)[:500],
+        detail={
+            "wlists": targets,
+            "reason": reason,
+            "deleted_count": len(ok_wlists),
+            "failed_count": result.get("failed_count", len(targets) - len(ok_wlists)),
+            "results": result.get("results"),
+            "device": (result.get("device") or {}).get("name", ""),
+        },
+        operator=user.username, ip_address=client_ip, user_id=user.id,
+        result="success" if result.get("success") else "failure",
+    )
+    if not ok_wlists:
+        detail = "；".join(
+            f"{r.get('wlist')}: {r.get('message')}" for r in (result.get("results") or [])
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"安博通白名单删除失败：{detail or result.get('error') or '未知错误'}",
+        )
+    return {
+        "ok": result.get("success"),
+        "deleted_count": len(ok_wlists),
+        "failed_count": result.get("failed_count", 0),
+        "results": result.get("results") or [],
+        "device": result.get("device"),
+        "total": local_total,
+    }
+
+
+@router.get("/anbotong/whitelist/match", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+def match_anbotong_whitelist(
+    targets: str = Query(
+        # 100 个 IPv6 目标（每个最长约 40 字符）约 4000 字符，上限留足 8192
+        ..., min_length=1, max_length=8192,
+        description="待封禁目标（逗号分隔，支持 IP/CIDR/范围/域名，最多 100 个）",
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    """手动封禁白名单匹配预检：待封禁对象与本地同步白名单并行校验。
+
+    匹配只读内存索引（不访问设备），单次稳定在毫秒级；CIDR / 范围会展开
+    判定白名单 IP 是否落在待封禁网段内，避免整段封禁漏掉白名单对象。
+    """
+    from app.core.anbotong_whitelist import match_targets
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for part in targets.split(","):
+        token = part.strip()
+        if not token or token in seen:
+            continue
+        if not _is_whitelist_matchable(token):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{token}' 不是合法的匹配目标（支持 IP / CIDR / 范围 / 域名）",
+            )
+        seen.add(token)
+        tokens.append(token)
+    if not tokens:
+        raise HTTPException(status_code=400, detail="待匹配目标不能为空")
+    if len(tokens) > 100:
+        raise HTTPException(status_code=400, detail="待匹配目标超过上限（100 个）")
+    result = match_targets(db, tokens)
+    result["fetched_at"] = beijing_now().isoformat()
+    return result
 
 
 @router.get("/asset-match", dependencies=[Depends(require_permission("ban_workflow", "view"))])
@@ -1387,6 +1827,9 @@ def sync_banned_ips_to_device(
 
     # 本次实际涉及的封堵设备（导入记录可逐条指定设备）
     used_devices = sorted({i.get("device_name") for i in items if i.get("device_name")})
+    if success_n:
+        # 设备黑名单新增条目：失效总条数缓存
+        _invalidate_blacklist_total()
     write_audit(
         db, action="sync_ban", resource_type="ban_record", resource_id="",
         detail={
@@ -2373,36 +2816,14 @@ def delete_approval_ticket(
 @router.get("/stats", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def workflow_stats(db: Session = Depends(get_db)) -> dict:
     """工作流统计：今日触发实例数 / 自动封禁数 / 待审批数 / 审批通过率 / 平均研判耗时 + 熔断状态。"""
-    today_start = beijing_now().replace(hour=0, minute=0, second=0, microsecond=0)
-    q_today = db.query(WorkflowInstance).filter(WorkflowInstance.created_at >= today_start)
-    today_instances = q_today.count()
-    today_auto_bans = q_today.filter(WorkflowInstance.final_result == "banned").count()
-    today_errors = q_today.filter(WorkflowInstance.status == "error").count()
-    pending_approvals = (
-        db.query(ApprovalTicket).filter(ApprovalTicket.status == "pending").count()
+    from app.core.dashboard_cache import CacheKeys, resolve_cached_payload
+    from app.core.dashboard_stats import compute_ban_workflow_stats
+
+    payload = resolve_cached_payload(
+        CacheKeys.BAN_WORKFLOW_STATS,
+        db,
+        compute_ban_workflow_stats,
     )
-    # 审批通过率：已出结论的工单中 approved 占比
-    approved_n = db.query(ApprovalTicket).filter(ApprovalTicket.status == "approved").count()
-    concluded_n = db.query(ApprovalTicket).filter(
-        ApprovalTicket.status.in_(["approved", "rejected", "timeout"])
-    ).count()
-    approval_rate = round(approved_n * 100.0 / concluded_n, 1) if concluded_n else None
-    # 平均研判耗时：今日成功智能体调用
-    avg_row = (
-        db.query(func.avg(AgentInvocationLog.duration_ms))
-        .filter(AgentInvocationLog.status == "success", AgentInvocationLog.created_at >= today_start)
-        .scalar()
-    )
-    avg_agent_ms = int(avg_row) if avg_row is not None else None
-    # 今日持续监控数
-    today_monitoring = q_today.filter(WorkflowInstance.final_result == "monitoring").count()
-    return {
-        "today_instances": today_instances,
-        "today_auto_bans": today_auto_bans,
-        "today_errors": today_errors,
-        "today_monitoring": today_monitoring,
-        "pending_approvals": pending_approvals,
-        "approval_rate": approval_rate,
-        "avg_agent_ms": avg_agent_ms,
-        "circuit": trigger_mod.get_circuit_state(),
-    }
+    # 熔断为本进程内存状态，不可使用 Celery 刷新快照中的字段
+    payload["circuit"] = trigger_mod.get_circuit_state()
+    return payload

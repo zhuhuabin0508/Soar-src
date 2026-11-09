@@ -322,6 +322,13 @@ async def lifespan(app: FastAPI):
         start_unban_scheduler()
     except Exception as exc:  # noqa: BLE001
         logger.warning("到期解封/审批超时调度器启动失败（忽略）: %s", exc)
+    # 大屏 Redis 快照 + 日汇总：随 backend 刷新（Beat 可选，见 DASHBOARD_BACKEND_REFRESH）
+    try:
+        from app.core.dashboard_refresh_scheduler import start_dashboard_refresh_scheduler
+
+        start_dashboard_refresh_scheduler()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("大屏/日汇总内嵌调度启动失败（忽略）: %s", exc)
     # 启动设备日志接收管理器（被动接入：启动 syslog/kafka 监听 + 接收健康检查）
     try:
         from app.core.log_receiver_manager import start_log_receiver_manager
@@ -344,6 +351,13 @@ async def lifespan(app: FastAPI):
         start_notification_ws_listener()
     except Exception as exc:  # noqa: BLE001
         logger.warning("通知 WebSocket 订阅启动失败（忽略，轮询兜底）: %s", exc)
+    # 启动安博通全局白名单后台同步（每 5 秒全量拉取，供白名单管理与封禁预检）
+    try:
+        from app.core.anbotong_whitelist import start_anbotong_whitelist_sync
+
+        start_anbotong_whitelist_sync()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("安博通白名单同步线程启动失败（忽略）: %s", exc)
     # 启动事件循环看门狗（单进程后端卡死时打印线程栈并退出，由 Docker 自动拉起）
     # 必须放在启动任务全部完成之后：建表/迁移/种子耗时不应被判定为卡死
     try:

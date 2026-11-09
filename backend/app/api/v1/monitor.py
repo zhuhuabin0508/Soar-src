@@ -151,17 +151,14 @@ def _no_match_count_today(db: Session) -> int:
 # ======================================================================
 # 概览卡片
 # ======================================================================
-@router.get("/overview", dependencies=[Depends(require_permission("monitor", "view"))])
-def monitor_overview(db: Session = Depends(get_db)) -> dict:
-    """6 张概览卡片：今日接收/成功/失败/部分/成功率/平均耗时 + 昨日对比 + 近24小时趋势。"""
-    now = beijing_now()
+def compute_monitor_overview(db: Session) -> dict:
+    """6 张概览卡片数据（供 API 与 Redis 快照刷新共用）。"""
     today_hours = _hour_range(24)
     yesterday_hours = _hour_range(48)[:24]
 
     today = _sum_metrics(_metrics_in_range(db, today_hours))
     yesterday = _sum_metrics(_metrics_in_range(db, yesterday_hours))
 
-    # 近24小时逐小时接收量（迷你趋势线）
     hour_rows = _metrics_in_range(db, today_hours)
     by_hour: dict[str, int] = {}
     for m in hour_rows:
@@ -178,13 +175,6 @@ def monitor_overview(db: Session = Depends(get_db)) -> dict:
         if not agg["total"]:
             return None
         return round(agg["parse_ms"] / agg["total"])
-
-    def delta(cur: Any, prev: Any) -> Optional[Any]:
-        if prev in (None, 0) and cur in (None, 0):
-            return 0
-        if prev in (None, 0):
-            return None  # 无基线不展示涨跌
-        return round((cur - prev) * 100.0 / prev, 1)
 
     return {
         "today": {
@@ -206,6 +196,18 @@ def monitor_overview(db: Session = Depends(get_db)) -> dict:
         "trend_24h": trend,
         "no_match_today": _no_match_count_today(db),
     }
+
+
+@router.get("/overview", dependencies=[Depends(require_permission("monitor", "view"))])
+def monitor_overview(db: Session = Depends(get_db)) -> dict:
+    """6 张概览卡片：今日接收/成功/失败/部分/成功率/平均耗时 + 昨日对比 + 近24小时趋势。"""
+    from app.core.dashboard_cache import CacheKeys, resolve_cached_payload
+
+    return resolve_cached_payload(
+        CacheKeys.MONITOR_OVERVIEW,
+        db,
+        compute_monitor_overview,
+    )
 
 
 # ======================================================================

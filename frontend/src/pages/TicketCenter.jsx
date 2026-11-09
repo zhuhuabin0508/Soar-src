@@ -5,11 +5,12 @@
 //   从右侧滑出面板展示工单信息（源+目的均相同 > 仅源相同 > 仅目的相同），可收起/展开
 // - IP 黑名单预检：IP 字段填值后防抖查询安博通黑名单，命中时右侧滑出预检面板
 //   （交互/样式/文案与工作台「手动封禁」预检一致）
+// - 安博通白名单匹配：IP 字段填值后防抖匹配本地同步索引，命中时右侧滑出白名单面板
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   TicketCheck, Plus, Search, Paperclip, X, Eye, Rocket, ChevronRight, Archive, ArchiveRestore, Monitor, Trash2,
-  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play, Loader2,
+  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play, Loader2, ShieldCheck,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -365,6 +366,74 @@ export default function TicketCenter() {
   const banMissed = banCheck.results.filter((r) => !r.found && !r.error).map((r) => r.ip)
   const banQueryErrors = banCheck.results.filter((r) => r.error)
 
+  // ===== 提交前安博通白名单匹配（与工作台手动封禁同口径）=====
+  // 首节点 IP 字段填值后 700ms 防抖，批量匹配后端本地同步索引（单次 ≤100 个目标，毫秒级）；
+  // 命中则弹窗加宽、右侧滑出「安博通白名单匹配」面板。无 ban_workflow:view 权限时不查询。
+  const canCheckWhitelist = hasPermission('ban_workflow', 'view')
+  const [whitelistCheck, setWhitelistCheck] = useState({
+    loading: false, items: [], tookMs: null, updatedAt: null, totalWhitelist: null, error: '', truncated: 0,
+  })
+  const [whitelistHidden, setWhitelistHidden] = useState(false)
+  const [whitelistRetry, setWhitelistRetry] = useState(0)
+  const whitelistSeq = useRef(0)
+  useEffect(() => {
+    if (!createOpen || !canCheckWhitelist) {
+      whitelistSeq.current += 1
+      setWhitelistCheck({ loading: false, items: [], tookMs: null, updatedAt: null, totalWhitelist: null, error: '', truncated: 0 })
+      setWhitelistHidden(false)
+      return undefined
+    }
+    // 汇总所有 IP 字段目标（IP / CIDR / 范围），跨字段去重；白名单匹配支持包含关系
+    const targets = []
+    for (const f of ipFields) {
+      const raw = String(values[f.key] ?? '').trim()
+      if (!raw) continue
+      if (validateIPExpression(raw, f.label || 'IP')) continue
+      for (const t of splitIPExpression(raw)) {
+        if (!t || targets.includes(t)) continue
+        targets.push(t)
+      }
+    }
+    if (!targets.length) {
+      // 目标被清空：失效在途请求，避免旧目标的匹配结果回填并滑出面板
+      whitelistSeq.current += 1
+      setWhitelistCheck({ loading: false, items: [], tookMs: null, updatedAt: null, totalWhitelist: null, error: '', truncated: 0 })
+      setWhitelistHidden(false)
+      return undefined
+    }
+    const seq = ++whitelistSeq.current
+    const batch = targets.slice(0, 100)
+    const truncated = targets.length - batch.length
+    const timer = setTimeout(() => {
+      setWhitelistCheck((s) => ({ ...s, loading: true, error: '' }))
+      banWorkflowApi.anbotongWhitelistMatch(batch)
+        .then((res) => {
+          if (seq !== whitelistSeq.current) return // 值已变化，丢弃旧结果
+          const items = res?.items || []
+          if (items.some((it) => it.matched)) setWhitelistHidden(false)
+          setWhitelistCheck({
+            loading: false,
+            items,
+            tookMs: res?.took_ms ?? null,
+            updatedAt: res?.last_success_at || res?.synced_at || null,
+            totalWhitelist: res?.total_whitelist ?? null,
+            error: '',
+            truncated,
+          })
+        })
+        .catch((e) => {
+          if (seq !== whitelistSeq.current) return
+          setWhitelistCheck({
+            loading: false, items: [], tookMs: null, updatedAt: null, totalWhitelist: null,
+            error: e?.message || '白名单匹配查询失败', truncated,
+          })
+        })
+    }, 700)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createOpen, canCheckWhitelist, ipProbeKey, whitelistRetry])
+  const whitelistFound = whitelistCheck.items.filter((it) => it.matched)
+
   // 匹配规则：顶层字段 + 当前值命中规则展开的扩展字段（必填校验/提交同步使用该集合）
   const renderFields = useMemo(() => {
     const out = []
@@ -696,7 +765,9 @@ export default function TicketCenter() {
   const showSimilarPanel = !!(similar && similar.length > 0 && !similarHidden)
   // 右侧黑名单预检面板：有命中且未被收起时展示
   const showBanPanel = banFound.length > 0 && !banHidden
-  const showSidePanels = showBanPanel || showSimilarPanel
+  // 右侧安博通白名单匹配面板：有命中且未被收起时展示
+  const showWhitelistPanel = whitelistFound.length > 0 && !whitelistHidden
+  const showSidePanels = showBanPanel || showWhitelistPanel || showSimilarPanel
 
   const columns = [
     {
@@ -1155,6 +1226,43 @@ export default function TicketCenter() {
               已查询 {banCheck.results.length} 个 IP，均不在设备黑名单中{banCheck.truncated > 0 && `（另有 ${banCheck.truncated} 个目标超出单次预检上限未查询）`}
             </div>
           )}
+          {/* 安博通白名单匹配弱提示：查询中 / 命中但面板被收起（点击展开）/ 命中详情见右侧 / 均未命中不打开展板 */}
+          {canCheckWhitelist && whitelistCheck.loading && (
+            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" /> 正在匹配安博通白名单…
+            </div>
+          )}
+          {canCheckWhitelist && !whitelistCheck.loading && whitelistFound.length > 0 && whitelistHidden && (
+            <button type="button" onClick={() => setWhitelistHidden(false)}
+              className="flex w-fit items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-emerald-500/50"
+              title="展开右侧安博通白名单匹配面板">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+              白名单匹配 · {whitelistFound.length} 个目标命中（点击展开）
+            </button>
+          )}
+          {canCheckWhitelist && !whitelistCheck.loading && whitelistFound.length > 0 && !whitelistHidden && (
+            <div className="flex items-center gap-1 text-[11px] text-emerald-600">
+              <ShieldCheck className="h-3 w-3 shrink-0" />
+              {whitelistFound.length} 个目标命中安博通白名单，详情见右侧
+            </div>
+          )}
+          {canCheckWhitelist && !whitelistCheck.loading && whitelistCheck.items.length > 0
+            && whitelistFound.length === 0 && !whitelistCheck.error && (
+            <div className="text-[11px] text-muted-foreground">
+              已匹配 {whitelistCheck.items.length} 个目标，均未命中安博通白名单
+              {whitelistCheck.truncated > 0 && `（另有 ${whitelistCheck.truncated} 个目标超出单次匹配上限未校验）`}
+            </div>
+          )}
+          {canCheckWhitelist && !whitelistCheck.loading && whitelistCheck.error && (
+            <div className="flex flex-wrap items-center gap-1 text-[11px] text-amber-600">
+              <AlertTriangle className="h-3 w-3 shrink-0" />
+              白名单匹配失败：{whitelistCheck.error}
+              <button type="button" onClick={() => setWhitelistRetry((n) => n + 1)}
+                className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 transition hover:bg-amber-500/20">
+                <RefreshCw className="h-3 w-3" />重试
+              </button>
+            </div>
+          )}
           {alertPrefill && (
             <div className="flex items-start gap-1.5 rounded-md border border-primary/30 bg-primary/5 p-2.5 text-xs text-foreground">
               <Paperclip className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
@@ -1476,6 +1584,69 @@ export default function TicketCenter() {
                 </div>
                 <div className="border-t border-amber-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
                   预检仅对单 IP / 域名精确查询设备黑名单，CIDR / 范围不做预检{banCheck.truncated > 0 && `；单次最多查询 20 个目标，另有 ${banCheck.truncated} 个未预检`}{banCheck.fetchedAt && `；更新于 ${fmtTime(banCheck.fetchedAt)}`}
+                </div>
+              </aside>
+            )}
+            {showWhitelistPanel && (
+              <aside className="panel-enter-soft h-fit overflow-hidden rounded-md border border-emerald-500/30 bg-emerald-500/[0.04]">
+                <div className="flex items-center gap-1.5 border-b border-emerald-500/20 px-3 py-2">
+                  <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                  <span className="text-[13px] font-medium text-foreground">安博通白名单匹配</span>
+                  <span className="text-[11px] tabular-nums text-muted-foreground">命中 {whitelistFound.length}/{whitelistCheck.items.length}</span>
+                  <button type="button" onClick={() => setWhitelistHidden(true)}
+                    className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                    title="收起白名单匹配面板（IP 变化后有新命中会重新滑出）">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div data-allow-scroll className="max-h-[52vh] space-y-2 overflow-y-auto overscroll-contain p-2.5">
+                  {whitelistFound.map((it) => (
+                    <div key={it.target} className="rounded-md border border-border bg-card p-2.5">
+                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                        <span className="break-all font-mono text-[13px] font-semibold text-foreground">{it.target}</span>
+                        <span className="ml-auto">
+                          <Badge variant="success">
+                            {it.match_type === 'contained' ? '包含匹配' : '精确匹配'}
+                          </Badge>
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {(it.entries || []).slice(0, 5).map((en, i) => (
+                          <div key={`${en.wlist || i}`} className="rounded border border-border bg-secondary/40 p-2">
+                            <div className="mb-1 break-all font-mono text-[12px] text-foreground">{en.wlist || '--'}</div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                              <span>{(en.enable === 1 || en.enable === '1') ? '启用' : '停用'}</span>
+                              <span>剩余 {fmtDeviceDuration(en.leftTime)}</span>
+                              <span>命中 {en.hit_num ?? '--'} 次</span>
+                            </div>
+                            {en.reason && (
+                              <div className="mt-0.5 break-all text-[11px] text-muted-foreground" title={en.reason}>
+                                原因：{en.reason}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {(it.entries || []).length > 5 && (
+                          <div className="text-[11px] text-muted-foreground">
+                            另有 {(it.entries || []).length - 5} 条命中条目未展示
+                          </div>
+                        )}
+                        {(it.entries || []).length === 0 && (
+                          <div className="text-[11px] text-muted-foreground">命中白名单，但未返回条目详情</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {whitelistCheck.truncated > 0 && (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-700">
+                      单次最多匹配 100 个目标，另有 {whitelistCheck.truncated} 个目标未校验
+                    </div>
+                  )}
+                </div>
+                <div className="border-t border-emerald-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                  白名单为全局豁免规则，命中后请确认处置方式；数据来自后端本地同步索引（约 5 秒与设备同步）
+                  {whitelistCheck.tookMs != null && `；匹配耗时 ${whitelistCheck.tookMs}ms`}
+                  {whitelistCheck.updatedAt && `；同步于 ${fmtTime(whitelistCheck.updatedAt)}`}
                 </div>
               </aside>
             )}

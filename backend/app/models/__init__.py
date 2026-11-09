@@ -10,6 +10,7 @@ from app.models.alert_handle_log import AlertHandleLog
 from app.models.alert_rule import AlertRule
 from app.models.alert_rule_group import AlertRuleGroup
 from app.models.alert_rule_hit import AlertRuleHit
+from app.models.anbotong_whitelist import AnbotongWhitelist
 from app.models.asset import (
     Asset,
     AssetTypeTemplate,
@@ -46,6 +47,12 @@ from app.models.govcloud_asset import (
     GovCloudElasticIP,
 )
 from app.models.ingestion_metric import IngestionMetric
+from app.models.stats_daily import (
+    StatsDailyExecution,
+    StatsDailyExecutionDim,
+    StatsDailyModelCall,
+    StatsDailyModelCallDim,
+)
 from app.models.log_receiver import (
     DeviceReceiveLog,
     DeviceReceiveMetric,
@@ -144,10 +151,15 @@ __all__ = [
     "AlertRule",
     "AlertRuleGroup",
     "AlertRuleHit",
+    "AnbotongWhitelist",
     "ParseStrategy",
     "ParseStrategyVersion",
     "ParseErrorQueue",
     "IngestionMetric",
+    "StatsDailyExecution",
+    "StatsDailyExecutionDim",
+    "StatsDailyModelCall",
+    "StatsDailyModelCallDim",
     "LogReceiver",
     "LogSourceEntry",
     "DeviceReceiveLog",

@@ -18,7 +18,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.timezone import beijing_now
-from app.database import LinkageSessionLocal, SessionLocal
+from app.config import settings
+from app.database import LinkageSessionLocal, SessionLocal, close_db_session
+from app.workflow.concurrency import release_workflow_inflight, try_acquire_workflow_inflight
 from app.models.alert_event import AlertEvent
 from app.models.system_config import SystemConfig
 from app.models.workflow_ban import WorkflowInstance, WorkflowTriggerRule
@@ -233,6 +235,44 @@ def _over_rate_limit(db: Session) -> bool:
     return recent >= limit
 
 
+# 在途槽位满时延后重跑实例（避免已建单却永久不封禁）
+_INFLIGHT_RETRY_SEC = 5
+_INFLIGHT_RETRY_MAX = 120  # 约 10 分钟
+
+
+def _defer_run_instance(instance_id: int, attempt: int = 0) -> None:
+    """在途满时延后执行；低频封禁场景下最终会跑到 record_ban。"""
+    if try_acquire_workflow_inflight():
+        from app.workflow.engine import run_instance
+
+        try:
+            run_instance(instance_id)
+        finally:
+            release_workflow_inflight()
+        return
+    if attempt >= _INFLIGHT_RETRY_MAX:
+        db_fail = LinkageSessionLocal()
+        try:
+            inst = db_fail.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+            if inst is not None and inst.status == "running":
+                inst.status = "error"
+                inst.error_msg = "联动并发长时间满载，实例执行超时（请人工核对是否需补封禁）"
+                inst.finished_at = beijing_now()
+                db_fail.commit()
+        finally:
+            db_fail.close()
+        logger.error("实例 #%s 在途重试耗尽，已标记 error", instance_id)
+        return
+    logger.info(
+        "联动在途满，%ss 后重试实例 #%s (attempt=%s)",
+        _INFLIGHT_RETRY_SEC, instance_id, attempt + 1,
+    )
+    threading.Timer(
+        _INFLIGHT_RETRY_SEC,
+        lambda: _defer_run_instance(instance_id, attempt + 1),
+    ).start()
+
+
 # ======================================================================
 # 后台 worker
 # ======================================================================
@@ -307,19 +347,31 @@ def _process_event(event: dict[str, Any]) -> None:
                     detail={"ip": src_ip, "rule": rule.rule_name, "alert_uuid": alert.uuid})
         logger.info("工作流实例已创建: id=%s ip=%s rule=%s", instance.id, src_ip, rule.rule_name)
 
-        run_instance(db, instance)
+        instance_id = instance.id
+        close_db_session(db)
+        db = None
+
+        if not try_acquire_workflow_inflight():
+            _defer_run_instance(instance_id)
+            return
+
+        try:
+            run_instance(instance_id)
+        finally:
+            release_workflow_inflight()
     finally:
-        db.close()
+        if db is not None:
+            close_db_session(db)
 
 
-def _worker_loop() -> None:
+def _worker_loop(worker_id: int = 0) -> None:
     """事件消费主循环。"""
     while True:
         event = _event_queue.get()
         try:
             _process_event(event)
         except Exception:  # noqa: BLE001
-            logger.exception("工作流触发处理异常: %s", event)
+            logger.exception("工作流触发处理异常(worker=%s): %s", worker_id, event)
 
 
 _worker_started = False
@@ -333,5 +385,12 @@ def start_trigger_worker() -> None:
         if _worker_started:
             return
         _worker_started = True
-        threading.Thread(target=_worker_loop, name="ban-workflow-trigger", daemon=True).start()
-        logger.info("封禁工作流触发 worker 已启动")
+        n = max(1, int(getattr(settings, "WORKFLOW_TRIGGER_CONCURRENCY", 2) or 2))
+        for i in range(n):
+            threading.Thread(
+                target=_worker_loop,
+                args=(i,),
+                name=f"ban-workflow-trigger-{i}",
+                daemon=True,
+            ).start()
+        logger.info("封禁工作流触发 worker 已启动: concurrency=%s", n)

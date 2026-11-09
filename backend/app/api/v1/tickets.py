@@ -1489,7 +1489,10 @@ def _monitor_light(db: Session, now, today_start) -> dict:
         )
         for tid, t in eval_tickets.items()
     }
-    kpi["timeout_warning"] = sum(1 for t in processing if sla_eval[t.id]["timeout"])
+    # 超时预警口径：暂停工单 SLA 已冻结，即使暂停前已超时也不计入预警
+    kpi["timeout_warning"] = sum(
+        1 for t in processing if t.status != "paused" and sla_eval[t.id]["timeout"]
+    )
 
     latest = []
     for t in latest_tickets:
@@ -1503,7 +1506,8 @@ def _monitor_light(db: Session, now, today_start) -> dict:
             "status_label": STATUS_LABELS.get(t.status, t.status),
             "current_node_name": t.current_node_name or t.current_node_key,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-            "timeout": sla_eval[t.id]["timeout"],
+            # 暂停工单不计超时预警（SLA 冻结）
+            "timeout": sla_eval[t.id]["timeout"] and t.status != "paused",
             "remind_count": t.remind_count or 0,
         })
 
@@ -1895,7 +1899,10 @@ def ticket_monitor_payload(
         if r.action == "submit" and r.created_at and r.created_at >= today_start
     }
     active_now = [t for t in processing if t.id in today_submit_ids]
-    timeout_warn = [t for t in processing if sla_eval[t.id]["timeout"]]
+    # 超时预警口径：暂停工单 SLA 已冻结，即使暂停前已超时也不计入预警
+    timeout_warn = [
+        t for t in processing if t.status != "paused" and sla_eval[t.id]["timeout"]
+    ]
     kpi = {
         "total": len(tickets),
         "today_new": sum(1 for t in tickets if t.created_at and t.created_at >= today_start),
@@ -1920,7 +1927,8 @@ def ticket_monitor_payload(
             "status_label": STATUS_LABELS.get(t.status, t.status),
             "current_node_name": t.current_node_name or t.current_node_key,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-            "timeout": sla_eval[t.id]["timeout"],
+            # 暂停工单不计超时预警（SLA 冻结）
+            "timeout": sla_eval[t.id]["timeout"] and t.status != "paused",
             "remind_count": t.remind_count or 0,
         })
 
@@ -2199,8 +2207,8 @@ def ticket_monitor_payload(
                 "closed_at": t.closed_at.isoformat() if t.closed_at else None,
                 # 统计分组：暂停工单归属「处理中」，供大屏下钻筛选与 KPI 同口径
                 "status_group": "processing" if t.status in ("processing", "paused") else t.status,
-                # SLA 超时预警（进行中工单超目标）
-                "timeout": ev["timeout"],
+                # SLA 超时预警（进行中工单超目标；暂停工单 SLA 冻结，不计预警）
+                "timeout": ev["timeout"] and t.status != "paused",
                 # 今日活跃（进行中且今日有提交流转），与 KPI processing_active 口径一致
                 "active_today": t.status in ("processing", "paused") and t.id in today_submit_ids,
                 "response_minutes": ev["response_minutes"],

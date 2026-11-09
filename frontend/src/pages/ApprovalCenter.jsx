@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Ban,
   ShieldBan,
+  ShieldCheck,
   ScrollText,
   User,
   ChevronDown,
@@ -34,6 +35,7 @@ import banWorkflowApi from '../api/banWorkflow'
 import BanApprovals from './ban/BanApprovals'
 import BanWorkbench from './ban/BanWorkbench'
 import AnbotongBlacklist from './ban/AnbotongBlacklist'
+import AnbotongWhitelist from './ban/AnbotongWhitelist'
 import BanWorkflowInstances from './ban/BanWorkflowInstances'
 import { inputBaseCls } from '../components/property/FormControls'
 import { hasPermission } from '../utils/permissions'
@@ -431,14 +433,15 @@ function ApprovalCard({ item, onApprove, onReject, onDelete, busy }) {
 // ============ 工作台主组件 ============
 function ApprovalCenter() {
   const [searchParams, setSearchParams] = useSearchParams()
-  // 支持 URL ?tab=banned / blacklist / all 直达；默认为统一审批中心。
-  // 「已封禁 IP」「安博通黑名单」按权限矩阵控制（ban_workflow:view）：
+  // 支持 URL ?tab=banned / blacklist / whitelist / all 直达；默认为统一审批中心。
+  // 「已封禁 IP」「安博通黑名单」「安博通白名单」按权限矩阵控制（ban_workflow:view）：
   // 无权限时强制落到审批中心，避免其访问无权数据。
   const canViewBan = hasPermission('ban_workflow', 'view')
   const requestedTab = searchParams.get('tab') === 'banned' ? 'banned'
     : searchParams.get('tab') === 'blacklist' ? 'blacklist'
-      : searchParams.get('tab') === 'all' ? 'all' : 'approval'
-  const initialTab = ((requestedTab === 'banned' || requestedTab === 'blacklist') && !canViewBan) ? 'approval' : requestedTab
+      : searchParams.get('tab') === 'whitelist' ? 'whitelist'
+        : searchParams.get('tab') === 'all' ? 'all' : 'approval'
+  const initialTab = ((requestedTab === 'banned' || requestedTab === 'blacklist' || requestedTab === 'whitelist') && !canViewBan) ? 'approval' : requestedTab
 
   const [items, setItems] = useState([])
   const [stats, setStats] = useState(null)
@@ -467,6 +470,7 @@ function ApprovalCenter() {
     const params = {}
     if (newTab === 'banned') params.tab = 'banned'
     else if (newTab === 'blacklist') params.tab = 'blacklist'
+    else if (newTab === 'whitelist') params.tab = 'whitelist'
     else if (newTab === 'all') params.tab = 'all'
     setSearchParams(params, { replace: true })
   }, [setSearchParams])
@@ -744,6 +748,20 @@ function ApprovalCenter() {
               安博通黑名单
             </button>
           )}
+          {canViewBan && (
+            <button
+              type="button"
+              onClick={() => switchTab('whitelist')}
+              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
+                tab === 'whitelist'
+                  ? 'border-primary text-foreground'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <ShieldCheck className="h-4 w-4" />
+              安博通白名单
+            </button>
+          )}
           <button
             type="button"
             onClick={() => switchTab('all')}
@@ -759,7 +777,7 @@ function ApprovalCenter() {
         </div>
 
         {/* ====== 审批中心 Tab：统一审批（封禁工单 + 工作流人工审批） ====== */}
-        {tab === 'approval' || ((tab === 'banned' || tab === 'blacklist') && !canViewBan) ? (
+        {tab === 'approval' || ((tab === 'banned' || tab === 'blacklist' || tab === 'whitelist') && !canViewBan) ? (
           <BanApprovals embedded />
         ) : tab === 'banned' ? (
           /* ====== 已封禁 IP Tab：嵌入封禁工作台（新封禁工作流数据，需 ban_workflow:view） ====== */
@@ -767,6 +785,9 @@ function ApprovalCenter() {
         ) : tab === 'blacklist' ? (
           /* ====== 安博通黑名单 Tab：设备侧实时黑名单（分页 + IP 精确查询，需 ban_workflow:view） ====== */
           <AnbotongBlacklist embedded />
+        ) : tab === 'whitelist' ? (
+          /* ====== 安博通白名单 Tab：本地 5 秒同步设备全局白名单（增删 + 批量，需 ban_workflow:view/edit） ====== */
+          <AnbotongWhitelist embedded />
         ) : (
           <>
             {/* ====== 全部历史 Tab：统一历史（封禁实例 + 审批历史） ====== */}

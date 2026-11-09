@@ -30,9 +30,23 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 40
     DB_LINKAGE_POOL_SIZE: int = 10
     DB_LINKAGE_MAX_OVERFLOW: int = 20
+    # 封禁触发：并行消费线程数（进程内）；联动在途全局上限见 WORKFLOW_INFLIGHT_LIMIT
+    # 在途上限 0 表示不限制（低频封禁场景推荐，避免「实例建了却不跑完封禁」）
+    WORKFLOW_TRIGGER_CONCURRENCY: int = 2
+    WORKFLOW_INFLIGHT_LIMIT: int = 0
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    # 大屏/监控聚合：Redis 快照 + Beat 刷新，降低主池只读压力
+    DASHBOARD_CACHE_ENABLED: bool = True
+    DASHBOARD_CACHE_TTL_SEC: int = 60
+    # True：API 进程内守护线程刷新 Redis/日表（不依赖单独起 Beat）；与 Beat 并存时靠 Redis 锁去重
+    DASHBOARD_BACKEND_REFRESH: bool = True
+    # 资产清单匹配索引：Redis 版本号 + 快照，减少多 worker 各自全表 SELECT
+    ASSET_INDEX_REDIS_ENABLED: bool = True
+    # 日汇总表：Beat 滚动重算，大屏聚合优先读表
+    DAILY_STATS_ENABLED: bool = True
+    DAILY_STATS_ROLLUP_DAYS: int = 8
 
     # Anthropic API Key：留空表示未配置，Agent 决策将走 Mock 降级路径
     ANTHROPIC_API_KEY: str = ""

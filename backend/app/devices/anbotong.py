@@ -21,6 +21,7 @@
 - 查询类调用不写 DeviceCallLog（工作台 30 秒轮询会产生大量日志），封禁 / 解封
   正常写调用日志（source 标记业务链路）。
 """
+import ipaddress
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -71,6 +72,31 @@ _ACTION_SPECS: dict[str, dict[str, Optional[str]]] = {
         "http_method": "GET",
         "api_path": "/Objects/Blacklist/blist/{blist}",
     },
+    # ===== 全局白名单（GlobalWhitelist）=====
+    "whitelist_list": {
+        "name": "查询全局白名单列表",
+        "action_type": None,
+        "http_method": "GET",
+        "api_path": "/Objects/GlobalWhitelist?page={page}&count={count}",
+    },
+    "whitelist_create": {
+        "name": "新建全局白名单",
+        "action_type": None,
+        "http_method": "POST",
+        "api_path": "/Objects/GlobalWhitelist",
+    },
+    "whitelist_batch_create": {
+        "name": "批量新建全局白名单",
+        "action_type": None,
+        "http_method": "POST",
+        "api_path": "/Objects/GlobalWhitelistBatch",
+    },
+    "whitelist_delete": {
+        "name": "删除全局白名单",
+        "action_type": None,
+        "http_method": "DELETE",
+        "api_path": "/Objects/GlobalWhitelist/wlist/{wlist}",
+    },
 }
 
 
@@ -104,11 +130,12 @@ def find_anbotong_device(db: Session) -> tuple[Optional[Device], Optional[str]]:
 def find_anbotong_action(
     db: Session, kind: str
 ) -> tuple[Optional[Device], Optional[DeviceAction], Optional[str]]:
-    """查找安博通阻断器的指定黑名单动作。
+    """查找安博通阻断器的指定动作。
 
     Args:
         db: 数据库会话。
-        kind: block / unblock / list / query。
+        kind: block / unblock / list / query / whitelist_list /
+            whitelist_create / whitelist_batch_create / whitelist_delete。
 
     Returns:
         (device, action, error) 三元组：action 为 None 时 error 描述原因。
@@ -438,3 +465,291 @@ def query_blacklist_on_anbotong(
         return _result(success=False, error=err)
     timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
     return query_blacklist_entry(device, action, ip, timeout=timeout)
+
+
+# ======================================================================
+# 全局白名单（GlobalWhitelist）
+# ======================================================================
+# 设备批量新建接口单次上限（文档：wlist_entry 1~100 项）
+WHITELIST_BATCH_LIMIT = 100
+# 白名单生命周期设备上限（秒），与黑名单一致
+MAX_WHITELIST_AGE_SECONDS = MAX_BAN_DURATION_SECONDS
+
+
+def fetch_whitelist_page(
+    device: Device,
+    action: DeviceAction,
+    page: int,
+    count: int,
+    *,
+    timeout: float,
+    source: str = "sync",
+    user_id: Optional[int] = None,
+    source_ip: Optional[str] = None,
+) -> tuple[dict[str, Any], list[dict], bool]:
+    """拉取单页设备白名单（不做 DB 操作，可安全在线程池中并发调用）。
+
+    设备对「白名单为空 / 页码超出末页」返回 HTTP 404：统一容错为空页，
+    beyond_end=True 表示已到末页。
+
+    Returns:
+        (统一结果结构, 条目列表, 是否已到末页)。
+    """
+    api_path = action.api_path or ""
+    paginated = "{page}" in api_path or "{count}" in api_path
+    params: dict[str, Any] = {}
+    if paginated:
+        params["page"] = str(max(1, int(page)))
+        params["count"] = str(max(1, int(count)))
+    result = execute_device_action(
+        device, action, params, timeout=timeout, source=source,
+        user_id=user_id, source_ip=source_ip, db=None, skip_log=True,
+    )
+    beyond_end = (
+        paginated
+        and not result["success"]
+        and result.get("status_code") == 404
+    )
+    if beyond_end:
+        result.update(success=True, error=None, note="白名单为空或页码超出范围")
+    items: list[dict] = []
+    body = result.get("response_body")
+    if result["success"] and isinstance(body, dict):
+        data = body.get("data")
+        if isinstance(data, list):
+            items = [x for x in data if isinstance(x, dict)]
+        elif isinstance(data, dict) and data:
+            items = [data]  # 容错：设备把单对象按对象返回
+    return result, items, beyond_end
+
+
+def list_whitelist_on_anbotong(
+    db: Session,
+    *,
+    page: int = 1,
+    count: int = LIST_PAGE_SIZE,
+    source: str = "api",
+    user_id: Optional[int] = None,
+    source_ip: Optional[str] = None,
+) -> dict[str, Any]:
+    """通过「查询全局白名单列表」动作分页拉取设备白名单。
+
+    设备响应不含总条数：page_full（本页是否满页）用于判定是否还有下一页；
+    白名单为空或页码翻过末页时设备返回 HTTP 404，这里统一容错为空页
+    （beyond_end=True），不视为拉取失败。
+
+    Returns:
+        统一结果结构 + items / page / count / page_full / paginated / fetched_at。
+    """
+    device, action, err = find_anbotong_action(db, "whitelist_list")
+    if err:
+        return _result(success=False, error=err)
+    page = max(1, int(page))
+    count = max(1, int(count))
+    timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
+    result, items, beyond_end = fetch_whitelist_page(
+        device, action, page, count, timeout=timeout,
+        source=source, user_id=user_id, source_ip=source_ip,
+    )
+    result["items"] = items
+    result["page"] = page
+    result["count"] = count
+    result["page_full"] = (not beyond_end) and len(items) >= count
+    result["paginated"] = True
+    result["fetched_at"] = beijing_now().isoformat()
+    return result
+
+
+def _normalize_whitelist_wlist(value: Any) -> str:
+    """规范化白名单条目：IP 用压缩形式，域名去尾点并转小写。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return ipaddress.ip_address(text).compressed
+    except ValueError:
+        return text.rstrip(".").lower()
+
+
+def _parse_batch_create_results(
+    body: Any, entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """解析批量新建响应中的逐项结果（HTTP 207 部分失败时外层 code 仍为 1）。"""
+    data = body.get("data") if isinstance(body, dict) else None
+    raw_results = data.get("results") if isinstance(data, dict) else None
+    results: list[dict[str, Any]] = []
+    if isinstance(raw_results, list) and raw_results:
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            wlist = item.get("wlist")
+            if not wlist and isinstance(index, int) and 0 <= index < len(entries):
+                wlist = entries[index]["wlist"]
+            status = item.get("status")
+            ok = isinstance(status, int) and 200 <= status < 300
+            results.append({
+                "wlist": _normalize_whitelist_wlist(wlist),
+                "success": ok,
+                "status": status,
+                "message": item.get("message") or ("Success" if ok else "失败"),
+            })
+    elif isinstance(body, dict) and str(body.get("code")) == "1":
+        # 设备未返回逐项结果但整体成功：按全部成功处理
+        results = [
+            {"wlist": e["wlist"], "success": True, "status": 200, "message": "Success"}
+            for e in entries
+        ]
+    # 未返回结果的尾部条目（total > processed 表示设备未处理完）视为未执行
+    returned = {r["wlist"] for r in results}
+    for entry in entries:
+        if entry["wlist"] not in returned:
+            results.append({
+                "wlist": entry["wlist"],
+                "success": False,
+                "status": None,
+                "message": "设备未返回该条目的执行结果（批量未处理）",
+            })
+    return results
+
+
+def create_whitelist_entries_on_anbotong(
+    db: Session,
+    entries: list[dict[str, Any]],
+    *,
+    source: str = "workbench",
+    user_id: Optional[int] = None,
+    source_ip: Optional[str] = None,
+) -> dict[str, Any]:
+    """向安博通阻断器新增全局白名单（1 条走单条接口，多条走批量接口）。
+
+    Args:
+        entries: 已校验的条目列表，每项含 wlist / age / enable / reason。
+        source/user_id/source_ip: 审计归属。
+
+    Returns:
+        统一结果结构 + results（逐条成功/失败明细）/ created_count。
+    """
+    clean = [{
+        "wlist": _normalize_whitelist_wlist(e.get("wlist")),
+        "age": int(e.get("age")),
+        "enable": int(e.get("enable")),
+        "reason": str(e.get("reason") or ""),
+    } for e in entries]
+    if not clean:
+        return _result(success=False, error="白名单条目不能为空")
+    if len(clean) > WHITELIST_BATCH_LIMIT:
+        return _result(
+            success=False,
+            error=f"单次最多新增 {WHITELIST_BATCH_LIMIT} 条（设备批量接口上限）",
+        )
+
+    if len(clean) == 1:
+        entry = clean[0]
+        result = _run_action(
+            db, "whitelist_create", dict(entry), source=source,
+            user_id=user_id, source_ip=source_ip, strict_code=True,
+        )
+        results = [{
+            "wlist": entry["wlist"],
+            "success": bool(result["success"]),
+            "status": result.get("status_code"),
+            "message": result.get("error") or "Success",
+        }]
+    else:
+        result = _run_action(
+            db, "whitelist_batch_create", {"wlist_entry": clean}, source=source,
+            user_id=user_id, source_ip=source_ip, strict_code=False,
+        )
+        if result.get("status_code") in (200, 207):
+            results = _parse_batch_create_results(result.get("response_body"), clean)
+            # 外层业务码非 1 时设备未执行任何条目
+            body = result.get("response_body")
+            if isinstance(body, dict) and body.get("code") is not None and str(body.get("code")) != "1":
+                msg = f"设备返回: code={body.get('code')}, msg={body.get('msg')}"
+                results = [
+                    {"wlist": e["wlist"], "success": False, "status": result.get("status_code"), "message": msg}
+                    for e in clean
+                ]
+        else:
+            error = result.get("error") or f"HTTP {result.get('status_code')}"
+            results = [
+                {"wlist": e["wlist"], "success": False, "status": result.get("status_code"), "message": error}
+                for e in clean
+            ]
+
+    created = sum(1 for r in results if r["success"])
+    failed = [r for r in results if not r["success"]]
+    return _result(
+        success=not failed,
+        error=None if not failed else f"{len(failed)} 条新增失败",
+        status_code=result.get("status_code"),
+        response_body=result.get("response_body"),
+        device=result.get("device"),
+        action=result.get("action"),
+        results=results,
+        created_count=created,
+        failed_count=len(failed),
+    )
+
+
+def delete_whitelist_entries_on_anbotong(
+    db: Session,
+    wlists: list[str],
+    *,
+    source: str = "workbench",
+    user_id: Optional[int] = None,
+    source_ip: Optional[str] = None,
+) -> dict[str, Any]:
+    """从安博通阻断器删除全局白名单条目（设备无批量删除接口，逐条执行）。
+
+    设备对不存在的条目返回 404：目标端态已达成，按幂等成功处理。
+    单条失败不中断其余条目，逐条返回结果。
+
+    Returns:
+        统一结果结构 + results（逐条成功/失败明细）/ deleted_count。
+    """
+    targets = [_normalize_whitelist_wlist(w) for w in wlists if str(w or "").strip()]
+    if not targets:
+        return _result(success=False, error="白名单条目不能为空")
+    if len(targets) > WHITELIST_BATCH_LIMIT:
+        return _result(
+            success=False,
+            error=f"单次最多删除 {WHITELIST_BATCH_LIMIT} 条",
+        )
+    device, action, err = find_anbotong_action(db, "whitelist_delete")
+    if err:
+        return _result(success=False, error=err)
+    timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
+    results: list[dict[str, Any]] = []
+    last_status = None
+    for target in targets:
+        result = _run_action(
+            db, "whitelist_delete", {"wlist": target}, source=source,
+            user_id=user_id, source_ip=source_ip, strict_code=False,
+            resolved=(device, action), timeout=timeout,
+        )
+        last_status = result.get("status_code")
+        already_absent = (not result["success"]) and last_status == 404
+        ok = bool(result["success"]) or already_absent
+        results.append({
+            "wlist": target,
+            "success": ok,
+            "status": last_status,
+            "message": (
+                "条目已不存在（按删除成功处理）" if already_absent
+                else (result.get("error") or "Success")
+            ),
+        })
+    deleted = sum(1 for r in results if r["success"])
+    failed = [r for r in results if not r["success"]]
+    return _result(
+        success=not failed,
+        error=None if not failed else f"{len(failed)} 条删除失败",
+        status_code=last_status,
+        device=_device_info(device),
+        action={"id": action.id, "name": action.name},
+        results=results,
+        deleted_count=deleted,
+        failed_count=len(failed),
+    )

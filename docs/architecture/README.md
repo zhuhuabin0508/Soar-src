@@ -24,6 +24,7 @@
 |------|------|
 | [platform-architecture-llm-base-modules.md](./platform-architecture-llm-base-modules.md) | 早期高层草案（已被 soar架构方案吸收，备查） |
 | [LLM-底座-设备工具化-落地方案.md](./LLM-%E5%BA%95%E5%BA%A7-%E8%AE%BE%E5%A4%87%E5%B7%A5%E5%85%B7%E5%8C%96-%E8%90%BD%E5%9C%B0%E6%96%B9%E6%A1%88.md) | 设备工具化执行稿（待与待办清单对齐后启用） |
+| [数据库连接与并发优化方案.md](./数据库连接与并发优化方案.md) | **已完成**：双池+短会话+触发并发；**下一阶段**：大屏 Redis 快照 |
 
 ## 冲突时怎么判
 

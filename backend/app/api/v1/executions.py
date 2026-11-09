@@ -9,7 +9,6 @@ from app.core.timezone import beijing_now, beijing_now_iso
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, extract, case
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -166,116 +165,19 @@ def get_stats_overview(
            by_trigger: {webhook: N, test_run: M},
            node_bottleneck: [{node_type, avg_duration_seconds, count, failed_count}]}``
     """
-    since = beijing_now() - timedelta(days=days)
-    logger.info("查询监测统计: days=%s, since=%s, workflow_id=%s", days, since, workflow_id)
+    from app.core.dashboard_cache import CacheKeys, resolve_cached_payload
+    from app.core.dashboard_stats import compute_executions_overview
 
-    # ---- 总体统计 ----
-    base_q = db.query(Execution).filter(Execution.created_at >= since)
     if workflow_id is not None:
-        base_q = base_q.filter(Execution.workflow_id == workflow_id)
-    total = base_q.count()
-    success = base_q.filter(Execution.status == "success").count()
-    failed = base_q.filter(Execution.status == "failed").count()
-    success_rate = round(success / total, 4) if total > 0 else 0.0
+        return compute_executions_overview(db, days=days, workflow_id=workflow_id)
 
-    # 平均耗时（秒）：EXTRACT(EPOCH FROM (finished_at - created_at))
-    avg_q = db.query(
-        func.avg(
-            extract("epoch", Execution.finished_at - Execution.created_at)
-        )
-    ).filter(
-        Execution.created_at >= since,
-        Execution.finished_at.isnot(None),
-    )
-    if workflow_id is not None:
-        avg_q = avg_q.filter(Execution.workflow_id == workflow_id)
-    avg_duration_row = avg_q.scalar()
-    avg_duration_seconds = round(float(avg_duration_row or 0), 2)
-
-    # ---- 按天趋势 ----
-    day_q = (
-        db.query(
-            func.date(Execution.created_at).label("date"),
-            func.count(Execution.id).label("total"),
-            func.sum(case((Execution.status == "success", 1), else_=0)).label("success"),
-            func.sum(case((Execution.status == "failed", 1), else_=0)).label("failed"),
-        )
-        .filter(Execution.created_at >= since)
-    )
-    if workflow_id is not None:
-        day_q = day_q.filter(Execution.workflow_id == workflow_id)
-    day_rows = (
-        day_q.group_by(func.date(Execution.created_at))
-        .order_by(func.date(Execution.created_at).asc())
-        .all()
-    )
-    by_day = [
-        {
-            "date": str(r.date),
-            "total": int(r.total or 0),
-            "success": int(r.success or 0),
-            "failed": int(r.failed or 0),
+    if days != 7:
+        return {
+            **compute_executions_overview(db, days=days),
+            "cache": {"stale": True, "source": "live", "enabled": True},
         }
-        for r in day_rows
-    ]
-
-    # ---- 按触发类型分布 ----
-    trigger_q = (
-        db.query(
-            Execution.trigger_type,
-            func.count(Execution.id),
-        )
-        .filter(Execution.created_at >= since)
+    return resolve_cached_payload(
+        CacheKeys.EXECUTIONS_OVERVIEW_7,
+        db,
+        lambda session: compute_executions_overview(session, days=days),
     )
-    if workflow_id is not None:
-        trigger_q = trigger_q.filter(Execution.workflow_id == workflow_id)
-    trigger_rows = trigger_q.group_by(Execution.trigger_type).all()
-    by_trigger = {row[0] or "unknown": int(row[1]) for row in trigger_rows}
-
-    # ---- 节点瓶颈：按 node_type 统计平均耗时与失败数 ----
-    # 关联 Execution 过滤时间范围，再按 ExecutionTrace.node_type 聚合
-    bottleneck_q = (
-        db.query(
-            ExecutionTrace.node_type,
-            func.count(ExecutionTrace.id).label("count"),
-            func.avg(
-                extract("epoch", ExecutionTrace.finished_at - ExecutionTrace.started_at)
-            ).label("avg_duration"),
-            func.sum(
-                case((ExecutionTrace.status == "failed", 1), else_=0)
-            ).label("failed_count"),
-        )
-        .join(Execution, ExecutionTrace.execution_id == Execution.id)
-        .filter(
-            Execution.created_at >= since,
-            ExecutionTrace.finished_at.isnot(None),
-        )
-    )
-    if workflow_id is not None:
-        bottleneck_q = bottleneck_q.filter(Execution.workflow_id == workflow_id)
-    bottleneck_rows = (
-        bottleneck_q.group_by(ExecutionTrace.node_type)
-        .order_by(func.avg(extract("epoch", ExecutionTrace.finished_at - ExecutionTrace.started_at)).desc())
-        .limit(20)
-        .all()
-    )
-    node_bottleneck = [
-        {
-            "node_type": r.node_type,
-            "count": int(r.count or 0),
-            "avg_duration_seconds": round(float(r.avg_duration or 0), 3),
-            "failed_count": int(r.failed_count or 0),
-        }
-        for r in bottleneck_rows
-    ]
-
-    return {
-        "total": total,
-        "success": success,
-        "failed": failed,
-        "success_rate": success_rate,
-        "avg_duration_seconds": avg_duration_seconds,
-        "by_day": by_day,
-        "by_trigger": by_trigger,
-        "node_bottleneck": node_bottleneck,
-    }

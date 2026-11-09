@@ -312,10 +312,93 @@ export default function BanWorkbench({ embedded = false }) {
   const assetQueryErrors = assetCheck.items.filter((it) => it.error)
   // 右侧资产匹配面板：有命中且未被用户收起时展示
   const showAssetPanel = assetMatched.length > 0 && !assetHidden
-  // 弹窗宽度：黑名单预检 / 资产匹配两面板独立滑出；双面板时加宽至 7xl 容纳
-  const manualMaxWidth = showDupPanel && showAssetPanel
-    ? 'max-w-7xl'
-    : (showDupPanel || showAssetPanel ? 'max-w-6xl' : 'max-w-xl')
+
+  // ===== 手动封禁安博通白名单匹配预检：与黑名单、资产匹配并行发起 =====
+  // 待封禁目标（IP / CIDR / 范围 / 域名）整体提交后端，由本地 5 秒同步的白名单
+  // 索引做匹配：单 IP/域名精确命中，CIDR/范围展开判断白名单 IP 是否落在网段内
+  // （避免整段封禁漏掉白名单对象）。命中 → 右侧面板滑出完整条目详情。
+  const [whitelistCheck, setWhitelistCheck] = useState({
+    loading: false, items: [], tookMs: null, syncedAt: null, totalWhitelist: null,
+    error: '', fetchedAt: null,
+  })
+  const [whitelistHidden, setWhitelistHidden] = useState(false)
+  const whitelistSeq = useRef(0)
+  useEffect(() => {
+    // 弹窗关闭 / 无查看权限：失效在途请求并清空匹配状态，避免下次打开残留旧结果
+    if (!manualOpen || !canView) {
+      whitelistSeq.current += 1
+      setWhitelistCheck({
+        loading: false, items: [], tookMs: null, syncedAt: null, totalWhitelist: null,
+        error: '', fetchedAt: null,
+      })
+      setWhitelistHidden(false)
+      return undefined
+    }
+    const raw = manualForm.ip.trim()
+    // 输入为空 / 表达式非法（多半是还在输入）：失效在途请求并清空旧结果，
+    // 否则已发出的请求返回后仍会按旧目标回填并滑出面板
+    if (!raw || validateBanEntry(raw, '封禁目标')) {
+      whitelistSeq.current += 1
+      setWhitelistCheck({
+        loading: false, items: [], tookMs: null, syncedAt: null, totalWhitelist: null,
+        error: '', fetchedAt: null,
+      })
+      return undefined
+    }
+    // 白名单匹配支持 IP / CIDR / 范围 / 域名，多值去重后最多 20 个
+    const targets = Array.from(new Set(splitIPExpression(raw))).slice(0, 20)
+    if (!targets.length) {
+      whitelistSeq.current += 1
+      setWhitelistCheck({
+        loading: false, items: [], tookMs: null, syncedAt: null, totalWhitelist: null,
+        error: '', fetchedAt: null,
+      })
+      return undefined
+    }
+    const seq = ++whitelistSeq.current
+    const timer = setTimeout(() => {
+      setWhitelistCheck((s) => ({ ...s, loading: true }))
+      banWorkflowApi.anbotongWhitelistMatch(targets)
+        .then((res) => {
+          // 竞态保护：输入已再次变化时丢弃本次结果
+          if (seq !== whitelistSeq.current) return
+          const items = res?.items || []
+          // 查到新命中时自动重新滑出（用户上次手动收起后目标已变化）
+          if (items.some((it) => it.matched)) setWhitelistHidden(false)
+          setWhitelistCheck({
+            loading: false,
+            items,
+            tookMs: res?.took_ms ?? null,
+            syncedAt: res?.last_success_at || res?.synced_at || null,
+            totalWhitelist: res?.total_whitelist ?? null,
+            error: '',
+            fetchedAt: res?.fetched_at || null,
+          })
+        })
+        .catch((e) => {
+          if (seq !== whitelistSeq.current) return
+          // 匹配失败不阻断封禁流程：清空结果，输入框下弱提示
+          setWhitelistCheck({
+            loading: false, items: [], tookMs: null, syncedAt: null, totalWhitelist: null,
+            error: e?.message || '白名单匹配查询失败', fetchedAt: null,
+          })
+        })
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [manualOpen, manualForm.ip, canView])
+  // 白名单匹配派生：命中目标 / 未命中目标 / 查询异常
+  const whitelistMatched = whitelistCheck.items.filter((it) => it.matched)
+  const whitelistMissedTargets = whitelistCheck.items
+    .filter((it) => !it.matched).map((it) => it.target)
+  // 右侧白名单面板：有命中且未被用户收起时展示
+  const showWhitelistPanel = whitelistMatched.length > 0 && !whitelistHidden
+  // 弹窗宽度：黑名单 / 资产 / 白名单三个面板独立滑出，按实际展开数量平滑加宽
+  const manualPanelCount = Number(showDupPanel) + Number(showAssetPanel) + Number(showWhitelistPanel)
+  const manualMaxWidth = manualPanelCount >= 3
+    ? 'max-w-[96rem]'
+    : manualPanelCount === 2
+      ? 'max-w-7xl'
+      : (manualPanelCount === 1 ? 'max-w-6xl' : 'max-w-xl')
 
   // 选择（批量同步）
   const [selected, setSelected] = useState([])
@@ -951,7 +1034,8 @@ export default function BanWorkbench({ embedded = false }) {
       </Modal>
 
       {/* 手动封禁表单：按「封禁目标 → 封禁策略 → 原因与备注」分区；必填项红 * 标识；提交中锁死取消出口。
-          有预检命中时右侧内嵌面板展示（同「发起工单」的相似工单推荐形式），弹窗同步加宽为 xl */}
+          黑名单预检 / 资产匹配 / 安博通白名单匹配三路并行预检，有命中时右侧内嵌面板展示
+          （同「发起工单」的相似工单推荐形式），弹窗按展开面板数量同步加宽 */}
       <Modal
         open={manualOpen}
         title="手动发起封禁"
@@ -1042,6 +1126,39 @@ export default function BanWorkbench({ embedded = false }) {
             {manualOpen && !assetCheck.loading && assetCheck.error && (
               <div className="mt-1 text-[11px] text-muted-foreground">
                 资产匹配暂不可用：{assetCheck.error}（不影响封禁提交）
+              </div>
+            )}
+            {/* 安博通白名单弱提示：查询中 / 命中但面板被收起（点击展开）/ 命中详情见右侧 /
+                空结果 / 查询失败（不阻断封禁流程） */}
+            {manualOpen && whitelistCheck.loading && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> 正在匹配安博通白名单…
+              </div>
+            )}
+            {manualOpen && !whitelistCheck.loading && whitelistMatched.length > 0 && whitelistHidden && (
+              <button
+                type="button"
+                onClick={() => setWhitelistHidden(false)}
+                className="mt-1 flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition hover:border-emerald-500/50"
+                title="展开右侧安博通白名单匹配面板">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+                白名单匹配 · {whitelistMatched.length} 个目标命中安博通白名单（点击展开）
+              </button>
+            )}
+            {manualOpen && !whitelistCheck.loading && whitelistMatched.length > 0 && !whitelistHidden && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-emerald-600">
+                <ShieldCheck className="h-3 w-3 shrink-0" />
+                {whitelistMatched.length} 个目标命中安博通白名单，详情见右侧
+              </div>
+            )}
+            {manualOpen && !whitelistCheck.loading && whitelistCheck.items.length > 0 && whitelistMatched.length === 0 && !whitelistCheck.error && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                已匹配 {whitelistCheck.items.length} 个目标，均未命中安博通白名单
+              </div>
+            )}
+            {manualOpen && !whitelistCheck.loading && whitelistCheck.error && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                白名单匹配暂不可用：{whitelistCheck.error}（不影响封禁提交）
               </div>
             )}
           </div>
@@ -1262,6 +1379,83 @@ export default function BanWorkbench({ embedded = false }) {
             </div>
             <div className="border-t border-info/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
               同时查询资产发现与资产清单（发现优先）；CIDR / 范围 / 域名不做资产匹配{assetCheck.fetchedAt && `；更新于 ${fmtTime(assetCheck.fetchedAt)}`}
+            </div>
+          </aside>
+        )}
+        {/* 安博通白名单匹配面板：有命中且未收起时柔和浮现（形式同黑名单 / 资产匹配面板）。
+            展示设备全局白名单完整字段；CIDR / 范围目标会列出网段内命中的全部白名单条目 */}
+        {showWhitelistPanel && (
+          <aside className="panel-enter-soft sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-emerald-500/30 bg-emerald-500/[0.04]">
+            <div className="flex items-center gap-1.5 border-b border-emerald-500/20 px-3 py-2">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+              <span className="text-[13px] font-medium text-foreground">安博通白名单匹配</span>
+              <span className="text-[11px] tabular-nums text-muted-foreground">命中 {whitelistMatched.length}/{whitelistCheck.items.length}</span>
+              <button type="button" onClick={() => setWhitelistHidden(true)}
+                className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                title="收起白名单匹配面板（目标变化后有新命中会重新滑出）">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div data-allow-scroll className="max-h-[62vh] space-y-2 overflow-y-auto overscroll-contain p-2.5">
+              {/* 命中目标卡片：精确命中 / 网段包含，逐条展示白名单完整信息 */}
+              {whitelistMatched.map((it) => (
+                <div key={it.target} className="rounded-md border border-border bg-card p-2.5">
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <span className="min-w-0 truncate font-mono text-[13px] font-semibold text-foreground" title={it.target}>{it.target}</span>
+                    <span className="ml-auto shrink-0">
+                      <Badge variant="success">{it.match_type === 'contained' ? '网段包含' : '精确命中'}</Badge>
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {(it.entries || []).map((entry, idx) => (
+                      <div key={`${entry.wlist}-${idx}`} className="rounded border border-emerald-500/20 bg-emerald-500/[0.03] p-2">
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <span className="min-w-0 truncate font-mono text-[12px] font-medium text-foreground" title={entry.wlist}>{entry.wlist}</span>
+                          <span className="ml-auto shrink-0">
+                            <Badge variant={(entry.enable === 1 || entry.enable === '1') ? 'success' : 'neutral'}>
+                              {(entry.enable === 1 || entry.enable === '1') ? '启用' : '停用'}
+                            </Badge>
+                          </span>
+                        </div>
+                        <dl className="space-y-1">
+                          {[
+                            ['添加方式', entry.reason],
+                            ['生效时间', entry.effectTime],
+                            ['有效期', fmtDeviceDuration(entry.age)],
+                            ['剩余时长', fmtDeviceDuration(entry.leftTime)],
+                            ['策略组', entry.policy_group_name],
+                            ['状态', (entry.state === 1 || entry.state === '1') ? '生效' : '未生效'],
+                            ['命中次数', entry.hit_num],
+                            ['节点 ID', entry.node_id],
+                          ].map(([label, value]) => (
+                            <div key={label} className="flex items-center justify-between gap-2">
+                              <dt className="shrink-0 text-[11px] text-muted-foreground">{label}</dt>
+                              <dd className="min-w-0 truncate font-mono text-[12px] text-foreground" title={String(value ?? '')}>
+                                {value == null || value === '' ? '--' : String(value)}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </div>
+                    ))}
+                    {it.truncated && (
+                      <div className="px-1 pt-0.5 text-[11px] text-muted-foreground">
+                        共 {it.entry_total} 条命中，仅展示前 {it.entries.length} 条
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {/* 未命中目标列表：确认知晓「哪些目标不受白名单保护」 */}
+              {whitelistMissedTargets.length > 0 && (
+                <div className="px-0.5 text-[11px] text-muted-foreground">未命中白名单：{whitelistMissedTargets.join('、')}</div>
+              )}
+            </div>
+            <div className="border-t border-emerald-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+              基于本地每 5 秒自动同步的设备全局白名单{whitelistCheck.tookMs != null && `；匹配耗时 ${whitelistCheck.tookMs}ms`}{whitelistCheck.syncedAt && `；同步于 ${fmtTime(whitelistCheck.syncedAt)}`}
+            </div>
+            <div className="border-t border-emerald-500/20 bg-emerald-500/[0.04] px-3 py-1.5 text-[10px] leading-relaxed text-emerald-700">
+              命中条目为安博通全局白名单，设备侧白名单通常优先于黑名单；请确认是否仍需对该目标下发封禁。
             </div>
           </aside>
         )}

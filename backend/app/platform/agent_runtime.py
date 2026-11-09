@@ -330,6 +330,15 @@ async def invoke_agent(
     executor = build_hermes_executor(
         db, agent, user, override=override, system_prompt=system_prompt
     )
+    _LINKAGE_CHANNELS = frozenset({"ban_workflow", "workflow", "workflow_ai_agent"})
+    if channel in _LINKAGE_CHANNELS:
+        from app.database import LinkageSessionLocal, close_db_session
+
+        executor._session_factory = LinkageSessionLocal
+        executor.tool_engine._session_factory = LinkageSessionLocal
+        close_db_session(db)
+        executor.db = None
+        executor.tool_engine.db = None
     if history:
         executor.load_history(history)
 

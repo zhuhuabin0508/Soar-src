@@ -119,8 +119,11 @@ def test_match_discovery_asset_error_returns_error_info(monkeypatch):
 
 def _patch_sources(monkeypatch, inventory_hit=None, discovery_payload=None):
     """跳过富化索引重建并固定两个来源的查询结果。"""
-    monkeypatch.setattr(te, "_asset_index_cache", {"built_at": time.time(), "single": {}, "nets": []})
-    monkeypatch.setattr(te, "_build_asset_index", lambda db: None)
+    monkeypatch.setattr(
+        te,
+        "ensure_asset_index",
+        lambda db: {"single": {}, "nets": []},
+    )
     monkeypatch.setattr(
         te, "_match_asset_ip",
         (lambda ip, index: inventory_hit) if inventory_hit else (lambda ip, index: None),

@@ -1,16 +1,19 @@
-"""安博通阻断器设备播种脚本：幂等同步黑名单（Blacklist）相关动作。
+"""安博通阻断器设备播种脚本：幂等同步黑名单与全局白名单动作。
 
 用法（在 backend 目录下，需已安装 backend 依赖 + 可连数据库）:
     python -m scripts.seed_anbotong_device
 
-数据来源：`安博通阻断应急拦截网关restful_API接口说明-V1.3`「黑名单」章节
-（文档目录 7.1，修订记录 7.13.3/7.13.4 补充了策略分组、生效字段与连续 IP/网段支持）。
+数据来源：`应急拦截网关restful接口说明-V1.3-20261105`
+- 7.13「黑名单」：查询列表 / 查询单条 / 新建（封禁）/ 修改 / 删除（解封）
+- 7.14「全局白名单」（R6.2 封堵器 + CASEMAN-7859）：查询列表 / 查询单条 /
+  新建 / 批量新建 / 修改 / 删除。资源 GlobalWhitelist，键 wlist，批量资源
+  GlobalWhitelistBatch；age、enable 必须是 JSON 整数，不支持地址段/CIDR/MAC、
+  PATCH、清空及批量删除。
 
 逻辑:
   1. 按设备名称定位已有设备「安博通阻断器」，不改动其连接凭据 / api_url。
-     设备 api_url 已包含 `/api/v3`，因此动作 api_path 从 `/Objects/Blacklist` 开始。
-  2. 以 device_id + 动作名称为幂等键，同步 5 个黑名单动作：
-     查询列表 / 查询单条 / 新建（封禁）/ 修改 / 删除（解封）。
+     设备 api_url 已包含 `/api/v3`，因此动作 api_path 从 `/Objects/...` 开始。
+  2. 以 device_id + 动作名称为幂等键，同步 11 个动作（黑名单 5 个 + 全局白名单 6 个）。
   3. 重复执行安全：已存在同名动作只更新字段，不重复创建。
 """
 import json
@@ -64,6 +67,36 @@ def _body_template(blist_key: str, age_key: str) -> str:
 _BODY_TEMPLATE_BLOCK = _body_template("ip", "duration")
 _BODY_TEMPLATE_MODIFY = _body_template("blist", "age")
 
+# ---------------- 全局白名单（7.14） ----------------
+# 与黑名单的关键差异：资源/键不同；age、enable 必须是 JSON 整数（模板中不加引号），
+# 执行器按 params_schema 的 number 类型转换并裸值渲染；批量接口使用数组参数。
+_WLIST_AGE_DESC = (
+    "全局白名单生命周期（秒）：-1 表示永久，其他取值 1~2592000；"
+    "设备要求 JSON 整数，不接受 0 或数字字符串"
+)
+_WLIST_REASON_DESC = (
+    "添加方式，UTF-8 字符串，最多 255 字节，不含控制字符；"
+    "省略或空串时设备按 API Add 处理"
+)
+_WLIST_POLICY_GROUP_DESC = (
+    "所属策略组名，UTF-8 字符串，最多 127 字节；省略时设备使用空串"
+)
+_WLIST_EFFECT_TIME_DESC = (
+    "生效时间，空串或 YYYY-MM-DD HH:mm:ss；省略时设备使用空串并按本地时间处理"
+)
+_WLIST_TARGET_DESC = "主机 IPv4/IPv6 或 ASCII 域名，最多 253 字节；不支持地址段/CIDR/MAC"
+
+_BODY_TEMPLATE_WLIST_CREATE = (
+    '{"wlist": "{{wlist}}", "age": {{age}}, "enable": {{enable}}, '
+    '"reason": "{{reason}}"}'
+)
+_BODY_TEMPLATE_WLIST_UPDATE = (
+    '{"wlist": "{{wlist}}", "age": {{age}}, "enable": {{enable}}, '
+    '"reason": "{{reason}}", "policy_group_name": "{{policy_group_name}}", '
+    '"effectTime": "{{effectTime}}"}'
+)
+_BODY_TEMPLATE_WLIST_BATCH = '{"wlist_entry": {{wlist_entry}}}'
+
 
 def _params(*items: dict) -> str:
     """把参数定义序列化为 params_schema 字符串。"""
@@ -78,8 +111,13 @@ _ACTIONS: list[dict] = [
         "category": "query",
         "risk_level": "readonly",
         "http_method": "GET",
-        "api_path": "/Objects/Blacklist",
-        "params_schema": "[]",
+        "api_path": "/Objects/Blacklist?page={page}&count={count}",
+        "params_schema": _params(
+            {"name": "page", "type": "number", "required": False, "default": "1",
+             "description": "页码，从 1 开始"},
+            {"name": "count", "type": "number", "required": False, "default": "1000",
+             "description": "每页条数；工作台拉取设备全部条目时使用大页"},
+        ),
         "body_template": "",
         "description": "查询设备当前全部黑名单条目（含剩余时长、命中次数、策略组与生效状态）",
         "example_payload": "",
@@ -227,6 +265,210 @@ _ACTIONS: list[dict] = [
         "example_payload": "",
         "example_response": json.dumps({"code": 1, "msg": None, "data": None}, ensure_ascii=False),
     },
+    # ---------------- 全局白名单（文档 7.14） ----------------
+    {
+        "name": "查询全局白名单列表",
+        "action_type": "custom",
+        "category": "query",
+        "risk_level": "readonly",
+        "http_method": "GET",
+        "api_path": "/Objects/GlobalWhitelist?page={page}&count={count}",
+        "params_schema": _params(
+            {"name": "page", "type": "number", "required": False, "default": "1",
+             "description": "页码，范围 1~100000，默认 1"},
+            {"name": "count", "type": "number", "required": False, "default": "20",
+             "description": "每页条数，范围 1~1000，默认 20"},
+        ),
+        "body_template": "",
+        "description": (
+            "分页查询全局白名单（GET /api/v3/Objects/GlobalWhitelist）；"
+            "age=-1 表示永久；空列表按设备框架返回 HTTP 404"
+        ),
+        "example_payload": "",
+        "example_response": json.dumps(
+            {
+                "code": 1,
+                "msg": None,
+                "data": [
+                    {
+                        "wlist": "192.0.2.10",
+                        "age": "3600",
+                        "enable": "1",
+                        "reason": "API Add",
+                        "effectTime": "2026-11-05 15:00:00",
+                        "policy_group_name": "-",
+                        "leftTime": "3500",
+                        "state": "1",
+                        "hit_num": "0",
+                        "node_id": "0",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    },
+    {
+        "name": "查询指定全局白名单",
+        "action_type": "custom",
+        "category": "query",
+        "risk_level": "readonly",
+        "http_method": "GET",
+        "api_path": "/Objects/GlobalWhitelist/wlist/{wlist}",
+        "params_schema": _params(
+            {"name": "wlist", "type": "string", "required": True, "default": "",
+             "description": f"{_WLIST_TARGET_DESC}（路径参数，IPv6 按 URL 规则编码）"},
+        ),
+        "body_template": "",
+        "description": (
+            "按主机 IP/域名查询单条全局白名单"
+            "（GET /api/v3/Objects/GlobalWhitelist/wlist/{wlist}）"
+        ),
+        "example_payload": "",
+        "example_response": json.dumps(
+            {
+                "code": 1,
+                "msg": None,
+                "data": {
+                    "wlist": "192.0.2.10",
+                    "age": "3600",
+                    "enable": "1",
+                    "reason": "API Add",
+                    "effectTime": "2026-11-05 15:00:00",
+                    "policy_group_name": "-",
+                },
+            },
+            ensure_ascii=False,
+        ),
+    },
+    {
+        "name": "新建全局白名单",
+        "action_type": "custom",
+        "category": "dispose",
+        "risk_level": "high_risk",
+        "http_method": "POST",
+        "api_path": "/Objects/GlobalWhitelist",
+        "params_schema": _params(
+            {"name": "wlist", "type": "string", "required": True, "default": "",
+             "description": _WLIST_TARGET_DESC},
+            {"name": "age", "type": "number", "required": True, "default": "3600",
+             "min": -1, "max": 2592000, "description": _WLIST_AGE_DESC},
+            {"name": "enable", "type": "enum", "required": True, "default": "1",
+             "options": ["1", "0"], "description": "1 启用，0 禁用（JSON 整数，不接受字符串/布尔）"},
+            {"name": "reason", "type": "string", "required": False, "default": "API Add",
+             "description": _WLIST_REASON_DESC},
+        ),
+        "body_template": _BODY_TEMPLATE_WLIST_CREATE,
+        "description": (
+            "新建全局白名单（POST /api/v3/Objects/GlobalWhitelist）；"
+            "age、enable 以 JSON 整数下发；成功返回 HTTP 200 且不回读条目"
+        ),
+        "example_payload": (
+            '{"wlist": "192.0.2.10", "age": 3600, "enable": 1, "reason": "API Add"}'
+        ),
+        "example_response": json.dumps(
+            {"code": 1, "msg": "Success", "data": None}, ensure_ascii=False
+        ),
+    },
+    {
+        "name": "批量新建全局白名单",
+        "action_type": "custom",
+        "category": "dispose",
+        "risk_level": "high_risk",
+        "http_method": "POST",
+        "api_path": "/Objects/GlobalWhitelistBatch",
+        "params_schema": _params(
+            {"name": "wlist_entry", "type": "array", "required": True, "default": "",
+             "description": (
+                 "顺序数组，1~100 项；每项字段：wlist（必填）、age（必填 JSON 整数）、"
+                 "enable（必填 JSON 整数 1/0）、reason/policy_group_name/effectTime（可选）"
+             )},
+        ),
+        "body_template": _BODY_TEMPLATE_WLIST_BATCH,
+        "description": (
+            "批量新建全局白名单（POST /api/v3/Objects/GlobalWhitelistBatch）；"
+            "先整体校验再逐项执行，非原子、无回滚；HTTP 207 表示部分失败且外层 code 仍为 1，"
+            "必须检查 results 每项 status 及 total/processed 差值"
+        ),
+        "example_payload": json.dumps(
+            {
+                "wlist_entry": [
+                    {"wlist": "192.0.2.10", "age": 3600, "enable": 1, "reason": "API Add"},
+                    {"wlist": "test-host.example", "age": -1, "enable": 1},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        "example_response": json.dumps(
+            {
+                "code": 1,
+                "msg": "Success",
+                "data": {
+                    "total": 2,
+                    "processed": 2,
+                    "results": [
+                        {"index": 0, "wlist": "192.0.2.10", "status": 200, "message": "Success"},
+                        {"index": 1, "wlist": "test-host.example", "status": 200, "message": "Success"},
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    },
+    {
+        "name": "修改全局白名单",
+        "action_type": "custom",
+        "category": "dispose",
+        "risk_level": "high_risk",
+        "http_method": "PUT",
+        "api_path": "/Objects/GlobalWhitelist/wlist/{wlist}",
+        "params_schema": _params(
+            {"name": "wlist", "type": "string", "required": True, "default": "",
+             "description": f"{_WLIST_TARGET_DESC}（路径参数，同时作为请求体 wlist，必须与 URL 一致）"},
+            {"name": "age", "type": "number", "required": True, "default": "3600",
+             "min": -1, "max": 2592000, "description": _WLIST_AGE_DESC},
+            {"name": "enable", "type": "enum", "required": True, "default": "1",
+             "options": ["1", "0"], "description": "1 启用，0 禁用（JSON 整数，不接受字符串/布尔）"},
+            {"name": "reason", "type": "string", "required": False, "default": "API Add",
+             "description": _WLIST_REASON_DESC},
+            {"name": "policy_group_name", "type": "string", "required": False, "default": "",
+             "description": _WLIST_POLICY_GROUP_DESC},
+            {"name": "effectTime", "type": "string", "required": False, "default": "",
+             "description": _WLIST_EFFECT_TIME_DESC},
+        ),
+        "body_template": _BODY_TEMPLATE_WLIST_UPDATE,
+        "description": (
+            "修改全局白名单（PUT /api/v3/Objects/GlobalWhitelist/wlist/{wlist}）；"
+            "完整替换该键属性且不修改键，age、enable 必填；省略 reason 使用 API Add，"
+            "省略 policy_group_name/effectTime 使用空串"
+        ),
+        "example_payload": (
+            '{"wlist": "192.0.2.10", "age": 7200, "enable": 0, "reason": "API Add"}'
+        ),
+        "example_response": json.dumps(
+            {"code": 1, "msg": "Success", "data": None}, ensure_ascii=False
+        ),
+    },
+    {
+        "name": "删除全局白名单",
+        "action_type": "custom",
+        "category": "dispose",
+        "risk_level": "high_risk",
+        "http_method": "DELETE",
+        "api_path": "/Objects/GlobalWhitelist/wlist/{wlist}",
+        "params_schema": _params(
+            {"name": "wlist", "type": "string", "required": True, "default": "",
+             "description": f"{_WLIST_TARGET_DESC}（路径参数，只删除 URL 指定的一条记录）"},
+        ),
+        "body_template": "",
+        "description": (
+            "删除单条全局白名单（DELETE /api/v3/Objects/GlobalWhitelist/wlist/{wlist}）；"
+            "无需请求体；不开放集合删除、筛选删除及清空"
+        ),
+        "example_payload": "",
+        "example_response": json.dumps(
+            {"code": 1, "msg": "Success", "data": None}, ensure_ascii=False
+        ),
+    },
 ]
 
 
@@ -275,7 +517,7 @@ def main() -> None:
         created, updated = _upsert_actions(db, device)
         db.commit()
         logger.info(
-            "播种完成: device_id=%s, 动作新增 %d 个 / 更新 %d 个（共 %d 个黑名单动作）",
+            "播种完成: device_id=%s, 动作新增 %d 个 / 更新 %d 个（共 %d 个黑名单+全局白名单动作）",
             device.id, created, updated, len(_ACTIONS),
         )
     except Exception as exc:  # noqa: BLE001

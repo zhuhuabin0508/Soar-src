@@ -116,6 +116,7 @@ class HermesToolEngine:
             verification_config: 写操作证据验证配置（Stage B）；None 表示不启用验证
         """
         self.db = db
+        self._session_factory = None  # 设置后工具执行使用联动/主池短会话
         self.agent = agent
         self.log_handler = log_handler
         self.tool_timeout_sec = tool_timeout_sec
@@ -714,7 +715,15 @@ class HermesToolEngine:
             # 纯数字字符串 → int，浮点字符串 → float，"true"/"false" → bool
             call_args = _coerce_primitive_args(call_args)
 
-        # 工具执行超时保护：防止死循环或卡住的网络请求阻塞整个 ReAct 循环
+        # 工具执行：长耗时 I/O 使用短会话，执行完归还连接
+        from app.database import close_db_session
+
+        borrowed = False
+        if getattr(self, "_session_factory", None) is not None:
+            if self.db is not None:
+                close_db_session(self.db)
+            self.db = self._session_factory()
+            borrowed = True
         tool_timeout = float(getattr(self, "tool_timeout_sec", 30.0))
         try:
             raw_result = await asyncio.wait_for(
@@ -729,6 +738,10 @@ class HermesToolEngine:
             logger.exception("工具 %s 执行异常: %s", effective_name, exc)
             raw_result = {"error": str(exc)}
             is_error = True
+        finally:
+            if borrowed and self.db is not None:
+                close_db_session(self.db)
+                self.db = None
 
         # 6. guardrail after_call（可 warn / halt）
         guard_action = "allow"

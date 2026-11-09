@@ -14,8 +14,9 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from app.core.timezone import beijing_now
+from app.database import LinkageSessionLocal, close_db_session, linkage_db
 from app.models.workflow_ban import (
-    ApprovalTicket, BanRecord, MonitorLog, WorkflowInstance, WorkflowNodeLog,
+    ApprovalTicket, BanRecord, WorkflowInstance, WorkflowNodeLog,
 )
 from app.workflow.audit import write_audit
 from app.workflow.nodes import NODE_REGISTRY
@@ -50,43 +51,71 @@ def _node_order(db: Session, instance_id: int) -> int:
     return count + 1
 
 
-def _run_node(db: Session, instance: WorkflowInstance, ctx: dict[str, Any], key: str) -> Any:
-    """执行单个节点并写节点日志/审计。返回 NodeResult。"""
+def _run_node(instance_id: int, ctx: dict[str, Any], key: str) -> Any:
+    """执行单个节点：准备日志 → 执行（可释放连接）→ 落库结果。"""
+    from app.workflow.nodes.base import NodeResult
+
     node: BaseNode = NODE_REGISTRY[key]
-    log = WorkflowNodeLog(
-        instance_id=instance.id,
-        node_name=node.name,
-        node_key=key,
-        node_order=_node_order(db, instance.id),
-        status="running",
-        start_time=beijing_now(),
-    )
-    db.add(log)
-    db.commit()
+    log_id: int
 
-    instance.current_node = key
-    db.commit()
+    with linkage_db() as db:
+        instance = (
+            db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+        )
+        if instance is None:
+            raise RuntimeError(f"工作流实例不存在: {instance_id}")
+        log = WorkflowNodeLog(
+            instance_id=instance.id,
+            node_name=node.name,
+            node_key=key,
+            node_order=_node_order(db, instance.id),
+            status="running",
+            start_time=beijing_now(),
+        )
+        db.add(log)
+        db.flush()
+        log_id = log.id
+        instance.current_node = key
 
+    db = LinkageSessionLocal()
     try:
-        result = node.execute(db, instance, ctx)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("节点执行异常: instance=%s node=%s", instance.id, key)
-        from app.workflow.nodes.base import NodeResult
-        result = NodeResult(status="fail", action="error", error=f"节点执行异常: {exc}")
+        instance = (
+            db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+        )
+        if instance is None:
+            raise RuntimeError(f"工作流实例不存在: {instance_id}")
+        try:
+            result = node.execute(db, instance, ctx)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("节点执行异常: instance=%s node=%s", instance_id, key)
+            result = NodeResult(status="fail", action="error", error=f"节点执行异常: {exc}")
+    finally:
+        close_db_session(db)
 
-    log.status = result.status
-    log.end_time = beijing_now()
-    log.output = node.jdump(result.output) if result.output else None
-    log.error_msg = result.error or None
-    db.commit()
-
-    # 每个节点执行写审计（操作人 system；审批等人工操作在 API 层单独记录）
-    write_audit(
-        db, action="workflow_node", resource_type="workflow_instance", resource_id=instance.id,
-        detail={"node": key, "node_name": node.name, "status": result.status,
-                "error": result.error or None},
-        result="success" if result.status != "fail" else "failed",
-    )
+    with linkage_db() as db:
+        instance = (
+            db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+        )
+        log = db.query(WorkflowNodeLog).filter(WorkflowNodeLog.id == log_id).first()
+        if log is not None:
+            log.status = result.status
+            log.end_time = beijing_now()
+            log.output = node.jdump(result.output) if result.output else None
+            log.error_msg = result.error or None
+        if instance is not None:
+            write_audit(
+                db,
+                action="workflow_node",
+                resource_type="workflow_instance",
+                resource_id=instance.id,
+                detail={
+                    "node": key,
+                    "node_name": node.name,
+                    "status": result.status,
+                    "error": result.error or None,
+                },
+                result="success" if result.status != "fail" else "failed",
+            )
     return result
 
 
@@ -117,54 +146,76 @@ def rebuild_context(db: Session, instance: WorkflowInstance) -> dict[str, Any]:
 
 
 def run_instance(
-    db: Session,
-    instance: WorkflowInstance,
+    instance_id: int,
     *,
     start_key: str = "event_trigger",
     ctx: Optional[dict[str, Any]] = None,
 ) -> None:
-    """运行（或恢复运行）一个工作流实例。
+    """运行（或恢复运行）一个工作流实例（按节点使用短会话）。
 
     Args:
-        db: 数据库会话。
-        instance: 实例（状态会被就地更新）。
+        instance_id: 实例 ID。
         start_key: 起始节点（新实例 event_trigger；审批恢复 approval_result）。
         ctx: 共享上下文（None 时从节点日志重建）。
     """
-    ctx = ctx if ctx is not None else rebuild_context(db, instance)
-    instance.status = "running"
-    db.commit()
+    if ctx is None:
+        with linkage_db() as db:
+            instance = (
+                db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+            )
+            if instance is None:
+                logger.error("run_instance: 实例不存在 id=%s", instance_id)
+                return
+            ctx = rebuild_context(db, instance)
+
+    with linkage_db() as db:
+        instance = (
+            db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+        )
+        if instance is None:
+            return
+        instance.status = "running"
 
     key: Optional[str] = start_key
     steps = 0
     while key is not None and steps < _MAX_STEPS:
         steps += 1
-        result = _run_node(db, instance, ctx, key)
+        result = _run_node(instance_id, ctx, key)
 
         if result.action == "pause":
-            # 审批暂停：等待回调恢复
-            instance.status = "waiting_approval"
-            instance.current_node = "approval_result"
-            db.commit()
-            logger.info("实例 #%s 暂停等待审批: ip=%s", instance.id, instance.src_ip)
+            with linkage_db() as db:
+                instance = (
+                    db.query(WorkflowInstance)
+                    .filter(WorkflowInstance.id == instance_id)
+                    .first()
+                )
+                if instance is not None:
+                    instance.status = "waiting_approval"
+                    instance.current_node = "approval_result"
+                    logger.info("实例 #%s 暂停等待审批: ip=%s", instance.id, instance.src_ip)
             return
 
         if result.action == "abort":
-            # 终止：skipped（参数校验失败）/ escalated（审批升级）
-            if result.status == "skipped":
-                instance.status = "skipped"
-                instance.final_result = "skipped"
-                instance.error_msg = result.error[:2000] if result.error else None
-            else:
-                instance.status = "escalated"
-                instance.final_result = ctx.get("final_result") or "escalated"
-            instance.finished_at = beijing_now()
-            db.commit()
-            logger.info("实例 #%s 终止: status=%s", instance.id, instance.status)
+            with linkage_db() as db:
+                instance = (
+                    db.query(WorkflowInstance)
+                    .filter(WorkflowInstance.id == instance_id)
+                    .first()
+                )
+                if instance is None:
+                    return
+                if result.status == "skipped":
+                    instance.status = "skipped"
+                    instance.final_result = "skipped"
+                    instance.error_msg = result.error[:2000] if result.error else None
+                else:
+                    instance.status = "escalated"
+                    instance.final_result = ctx.get("final_result") or "escalated"
+                instance.finished_at = beijing_now()
+                logger.info("实例 #%s 终止: status=%s", instance.id, instance.status)
             return
 
         if result.action == "error":
-            # 转异常处理节点（单节点失败不中断整体实例）
             ctx["last_error"] = result.error or "未知错误"
             key = "error_handler"
             continue
@@ -172,11 +223,15 @@ def run_instance(
         key = result.next_key or NODE_FLOW.get(key)
 
     if steps >= _MAX_STEPS:
-        logger.error("实例 #%s 超过最大节点步数，强制结束", instance.id)
-        instance.status = "error"
-        instance.error_msg = "超过最大节点执行步数（疑似环路）"
-        instance.finished_at = beijing_now()
-        db.commit()
+        logger.error("实例 #%s 超过最大节点步数，强制结束", instance_id)
+        with linkage_db() as db:
+            instance = (
+                db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+            )
+            if instance is not None:
+                instance.status = "error"
+                instance.error_msg = "超过最大节点执行步数（疑似环路）"
+                instance.finished_at = beijing_now()
 
 
 def cancel_instance(db: Session, instance: WorkflowInstance, operator: str, reason: str) -> bool:
