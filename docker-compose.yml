@@ -85,6 +85,10 @@ services:
       WORKFLOW_SOC_AGENT_ID: ${WORKFLOW_SOC_AGENT_ID:-0}
       WORKFLOW_SYSTEM_USER_ID: ${WORKFLOW_SYSTEM_USER_ID:-0}
       BAN_ANALYST_AGENT_ID: ${BAN_ANALYST_AGENT_ID:-0}
+      # 封禁联动并发：触发消费线程数 / 全局在途实例上限（Redis 计数）
+      WORKFLOW_TRIGGER_CONCURRENCY: ${WORKFLOW_TRIGGER_CONCURRENCY:-2}
+      # 0=不限制在途数（低频封禁优先保证下发成功）；风暴期可改为 12 等
+      WORKFLOW_INFLIGHT_LIMIT: ${WORKFLOW_INFLIGHT_LIMIT:-0}
       # 卡死时输出 C 层/全线程堆栈，便于定位阻塞点
       PYTHONFAULTHANDLER: "1"
       # ===== XDR 开放性 OpenAPI（query_xdr_openapi 工具使用；真实值在 .env.dev）=====

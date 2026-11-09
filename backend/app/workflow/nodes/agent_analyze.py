@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.database import close_db_session
 from app.models.workflow_ban import WorkflowInstance
 from app.workflow import agent_client
 from app.workflow.trigger import record_agent_outcome
@@ -25,9 +26,16 @@ class AgentAnalyzeNode(BaseNode):
             "occur_timestamp": ctx.get("occur_timestamp") or "",
             "src_country": ctx.get("src_country") or "",
         }
+        instance_id = instance.id
+        # 研判为分钟级外部 I/O，执行前释放 ORM 会话占用的连接
+        db.commit()
+        close_db_session(db)
         try:
             decision = agent_client.analyze_ip_risk(
-                db, ip, alert_context, instance_id=instance.id, node_key=self.key,
+                ip,
+                alert_context,
+                instance_id=instance_id,
+                node_key=self.key,
             )
         except agent_client.AgentCallError as exc:
             # 熔断统计：连续失败计数 +1（成功在下方清零）

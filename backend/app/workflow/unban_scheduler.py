@@ -140,7 +140,7 @@ def scan_approval_timeout() -> int:
                 WorkflowInstance.id == ticket.workflow_instance_id,
             ).first()
             if instance is not None and instance.status == "waiting_approval":
-                run_instance(db, instance, start_key="approval_result")
+                run_instance(instance.id, start_key="approval_result")
                 resumed += 1
         if tickets:
             logger.info("审批超时处理: %d 单，恢复实例 %d 个", len(tickets), resumed)

@@ -1,8 +1,10 @@
 """SQLAlchemy 数据库引擎、会话工厂与声明式基类。"""
 import logging
+from contextlib import contextmanager
+from typing import Iterator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from app.config import settings
 
@@ -38,6 +40,57 @@ LinkageSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=linka
 
 # 所有 ORM 模型的共同基类
 Base = declarative_base()
+
+
+@contextmanager
+def linkage_db() -> Iterator[Session]:
+    """联动池短会话：commit/rollback 后 close，归还连接。"""
+    db = LinkageSessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@contextmanager
+def main_db() -> Iterator[Session]:
+    """主池短会话。"""
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def close_db_session(db: Session | None) -> None:
+    """结束会话并归还连接（长 I/O 前调用，调用方不得再使用该 Session）。"""
+    if db is None:
+        return
+    try:
+        if db.new or db.dirty or db.deleted:
+            db.rollback()
+        else:
+            try:
+                if db.in_transaction():
+                    db.rollback()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+        db.close()
+    except Exception:  # noqa: BLE001
+        logger.debug("关闭数据库会话失败", exc_info=True)
+
+
+# 兼容旧调用点，语义等同 close_db_session
+def release_db_connection(db: Session | None) -> None:
+    close_db_session(db)
 
 
 def get_db():

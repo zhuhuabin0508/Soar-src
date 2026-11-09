@@ -59,6 +59,7 @@ class HermesAgentExecutor:
                 含 model_config_id/temperature/max_tokens/top_p 等字段，按需启用。
         """
         self.db = db
+        self._session_factory = None
         self.agent = agent
         self.user = user
         self.log_handler = log_handler
@@ -310,6 +311,19 @@ class HermesAgentExecutor:
                 self.log_handler(level, message)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _release_db_for_io(self) -> None:
+        """长 I/O（LLM）前释放 ORM 会话连接；联动链路启用 session_factory。"""
+        if getattr(self, "_session_factory", None) is None and self.db is None:
+            return
+        from app.database import close_db_session
+
+        if self.db is not None:
+            close_db_session(self.db)
+            self.db = None
+        if self.tool_engine is not None and self.tool_engine.db is not None:
+            close_db_session(self.tool_engine.db)
+            self.tool_engine.db = None
 
     # ========================================================================
     # 主循环
@@ -610,7 +624,8 @@ class HermesAgentExecutor:
         while True:
             attempt += 1
             try:
-                # 模型调用监控：计时 + 记录调用指标（成功/失败均记录）
+                # 推理期间不持有数据库连接
+                self._release_db_for_io()
                 with ModelCallTimer(
                     model_config_id=self._model_meta.get("model_config_id"),
                     model_name=self._model_meta.get("model_name", ""),
@@ -744,6 +759,7 @@ class HermesAgentExecutor:
         while True:
             attempt += 1
             try:
+                self._release_db_for_io()
                 with ModelCallTimer(
                     model_config_id=self._model_meta.get("model_config_id"),
                     model_name=self._model_meta.get("model_name", ""),

@@ -11,9 +11,9 @@ import time
 from typing import Any, Optional
 
 import requests
-from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import LinkageSessionLocal, close_db_session, linkage_db
 from app.models.workflow_ban import AgentInvocationLog
 
 logger = logging.getLogger(__name__)
@@ -24,8 +24,6 @@ AGENT_MAX_ATTEMPTS = 3
 
 REQUIRED_FIELDS = ("is_banned", "risk_level", "action", "need_confirm", "ban_plan", "monitoring_advice", "reasons")
 
-# 研判输入附带的输出契约指令：约束智能体最终回答为纯 JSON
-#（部分智能体 system_prompt 未约束输出格式，会导致 adapt_ban_risk_analyze 解析失败）
 _OUTPUT_CONTRACT = (
     "输出要求：最终回答必须只包含一个 JSON 对象，不要任何解释文字或 markdown 代码块标记，"
     '字段：is_banned(bool)、risk_level(str)、action(str)、need_confirm(bool)、'
@@ -41,7 +39,6 @@ class AgentCallError(Exception):
 
 
 def _write_invocation_log(
-    db: Session,
     *,
     instance_id: Optional[int],
     node_key: str,
@@ -55,26 +52,24 @@ def _write_invocation_log(
     error_msg: Optional[str],
 ) -> None:
     try:
-        db.add(AgentInvocationLog(
-            workflow_instance_id=instance_id,
-            node_key=node_key,
-            request_body=json.dumps(request_body, ensure_ascii=False),
-            response_body=json.dumps(response_body, ensure_ascii=False) if response_body is not None else None,
-            model_name=model_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            duration_ms=duration_ms,
-            status=status,
-            error_msg=error_msg,
-        ))
-        db.commit()
+        with linkage_db() as db:
+            db.add(AgentInvocationLog(
+                workflow_instance_id=instance_id,
+                node_key=node_key,
+                request_body=json.dumps(request_body, ensure_ascii=False),
+                response_body=json.dumps(response_body, ensure_ascii=False) if response_body is not None else None,
+                model_name=model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                duration_ms=duration_ms,
+                status=status,
+                error_msg=error_msg,
+            ))
     except Exception:  # noqa: BLE001
-        db.rollback()
         logger.exception("智能体调用日志写入失败（不影响流程）")
 
 
 async def _invoke_ban_risk_analyze(
-    db: Session,
     ip: str,
     alert_context: dict[str, Any],
     *,
@@ -82,28 +77,42 @@ async def _invoke_ban_risk_analyze(
     instance_id: Optional[int],
     node_key: str,
 ) -> dict[str, Any]:
+    from app.models.agent import Agent
     from app.platform.agent_runtime import (
         OUTPUT_MODE_BAN_RISK_ANALYZE,
         invoke_agent,
         resolve_runtime_user,
     )
 
-    result = await invoke_agent(
-        db=db,
-        agent_id=agent_id,
-        input={"ip": ip, "alert_context": alert_context, "output_format": _OUTPUT_CONTRACT},
-        user=resolve_runtime_user(db),
-        channel="ban_workflow",
-        output_mode=OUTPUT_MODE_BAN_RISK_ANALYZE,
-        session_id=f"ban-{instance_id or 0}-{node_key}",
-    )
+    db = LinkageSessionLocal()
+    try:
+        user = resolve_runtime_user(db)
+        agent = db.query(Agent).filter(Agent.id == int(agent_id)).first()
+        if agent is None:
+            raise AgentCallError(f"智能体不存在: agent_id={agent_id}")
+    finally:
+        close_db_session(db)
+
+    db = LinkageSessionLocal()
+    try:
+        result = await invoke_agent(
+            db=db,
+            agent=agent,
+            input={"ip": ip, "alert_context": alert_context, "output_format": _OUTPUT_CONTRACT},
+            user=user,
+            channel="ban_workflow",
+            output_mode=OUTPUT_MODE_BAN_RISK_ANALYZE,
+            session_id=f"ban-{instance_id or 0}-{node_key}",
+        )
+    finally:
+        close_db_session(db)
+
     if result.decision is None:
         raise AgentCallError("invoke_agent 未返回 ban_risk_analyze 决策")
     return result.decision
 
 
 async def _analyze_ip_risk_via_runtime(
-    db: Session,
     ip: str,
     alert_context: dict[str, Any],
     *,
@@ -120,7 +129,7 @@ async def _analyze_ip_risk_via_runtime(
     for attempt in range(1, AGENT_MAX_ATTEMPTS + 1):
         try:
             response_body = await _invoke_ban_risk_analyze(
-                db, ip, alert_context,
+                ip, alert_context,
                 agent_id=agent_id,
                 instance_id=instance_id,
                 node_key=node_key,
@@ -139,7 +148,6 @@ async def _analyze_ip_risk_via_runtime(
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     _write_invocation_log(
-        db,
         instance_id=instance_id,
         node_key=node_key,
         request_body=request_body,
@@ -158,7 +166,6 @@ async def _analyze_ip_risk_via_runtime(
 
 
 def _analyze_ip_risk_via_http(
-    db: Session,
     ip: str,
     alert_context: dict[str, Any],
     *,
@@ -205,7 +212,6 @@ def _analyze_ip_risk_via_http(
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     _write_invocation_log(
-        db,
         instance_id=instance_id,
         node_key=node_key,
         request_body=request_body,
@@ -224,25 +230,23 @@ def _analyze_ip_risk_via_http(
 
 
 def analyze_ip_risk(
-    db: Session,
     ip: str,
     alert_context: dict[str, Any],
     *,
     instance_id: Optional[int] = None,
     node_key: str = "agent_analyze",
     agent_id: Optional[int] = None,
+    db=None,  # noqa: ARG001 — 兼容旧签名，忽略
 ) -> dict[str, Any]:
     """调用 IP 风险研判智能体（ban_risk_analyze）。
 
-    Args:
-        agent_id: 显式指定智能体 ID（如工单自动研判按名称解析后传入）；
-            缺省走 ``BAN_ANALYST_AGENT_ID`` 配置（封禁工作流口径不变）。
+    长耗时推理期间不占用调用方 Session；日志与配置加载使用联动池短会话。
     """
     aid = agent_id if agent_id and agent_id > 0 else int(getattr(settings, "BAN_ANALYST_AGENT_ID", 0) or 0)
     if aid > 0:
         return asyncio.run(
             _analyze_ip_risk_via_runtime(
-                db, ip, alert_context,
+                ip, alert_context,
                 agent_id=aid,
                 instance_id=instance_id,
                 node_key=node_key,
@@ -253,7 +257,7 @@ def analyze_ip_risk(
             "BAN_ANALYST_AGENT_ID 未配置，生产环境禁止 HTTP mock 研判"
         )
     return _analyze_ip_risk_via_http(
-        db, ip, alert_context,
+        ip, alert_context,
         instance_id=instance_id,
         node_key=node_key,
     )

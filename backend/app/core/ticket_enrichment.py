@@ -785,7 +785,7 @@ def _run_agent_analysis(db, ip: str, title: str) -> dict:
             "请在平台创建该智能体或配置 BAN_ANALYST_AGENT_ID"
         )
     decision = analyze_ip_risk(
-        db, ip,
+        ip,
         {"alert_name": title or ""},
         instance_id=None,
         node_key="ticket_enrichment",

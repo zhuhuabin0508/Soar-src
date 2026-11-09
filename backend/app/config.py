@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 40
     DB_LINKAGE_POOL_SIZE: int = 10
     DB_LINKAGE_MAX_OVERFLOW: int = 20
+    # 封禁触发：并行消费线程数（进程内）；联动在途全局上限见 WORKFLOW_INFLIGHT_LIMIT
+    # 在途上限 0 表示不限制（低频封禁场景推荐，避免「实例建了却不跑完封禁」）
+    WORKFLOW_TRIGGER_CONCURRENCY: int = 2
+    WORKFLOW_INFLIGHT_LIMIT: int = 0
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"

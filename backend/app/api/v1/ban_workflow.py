@@ -790,7 +790,8 @@ def _apply_approval(
     db.commit()
 
     # 恢复实例：approval_result 节点按工单状态路由（同意→执行封禁；驳回/超时→持续监控；升级→终止）
-    run_instance(db, instance, start_key="approval_result")
+    run_instance(instance.id, start_key="approval_result")
+    db.refresh(instance)
     write_audit(
         db, action="approval", resource_type="approval_ticket", resource_id=ticket.id,
         detail={"result": result, "ip": ticket.ip, "comment": comment,

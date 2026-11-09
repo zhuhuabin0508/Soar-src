@@ -11,6 +11,7 @@ from datetime import timedelta
 
 from app.models.banned_ip import BannedIP
 from app.models.workflow_ban import BanRecord, WorkflowInstance
+from app.database import close_db_session
 from app.workflow import ban_client
 from app.workflow.audit import write_audit
 from .base import BaseNode, NodeResult
@@ -22,11 +23,43 @@ def execute_ban(db: Session, instance: WorkflowInstance, ctx: dict[str, Any], no
     decision = ctx.get("agent_decision") or {}
     ban_plan = decision.get("ban_plan") or {}
 
+    instance_id = instance.id
+    db.commit()
+    close_db_session(db)
+
     try:
         record_id = ban_client.record_ban(ip, ban_plan)
     except ban_client.BanCallError as exc:
         return NodeResult(status="fail", action="error", output={"ip": ip, "ban_plan": ban_plan}, error=str(exc))
 
+    from app.database import LinkageSessionLocal
+
+    db = LinkageSessionLocal()
+    try:
+        instance = db.query(WorkflowInstance).filter(WorkflowInstance.id == instance_id).first()
+        if instance is None:
+            return NodeResult(
+                status="fail", action="error",
+                output={"ip": ip, "record_id": record_id},
+                error=f"封禁 API 已成功(record_id={record_id})但实例 #{instance_id} 不存在，请人工核对平台记录",
+            )
+        return _persist_ban_after_api(
+            db, instance, ctx, node_key, ban_source, ip, ban_plan, record_id,
+        )
+    finally:
+        close_db_session(db)
+
+
+def _persist_ban_after_api(
+    db: Session,
+    instance: WorkflowInstance,
+    ctx: dict[str, Any],
+    node_key: str,
+    ban_source: str,
+    ip: str,
+    ban_plan: dict,
+    record_id: str,
+) -> NodeResult:
     is_permanent = bool(ban_plan.get("is_permanent"))
     duration = int(ban_plan.get("ban_duration") or 3600)
     now = beijing_now()
@@ -69,7 +102,9 @@ def execute_ban(db: Session, instance: WorkflowInstance, ctx: dict[str, Any], no
         detail={"ip": ip, "ban_plan": ban_plan, "record_id": record_id, "instance_id": instance.id, "node": node_key},
     )
     ctx["ban_record_id"] = record.id
-    return NodeResult(output={"ip": ip, "record_id": record_id, "ban_plan": ban_plan, "ban_record_id": record.id})
+    return NodeResult(
+        output={"ip": ip, "record_id": record_id, "ban_plan": ban_plan, "ban_record_id": record.id},
+    )
 
 
 class DirectBanNode(BaseNode):

@@ -72,6 +72,24 @@ def record_device_call(
             pass
 
 
+def _record_device_call_isolated(
+    device: Device,
+    action: DeviceAction,
+    *,
+    source: str = "manual_test",
+    **kwargs,
+) -> None:
+    """HTTP 阶段不占连接：日志写入使用短会话。"""
+    from app.database import LinkageSessionLocal, SessionLocal, close_db_session
+
+    factory = LinkageSessionLocal if source == "workflow" else SessionLocal
+    db = factory()
+    try:
+        record_device_call(db, device=device, action=action, source=source, **kwargs)
+    finally:
+        close_db_session(db)
+
+
 def _build_request(device: Device, action: DeviceAction, params: dict[str, Any]):
     """统一构造设备调用的 (method, url, headers, auth, body)，供各链路复用。"""
     # schema 默认值 / 取值映射：路径占位符与请求体模板共用
@@ -354,6 +372,11 @@ def execute_device_action(
     # 审计摘要须在青藤登录前构造：登录失败路径的 record_device_call 也会引用
     request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
 
+    from app.database import close_db_session
+
+    # 外部 HTTP 不占用调用方 Session（工作流常传入联动会话）
+    close_db_session(db)
+
     # 青藤签名协议：登录换取 comId/jwt/signKey 并对本业务请求做 SHA1 签名。
     # 若动作指向登录接口本身，则直接携带账号密码发送，不再走签名流程。
     auth_type = action.auth_type or "api_key"
@@ -372,12 +395,14 @@ def execute_device_action(
             except Exception as exc:  # noqa: BLE001
                 msg = f"{type(exc).__name__}: {exc}"
                 logger.warning("青藤登录失败: %s", msg)
-                if db and not skip_log:
-                    record_device_call(db, device=device, action=action, source=source,
-                                       workflow_id=workflow_id, agent_id=agent_id,
-                                       user_id=user_id, source_ip=source_ip,
-                                       request_summary=request_summary, status="failed",
-                                       latency_ms=0, error_message=msg)
+                if not skip_log:
+                    _record_device_call_isolated(
+                        device, action, source=source,
+                        workflow_id=workflow_id, agent_id=agent_id,
+                        user_id=user_id, source_ip=source_ip,
+                        request_summary=request_summary, status="failed",
+                        latency_ms=0, error_message=msg,
+                    )
                 return {"success": False, "status_code": None, "response_body": None,
                         "error": msg, "latency_ms": 0}
             headers, req_body, url = _qingteng_signheaders(
@@ -422,12 +447,14 @@ def execute_device_action(
     if r is None:
         msg = f"{type(last_exc).__name__}: {last_exc}"
         logger.warning("设备 API 请求异常: %s", msg)
-        if db and not skip_log:
-            record_device_call(db, device=device, action=action, source=source,
-                               workflow_id=workflow_id, agent_id=agent_id,
-                               user_id=user_id, source_ip=source_ip,
-                               request_summary=request_summary, status="failed",
-                               latency_ms=latency_ms, error_message=msg)
+        if not skip_log:
+            _record_device_call_isolated(
+                device, action, source=source,
+                workflow_id=workflow_id, agent_id=agent_id,
+                user_id=user_id, source_ip=source_ip,
+                request_summary=request_summary, status="failed",
+                latency_ms=latency_ms, error_message=msg,
+            )
         return {"success": False, "status_code": None, "response_body": None,
                 "error": msg, "latency_ms": latency_ms}
 
@@ -441,9 +468,9 @@ def execute_device_action(
     logger.info("设备动作执行完成: status=%s, success=%s, device=%s, action=%s",
                 r.status_code, success, device.id, action.id)
 
-    if db and not skip_log:
-        record_device_call(
-            db, device=device, action=action, source=source,
+    if not skip_log:
+        _record_device_call_isolated(
+            device, action, source=source,
             workflow_id=workflow_id, agent_id=agent_id, user_id=user_id,
             source_ip=source_ip, request_summary=request_summary,
             response_summary=json.dumps(resp_body, ensure_ascii=False)[:2000],
