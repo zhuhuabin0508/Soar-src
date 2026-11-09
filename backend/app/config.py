@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     DASHBOARD_CACHE_TTL_SEC: int = 60
     # 资产清单匹配索引：Redis 版本号 + 快照，减少多 worker 各自全表 SELECT
     ASSET_INDEX_REDIS_ENABLED: bool = True
+    # 日汇总表：Beat 滚动重算，大屏聚合优先读表
+    DAILY_STATS_ENABLED: bool = True
+    DAILY_STATS_ROLLUP_DAYS: int = 8
 
     # Anthropic API Key：留空表示未配置，Agent 决策将走 Mock 降级路径
     ANTHROPIC_API_KEY: str = ""

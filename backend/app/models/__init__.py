@@ -45,6 +45,12 @@ from app.models.govcloud_asset import (
     GovCloudElasticIP,
 )
 from app.models.ingestion_metric import IngestionMetric
+from app.models.stats_daily import (
+    StatsDailyExecution,
+    StatsDailyExecutionDim,
+    StatsDailyModelCall,
+    StatsDailyModelCallDim,
+)
 from app.models.log_receiver import (
     DeviceReceiveLog,
     DeviceReceiveMetric,
@@ -146,6 +152,10 @@ __all__ = [
     "ParseStrategyVersion",
     "ParseErrorQueue",
     "IngestionMetric",
+    "StatsDailyExecution",
+    "StatsDailyExecutionDim",
+    "StatsDailyModelCall",
+    "StatsDailyModelCallDim",
     "LogReceiver",
     "LogSourceEntry",
     "DeviceReceiveLog",

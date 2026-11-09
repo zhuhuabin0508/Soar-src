@@ -7,6 +7,7 @@ from typing import Any, Optional
 from sqlalchemy import case, extract, func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.timezone import beijing_now
 from app.models import Agent, ChatMessage, Execution, ExecutionTrace, LLMConfig, ModelCallLog
 from app.models.workflow_ban import AgentInvocationLog, ApprovalTicket, WorkflowInstance
@@ -15,6 +16,12 @@ logger = logging.getLogger(__name__)
 
 def compute_dashboard_stats(db: Session) -> dict[str, Any]:
     """最近 7 天大屏 KPI / 趋势 / 分类 / Top IP。"""
+    if settings.DAILY_STATS_ENABLED:
+        from app.core.daily_stats_rollup import try_compute_dashboard_from_rollups
+
+        rolled = try_compute_dashboard_from_rollups(db)
+        if rolled is not None:
+            return rolled
     logger.info("计算大屏统计")
 
     today = date.today()
@@ -200,6 +207,12 @@ def extract_exec_info(execution: Execution) -> dict[str, Any]:
 def compute_ai_usage_stats(db: Session, *, days: int = 7) -> dict[str, Any]:
     """智能体与大模型使用统计（默认最近 7 天）。"""
     days = max(1, min(int(days), 90))
+    if settings.DAILY_STATS_ENABLED and days == 7:
+        from app.core.daily_stats_rollup import try_compute_ai_usage_model_rollups
+
+        model_rollup = try_compute_ai_usage_model_rollups(db, days=days)
+        if model_rollup is not None:
+            return _finalize_ai_usage_with_agents(db, days, model_rollup)
     logger.info("计算 AI 使用统计: days=%s", days)
 
     today = date.today()
@@ -426,6 +439,105 @@ def compute_ai_usage_stats(db: Session, *, days: int = 7) -> dict[str, Any]:
     }
     logger.info("AI 使用统计计算完成: agents=%d, models=%d", len(agent_usage), len(model_usage))
     return stats
+
+
+def _finalize_ai_usage_with_agents(db: Session, days: int, model_rollup: dict[str, Any]) -> dict[str, Any]:
+    """日汇总提供模型侧；执行与对话仍查明细（数据量小于 model_call_logs 全量）。"""
+    days = max(1, min(int(days), 90))
+    today = date.today()
+    n_days_ago = today - timedelta(days=days - 1)
+    date_list = [(n_days_ago + timedelta(days=i)).isoformat() for i in range(days)]
+    date_set = set(date_list)
+    since_datetime = datetime.combine(n_days_ago, datetime.min.time())
+
+    executions = (
+        db.query(Execution)
+        .filter(Execution.created_at >= since_datetime)
+        .all()
+    )
+    chat_messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.created_at >= since_datetime)
+        .all()
+    )
+    agent_rollups = model_rollup.get("agent_rollups") or {}
+    agent_ids = set(agent_rollups.keys())
+    for e in executions:
+        if e.agent_id:
+            agent_ids.add(e.agent_id)
+    for cm in chat_messages:
+        agent_ids.add(cm.agent_id)
+
+    agents_map = (
+        {a.id: a for a in db.query(Agent).filter(Agent.id.in_(agent_ids)).all()}
+        if agent_ids
+        else {}
+    )
+    agent_ids = {aid for aid in agent_ids if aid in agents_map}
+
+    exec_by_agent: dict[int, list] = defaultdict(list)
+    for e in executions:
+        if e.agent_id:
+            exec_by_agent[e.agent_id].append(e)
+    msg_by_agent: dict[int, list] = defaultdict(list)
+    for cm in chat_messages:
+        msg_by_agent[cm.agent_id].append(cm)
+
+    agent_usage = []
+    for aid in agent_ids:
+        agent = agents_map.get(aid)
+        agent_execs = exec_by_agent.get(aid, [])
+        agent_msgs = msg_by_agent.get(aid, [])
+        rollup = agent_rollups.get(aid) or {}
+        last_active = None
+        candidates = []
+        if agent_execs:
+            candidates.extend(e.created_at for e in agent_execs if e.created_at)
+        if agent_msgs:
+            candidates.extend(cm.created_at for cm in agent_msgs if cm.created_at)
+        if candidates:
+            last_active = max(candidates).isoformat()
+        session_ids = {cm.session_id for cm in agent_msgs}
+        agent_usage.append({
+            "agent_id": aid,
+            "agent_name": agent.name if agent else f"(已删除智能体 #{aid})",
+            "engine": agent.engine if agent else "",
+            "conversation_count": len(session_ids),
+            "message_count": len(agent_msgs),
+            "execution_count": len(agent_execs),
+            "model_call_count": int(rollup.get("model_call_count", 0)),
+            "total_tokens": int(rollup.get("total_tokens", 0)),
+            "last_active_at": last_active,
+        })
+    agent_usage.sort(key=lambda x: (x["model_call_count"], x["execution_count"]), reverse=True)
+
+    daily_agent_calls: dict[str, int] = {d: 0 for d in date_list}
+    for e in executions:
+        if e.created_at:
+            day_str = e.created_at.date().isoformat()
+            if day_str in date_set:
+                daily_agent_calls[day_str] += 1
+    for cm in chat_messages:
+        if cm.created_at:
+            day_str = cm.created_at.date().isoformat()
+            if day_str in date_set:
+                daily_agent_calls[day_str] += 1
+    agent_trend = [{"date": d, "count": daily_agent_calls[d]} for d in date_list]
+
+    mk = model_rollup["model_kpi"]
+    return {
+        "kpi": {
+            "total_agent_calls": len(executions) + len(chat_messages),
+            "active_agents": len(agent_ids),
+            **mk,
+        },
+        "agent_usage": agent_usage,
+        "model_usage": model_rollup["model_usage"],
+        "agent_trend": agent_trend,
+        "model_trend": model_rollup["model_trend"],
+        "provider_distribution": model_rollup["provider_distribution"],
+        "trigger_distribution": model_rollup["trigger_distribution"],
+    }
 
 
 def compute_ban_workflow_stats(db: Session) -> dict[str, Any]:

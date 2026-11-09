@@ -72,6 +72,10 @@ celery_app.conf.beat_schedule = {
         "task": "refresh_dashboard_cache",
         "schedule": 60.0,
     },
+    "rollup-daily-stats": {
+        "task": "rollup_daily_stats",
+        "schedule": crontab(minute="*/15"),
+    },
 }
 
 # 自动发现 app 包下的 tasks 模块（即 app.tasks）
