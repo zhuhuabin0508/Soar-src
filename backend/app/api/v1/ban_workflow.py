@@ -2282,36 +2282,11 @@ def delete_approval_ticket(
 @router.get("/stats", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def workflow_stats(db: Session = Depends(get_db)) -> dict:
     """工作流统计：今日触发实例数 / 自动封禁数 / 待审批数 / 审批通过率 / 平均研判耗时 + 熔断状态。"""
-    today_start = beijing_now().replace(hour=0, minute=0, second=0, microsecond=0)
-    q_today = db.query(WorkflowInstance).filter(WorkflowInstance.created_at >= today_start)
-    today_instances = q_today.count()
-    today_auto_bans = q_today.filter(WorkflowInstance.final_result == "banned").count()
-    today_errors = q_today.filter(WorkflowInstance.status == "error").count()
-    pending_approvals = (
-        db.query(ApprovalTicket).filter(ApprovalTicket.status == "pending").count()
+    from app.core.dashboard_cache import CacheKeys, resolve_cached_payload
+    from app.core.dashboard_stats import compute_ban_workflow_stats
+
+    return resolve_cached_payload(
+        CacheKeys.BAN_WORKFLOW_STATS,
+        db,
+        compute_ban_workflow_stats,
     )
-    # 审批通过率：已出结论的工单中 approved 占比
-    approved_n = db.query(ApprovalTicket).filter(ApprovalTicket.status == "approved").count()
-    concluded_n = db.query(ApprovalTicket).filter(
-        ApprovalTicket.status.in_(["approved", "rejected", "timeout"])
-    ).count()
-    approval_rate = round(approved_n * 100.0 / concluded_n, 1) if concluded_n else None
-    # 平均研判耗时：今日成功智能体调用
-    avg_row = (
-        db.query(func.avg(AgentInvocationLog.duration_ms))
-        .filter(AgentInvocationLog.status == "success", AgentInvocationLog.created_at >= today_start)
-        .scalar()
-    )
-    avg_agent_ms = int(avg_row) if avg_row is not None else None
-    # 今日持续监控数
-    today_monitoring = q_today.filter(WorkflowInstance.final_result == "monitoring").count()
-    return {
-        "today_instances": today_instances,
-        "today_auto_bans": today_auto_bans,
-        "today_errors": today_errors,
-        "today_monitoring": today_monitoring,
-        "pending_approvals": pending_approvals,
-        "approval_rate": approval_rate,
-        "avg_agent_ms": avg_agent_ms,
-        "circuit": trigger_mod.get_circuit_state(),
-    }

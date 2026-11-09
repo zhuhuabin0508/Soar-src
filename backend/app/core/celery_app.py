@@ -67,6 +67,11 @@ celery_app.conf.beat_schedule = {
         "task": "scan_ticket_pauses",
         "schedule": crontab(minute="*/5"),
     },
+    # 大屏 / 监控 Redis 快照（约 60s 一次，见 DASHBOARD_CACHE_*）
+    "refresh-dashboard-cache": {
+        "task": "refresh_dashboard_cache",
+        "schedule": 60.0,
+    },
 }
 
 # 自动发现 app 包下的 tasks 模块（即 app.tasks）

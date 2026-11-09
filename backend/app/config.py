@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    # 大屏/监控聚合：Redis 快照 + Beat 刷新，降低主池只读压力
+    DASHBOARD_CACHE_ENABLED: bool = True
+    DASHBOARD_CACHE_TTL_SEC: int = 60
 
     # Anthropic API Key：留空表示未配置，Agent 决策将走 Mock 降级路径
     ANTHROPIC_API_KEY: str = ""
