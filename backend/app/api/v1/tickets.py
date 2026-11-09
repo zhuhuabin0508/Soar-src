@@ -96,6 +96,7 @@ from app.dependencies import (
     get_current_user, has_permission_for_user, is_admin, require_permission,
 )
 from app.devices.action_executor import execute_device_action
+from app.models.ban_hit_stat import BanHitStat
 from app.models.device import Device, DeviceAction
 from app.models.notification import Notification
 from app.models.ticket import (
@@ -1514,9 +1515,10 @@ def _monitor_light(db: Session, now, today_start) -> dict:
     }
 
 
-# ============ 封禁IP实时统计（大屏「封禁IP统计」卡）：安博通黑名单全量 + 重保区间 ============
-# 与 /monitor 聚合接口解耦：数据源为安博通阻断器黑名单接口（设备侧实时全量），
-# 大屏卡片独立轮询本接口，避免设备调用频率绑死在工单聚合刷新周期上。
+# ============ 封禁IP统计（大屏「封禁IP统计」卡）：安博通黑名单历史累计 + 重保区间 ============
+# 与 /monitor 聚合接口解耦：每次全量拉取安博通黑名单后增量合并进 ban_hit_stats
+# 命中累计表（历史累计口径，解封/到期不回退），大屏卡片独立轮询本组接口，
+# 避免设备调用频率绑死在工单聚合刷新周期上。
 
 # 全量黑名单翻页上限（单页 LIST_PAGE_SIZE=1000，20 页 = 2 万条，超出以 truncated 标记）
 _BLACKLIST_FETCH_MAX_PAGES = 20
@@ -1524,6 +1526,8 @@ _BLACKLIST_FETCH_MAX_PAGES = 20
 _BLACKLIST_CACHE_TTL_SECONDS = 10.0
 _blacklist_cache: dict = {"at": 0.0, "items": [], "truncated": False}
 _blacklist_cache_lock = threading.Lock()
+# 命中累计表同步锁：并发请求同时触发全量拉取时串行化合并，避免增量重复累计
+_ban_hit_sync_lock = threading.Lock()
 
 
 def _parse_effect_time(value) -> datetime | None:
@@ -1569,12 +1573,54 @@ def _parse_hit_num(value) -> int:
         return 0
 
 
+def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
+    """将本次拉取的设备黑名单条目并入命中累计表（ban_hit_stats，历史累计口径）。
+
+    - 新条目：hit_total = last_hit = 当前 hit_num；
+    - 已有条目：设备侧 hit_num 单调递增，取差值计入累计；当前值小于 last_hit
+      （解封后重新封禁，设备计数清零重计）时按新一轮全量计入；
+    - 条目从设备消失（解封/到期）不删除记录：累计值保留，统计只增不减。
+
+    同一批条目重复同步幂等（last_hit 已更新为当前值，差值为 0）。
+    """
+    if not items:
+        return
+    rows = {r.blist: r for r in db.query(BanHitStat).all()}
+    now = beijing_now()
+    for it in items:
+        blist = str(it.get("blist") or "").strip()
+        if not blist:
+            continue
+        hit = _parse_hit_num(it.get("hit_num"))
+        eff = _parse_effect_time(it.get("effectTime"))
+        row = rows.get(blist)
+        if row is None:
+            row = BanHitStat(blist=blist, hit_total=hit, last_hit=hit,
+                             effect_time=eff, first_seen_at=now, last_seen_at=now)
+            db.add(row)
+            rows[blist] = row  # 同批同 blist 去重
+        else:
+            delta = hit - row.last_hit if hit >= row.last_hit else hit
+            # 仅在命中 / 生效时间真正变化时才更新 last_seen_at：
+            # 无条件赋新时间戳会把全表行标记 dirty，每次同步产生全表 UPDATE
+            changed = delta > 0 or (eff is not None and eff != row.effect_time)
+            if delta > 0:
+                row.hit_total = (row.hit_total or 0) + delta
+            row.last_hit = hit
+            if eff is not None:
+                row.effect_time = eff
+            if changed:
+                row.last_seen_at = now
+    db.commit()
+
+
 def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
     """翻页拉取安博通阻断器黑名单全量条目（带 TTL 缓存）。
 
-    Returns:
-        (items, error, truncated)：error 非 None 时 items 为空；truncated=True 表示
-        超出翻页上限，仅统计到前 ``_BLACKLIST_FETCH_MAX_PAGES`` 页。
+    每次真实拉取成功后同步命中累计表（历史累计口径数据源，见 _sync_ban_hit_stats）；
+    缓存命中时不重复同步。Returns: (items, error, truncated)：error 非 None 时
+    items 为空；truncated=True 表示超出翻页上限，仅统计到前
+    ``_BLACKLIST_FETCH_MAX_PAGES`` 页。
     """
     now_ts = time.monotonic()
     with _blacklist_cache_lock:
@@ -1602,6 +1648,10 @@ def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
         truncated = True
         logger.warning("黑名单条目超过 %d 页上限，统计可能不全", _BLACKLIST_FETCH_MAX_PAGES)
 
+    # 并入命中累计表（串行化：并发双拉取时第二次同步幂等，不重复累计增量）
+    with _ban_hit_sync_lock:
+        _sync_ban_hit_stats(db, items)
+
     with _blacklist_cache_lock:
         _blacklist_cache.update(at=now_ts, items=items, truncated=truncated)
     return items, None, truncated
@@ -1614,12 +1664,17 @@ def ticket_monitor_ban_live(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_monitor", "view")),
 ):
-    """封禁IP实时统计（大屏「封禁IP统计」卡专用，独立于 /monitor 聚合接口轮询）。
+    """封禁IP统计（大屏「封禁IP统计」卡专用，独立于 /monitor 聚合接口轮询）。
 
-    - ``total``：安博通阻断器黑名单接口全量条目总数（设备侧实时值，直读直显）；
-    - ``total_hit_count``：全量条目的拦截（命中）次数总和（逐条累加 hit_num）；
-    - ``period_count``：重保时间范围内「产生」的封禁条目数（按条目 effectTime 落在
-      ``[period_start, period_end]` 统计）；起止均未传时为 null（前端提示未配置）；
+    历史累计口径（数据源 ban_hit_stats 命中累计表，每次全量拉取设备黑名单后
+    增量合并，见 ``_sync_ban_hit_stats``）：条目解封/到期从设备消失后计数保留，
+    只增不减；解封后重新封禁按新一轮命中继续累计。
+
+    - ``total``：累计封禁条目（去重 blist）总数（含已解封/到期）；
+    - ``total_hit_count``：全量条目的拦截（命中）次数累计总和；
+    - ``period_count``：重保时间范围内「产生」的封禁条目数（按条目最近一次
+      effectTime 落在 ``[period_start, period_end]` 统计）；起止均未传时为
+      null（前端提示未配置）；
     - ``period_hit_count``：重保时间范围内产生条目的拦截（命中）次数总和；
       未配置范围时为 null。
 
@@ -1648,21 +1703,27 @@ def ticket_monitor_ban_live(
             "fetched_at": beijing_now().isoformat(),
         }
 
-    items, err, truncated = _fetch_full_blacklist(db)
+    # 全量拉取（内部已同步命中累计表；缓存命中时直接用表内累计值）
+    _, err, truncated = _fetch_full_blacklist(db)
     if err:
-        logger.warning("大屏封禁IP实时统计失败: %s", err)
+        logger.warning("大屏封禁IP统计失败: %s", err)
         return _payload(False, None, None, error=err)
+    # 历史累计口径：从命中累计表聚合（解封/到期条目仍计数，只增不减）
+    total = db.query(func.count(BanHitStat.id)).scalar() or 0
+    total_hit_count = db.query(func.coalesce(func.sum(BanHitStat.hit_total), 0)).scalar() or 0
     period_count = None
     period_hit_count = None
     if ps and pe:
-        in_period = [
-            it for it in items
-            if (t := _parse_effect_time(it.get("effectTime"))) is not None and ps <= t <= pe
-        ]
-        period_count = len(in_period)
-        period_hit_count = sum(_parse_hit_num(it.get("hit_num")) for it in in_period)
-    total_hit_count = sum(_parse_hit_num(it.get("hit_num")) for it in items)
-    return _payload(True, len(items), period_count, total_hit=total_hit_count,
+        period_q = db.query(BanHitStat).filter(
+            BanHitStat.effect_time.isnot(None),
+            BanHitStat.effect_time >= ps,
+            BanHitStat.effect_time <= pe,
+        )
+        period_count = period_q.count()
+        period_hit_count = (
+            period_q.with_entities(func.coalesce(func.sum(BanHitStat.hit_total), 0)).scalar() or 0
+        )
+    return _payload(True, total, period_count, total_hit=total_hit_count,
                     period_hit=period_hit_count, truncated=truncated)
 
 
@@ -1679,9 +1740,10 @@ def ticket_monitor_ban_intercept_trend(
 ):
     """重保期间每日拦截次数趋势（大屏右上「重保拦截趋势」卡专用）。
 
-    按日分桶统计重保时间范围内「产生」的黑名单条目命中（拦截）次数：
-    某日拦截次数 = effectTime 落在该日的条目 hit_num 之和，同时返回该日新增条目数
-    ban_count（辅助口径）。逐日求和与 ``/monitor/ban-live`` 的 ``period_hit_count``
+    按日分桶统计重保时间范围内「产生」的黑名单条目命中（拦截）次数（历史累计
+    口径，数据源 ban_hit_stats 命中累计表）：某日拦截次数 = 最近一次 effectTime
+    落在该日的条目累计命中（hit_total）之和，同时返回该日新增条目数 ban_count
+    （辅助口径）。逐日求和与 ``/monitor/ban-live`` 的 ``period_hit_count``
     完全一致（同一条目集合同一口径），两卡数字可互相核对。
 
     - 起止必须同时提供且起点不晚于终点（否则 HTTP 400）；
@@ -1709,7 +1771,8 @@ def ticket_monitor_ban_intercept_trend(
             "fetched_at": beijing_now().isoformat(),
         }
 
-    items, err, _ = _fetch_full_blacklist(db)
+    # 全量拉取（内部已同步命中累计表）+ 从累计表按日分桶（历史累计口径）
+    _, err, _ = _fetch_full_blacklist(db)
     if err:
         logger.warning("大屏重保拦截趋势获取黑名单失败: %s", err)
         return _payload(False, error=err)
@@ -1725,13 +1788,14 @@ def ticket_monitor_ban_intercept_trend(
 
     counts = [0] * total_days
     bans = [0] * total_days
-    for it in items:
-        t = _parse_effect_time(it.get("effectTime"))
-        if t is None:
-            continue
-        idx = (t.replace(hour=0, minute=0, second=0, microsecond=0) - first_day).days
+    for eff, hit_total in (
+        db.query(BanHitStat.effect_time, BanHitStat.hit_total)
+        .filter(BanHitStat.effect_time.isnot(None))
+        .all()
+    ):
+        idx = (eff.replace(hour=0, minute=0, second=0, microsecond=0) - first_day).days
         if 0 <= idx < total_days:
-            counts[idx] += _parse_hit_num(it.get("hit_num"))
+            counts[idx] += hit_total or 0
             bans[idx] += 1
     days = []
     for i in range(total_days):

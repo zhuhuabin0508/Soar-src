@@ -59,8 +59,9 @@ export const ticketApi = {
     return request(`/tickets/monitor${_qs(params)}`)
   },
   advanceTicket: (id, body) => request(`/tickets/${id}/advance`, { method: 'POST', body }),
-  // 封禁IP实时统计（大屏「封禁IP统计」卡独立轮询）：安博通阻断器黑名单全量总数
-  // + 全量拦截（命中 hit_num）次数总和 + 重保时间范围内产生的封禁条目数与拦截次数。
+  // 封禁IP统计（大屏「封禁IP统计」卡独立轮询，历史累计口径：解封/到期不回退）：
+  // 累计封禁条目（去重 blist）总数 + 全量拦截（命中 hit_num）累计次数总和
+  // + 重保时间范围内产生的封禁条目数与拦截次数。
   // periodStart/periodEnd 为 datetime-local 值（YYYY-MM-DDTHH:mm）；两者须同时传或
   // 同时不传（不传时 period_count / period_hit_count 为 null）。
   // 设备接口异常时后端仍返回 200 + ok=false + error，前端据此降级展示。

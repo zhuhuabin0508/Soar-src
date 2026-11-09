@@ -18,7 +18,8 @@
 //          峰值 / 均值关键节点标注；重保时间范围与刷新节奏和「封禁IP统计」卡共享、任一卡配置
 //          即时互通；独立轮询实时更新，接口异常保留最近快照降级展示）
 //   ⑥ 右下：封禁IP统计（2×2 网格四大数据项：上行封禁数量 / 下行拦截次数，左列总量 / 右列重保期间；
-//          总封禁IP数量 = 安博通黑名单实时全量总数；总封禁IP拦截次数 = 全量条目命中（hit_num）总和；
+//          历史累计口径：后端按 blist 去重累计命中（解封/到期条目仍计数，只增不减）；
+//          总封禁IP数量 = 累计封禁条目总数；总封禁IP拦截次数 = 条目累计命中总和；
 //          重保期间数量 / 拦截次数 = 重保时间范围内产生的封禁条目及其命中次数，范围经卡片头部
 //          设置按钮配置（未设置时橙色描边提示）、变更即刷新。
 //          卡片独立轮询（间隔可配 + 手动刷新），接口异常保留最近快照降级展示）
@@ -1745,9 +1746,9 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
       {/* 2×2 网格：上行 = 封禁数量（核心，同行水平对齐），下行 = 拦截次数；
           左列 = 总量口径（蓝系），右列 = 重保期间口径（橙系）；四块结构统一、数字基线对齐 */}
       <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-2">
-        {/* 总封禁IP数量 —— 安博通阻断器黑名单接口实时全量总数 */}
+        {/* 总封禁IP数量 —— 历史累计封禁条目总数（解封/到期仍计数） */}
         <BanStatBlock color={C.cyan} label="总封禁IP数量"
-          desc={demo ? '演示数据 · 黑名单全量' : '安博通黑名单 · 实时全量'}
+          desc={demo ? '演示数据 · 黑名单全量' : '安博通黑名单 · 历史累计'}
           value={total} loading={loading && !data} noValue={!demo && !data} />
         {/* 重保期间封禁IP数量 —— 重保时间范围内产生的封禁条目（范围可配置） */}
         <BanStatBlock color={C.accent} label="重保期间封禁IP数量"
@@ -1755,7 +1756,7 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
             ? `${fmtBanPeriod(period.start)} ~ ${fmtBanPeriod(period.end)}`
             : '未设置重保时间范围'}
           value={periodCount} loading={loading && !data} noValue={period == null || (!demo && !data)} />
-        {/* 总封禁IP拦截次数 —— 安博通黑名单全量条目命中（hit_num）次数总和 */}
+        {/* 总封禁IP拦截次数 —— 全量条目命中（hit_num）累计总和（解封/到期不回退） */}
         <BanStatBlock color={C.lightBlue} label="总封禁IP拦截次数" unit="次"
           desc={demo ? '演示数据 · 命中累计' : '安博通黑名单 · 命中累计'}
           value={totalHit} loading={loading && !data} noValue={!demo && !data} />
