@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # 大屏/监控聚合：Redis 快照 + Beat 刷新，降低主池只读压力
     DASHBOARD_CACHE_ENABLED: bool = True
     DASHBOARD_CACHE_TTL_SEC: int = 60
+    # True：API 进程内守护线程刷新 Redis/日表（不依赖单独起 Beat）；与 Beat 并存时靠 Redis 锁去重
+    DASHBOARD_BACKEND_REFRESH: bool = True
     # 资产清单匹配索引：Redis 版本号 + 快照，减少多 worker 各自全表 SELECT
     ASSET_INDEX_REDIS_ENABLED: bool = True
     # 日汇总表：Beat 滚动重算，大屏聚合优先读表

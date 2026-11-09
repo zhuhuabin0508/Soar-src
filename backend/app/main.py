@@ -322,6 +322,13 @@ async def lifespan(app: FastAPI):
         start_unban_scheduler()
     except Exception as exc:  # noqa: BLE001
         logger.warning("到期解封/审批超时调度器启动失败（忽略）: %s", exc)
+    # 大屏 Redis 快照 + 日汇总：随 backend 刷新（Beat 可选，见 DASHBOARD_BACKEND_REFRESH）
+    try:
+        from app.core.dashboard_refresh_scheduler import start_dashboard_refresh_scheduler
+
+        start_dashboard_refresh_scheduler()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("大屏/日汇总内嵌调度启动失败（忽略）: %s", exc)
     # 启动设备日志接收管理器（被动接入：启动 syslog/kafka 监听 + 接收健康检查）
     try:
         from app.core.log_receiver_manager import start_log_receiver_manager

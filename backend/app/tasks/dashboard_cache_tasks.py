@@ -48,9 +48,8 @@ def _refresh_one(
         release_refresh_lock(cache_key)
 
 
-@celery_app.task(name="refresh_dashboard_cache")
-def refresh_dashboard_cache() -> dict[str, bool]:
-    """刷新首批大屏/监控快照（Beat 约每 60s 一次）。"""
+def execute_refresh_dashboard_cache() -> dict[str, bool]:
+    """刷新首批大屏/监控快照（Celery 与 backend 内嵌调度共用）。"""
     if not settings.DASHBOARD_CACHE_ENABLED:
         return {"skipped": True}
 
@@ -79,3 +78,9 @@ def refresh_dashboard_cache() -> dict[str, bool]:
         ),
     }
     return results
+
+
+@celery_app.task(name="refresh_dashboard_cache")
+def refresh_dashboard_cache() -> dict[str, bool]:
+    """Celery Beat 入口（可选；未起 Beat 时由 API 内嵌调度执行）。"""
+    return execute_refresh_dashboard_cache()
