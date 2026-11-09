@@ -72,6 +72,9 @@ export const banWorkflowApi = {
   // 安博通黑名单单个 IP 精确查询（仅 admin）：404=未封禁属业务结果，异常按 502 报错
   anbotongBlacklistQuery: (ip) =>
     request(`/ban-workflow/anbotong/blacklist/query?ip=${encodeURIComponent(ip)}`),
+  // 黑名单总条数（设备接口无 total，后端全量计数并缓存 60 秒）
+  anbotongBlacklistCount: () =>
+    request('/ban-workflow/anbotong/blacklist/count'),
   // 安博通黑名单行内解封：从设备移除条目；设备 404 按幂等成功处理
   unbanAnbotongBlacklist: (ip, reason) =>
     request(`/ban-workflow/anbotong/blacklist/unban?ip=${encodeURIComponent(ip)}`, {
@@ -81,6 +84,23 @@ export const banWorkflowApi = {
   // 匹配规则与工单安全上下文完全同口径（发现优先、按来源去重）
   assetMatch: (ips) =>
     request(`/ban-workflow/asset-match?ips=${encodeURIComponent(ips.join(','))}`),
+  // 安博通全局白名单：本地同步列表（后台每 5 秒自动从设备拉取）
+  anbotongWhitelist: (params = {}) =>
+    request(`/ban-workflow/anbotong/whitelist${qs(params)}`),
+  // 立即从安博通阻断器全量拉取白名单并刷新本地缓存
+  syncAnbotongWhitelist: () =>
+    request('/ban-workflow/anbotong/whitelist/sync', { method: 'POST' }),
+  // 手动新增白名单（1~100 条）：设备成功后即时更新本地列表
+  createAnbotongWhitelist: (entries) =>
+    request('/ban-workflow/anbotong/whitelist', { method: 'POST', body: { entries } }),
+  // 批量删除白名单：设备逐条删除，404 按已删除处理
+  deleteAnbotongWhitelist: (wlists, reason) =>
+    request('/ban-workflow/anbotong/whitelist/delete', {
+      method: 'POST', body: { wlists, reason },
+    }),
+  // 手动封禁白名单匹配预检：IP/CIDR/范围/域名，只读本地索引，毫秒级返回
+  anbotongWhitelistMatch: (targets) =>
+    request(`/ban-workflow/anbotong/whitelist/match?targets=${encodeURIComponent(targets.join(','))}`),
   // 同步安博通封禁：下发前的资产匹配预览（不产生设备调用）
   syncPreview: (ids, deviceId = null) => request('/ban-workflow/banned-ips/sync-preview', {
     method: 'POST', body: { ids, device_id: deviceId },

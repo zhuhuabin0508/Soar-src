@@ -10,6 +10,7 @@ from app.models.alert_handle_log import AlertHandleLog
 from app.models.alert_rule import AlertRule
 from app.models.alert_rule_group import AlertRuleGroup
 from app.models.alert_rule_hit import AlertRuleHit
+from app.models.anbotong_whitelist import AnbotongWhitelist
 from app.models.asset import (
     Asset,
     AssetTypeTemplate,
@@ -148,6 +149,7 @@ __all__ = [
     "AlertRule",
     "AlertRuleGroup",
     "AlertRuleHit",
+    "AnbotongWhitelist",
     "ParseStrategy",
     "ParseStrategyVersion",
     "ParseErrorQueue",

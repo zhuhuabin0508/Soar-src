@@ -96,31 +96,50 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
     # （调用方未传参时用默认值回填，避免占位符原样下发导致设备 4xx）
     defaults: dict[str, Any] = {}
     value_maps: dict[str, dict] = {}
+    param_types: dict[str, str] = {}
+    schema_items: list[dict] = []
     try:
         for _p in json.loads(action.params_schema or "[]"):
             if not isinstance(_p, dict):
                 continue
+            schema_items.append(_p)
             _name = _p.get("name")
             if not _name:
                 continue
-            if _p.get("default") not in (None, ""):
+            # 显式声明的默认值都要回填（含空串），否则 {{param}} 占位符会
+            # 原样残留在请求体中，被当作字面量下发给设备
+            if "default" in _p:
                 defaults[_name] = _p["default"]
             if isinstance(_p.get("map_values"), dict):
                 value_maps[_name] = _p["map_values"]
+            param_types[_name] = str(_p.get("type") or "").lower()
     except Exception:  # noqa: BLE001
         logger.warning("解析动作 params_schema 默认值失败，忽略: action_id=%s", action.id)
+        schema_items = []
+
+    # 必填参数校验：调用方未传且无默认值时直接失败，避免占位符原样下发
+    for _p in schema_items:
+        _name = _p.get("name")
+        if not _p.get("required") or not _name:
+            continue
+        _v = params.get(_name)
+        if (_v is None or (isinstance(_v, str) and not _v.strip())) and \
+                defaults.get(_name) in (None, ""):
+            raise ValueError(f"参数「{_p.get('label') or _name}」不能为空")
 
     # 1) 拼接 URL（支持 {param} 路径参数占位符：从 params 取值替换并剔除，
     #    调用方未传时回填 schema 默认值；剩余参数继续按 GET query / POST body
     #    传递；无占位符的动作行为不变）
     base_url = (device.api_url or "").rstrip("/")
     api_path = (action.api_path or "").lstrip("/")
+    path_values: dict[str, Any] = {}
     if "{" in api_path:
         for _k in re.findall(r"\{(\w+)\}", api_path):
             _v = params.pop(_k, None)
             if _v is None or str(_v) == "":
                 _v = defaults.get(_k)
             if _v is not None and str(_v) != "":
+                path_values[_k] = _v
                 api_path = api_path.replace(f"{{{_k}}}", _quote(str(_v), safe=""))
     url = f"{base_url}/{api_path}" if api_path else base_url
     # SSRF 防护：动作执行出口兜底校验（协议白名单 + 云元数据黑名单）
@@ -165,6 +184,9 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
         # map_values 用于设备语义与平台约定不一致时的取值映射，
         # 例如平台用 duration=0 表示永久，而安博通要求 -1，则声明 {"0": "-1"}。
         merged = dict(defaults)
+        # 路径参数同时出现在请求体模板时（如 PUT /wlist/{wlist} 要求 body.wlist
+        # 与 URL 一致），把已解析的路径值并入，避免占位符残留
+        merged.update(path_values)
         for k, v in params.items():
             # 空值视为「未填写」：有默认值时保留默认值，避免把默认值覆盖成空串；
             # 无默认值时仍按空串替换，保持原有行为。
@@ -175,7 +197,37 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
             if k in merged:
                 merged[k] = mapping.get(str(merged[k]).strip(), merged[k])
         for k, v in merged.items():
-            body_str = body_str.replace(f"{{{{{k}}}}}", str(v))
+            _type = param_types.get(k, "")
+            if _type in ("integer", "int"):
+                # 设备要求 JSON 整数（不加引号），统一转成 int 后按裸值渲染
+                try:
+                    _raw = str(int(str(v).strip()))
+                except (TypeError, ValueError):
+                    raise ValueError(f"参数「{k}」必须是整数，当前值: {v!r}") from None
+            elif _type == "number":
+                # number 允许小数（如带宽 1.5），整数值仍按裸整数渲染
+                try:
+                    _num = float(str(v).strip())
+                except (TypeError, ValueError):
+                    raise ValueError(f"参数「{k}」必须是数字，当前值: {v!r}") from None
+                _raw = str(int(_num)) if _num.is_integer() else str(_num)
+            elif _type in ("array", "object", "json"):
+                _val = v
+                if isinstance(_val, str):
+                    try:
+                        _val = json.loads(_val)
+                    except ValueError:
+                        raise ValueError(
+                            f"参数「{k}」必须是合法的 JSON 数组/对象"
+                        ) from None
+                if _type == "array" and not isinstance(_val, list):
+                    raise ValueError(f"参数「{k}」必须是 JSON 数组")
+                if _type == "object" and not isinstance(_val, dict):
+                    raise ValueError(f"参数「{k}」必须是 JSON 对象")
+                _raw = json.dumps(_val, ensure_ascii=False)
+            else:
+                _raw = str(v)
+            body_str = body_str.replace(f"{{{{{k}}}}}", _raw)
         try:
             req_body = json.loads(body_str)
         except Exception:  # noqa: BLE001

@@ -88,6 +88,28 @@ export default function AnbotongBlacklist({ embedded = false }) {
   const blSeq = useRef(0)
   const blMounted = useRef(true)
   useEffect(() => () => { blMounted.current = false }, [])
+  // 总条数统计：设备列表接口不返回 total，由后端全量计数（缓存 60 秒）
+  const [blTotal, setBlTotal] = useState({ total: null, loading: false, error: '', fetchedAt: null })
+  const blTotalSeq = useRef(0)
+  const blTotalInFlight = useRef(false)
+  const loadBlacklistTotal = useCallback(() => {
+    if (blTotalInFlight.current) return // 避免自动刷新与手动重试并发触发全量统计
+    blTotalInFlight.current = true
+    const seq = ++blTotalSeq.current
+    setBlTotal((s) => ({ ...s, loading: true }))
+    banWorkflowApi.anbotongBlacklistCount()
+      .then((res) => {
+        if (!blMounted.current || seq !== blTotalSeq.current) return
+        setBlTotal({
+          total: res.total ?? null, loading: false, error: '', fetchedAt: res.fetched_at || null,
+        })
+      })
+      .catch((e) => {
+        if (!blMounted.current || seq !== blTotalSeq.current) return
+        setBlTotal({ total: null, loading: false, error: e.message || '总条数统计失败', fetchedAt: null })
+      })
+      .finally(() => { blTotalInFlight.current = false })
+  }, [])
   const loadBlacklist = useCallback((pageArg, countArg) => {
     const p = Math.max(1, pageArg ?? blPageRef.current)
     const c = Math.max(1, countArg ?? blPageSizeRef.current)
@@ -126,13 +148,18 @@ export default function AnbotongBlacklist({ embedded = false }) {
   useEffect(() => {
     if (!canView) return
     loadBlacklist()
-  }, [canView, loadBlacklist])
-  // 自动刷新：按当前间隔轮询当前页；调整间隔时重建 timer，embedded 卸载（切 Tab）清理
+    loadBlacklistTotal()
+  }, [canView, loadBlacklist, loadBlacklistTotal])
+  // 自动刷新：按当前间隔轮询当前页 + 总条数（后端缓存，不会每次扫设备）；
+  // 调整间隔时重建 timer，embedded 卸载（切 Tab）清理
   useEffect(() => {
     if (!canView || !blacklistRefreshMs) return undefined
-    const timer = setInterval(() => loadBlacklist(), blacklistRefreshMs)
+    const timer = setInterval(() => {
+      loadBlacklist()
+      loadBlacklistTotal()
+    }, blacklistRefreshMs)
     return () => clearInterval(timer)
-  }, [canView, blacklistRefreshMs, loadBlacklist])
+  }, [canView, blacklistRefreshMs, loadBlacklist, loadBlacklistTotal])
   const changeBlacklistRefresh = (value) => {
     const ms = Number(value)
     setBlacklistRefreshMs(ms)
@@ -180,6 +207,8 @@ export default function AnbotongBlacklist({ embedded = false }) {
           : `IP ${ip} 已解封（已从安博通阻断器黑名单移除）`)
         // 刷新当前页黑名单，更新设备侧数据状态
         loadBlacklist()
+        // 条目已从设备移除：同步刷新总条数（后端已失效统计缓存）
+        loadBlacklistTotal()
         // 单条查询模式下同步刷新该条结果（解封后应变更为「不在黑名单中」）
         // 后端返回的 ip 已归一化为小写域名，这里忽略大小写比较，避免大写域名不刷新
         if (blQuery && String(blQuery.ip || '').toLowerCase() === ip.toLowerCase()) {
@@ -188,7 +217,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
       })
       .catch((e) => toast.error(e.message || '解封失败，列表数据保持不变'))
       .finally(() => setUnbanningIp(''))
-  }, [unbanningIp, blQuery, loadBlacklist])
+  }, [unbanningIp, blQuery, loadBlacklist, loadBlacklistTotal])
 
   // 列表列：末尾追加解封操作（冻结右侧，与封禁工作台操作列同风格）
   const columns = useMemo(() => {
@@ -217,18 +246,23 @@ export default function AnbotongBlacklist({ embedded = false }) {
     ]
   }, [canEdit, unbanningIp, doUnban])
 
+  // 总页数（总条数未知时降级为按 page_full 判断下一页）
+  const blTotalPages = blTotal.total != null
+    ? Math.max(1, Math.ceil(blTotal.total / blacklistPageSize))
+    : null
+
   const content = (
     <Card>
       {/* 头部：标题 + 设备标识 ｜ 右侧工具区（自动刷新 + 立即刷新，均次级操作用 ghost） */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex min-w-0 shrink-0 items-center gap-2">
           <ShieldBan className="h-4 w-4 text-primary" />
-          <span className="text-sm font-semibold text-foreground">安博通黑名单（设备实时）</span>
+          <span className="whitespace-nowrap text-sm font-semibold text-foreground">安博通黑名单（设备实时）</span>
           {blacklist.device && (
             <Badge variant="info">{blacklist.device.name}</Badge>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           <span className="text-xs text-muted-foreground">自动刷新</span>
           <CompactSelect
             size="sm"
@@ -247,7 +281,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
       </div>
       {/* 筛选栏：IP 精确查询为本区域唯一主操作；查询模式提供返回列表出口 */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <div className="relative w-64">
+        <div className="relative w-72 max-w-full">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <input
             className={`${inputBaseCls} w-full pl-8 pr-8`}
@@ -279,7 +313,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
       {/* 次级统计信息（弱化层级，不与标题/操作抢视觉重心） */}
       <div className="mt-2 text-xs text-muted-foreground">
         {blacklist.paginated
-          ? `第 ${blacklist.page} 页 · 本页 ${blacklist.items.length} 条${blacklist.page_full ? '' : ' · 已到末页'}`
+          ? `本页 ${blacklist.items.length} 条${blacklist.page_full ? '' : ' · 已到末页'}`
           : `共 ${blacklist.items.length} 条`}
         {' · '}更新于 {fmtTime(blacklist.fetched_at)}
         {blacklistRefreshMs
@@ -319,39 +353,59 @@ export default function AnbotongBlacklist({ embedded = false }) {
           emptyIcon={Inbox}
         />
       </div>
-      {/* 底部分页栏：与数据区紧贴（B 端查询列表页惯例）；查询模式隐藏，避免与单条详情混淆 */}
+      {/* 底部分页栏：左侧总页数/总条数，右侧每页条数与翻页；查询模式隐藏，避免与单条详情混淆 */}
       {blacklist.paginated && !blQuery && (
-        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="text-xs text-muted-foreground">每页</span>
-            {/* 不指定宽度：CompactSelect sm 触发器自带 min-w，外层窄于内部
-                min-width 时按钮会溢出容器、与右侧按钮重叠 */}
-            <CompactSelect
-              size="sm"
-              className="shrink-0"
-              value={String(blacklistPageSize)}
-              onChange={(e) => changeBlacklistPageSize(e.target.value)}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {blTotal.total != null
+              ? `第 ${blacklistPage} / ${blTotalPages} 页 · 共 ${blTotal.total} 条`
+              : blTotal.loading
+                ? `第 ${blacklistPage} 页 · 总条数统计中…`
+                : `第 ${blacklistPage} 页 · 总条数暂不可用`}
+            {!blTotal.loading && blTotal.error && (
+              <button
+                type="button"
+                className="ml-1 text-primary transition hover:underline"
+                onClick={loadBlacklistTotal}
+              >
+                重试
+              </button>
+            )}
+          </span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-xs text-muted-foreground">每页</span>
+              {/* 不指定宽度：CompactSelect sm 触发器自带 min-w，外层窄于内部
+                  min-width 时按钮会溢出容器、与右侧按钮重叠 */}
+              <CompactSelect
+                size="sm"
+                className="shrink-0"
+                value={String(blacklistPageSize)}
+                onChange={(e) => changeBlacklistPageSize(e.target.value)}
+              >
+                {BLACKLIST_PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={String(n)}>{n} 条</option>
+                ))}
+              </CompactSelect>
+            </div>
+            <Button
+              size="sm" variant="ghost" className="shrink-0"
+              disabled={blacklistPage <= 1 || blacklistLoading}
+              onClick={() => gotoBlacklistPage(blacklistPage - 1)}
             >
-              {BLACKLIST_PAGE_SIZE_OPTIONS.map((n) => (
-                <option key={n} value={String(n)}>{n} 条</option>
-              ))}
-            </CompactSelect>
+              上一页
+            </Button>
+            <Button
+              size="sm" variant="ghost" className="shrink-0"
+              disabled={
+                (blTotalPages != null ? blacklistPage >= blTotalPages : !blacklist.page_full)
+                || blacklistLoading
+              }
+              onClick={() => gotoBlacklistPage(blacklistPage + 1)}
+            >
+              下一页
+            </Button>
           </div>
-          <Button
-            size="sm" variant="ghost" className="shrink-0"
-            disabled={blacklistPage <= 1 || blacklistLoading}
-            onClick={() => gotoBlacklistPage(blacklistPage - 1)}
-          >
-            上一页
-          </Button>
-          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">第 {blacklistPage} 页</span>
-          <Button
-            size="sm" variant="ghost" className="shrink-0"
-            disabled={!blacklist.page_full || blacklistLoading}
-            onClick={() => gotoBlacklistPage(blacklistPage + 1)}
-          >
-            下一页
-          </Button>
         </div>
       )}
     </Card>

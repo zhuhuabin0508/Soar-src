@@ -24,8 +24,9 @@ import { confirm } from './ConfirmDialog'
 import { Drawer } from './Dialog'
 import { Button } from './ui'
 import { inputCls, hintCls } from './property/FormControls'
-import { guardNavPermission } from '../utils/permissions'
+import { guardNavPermission, hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
+import banWorkflowApi from '../api/banWorkflow'
 import { exportEnrichmentXlsx } from '../utils/ticketEnrichExport'
 import { flatFieldDefs } from '../utils/ticketFlow'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -472,6 +473,21 @@ const banFromCache = (ticketId, ips) => {
   return m
 }
 
+// ============ 安博通白名单匹配：会话级缓存 ============
+// 白名单匹配只读后端本地索引（每 5 秒从设备同步），毫秒级返回；端点单次最多 100 个目标。
+const WL_CHUNK = 100
+const _wlCache = new Map()      // `${ticketId}::${ip}` → { matched, match_type, entries, entry_total, truncated }
+
+const wlCacheKey = (ticketId, ip) => `${ticketId}::${ip}`
+const wlFromCache = (ticketId, ips) => {
+  const m = new Map()
+  ips.forEach((ip) => {
+    const st = _wlCache.get(wlCacheKey(ticketId, ip))
+    if (st) m.set(ip, st)
+  })
+  return m
+}
+
 // ============ 主组件 ============
 
 const VIRTUAL_THRESHOLD = 50     // 超过后启用虚拟滚动 + 详情抽屉
@@ -502,6 +518,7 @@ const ipCompare = (a, b) => {
 const FILTER_DEFS = [
   { key: 'malicious', label: '仅恶意' },
   { key: 'ban', label: '黑名单命中' },
+  { key: 'whitelist', label: '白名单命中' },
   { key: 'severityHigh', label: '高危情报' },
   { key: 'asset', label: '资产命中' },
   { key: 'assetCritical', label: '重要资产' },
@@ -509,11 +526,12 @@ const FILTER_DEFS = [
   { key: 'failed', label: '查询失败' },
 ]
 
-const matchesFilters = (e, banMap, filters) => {
+const matchesFilters = (e, banMap, filters, wlMap = null) => {
   for (const f of filters) {
     const ban = banMap.get(e.ip)
     if (f === 'malicious' && !e.threat?.is_malicious) return false
     if (f === 'ban' && !ban?.banned) return false
+    if (f === 'whitelist' && !wlMap?.get(e.ip)?.matched) return false
     if (f === 'severityHigh' && !isHighSeverity(e.threat?.severity)) return false
     if (f === 'asset' && !e.asset?.matched) return false
     if (f === 'assetCritical' && !isHighCriticality(e)) return false
@@ -527,8 +545,12 @@ const FILTER_CHIP_CLS = {
   red: 'border-red-500/40 bg-red-500/10 text-red-600',
   amber: 'border-amber-500/40 bg-amber-500/10 text-amber-600',
   primary: 'border-primary/40 bg-primary/10 text-primary',
+  emerald: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600',
   muted: 'border-border bg-muted text-muted-foreground',
 }
+
+// 安博通白名单匹配类型（后端 match_type：exact 精确条目 / contained 被 CIDR、地址段包含）
+const WL_MATCH_LABEL = { exact: '精确匹配', contained: '包含匹配' }
 // 查询失败为「情报失败 ∪ 资产失败」并集，统计与筛选复用同一口径
 const FAILED_FILTER = new Set(['failed'])
 
@@ -591,6 +613,13 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
   const [banDeviceError, setBanDeviceError] = useState(null)
   const autoQueriedRef = useRef(false)
 
+  // ===== 安博通白名单匹配（只读后端本地同步索引；无 ban_workflow:view 不查询） =====
+  const canWhitelist = hasPermission('ban_workflow', 'view')
+  const [wlMap, setWlMap] = useState(() => wlFromCache(ticket.id, entries.map((e) => e.ip)))
+  const [wlProgress, setWlProgress] = useState({ loading: false, done: 0, total: 0, error: '' })
+  // 已自动补查过的 IP（失败不自动重试，避免接口异常时无线循环；手动重试不受限）
+  const wlAttemptedRef = useRef(new Set())
+
   const [requerying, setRequerying] = useState(false)
   const scrollRef = useRef(null)
 
@@ -612,8 +641,10 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
       pending: s.pending ?? entries.some((e) => e.pending),
       totalOriginal: s.total_original,
       banned,
+      whitelisted: entries.reduce((n, e) => n + (wlMap.get(e.ip)?.matched ? 1 : 0), 0),
+      whitelistQueried: entries.filter((e) => wlMap.has(e.ip)).length,
     }
-  }, [enrichment, entries, banMap])
+  }, [enrichment, entries, banMap, wlMap])
 
   // ===== 黑名单批量查询（20/批 × 并发 2，渐进渲染） =====
   const runBanQuery = useCallback(async (ips, opts = {}) => {
@@ -672,13 +703,60 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
     if (missing.length) runBanQuery(missing, { silent: true })
   }, [isV2, entries, ticket.id, runBanQuery])
 
+  // ===== 安博通白名单匹配 =====
+  const runWhitelistQuery = useCallback(async (ips) => {
+    const list = [...new Set((ips || []).filter(Boolean))]
+    if (!list.length) return
+    setWlProgress({ loading: true, done: 0, total: list.length, error: '' })
+    let done = 0
+    try {
+      for (let i = 0; i < list.length; i += WL_CHUNK) {
+        const chunk = list.slice(i, i + WL_CHUNK)
+        // eslint-disable-next-line no-await-in-loop
+        const res = await banWorkflowApi.anbotongWhitelistMatch(chunk)
+        const byIp = new Map((res?.items || []).map((it) => [it.target, {
+          matched: !!it.matched,
+          match_type: it.match_type || null,
+          entries: it.entries || [],
+          entry_total: it.entry_total ?? 0,
+          truncated: !!it.truncated,
+        }]))
+        chunk.forEach((ip) => {
+          _wlCache.set(wlCacheKey(ticket.id, ip), byIp.get(ip) || {
+            matched: false, match_type: null, entries: [], entry_total: 0, truncated: false,
+          })
+        })
+        done += chunk.length
+        setWlMap(wlFromCache(ticket.id, entries.map((e) => e.ip)))
+        setWlProgress((p) => ({ ...p, done }))
+      }
+      setWlProgress((p) => ({ ...p, loading: false }))
+    } catch (e) {
+      // 匹配失败不阻断安全上下文其余信息展示：展示错误并支持重试
+      setWlProgress((p) => ({ ...p, loading: false, error: e?.message || '安博通白名单匹配失败' }))
+    }
+  }, [ticket.id, entries])
+
+  // 进入 Tab / 重新研判新增 IP 时自动匹配未查询过的 IP（缓存跳过已查过的）
+  useEffect(() => {
+    if (!isV2 || !canWhitelist || wlProgress.loading) return
+    const missing = entries
+      .map((e) => e.ip)
+      .filter((ip) => !_wlCache.has(wlCacheKey(ticket.id, ip)))
+      .filter((ip) => !wlAttemptedRef.current.has(wlCacheKey(ticket.id, ip)))
+    if (!missing.length) return
+    // 先登记再查询：失败后不会因 loading 变化反复自动重试
+    missing.forEach((ip) => wlAttemptedRef.current.add(wlCacheKey(ticket.id, ip)))
+    runWhitelistQuery(missing)
+  }, [isV2, canWhitelist, entries, ticket.id, runWhitelistQuery, wlProgress.loading])
+
   // ===== 筛选 / 排序 / 分组视图 =====
   const filtered = useMemo(() => {
-    const list = entries.filter((e) => matchesFilters(e, banMap, filters))
+    const list = entries.filter((e) => matchesFilters(e, banMap, filters, wlMap))
     if (sort === 'risk') list.sort((a, b) => riskRank(a, banMap) - riskRank(b, banMap) || ipCompare(a.ip, b.ip))
     else if (sort === 'ip') list.sort((a, b) => ipCompare(a.ip, b.ip))
     return list
-  }, [entries, filters, sort, banMap])
+  }, [entries, filters, sort, banMap, wlMap])
 
   const roleGroups = useMemo(() => {
     // 同一 IP 跨源/目的双角色时只在首个所属分组展示一行（行内"双"标记 + 详情标注完整角色），
@@ -821,6 +899,9 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
             {ban?.banned && (
               <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">封禁中</span>
             )}
+            {wlMap.get(e.ip)?.matched && (
+              <span className="whitespace-nowrap rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600">白名单</span>
+            )}
             {e.asset?.matched ? (
               <span className={`inline-flex min-w-0 items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] font-medium ${isHighCriticality(e) ? 'bg-amber-500/10 text-amber-600' : 'bg-primary/10 text-primary'}`}>
                 {e.asset.asset_name || '资产'}{e.asset.source_label ? `·${e.asset.source_label}` : ''}
@@ -947,6 +1028,23 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
           {banDeviceError && !banProgress.loading && (
             <span className="text-amber-600" title={banDeviceError}>安博通阻断器不可用</span>
           )}
+          {canWhitelist && (
+            <>
+              <span className="ml-2 shrink-0 text-muted-foreground">白名单（本地实时）：</span>
+              <StatChip tone="emerald" active={filters.has('whitelist')} onClick={() => applyChipFilter('whitelist')}>命中 {stats.whitelisted}</StatChip>
+              {wlProgress.loading && (
+                <span className="inline-flex items-center gap-1 text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />校验中 {wlProgress.done}/{wlProgress.total}
+                </span>
+              )}
+              {wlProgress.error && !wlProgress.loading && (
+                <button type="button" onClick={() => runWhitelistQuery(entries.map((e) => e.ip))}
+                  className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 transition hover:bg-amber-500/20">
+                  <RefreshCw className="h-3 w-3" />白名单校验重试
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
 
@@ -959,6 +1057,52 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
           deviceError={banDeviceError}
           onRetry={() => runBanQuery(entries.map((e) => e.ip))}
         />
+        {/* 安博通白名单匹配结果（只读本地同步索引；命中项在行内展示"白名单"徽标） */}
+        {canWhitelist && (
+          <div className="mt-2 rounded-md border border-emerald-500/25 bg-emerald-500/[0.04] px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              <span className="font-medium text-foreground">安博通白名单匹配</span>
+              {wlProgress.loading ? (
+                <span className="inline-flex items-center gap-1 text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />校验中 {wlProgress.done}/{wlProgress.total}
+                </span>
+              ) : wlProgress.error ? (
+                <>
+                  <span className="text-amber-600">校验失败：{wlProgress.error}</span>
+                  <button type="button" onClick={() => runWhitelistQuery(entries.map((e) => e.ip))}
+                    className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 transition hover:bg-amber-500/20">
+                    <RefreshCw className="h-3 w-3" />重试
+                  </button>
+                </>
+              ) : (
+                <span className="text-muted-foreground">
+                  已校验 {stats.whitelistQueried}/{stats.total} 个 IP，命中
+                  <span className={`ml-1 font-semibold ${stats.whitelisted ? 'text-emerald-600' : 'text-foreground'}`}>{stats.whitelisted}</span>
+                  个
+                </span>
+              )}
+            </div>
+            {!wlProgress.loading && !wlProgress.error && stats.whitelisted > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {entries.filter((e) => wlMap.get(e.ip)?.matched).slice(0, 12).map((e) => {
+                  const st = wlMap.get(e.ip)
+                  return (
+                    <span key={e.ip} className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] text-emerald-700">
+                      {e.ip}
+                      <span className="font-sans text-[10px] text-emerald-600/80">
+                        {WL_MATCH_LABEL[st.match_type] || '命中'}{st.entry_total > 1 ? ` · ${st.entry_total} 条` : ''}
+                      </span>
+                    </span>
+                  )
+                })}
+                {stats.whitelisted > 12 && (
+                  <span className="text-[11px] text-muted-foreground">等 {stats.whitelisted} 个</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* L2 工具栏 + L3 列表（展开后） */}
@@ -1103,6 +1247,11 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                               <EnrichEntryDetail entry={e} roleText={roleText} onFill={onFill}
                                 liteHint={e.detail === 'lite'}
                                 onRequery={() => requeryIps([e.ip])} />
+                              {wlMap.get(e.ip) && (
+                                <div className="mt-3">
+                                  <WhitelistStatusDetail ip={e.ip} st={wlMap.get(e.ip)} />
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1151,6 +1300,9 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                   onRequery={() => requeryIps([drawerEntry.ip])} />
                 {banMapForEntry(drawerEntry) && (
                   <BanStatusDetail ip={drawerEntry.ip} st={banMapForEntry(drawerEntry)} />
+                )}
+                {wlMap.get(drawerEntry.ip) && (
+                  <WhitelistStatusDetail ip={drawerEntry.ip} st={wlMap.get(drawerEntry.ip)} />
                 )}
               </>
             )}
@@ -1212,6 +1364,64 @@ function BanStatusDetail({ ip, st }) {
         </div>
       ) : (
         <p className="text-[13px] text-muted-foreground">设备上未找到该 IP 的黑名单条目</p>
+      )}
+    </div>
+  )
+}
+
+// ============ 安博通白名单单 IP 详情（命中条目来自后端本地同步索引） ============
+
+function WhitelistStatusDetail({ ip, st }) {
+  if (!st) return null
+  return (
+    <div className={`rounded-md border p-3 ${st.matched ? 'border-emerald-500/30 bg-emerald-500/[0.04]' : 'border-border bg-secondary'}`}>
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-foreground">
+        <ShieldCheck className={`h-3.5 w-3.5 ${st.matched ? 'text-emerald-600' : 'text-primary'}`} />安博通白名单
+        {st.matched ? (
+          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600">
+            命中{WL_MATCH_LABEL[st.match_type] ? ` · ${WL_MATCH_LABEL[st.match_type]}` : ''}
+          </span>
+        ) : (
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">未命中</span>
+        )}
+        <span className="ml-auto font-mono text-[11px] font-normal text-muted-foreground">{ip}</span>
+      </div>
+      {st.matched ? (
+        <div className="space-y-1.5">
+          {st.entries.length === 0 ? (
+            <p className="text-[13px] text-muted-foreground">命中白名单，但未返回条目详情（可能已同步变更，请重试）</p>
+          ) : st.entries.map((en, i) => (
+            <div key={`${en.wlist || i}`} className="grid grid-cols-1 gap-x-6 gap-y-1 rounded-md bg-muted p-2.5 text-[12px] leading-relaxed sm:grid-cols-2">
+              <div className="flex min-w-0 items-start gap-2 sm:col-span-2">
+                <span className="shrink-0 text-muted-foreground">白名单条目：</span>
+                <span className="min-w-0 break-all font-mono text-foreground">{en.wlist || '--'}</span>
+              </div>
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="shrink-0 text-muted-foreground">启用：</span>
+                <span className="text-foreground">{fmtBanEntryVal('enable', en.enable)}</span>
+              </div>
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="shrink-0 text-muted-foreground">剩余时长：</span>
+                <span className="text-foreground">{fmtBanEntryVal('leftTime', en.leftTime)}</span>
+              </div>
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="shrink-0 text-muted-foreground">命中次数：</span>
+                <span className="text-foreground">{en.hit_num ?? '--'}</span>
+              </div>
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="shrink-0 text-muted-foreground">原因：</span>
+                <span className="min-w-0 break-words text-foreground">{en.reason || '--'}</span>
+              </div>
+            </div>
+          ))}
+          {st.truncated && (
+            <p className="text-[11px] text-muted-foreground">
+              仅展示前 {st.entries.length} 条，共命中 {st.entry_total} 条
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-[13px] text-muted-foreground">该 IP 未命中安博通白名单，仍按黑名单与资产匹配结果判断风险。</p>
       )}
     </div>
   )
