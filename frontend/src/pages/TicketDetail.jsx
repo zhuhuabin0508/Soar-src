@@ -243,11 +243,15 @@ export default function TicketDetail() {
       .then((res) => {
         if (ticketReqSeq.current !== seq) return
         setTicket(res)
-        // 初始化当前节点表单（含匹配规则下的扩展字段 default）
+        // 初始化当前节点表单（含匹配规则下的扩展字段 default）；
+        // 被回退重新回到本节点时，优先回显该节点上次提交的字段值（restore_values）
         if (res.can_handle && res.current_node) {
+          const restored = res.restore_values || null
           const init = {}
           flatFieldDefs(res.current_node.fields).forEach((f) => {
-            let v = f.default ?? ''
+            const hasRestored = !!restored
+              && Object.prototype.hasOwnProperty.call(restored, f.key)
+            let v = hasRestored ? restored[f.key] : (f.default ?? '')
             if (f.type === 'switch') v = v === true || v === 'true' || v === '是'
             init[f.key] = v
           })
