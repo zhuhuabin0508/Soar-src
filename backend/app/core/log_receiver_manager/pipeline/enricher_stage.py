@@ -88,12 +88,21 @@ class AssetEnricher:
 _ASSET_INDEX_TTL_S = 600  # 10 分钟；资产写接口通过 invalidate_asset_index 主动失效
 _asset_index_lock = threading.Lock()
 _asset_index_cache: dict = {"built_at": 0.0, "single": {}, "nets": []}
+_asset_index_version: int = -1
 
 
 def invalidate_asset_index() -> None:
-    """资产数据变更后主动失效索引缓存（下次匹配时重建）。"""
+    """资产数据变更后主动失效索引缓存（跨进程 bump 版本 + 本进程失效）。"""
+    try:
+        from app.core.asset_index_cache import bump_asset_index_version
+
+        bump_asset_index_version()
+    except Exception:  # noqa: BLE001
+        logger.debug("asset index version bump skipped", exc_info=True)
     with _asset_index_lock:
         _asset_index_cache["built_at"] = 0.0
+    global _asset_index_version
+    _asset_index_version = -1
 
 
 # 多值分隔符：与导入校验 ip_validation.split_ip_expression、检索层 _value_to_intervals 一致
@@ -248,13 +257,9 @@ class AssetLibEnricher:
         try:
             if norm.get_field("relate_asset_id"):
                 return  # 已有关联资产，跳过
-            with _asset_index_lock:
-                if time.time() - _asset_index_cache["built_at"] > _ASSET_INDEX_TTL_S:
-                    _build_asset_index(db)
-                index = {
-                    "single": _asset_index_cache["single"],
-                    "nets": _asset_index_cache["nets"],
-                }
+            from app.core.asset_index_cache import ensure_asset_index
+
+            index = ensure_asset_index(db)
             for field in ("host_ip", "src_ip", "dst_ip"):
                 val = norm.get_field(field)
                 if not val:

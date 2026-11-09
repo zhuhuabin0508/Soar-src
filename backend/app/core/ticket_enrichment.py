@@ -73,13 +73,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.log_receiver_manager.pipeline.enricher_stage import (
-    _ASSET_INDEX_TTL_S,
-    _asset_index_cache,
-    _asset_index_lock,
-    _build_asset_index,
-    _match_asset_ip,
-)
+from app.core.asset_index_cache import ensure_asset_index
+from app.core.log_receiver_manager.pipeline.enricher_stage import _match_asset_ip
 from app.core.timezone import beijing_now
 
 logger = logging.getLogger(__name__)
@@ -308,13 +303,7 @@ def _match_inventory_asset(db, ip: str) -> Optional[dict]:
     from app.models.asset import Asset
     from app.schemas.common import to_dict
 
-    with _asset_index_lock:
-        if time.time() - _asset_index_cache["built_at"] > _ASSET_INDEX_TTL_S:
-            _build_asset_index(db)
-        index = {
-            "single": _asset_index_cache["single"],
-            "nets": _asset_index_cache["nets"],
-        }
+    index = ensure_asset_index(db)
     hit = _match_asset_ip(ip, index)
     if not hit:
         return None

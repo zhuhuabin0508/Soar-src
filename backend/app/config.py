@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # 大屏/监控聚合：Redis 快照 + Beat 刷新，降低主池只读压力
     DASHBOARD_CACHE_ENABLED: bool = True
     DASHBOARD_CACHE_TTL_SEC: int = 60
+    # 资产清单匹配索引：Redis 版本号 + 快照，减少多 worker 各自全表 SELECT
+    ASSET_INDEX_REDIS_ENABLED: bool = True
 
     # Anthropic API Key：留空表示未配置，Agent 决策将走 Mock 降级路径
     ANTHROPIC_API_KEY: str = ""
