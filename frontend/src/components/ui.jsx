@@ -445,7 +445,9 @@ export function DataTable({
         <thead>
           <tr
             className={`border-b border-border text-left ${dCls.header} text-muted-foreground ${
-              stickyHeader ? 'sticky top-0 z-base' : ''
+              // 粘性表头层级用 z-sticky：必须高于冻结列单元格 z-dropdown，
+              // 否则垂直滚动时冻结列的体单元格会盖住表头（见 index.css z-index 体系）
+              stickyHeader ? 'sticky top-0 z-sticky' : ''
             }`}
             style={{ background: 'var(--table-header)' }}
           >
