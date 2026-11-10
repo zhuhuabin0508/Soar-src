@@ -695,9 +695,12 @@ export default function ChatPage() {
   )
 
   // ----- 加载已上传文件列表（按当前智能体隔离：公共文件 + 本人上传）-----
+  // 只取 source=upload 的用户上传文件：对话过程中工具生成的交付/中间产物
+  // （source=agent）不属于用户上传内容，不应出现在“已上传文件”区域，
+  // 它们只通过消息气泡内的下载卡片暴露。
   const loadUploadedFiles = useCallback(async () => {
     try {
-      const list = await agentFilesApi.list(selectedAgentId || undefined)
+      const list = await agentFilesApi.list(selectedAgentId || undefined, 'upload')
       setUploadedFiles(Array.isArray(list) ? list : [])
     } catch {
       // 静默失败
@@ -966,22 +969,29 @@ export default function ChatPage() {
                 case 'tool_start':
                   flushPending()
                   updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            toolCalls: [
-                              ...(m.toolCalls || []),
-                              {
-                                name: data.tool_name || '',
-                                call_id: data.tool_call_id || '',
-                                status: 'running',
-                                message: data.message || '',
-                              },
-                            ],
-                          }
-                        : m
-                    )
+                    prev.map((m) => {
+                      if (m.id !== aiMsg.id) return m
+                      // ReAct 每轮迭代都会先输出一段“我先查询…”的中间叙述，
+                      // 若全部累积在回答气泡里就会重复出现相同段落。
+                      // 这里把本轮已输出的叙述移入执行过程，气泡只保留最终回答。
+                      const narration = (m.content || '').trim()
+                      return {
+                        ...m,
+                        content: '',
+                        statusMsgs: narration
+                          ? [...(m.statusMsgs || []), `[分析] ${narration}`]
+                          : m.statusMsgs || [],
+                        toolCalls: [
+                          ...(m.toolCalls || []),
+                          {
+                            name: data.tool_name || '',
+                            call_id: data.tool_call_id || '',
+                            status: 'running',
+                            message: data.message || '',
+                          },
+                        ],
+                      }
+                    })
                   )
                   break
                 case 'tool_end':
@@ -1001,6 +1011,29 @@ export default function ChatPage() {
                         }
                       }
                       return { ...m, toolCalls: tcs }
+                    })
+                  )
+                  break
+                case 'reset':
+                  // 后端检测到退化输出（重复计划叙述）并重试/去重：
+                  // 清空当前气泡中已流式的退化文本（移入执行过程日志，超长截断），
+                  // 最终回答以下一轮 token / done 事件内容为准
+                  flushPending()
+                  fullText = ''
+                  updateMessages((prev) =>
+                    prev.map((m) => {
+                      if (m.id !== aiMsg.id) return m
+                      const narration = (m.content || '').trim()
+                      const brief = narration
+                        ? `[分析] ${narration.slice(0, 300)}${narration.length > 300 ? '…（已重置）' : ''}`
+                        : ''
+                      return {
+                        ...m,
+                        content: '',
+                        statusMsgs: brief
+                          ? [...(m.statusMsgs || []), brief]
+                          : m.statusMsgs || [],
+                      }
                     })
                   )
                   break
@@ -1089,15 +1122,15 @@ export default function ChatPage() {
                 }
                 case 'done':
                   flushPending()
-                  // 不用 data.content 覆盖已累积的流式内容
-                  // data.content 只包含最后一轮 LLM 回复，会丢失前面轮次的分析过程
-                  // 保留 m.content（包含所有轮次的 token 累积），仅无累积时用 data.content 回退
+                  // 回答气泡只保留最终一轮 LLM 回复：中间轮次的叙述已在 tool_start
+                  // 时移入执行过程，这里不再回退到 fullText（否则会把每轮重复的
+                  // 分析拼接成一段重复回复）。
                   updateMessages((prev) =>
                     prev.map((m) =>
                       m.id === aiMsg.id
                         ? {
                             ...m,
-                            content: m.content || data.content || fullText || '',
+                            content: m.content || data.content || '',
                             status: 'done',
                             usage: data.usage || null,
                           }
@@ -1133,7 +1166,12 @@ export default function ChatPage() {
       updateMessages((prev) =>
         prev.map((m) =>
           m.id === aiMsg.id && m.status === 'streaming'
-            ? { ...m, content: m.content || fullText, status: 'done' }
+            ? {
+                ...m,
+                // 有工具调用时中间叙述已进入执行过程，不再用 fullText 回填
+                content: m.content || ((m.toolCalls || []).length ? '' : fullText),
+                status: 'done',
+              }
             : m
         )
       )

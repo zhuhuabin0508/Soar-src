@@ -22,6 +22,7 @@ class SSEEventDict:
     - status: 状态更新
     - thinking: LLM 思考过程（<think> 块内容，供前端折叠展示）
     - token: LLM 流式 token
+    - reset: 重置当前回答气泡（退化输出检测命中后重试/去重前，清空已流式文本）
     - tool_start: 工具开始执行
     - tool_end: 工具执行结束
     - skill_interrupt: 技能被中断

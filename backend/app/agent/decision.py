@@ -47,6 +47,13 @@ def _extract_generated_file(tool_output) -> Optional[dict]:
     data = tool_output if isinstance(tool_output, dict) else None
     if not data:
         return None
+    # generate_document / append_document 直接返回 {ok, file_id, file_name, ...}，
+    # 识别该形状让前端在消息气泡内渲染下载卡片
+    if data.get("ok") and data.get("file_id"):
+        return {
+            "file_id": data["file_id"],
+            "file_name": data.get("file_name") or "",
+        }
     inner = data.get("result")
     if isinstance(inner, dict) and inner.get("output_file"):
         data = inner

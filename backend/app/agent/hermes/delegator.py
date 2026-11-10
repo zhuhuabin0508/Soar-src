@@ -250,6 +250,23 @@ def build_child_system_prompt(
     return "\n".join(parts)
 
 
+# 单个子代理结果回灌父上下文的字符预算：子代理倾向返回整表数据，
+# 会把父上下文撑爆（实测多任务汇总后达数万字符，拖慢父代理每次推理）。
+# 结论与关键统计足够，明细数据父代理可自行再查。
+_DELEGATE_RESULT_MAX_CHARS = 8000
+
+
+def _cap_delegation_result(text: str, budget: int = _DELEGATE_RESULT_MAX_CHARS) -> str:
+    """把子代理结果截断到预算内，并注明完整内容所在 transcript。"""
+    if not isinstance(text, str) or len(text) <= budget:
+        return text
+    return (
+        text[:budget]
+        + f"\n...[子代理结果过长（原始 {len(text)} 字符），已截断；"
+        "父代理如需明细请自行调用工具查询，不要依赖子代理转述全部数据]"
+    )
+
+
 # ============================================================================
 # 委派器
 # ============================================================================
@@ -520,10 +537,10 @@ class Delegator:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 6. 构建汇总结果
+        # 6. 构建汇总结果（每个任务结果截断到预算，防止父上下文被整表数据撑爆）
         if len(results) == 1:
             # 单任务：直接返回结果文本
-            content = results[0]["result"]
+            content = _cap_delegation_result(results[0]["result"])
             if results[0]["status"] == "failed":
                 content = json.dumps({
                     "status": "failed",
@@ -539,7 +556,7 @@ class Delegator:
                     {
                         "goal": r["goal"],
                         "status": r["status"],
-                        "result": r["result"],
+                        "result": _cap_delegation_result(r["result"]),
                     }
                     for r in results
                 ],

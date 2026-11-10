@@ -36,9 +36,10 @@ def repair_json(text: str) -> Optional[str]:
     # Step 2: 平衡括号匹配抽取
     extracted = _extract_json_object_balanced(stripped)
     if extracted is not None:
-        # 验证可解析
+        # 验证可解析（strict=False 容忍字符串内的裸换行等控制字符，
+        # 部分模型输出的 arguments 不转义 \n，严格模式会整段解析失败）
         try:
-            json.loads(extracted)
+            json.loads(extracted, strict=False)
             return extracted
         except json.JSONDecodeError:
             # 抽取出来但仍无法解析，尝试补全
@@ -48,7 +49,7 @@ def repair_json(text: str) -> Optional[str]:
     completed = _complete_truncated_json(stripped)
     if completed is not None:
         try:
-            json.loads(completed)
+            json.loads(completed, strict=False)
             return completed
         except json.JSONDecodeError:
             return None
@@ -71,7 +72,7 @@ def parse_json_safely(text: str) -> tuple[dict, bool]:
     if repaired is None:
         return {}, True
     try:
-        result = json.loads(repaired)
+        result = json.loads(repaired, strict=False)
         if isinstance(result, dict):
             return result, False
         return {}, True

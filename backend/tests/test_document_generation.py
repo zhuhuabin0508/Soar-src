@@ -249,6 +249,18 @@ def test_save_document_xlsx_table_only_removes_empty_text_sheet(fake_file_store)
     assert wb["表格1"].cell(2, 1).value == 1
 
 
+def test_save_document_xlsx_sanitizes_sheet_title(fake_file_store):
+    """标题含 Excel 非法字符（如斜杠）时清理后仍能生成，不抛异常。"""
+    from openpyxl import load_workbook
+
+    tmp_path, fake = fake_file_store
+    content = "## MySQL/MariaDB 版本分布\n| 版本 | 数量 |\n| --- | --- |\n| 8.0 | 14 |\n"
+    result = save_document_as_agent_file(content, "版本分布", fmt="xlsx")
+    assert result.get("ok") is True
+    wb = load_workbook(str(tmp_path / fake.rec.stored_name))
+    assert "MySQL-MariaDB 版本分布" in wb.sheetnames
+
+
 def test_save_document_format_alias_and_default(fake_file_store):
     """markdown/word 别名与默认 docx。"""
     tmp_path, fake = fake_file_store

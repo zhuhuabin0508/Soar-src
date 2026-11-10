@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Shield, Plus, RefreshCw, Download, Upload, Wifi, WifiOff, Files, Columns, CheckSquare,
-  Database, ChevronDown, Activity, Zap, CheckCircle2, FilePlus2,
+  Database, ChevronDown, Activity, Zap, CheckCircle2, FilePlus2, Trash2,
 } from 'lucide-react'
 import { devices as devicesApi } from '../../api/client'
 import { Modal } from '../../components/Dialog'
@@ -92,14 +92,32 @@ function DeviceManagement() {
   // 每台设备的动作列表（key=deviceId），避免多设备展开/切换时动作互相串
   const [actionsMap, setActionsMap] = useState({})
   const [loadingActions, setLoadingActions] = useState(false)
-  // 勾选用于导出的设备 ID 集合
+  // 勾选用于导出 / 批量删除的设备 ID 集合
   const [checkIds, setCheckIds] = useState([])
+  // 批量删除请求进行中
+  const [batchDeleting, setBatchDeleting] = useState(false)
+  // 最近一次勾选位置，用于 Shift 连续区间多选
+  const lastCheckIndexRef = useRef(null)
 
-  // 切换某台设备的勾选状态
-  const toggleCheck = (device) =>
-    setCheckIds((prev) =>
-      prev.includes(device.id) ? prev.filter((x) => x !== device.id) : [...prev, device.id]
-    )
+  // 切换某台设备的勾选状态（Shift 点击支持连续多选）
+  const toggleCheck = (device, shiftKey = false) => {
+    const idx = filteredDevices.findIndex((d) => d.id === device.id)
+    const lastIdx = lastCheckIndexRef.current
+    setCheckIds((prev) => {
+      if (shiftKey && lastIdx != null && idx !== -1) {
+        const [start, end] = lastIdx < idx ? [lastIdx, idx] : [idx, lastIdx]
+        const rangeIds = filteredDevices.slice(start, end + 1).map((d) => d.id)
+        if (prev.includes(device.id)) {
+          return prev.filter((id) => !rangeIds.includes(id))
+        }
+        return Array.from(new Set([...prev, ...rangeIds]))
+      }
+      return prev.includes(device.id)
+        ? prev.filter((x) => x !== device.id)
+        : [...prev, device.id]
+    })
+    lastCheckIndexRef.current = idx
+  }
 
   // 弹窗状态
   const [devFormOpen, setDevFormOpen] = useState(false)
@@ -273,10 +291,69 @@ function DeviceManagement() {
         })
       }
       setExpandedIds((prev) => prev.filter((id) => id !== device.id))
+      setCheckIds((prev) => prev.filter((id) => id !== device.id))
       await loadDevices()
       toast.success('设备已删除')
     } catch (err) {
       toast.error(`删除失败：${err.message || err}`)
+    }
+  }
+
+  const handleBatchDelete = async () => {
+    if (!checkIds.length) return
+    const ids = [...checkIds]
+    const count = ids.length
+    const ok = await confirm({
+      title: '批量删除设备',
+      message: (
+        <div className="space-y-2">
+          <p>
+            确定删除选中的{' '}
+            <span className="font-semibold text-destructive">{count}</span> 台设备吗？
+          </p>
+          <p className="text-xs">
+            删除后数据不可恢复，设备下的所有动作、接收渠道及调用日志将一并清除。
+          </p>
+        </div>
+      ),
+      variant: 'danger',
+      confirmText: `删除 ${count} 台设备`,
+    })
+    if (!ok) return
+
+    setBatchDeleting(true)
+    try {
+      const res = await devicesApi.batchRemove(ids)
+      const deletedIds = Array.isArray(res?.deleted_ids) ? res.deleted_ids : ids
+      const failed = Array.isArray(res?.failed) ? res.failed : []
+
+      // 清理被删除设备的展开、分栏选中与动作缓存
+      setExpandedIds((prev) => prev.filter((id) => !deletedIds.includes(id)))
+      setActionsMap((m) => {
+        const next = { ...m }
+        deletedIds.forEach((id) => {
+          delete next[id]
+        })
+        return next
+      })
+      setSelectedId((prev) => (deletedIds.includes(prev) ? null : prev))
+      setCheckIds([])
+      lastCheckIndexRef.current = null
+      await loadDevices()
+
+      if (failed.length) {
+        toast.error(
+          `成功删除 ${res?.deleted ?? 0} 台，${failed.length} 台失败：${failed
+            .map((f) => `#${f.id} ${f.reason}`)
+            .join('；')}`
+        )
+      } else {
+        toast.success(`已删除 ${res?.deleted ?? count} 台设备`)
+      }
+    } catch (err) {
+      toast.error(`批量删除失败：${err.message || err}`)
+    } finally {
+      setBatchDeleting(false)
     }
   }
 
@@ -515,7 +592,7 @@ function DeviceManagement() {
   // 导出所选设备（未勾选时提示）
   const handleExportSelected = () => {
     if (!checkIds.length) {
-      toast.warning('请先勾选要导出的设备（卡片左上角勾选框）')
+      toast.warning('请先勾选要导出的设备（列表项前的复选框）')
       return
     }
     handleExport(checkIds)
@@ -524,8 +601,13 @@ function DeviceManagement() {
   // 全选 / 取消全选当前过滤列表
   const toggleCheckAll = () => {
     const allIds = filteredDevices.map((d) => d.id)
-    const allChecked = allIds.every((id) => checkIds.includes(id))
-    setCheckIds(allChecked ? [] : allIds)
+    const allChecked = allIds.length > 0 && allIds.every((id) => checkIds.includes(id))
+    lastCheckIndexRef.current = null
+    setCheckIds((prev) =>
+      allChecked
+        ? prev.filter((id) => !allIds.includes(id))
+        : Array.from(new Set([...prev, ...allIds]))
+    )
   }
 
   const handleImport = async (e) => {
@@ -567,6 +649,16 @@ function DeviceManagement() {
     }
     return r
   }, [devices, filters.search, filters.type, filters.vendor, filters.status, filters.tag])
+
+  // 当前过滤列表是否全部选中（全选复选框联动 + 半选态）
+  const allChecked =
+    filteredDevices.length > 0 && filteredDevices.every((d) => checkIds.includes(d.id))
+  const selectAllRef = useRef(null)
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = checkIds.length > 0 && !allChecked
+    }
+  }, [checkIds.length, allChecked])
 
   // 厂商选项
   const vendorOptions = useMemo(() => {
@@ -881,6 +973,57 @@ function DeviceManagement() {
                   </div>
                 </div>
               )}
+              {/* 批量选择栏：全选 + 已选数量 + 批量删除 */}
+              {!loading && filteredDevices.length > 0 && (
+                <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
+                  <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground">
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      className="h-4 w-4 cursor-pointer accent-primary"
+                      checked={allChecked}
+                      onChange={toggleCheckAll}
+                      title="全选当前过滤列表"
+                    />
+                    全选
+                  </label>
+                  <span className="text-xs text-muted-foreground">
+                    已选{' '}
+                    <span
+                      className={`font-semibold tabular-nums ${
+                        checkIds.length ? 'text-primary' : 'text-foreground'
+                      }`}
+                    >
+                      {checkIds.length}
+                    </span>{' '}
+                    项
+                  </span>
+                  {checkIds.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleBatchDelete}
+                        disabled={batchDeleting}
+                        className="btn-danger btn-sm"
+                      >
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />
+                        {batchDeleting ? '删除中…' : '批量删除'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCheckIds([])
+                          lastCheckIndexRef.current = null
+                        }}
+                        disabled={batchDeleting}
+                        className="btn-secondary btn-sm"
+                      >
+                        取消选择
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* 内容区 */}
@@ -1098,6 +1241,15 @@ function DeviceManagement() {
                     <table className="table-stagger w-full min-w-[1000px] table-fixed border-collapse text-sm">
                       <thead className="bg-card text-muted-foreground">
                         <tr>
+                          <th className="w-12 px-4 py-3 text-left font-medium">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 cursor-pointer accent-primary"
+                              checked={allChecked}
+                              onChange={toggleCheckAll}
+                              title="全选当前过滤列表"
+                            />
+                          </th>
                           <th className="w-16 px-4 py-3 text-left font-medium">ID</th>
                           <th className="w-48 px-4 py-3 text-left font-medium">设备名称</th>
                           <th className="w-24 px-4 py-3 text-left font-medium">类型</th>
@@ -1118,6 +1270,16 @@ function DeviceManagement() {
                               idx % 2 === 0 ? 'bg-card' : ''
                             }`}
                           >
+                            <td className="px-4 py-3">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 cursor-pointer accent-primary"
+                                checked={checkIds.includes(dev.id)}
+                                onChange={(e) => toggleCheck(dev, e.shiftKey)}
+                                onClick={(e) => e.stopPropagation()}
+                                title="勾选以选择"
+                              />
+                            </td>
                             <td className="px-4 py-3 font-mono text-primary">#{dev.id}</td>
                             <td className="truncate px-4 py-3 text-foreground">{dev.name}</td>
                             <td className="truncate px-4 py-3 text-muted-foreground">

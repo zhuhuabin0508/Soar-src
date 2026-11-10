@@ -114,7 +114,7 @@ async def upload_agent_file(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # 写入数据库（记录归属：上传用户 + 可选智能体）
+    # 写入数据库（记录归属：上传用户 + 可选智能体；来源=用户上传）
     record = AgentFile(
         original_name=original_name,
         stored_name=stored_name,
@@ -123,6 +123,7 @@ async def upload_agent_file(
         file_size=len(content),
         agent_id=agent_id,
         created_by=current_user.id,
+        source="upload",
     )
     db.add(record)
     db.commit()
@@ -139,6 +140,7 @@ async def upload_agent_file(
         "file_type": record.file_type,
         "file_size": record.file_size,
         "agent_id": record.agent_id,
+        "source": record.source,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
 
@@ -146,16 +148,23 @@ async def upload_agent_file(
 @router.get("")
 def list_agent_files(
     agent_id: int | None = Query(None, description="按智能体过滤（可选）"),
+    source: str | None = Query(
+        None,
+        description="按来源过滤（可选）：upload=用户上传，agent=对话中工具生成。",
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """列出可见的智能体文件：公共文件 + 本人上传的文件（可选限定智能体）。"""
-    records = (
-        db.query(AgentFile)
-        .filter(_visible_filter(current_user.id, agent_id))
-        .order_by(AgentFile.created_at.desc())
-        .all()
-    )
+    """列出可见的智能体文件：公共文件 + 本人上传的文件（可选限定智能体/来源）。
+
+    ``source=upload`` 供对话页"已上传文件"区域使用——工具在对话过程中生成的
+    交付/中间产物（source=agent）不属于用户上传内容，不应出现在该列表中，
+    它们只通过消息气泡内的下载卡片暴露。
+    """
+    query = db.query(AgentFile).filter(_visible_filter(current_user.id, agent_id))
+    if source:
+        query = query.filter(AgentFile.source == source)
+    records = query.order_by(AgentFile.created_at.desc()).all()
     return [
         {
             "id": r.id,
@@ -164,6 +173,7 @@ def list_agent_files(
             "file_type": r.file_type,
             "file_size": r.file_size,
             "agent_id": r.agent_id,
+            "source": r.source,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
         for r in records

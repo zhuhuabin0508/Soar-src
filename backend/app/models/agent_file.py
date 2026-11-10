@@ -37,6 +37,10 @@ class AgentFile(Base):
     # 归属智能体 id（NULL=公共）；归属上传用户 id（NULL=非用户上传）
     agent_id = Column(Integer, nullable=True)
     created_by = Column(Integer, nullable=True)
+    # 文件来源（2026-11-10）：upload=用户手动上传（展示在"已上传文件"列表）；
+    # agent=对话过程中工具生成的交付/中间产物（只出现在消息气泡的下载卡片，
+    # 不进入"已上传文件"列表）。历史数据默认视为 upload。
+    source = Column(String(20), nullable=False, server_default="upload")
     created_at = Column(DateTime, server_default=func.now())
 
     __table_args__ = (

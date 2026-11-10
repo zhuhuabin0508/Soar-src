@@ -1384,13 +1384,15 @@ def run_lightweight_migrations(engine) -> None:
             },
         )
         # agent_files 表新增归属隔离列：agent_id（归属智能体，NULL=公共）、
-        # created_by（上传用户 id，NULL=非用户上传）；旧文件保持 agent_id NULL 即公共
+        # created_by（上传用户 id，NULL=非用户上传）；旧文件保持 agent_id NULL 即公共；
+        # source（文件来源，upload=用户上传 / agent=对话中工具生成）历史数据默认 upload
         ensure_columns(
             engine,
             "agent_files",
             {
                 "agent_id": "INTEGER",
                 "created_by": "INTEGER",
+                "source": "VARCHAR(20) NOT NULL DEFAULT 'upload'",
             },
         )
         try:

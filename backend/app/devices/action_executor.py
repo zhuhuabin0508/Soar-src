@@ -426,7 +426,16 @@ def execute_device_action(
 
     from app.database import close_db_session
 
-    # 外部 HTTP 不占用调用方 Session（工作流常传入联动会话）
+    # 外部 HTTP 不占用调用方 Session（工作流常传入联动会话）。
+    # 注意：close_db_session 内部的 rollback 会使会话内 ORM 实例属性过期，
+    # 随后访问 action.auth_type / device.id 等会抛 DetachedInstanceError。
+    # 因此先把本次执行需要的实例从会话摘出（保留已加载属性），再关闭会话。
+    if db is not None:
+        try:
+            db.expunge(device)
+            db.expunge(action)
+        except Exception:  # noqa: BLE001
+            pass
     close_db_session(db)
 
     # 青藤签名协议：登录换取 comId/jwt/signKey 并对本业务请求做 SHA1 签名。
@@ -580,7 +589,110 @@ def find_device_action_by_type(
 
 # 智能体工具返回的响应体上限（字符数）：外部设备 API 可能返回超大列表，
 # 超限时截断并标记 response_truncated，保护 LLM 上下文与 SSE 事件大小
-_TOOL_RESPONSE_MAX_CHARS = 30000
+_TOOL_RESPONSE_MAX_CHARS = 60000
+# 单页被裁剪后建议模型使用的安全页大小（稳定落在上下文上限内）
+_SAFE_PAGE_ROWS = 40
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _trim_body_to_page(
+    body: Any, params: dict[str, Any], max_chars: int = _TOOL_RESPONSE_MAX_CHARS
+) -> tuple[Any, dict[str, Any]] | tuple[None, dict[str, Any]]:
+    """把超大的列表型响应体按「整行」裁剪成一页，并返回分页信息。
+
+    直接按字符截断会切坏 JSON：模型只能看到半条记录、且看不到 ``total``，
+    只能反复用不同 size 试探，表现为“输出被截断”+同一动作重复调用。
+    这里保留 JSON 结构，只保留能完整放下的行，并显式给出
+    ``page / page_size / total / has_more / next_page``，模型可据此逐页取数。
+
+    Returns:
+        ``(trimmed_body, pagination_meta)``；响应体不是带 ``rows`` 列表的
+        JSON 对象时返回 ``(None, {})``，由调用方走文本兜底。
+    """
+    data = body
+    if isinstance(body, str):
+        try:
+            data = json.loads(body)
+        except (ValueError, TypeError):
+            return None, {}
+    if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+        return None, {}
+    rows = data["rows"]
+    if not rows:
+        return None, {}
+
+    page = _as_int(params.get("page"), 0)
+    size = _as_int(params.get("size"), len(rows)) or len(rows)
+    # 预留非 rows 字段（total/charts 等）与分页元信息的长度
+    others = {k: v for k, v in data.items() if k != "rows"}
+    budget = max_chars - len(json.dumps(others, ensure_ascii=False)) - 512
+
+    kept: list[Any] = []
+    used = 0
+    for row in rows:
+        row_len = len(json.dumps(row, ensure_ascii=False)) + 2
+        if kept and used + row_len > budget:
+            break
+        kept.append(row)
+        used += row_len
+
+    dropped = len(rows) - len(kept)
+    total = data.get("total")
+    trimmed = dict(data)
+    trimmed["rows"] = kept
+
+    # 保险：首行总是被保留，单行过大或非 rows 字段（total/charts 等）过大时，
+    # 裁剪结果仍可能超过上限——此时放弃结构化分页，回退调用方的文本截断路径，
+    # 保证响应体上限不被绕过
+    if len(json.dumps(trimmed, ensure_ascii=False)) > max_chars:
+        return None, {}
+
+    if dropped > 0:
+        # 本页被裁剪时不能直接翻到 page+1：设备按 page*size 计算偏移，
+        # 若继续用原 size 翻页，被裁掉的尾部行会被整段跳过（漏数据）。
+        # 这里要求模型改用安全页大小从第 0 页重新取数——可能重复已取行，
+        # 但绝不会漏行，且后续每页都能完整放下。
+        safe_size = max(1, min(len(kept), _SAFE_PAGE_ROWS))
+        meta: dict[str, Any] = {
+            "page": page,
+            "page_size": safe_size,
+            "offset": page * size,
+            "returned": len(kept),
+            "rows_in_response": len(rows),
+            "rows_dropped": dropped,
+            "total": total,
+            "has_more": True,
+            "next_page": None,
+            "restart_page": 0,
+            "restart_size": safe_size,
+        }
+        return trimmed, meta
+
+    fetched = page * size + len(kept)
+    if isinstance(total, int) and total >= 0:
+        has_more = fetched < total
+    else:
+        has_more = len(rows) >= size
+
+    meta = {
+        "page": page,
+        "page_size": size,
+        "offset": page * size,
+        "returned": len(kept),
+        "rows_in_response": len(rows),
+        "rows_dropped": 0,
+        "total": total,
+        "has_more": has_more,
+        "next_page": (page + 1) if has_more else None,
+    }
+    return trimmed, meta
+
 
 # 中高风险等级：处置类动作（封禁/解封/隔离/删数据/变更配置等）。
 # 该类动作经智能体触发时必须在服务端校验发起用户权限（与手动封禁工作台
@@ -649,7 +761,12 @@ async def execute_device_action_by_id(
                     "error": (
                         f"动作归属校验失败: action_id={action_id} 属于设备 {action.device_id}，"
                         f"与传入 device_id={device_id} 不一致"
-                    )
+                    ),
+                    # action_id 已唯一确定动作归属，无需 device_id；给出可直接照做的重试方式
+                    "hint": (
+                        f"重试时省略 device_id（或改传 device_id={action.device_id}），"
+                        "action_id 已足够定位设备动作"
+                    ),
                 }
             if not action.enabled:
                 return {"error": f"动作已禁用: {action.name} (action_id={action_id})"}
@@ -696,17 +813,44 @@ async def execute_device_action_by_id(
                 "action_type": action.action_type,
                 "name": action.name,
             }
-            # 响应体过大时截断，保护 LLM 上下文
+            # 响应体过大时按整行裁剪出一页，并返回分页元信息（不破坏 JSON 结构）
             body = result.get("response_body")
             if body is not None:
                 text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
                 if len(text) > _TOOL_RESPONSE_MAX_CHARS:
-                    result["response_body"] = (
-                        text[:_TOOL_RESPONSE_MAX_CHARS]
-                        + f"\n...[响应过大已截断（原始 {len(text)} 字符），"
-                        "可带分页/过滤参数重新调用以缩小范围]"
-                    )
-                    result["response_truncated"] = True
+                    paged, page_meta = _trim_body_to_page(body, params or {})
+                    if paged is not None:
+                        result["response_body"] = paged
+                        result["pagination"] = page_meta
+                        if page_meta.get("rows_dropped"):
+                            result["hint"] = (
+                                f"本页返回 {page_meta['rows_in_response']} 行，超出上下文上限，"
+                                f"已完整保留前 {page_meta['returned']} 行（偏移 {page_meta['offset']} 行起），"
+                                f"total={page_meta['total']}。"
+                                f"请立即改用 page=0、size={page_meta['restart_size']} 从头逐页取数"
+                                "（已取过的行可能重复，跳过即可），之后每页都用同一 size；"
+                                "不要沿用原 size 翻页（会漏行），也不要反复试探其它 size。"
+                            )
+                        else:
+                            result["hint"] = (
+                                f"响应按整行返回：本次 {page_meta['returned']} 行，"
+                                f"total={page_meta['total']}，has_more={page_meta['has_more']}。"
+                                + (
+                                    f"下一页请使用 page={page_meta['next_page']}、"
+                                    f"size={page_meta['page_size']}，直到 has_more=false；"
+                                    "不要用其它 size 反复试探。"
+                                    if page_meta["has_more"]
+                                    else "已取完本查询的全部行。"
+                                )
+                            )
+                    else:
+                        # 非列表型响应：仅保留前部文本，明确提示缩小查询范围
+                        result["response_body"] = (
+                            text[:_TOOL_RESPONSE_MAX_CHARS]
+                            + f"\n...[响应体过长（原始 {len(text)} 字符），仅保留前 {_TOOL_RESPONSE_MAX_CHARS} 字符；"
+                            "请增加过滤条件或缩小查询范围]"
+                        )
+                        result["response_truncated"] = True
             return result
         finally:
             db.close()

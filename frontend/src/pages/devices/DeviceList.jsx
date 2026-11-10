@@ -127,8 +127,8 @@ export function DeviceCard({
             className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
             checked={checked}
             onClick={(e) => e.stopPropagation()}
-            onChange={() => onToggleCheck?.(device)}
-            title="勾选以导出"
+            onChange={(e) => onToggleCheck?.(device, e.shiftKey)}
+            title="勾选以选择（Shift 可连续多选）"
           />
         )}
         <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/15 text-primary">
@@ -440,11 +440,11 @@ export function DeviceRow({
       {typeof checked === 'boolean' && (
         <input
           type="checkbox"
-          className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-primary"
+          className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
           checked={checked}
           onClick={(e) => e.stopPropagation()}
-          onChange={() => onToggleCheck?.(device)}
-          title="勾选以导出"
+          onChange={(e) => onToggleCheck?.(device, e.shiftKey)}
+          title="勾选以选择（Shift 可连续多选）"
         />
       )}
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">

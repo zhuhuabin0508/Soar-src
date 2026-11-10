@@ -447,6 +447,7 @@ def save_workbook_as_agent_file(
             file_size=os.path.getsize(abs_path),
             agent_id=agent_id,
             created_by=user_id,
+            source="agent",
         )
         db.add(rec)
         db.commit()
@@ -507,6 +508,7 @@ def save_json_as_agent_file(
             file_size=os.path.getsize(abs_path),
             agent_id=agent_id,
             created_by=user_id,
+            source="agent",
         )
         db.add(rec)
         db.commit()
@@ -541,6 +543,33 @@ _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t\x00-\x1f]')
 
 # 行内粗体标记 **text**
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def _strip_inline_markdown(text: str) -> str:
+    """去除行内 Markdown 标记（加粗/行内代码/链接），供 xlsx 纯文本单元格使用。
+
+    Excel 不渲染 Markdown，``**30**``、反引号代码、``[文本](url)`` 会原样显示，
+    因此在写入单元格前剥离标记、仅保留可读文本。
+    """
+    text = _BOLD_RE.sub(r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text
+
+
+# Excel 工作表名非法字符（openpyxl 遇到会直接抛 ValueError）
+_INVALID_SHEET_TITLE_RE = re.compile(r"[\[\]:*?/\\]")
+
+
+def _safe_sheet_title(raw: str, fallback: str) -> str:
+    """清洗工作表名：替换 Excel 非法字符、压缩空白、限制 31 字符、空名回退。
+
+    智能体常把「MySQL/MariaDB 版本分布」这类标题直接作为工作表名，
+    含斜杠等字符会让 openpyxl 抛 ValueError，导致整份文档生成失败。
+    """
+    title = _INVALID_SHEET_TITLE_RE.sub("-", (raw or "").strip())
+    title = re.sub(r"\s+", " ", title).strip(" -")
+    return (title or fallback)[:31]
 
 
 def _sanitize_doc_name(suggested_name: str, fmt: str) -> str:
@@ -602,6 +631,16 @@ def _parse_markdown_blocks(content: str) -> list[dict]:
             if rows:
                 blocks.append({"kind": "table", "rows": rows})
             continue
+        # 引用块（> 文本）：去掉标记后按普通段落输出，避免 Excel/docx 残留 ">"
+        if stripped.startswith(">"):
+            quote_lines: list[str] = []
+            while i < n and lines[i].strip().startswith(">"):
+                quote_lines.append(re.sub(r"^>\s?", "", lines[i].strip()))
+                i += 1
+            quote_text = "\n".join(x for x in quote_lines if x)
+            if quote_text:
+                blocks.append({"kind": "paragraph", "text": quote_text})
+            continue
         # 标题（1-4 级）
         m = re.match(r"^(#{1,4})\s+(.*)$", stripped)
         if m:
@@ -631,7 +670,7 @@ def _parse_markdown_blocks(content: str) -> list[dict]:
             nxt = lines[i].strip()
             if (
                 not nxt
-                or nxt.startswith(("#", "|", "```"))
+                or nxt.startswith(("#", "|", ">", "```"))
                 or re.match(r"^[-*]\s+", nxt)
                 or re.match(r"^\d+[.、]\s*", nxt)
             ):
@@ -764,11 +803,14 @@ def _build_workbook(content: str, options: dict | None):
             rows = block["rows"]
             table_count += 1
             # 表格永远独立工作表：避免与已写入「文档」表的文本行互相覆盖
-            target = wb.create_sheet(title=(last_heading or f"表格{table_count}")[:31])
+            target = wb.create_sheet(
+                title=_safe_sheet_title(last_heading or "", f"表格{table_count}")
+            )
             for r, row in enumerate(rows, start=1):
                 for c in range(max(len(x) for x in rows)):
                     cell = target.cell(row=r, column=c + 1)
-                    cell.value = _coerce_cell(row[c]) if c < len(row) else ""
+                    raw = row[c] if c < len(row) else ""
+                    cell.value = _coerce_cell(_strip_inline_markdown(raw))
                     if r == 1 and header_bold:
                         cell.font = Font(bold=True)
                         cell.fill = PatternFill("solid", fgColor="F3F4F6")
@@ -782,7 +824,7 @@ def _build_workbook(content: str, options: dict | None):
             continue
         # 非表格文本写入「文档」表
         if kind == "heading":
-            text = block["text"]
+            text = _strip_inline_markdown(block["text"])
             last_heading = text
         elif kind == "list":
             text = ("\n".join(
@@ -793,6 +835,9 @@ def _build_workbook(content: str, options: dict | None):
             text = block["text"]
         else:
             text = block["text"]
+        # Excel 不渲染 Markdown：段落/列表中的加粗等标记需剥离（代码块保持原样）
+        if kind != "code":
+            text = _strip_inline_markdown(text)
         cell = text_ws.cell(row=text_row, column=1, value=text)
         if kind == "heading":
             cell.font = Font(bold=True)
@@ -854,11 +899,13 @@ def save_document_as_agent_file(
     original = _sanitize_doc_name(suggested_name, fmt)
 
     # ---- 生成文件体（内存中完成转换） ----
+    src_markdown = content  # 传给渲染器的 Markdown 源文稿（md 含标题行），供后续追加
     try:
         if fmt == "md":
             title = str((options or {}).get("title") or "").strip()
             payload = (f"# {title}\n\n{content}") if title else content
             data = payload.encode("utf-8")
+            src_markdown = payload
         elif fmt == "docx":
             buf = io.BytesIO()
             _build_docx(content, options).save(buf)
@@ -878,6 +925,18 @@ def save_document_as_agent_file(
     abs_path = os.path.join(upload_dir, stored)
     with open(abs_path, "wb") as f:
         f.write(data)
+    # 源文稿 sidecar（<stored>.src.json）：记录 Markdown 原文与渲染配置，
+    # 供 append_document 分批追加时合并重渲染；写失败不影响本次生成
+    try:
+        import json as _json
+
+        with open(abs_path + ".src.json", "w", encoding="utf-8") as f:
+            f.write(_json.dumps(
+                {"content": src_markdown, "options": options, "fmt": fmt},
+                ensure_ascii=False,
+            ))
+    except Exception:  # noqa: BLE001
+        logger.debug("写入文档源文稿 sidecar 失败（不影响生成）: %s", original)
     db = SessionLocal()
     try:
         rec = AgentFile(
@@ -888,6 +947,7 @@ def save_document_as_agent_file(
             file_size=len(data),
             agent_id=agent_id,
             created_by=user_id,
+            source="agent",
         )
         db.add(rec)
         db.commit()
@@ -904,6 +964,142 @@ def save_document_as_agent_file(
         db.rollback()
         logger.exception("保存文档到上传文件库失败: %s", original)
         return {"error": f"保存文档失败: {exc}"}
+    finally:
+        db.close()
+
+
+def append_document_as_agent_file(
+    file_id,
+    content: str,
+    agent_id: int | None = None,
+    user_id: int | None = None,
+) -> dict:
+    """向已生成的文档追加 Markdown 片段并整体重渲染（分批生成大文档）。
+
+    供 ``append_document`` 内置工具调用：明细行数很多时，模型先
+    ``generate_document`` 写入表头+首批行，再多次本函数追加剩余行，
+    避免单次工具参数过长导致输出失败。
+
+    合并规则：
+    - 追加内容以 ``|`` 开头且已有文稿以表格行结尾 → 直接换行拼接
+      （延续同一张表，xlsx 中不会拆出新工作表），并自动剔除模型
+      重复携带的表头/分隔行；
+    - 其余情况（新章节/新表）→ 空行分隔后拼接。
+
+    Args:
+        file_id: ``generate_document`` 返回的 AgentFile ID。
+        content: 要追加的 Markdown 片段。
+        agent_id: 归属智能体 id（沙箱注入，做权限校验）。
+        user_id: 归属用户 id（沙箱注入，做权限校验）。
+
+    Returns:
+        成功 ``{"ok": True, "file_id", "file_name", "file_type", "file_size",
+        "appended_chars", "total_chars", "download_url"}``；失败 ``{"error": ...}``。
+    """
+    import io
+    import json as _json
+
+    from app.database import SessionLocal
+    from app.models.agent_file import AgentFile
+
+    if not isinstance(content, str) or not content.strip():
+        return {"error": "追加内容不能为空：请通过 content 参数提供要追加的 Markdown 片段"}
+    try:
+        file_id = int(file_id)
+    except (TypeError, ValueError):
+        return {"error": "file_id 必须是数字（generate_document 返回的文件 ID）"}
+
+    db = SessionLocal()
+    try:
+        rec = db.query(AgentFile).filter(AgentFile.id == file_id).first()
+        if rec is None:
+            return {"error": f"文件不存在: file_id={file_id}"}
+        # 归属校验：只允许本智能体/本用户追加自己会话里生成的文件
+        if agent_id is not None and rec.agent_id is not None and rec.agent_id != agent_id:
+            return {"error": f"无权追加该文件: file_id={file_id}"}
+        if user_id is not None and rec.created_by is not None and rec.created_by != user_id:
+            return {"error": f"无权追加该文件: file_id={file_id}"}
+
+        src_path = rec.file_path + ".src.json"
+        if not os.path.exists(src_path):
+            return {
+                "error": "该文件缺少源文稿，无法追加（可能是旧版本生成的文件）",
+                "hint": "请用 generate_document 重新生成文件后再分批追加",
+            }
+        with open(src_path, "r", encoding="utf-8") as f:
+            src = _json.load(f)
+        base = str(src.get("content") or "")
+        fmt = str(src.get("fmt") or rec.file_type or "docx").lower()
+        options = src.get("options") or None
+
+        addition = content.strip()
+        # 表格延续：已有文稿最后一行是表格行，且追加内容以表格行开头
+        base_lines = base.rstrip().splitlines()
+        cont_table = (
+            bool(base_lines)
+            and base_lines[-1].strip().startswith("|")
+            and addition.startswith("|")
+        )
+        if cont_table:
+            add_lines = addition.splitlines()
+            # 模型常会重复携带表头+分隔行：紧跟表格尾部时剔除，避免中段混入重复表头
+            if (
+                len(add_lines) >= 2
+                and re.match(r"^[\s:\-|]+$", add_lines[1].strip().strip("|") or "-")
+                and add_lines[1].strip().startswith("|")
+            ):
+                add_lines = add_lines[2:]
+            addition = "\n".join(add_lines)
+            merged = base.rstrip() + "\n" + addition
+        else:
+            merged = base.rstrip() + "\n\n" + addition
+
+        if len(merged) > _GENERATE_DOC_MAX_CHARS:
+            return {
+                "error": (
+                    f"追加后内容过长（{len(merged)} 字符，上限 {_GENERATE_DOC_MAX_CHARS}），"
+                    "请精简或拆分为多个文件"
+                ),
+            }
+
+        try:
+            if fmt == "md":
+                data = merged.encode("utf-8")
+            elif fmt == "docx":
+                buf = io.BytesIO()
+                _build_docx(merged, options).save(buf)
+                data = buf.getvalue()
+            else:  # xlsx
+                buf = io.BytesIO()
+                _build_workbook(merged, options).save(buf)
+                data = buf.getvalue()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("追加后重渲染 %s 文档失败: file_id=%s", fmt, file_id)
+            return {"error": f"重新渲染文档失败: {exc}"}
+
+        with open(rec.file_path, "wb") as f:
+            f.write(data)
+        with open(src_path, "w", encoding="utf-8") as f:
+            f.write(_json.dumps(
+                {"content": merged, "options": options, "fmt": fmt},
+                ensure_ascii=False,
+            ))
+        rec.file_size = len(data)
+        db.commit()
+        return {
+            "ok": True,
+            "file_id": rec.id,
+            "file_name": rec.original_name,
+            "file_type": fmt,
+            "file_size": rec.file_size,
+            "appended_chars": len(addition),
+            "total_chars": len(merged),
+            "download_url": f"/api/v1/agent-files/{rec.id}/download",
+        }
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("追加文档失败: file_id=%s", file_id)
+        return {"error": f"追加文档失败: {exc}"}
     finally:
         db.close()
 
@@ -964,6 +1160,219 @@ def recall_agent_memory(key: str = "") -> dict:
     if key in store:
         return {"key": key, "value": store[key]}
     return {"key": key, "value": None, "error": f"未找到记忆: {key}", "available_keys": list(store.keys())}
+
+
+async def export_device_action_to_excel(
+    action_id,
+    params: dict | None = None,
+    file_name: str = "设备数据导出.xlsx",
+    columns: list | None = None,
+    sheet_name: str | None = None,
+    max_rows: int = 5000,
+    page_size: int = 40,
+    agent_id: int | None = None,
+    user_id: int | None = None,
+) -> dict:
+    """服务端把设备动作的列表型结果分页拉全量并直写 xlsx（不经 LLM 传数）。
+
+    供 ``export_device_action_to_excel`` 设备工具调用：解决"完整明细 Excel"
+    场景下 LLM 逐批读入再输出到 generate_document/append_document 参数导致的
+    十分钟级耗时——本函数在服务端循环分页取数（复用 execute_device_action_by_id
+    的裁剪/审计链路），直接写 Excel 并注册为智能体文件，LLM 只决定查什么。
+
+    分页协议（与 action_executor 的 pagination 语义一致）：
+    - 正常翻页：按 ``next_page`` 继续；
+    - 单页被裁剪（``rows_dropped>0``）：按 ``restart_size`` 从 page=0 重取一遍；
+    - 无 pagination 元信息：视设备侧自身分页（page/size 透传），按 total 判断是否取完。
+
+    Args:
+        action_id: 设备动作 ID。
+        params: 动作参数（过滤条件等）；page/size 由本函数控制，传入值会被覆盖。
+        file_name: 输出文件名（可不含扩展名）。
+        columns: 指定导出列（行字段的子集）；缺省导出全部字段。
+        sheet_name: 工作表名；缺省用文件名。
+        max_rows: 最多导出行数（防失控拉取）。
+        page_size: 初始分页大小。
+
+    Returns:
+        成功 ``{ok, file_id, file_name, rows, columns, total, pages, download_url}``；
+        失败 ``{error, ...}``。
+    """
+    import uuid as _uuid
+
+    from app.devices.action_executor import execute_device_action_by_id as _exec
+
+    try:
+        action_id = int(action_id)
+    except (TypeError, ValueError):
+        return {"error": "action_id 必须是数字（query_device_actions 返回的动作 ID）"}
+    base_params = dict(params or {})
+    # page/size 由本函数控制，避免调用方传入干扰分页循环
+    for k in ("page", "size"):
+        base_params.pop(k, None)
+
+    rows_out: list = []
+    page, size = 0, max(1, min(int(page_size or 40), 100))
+    restarted = False
+    pages = 0
+    total = None
+    while pages < 200:  # 200 页硬上限（100 行/页 = 2 万行），防失控
+        call_params = {**base_params, "page": page, "size": size}
+        result = await _exec(
+            action_id=action_id,
+            params=call_params,
+            agent_id=agent_id,
+            user_id=user_id,
+        )
+        if not isinstance(result, dict) or result.get("error"):
+            return {
+                "error": (result or {}).get("error", "设备动作执行失败"),
+                "hint": "请确认 action_id 正确、设备在线且参数合法（可先用 query_device_actions 查看参数要求）",
+            }
+        pages += 1
+        body = result.get("response_body")
+        pg = result.get("pagination") or {}
+        batch = []
+        if isinstance(body, dict) and isinstance(body.get("rows"), list):
+            batch = body["rows"]
+            if total is None:
+                total = _as_export_int(pg.get("total") or body.get("total"))
+        elif isinstance(body, str):
+            return {
+                "error": "该动作返回的不是列表型数据（找不到 rows 列表），无法导出为 Excel",
+                "hint": "仅支持返回行列表的查询类动作；非列表结果请用 execute_device_action 查看",
+            }
+        # 单页被裁剪：按 restart_size 从头重取（只允许一次，避免死循环）
+        if pg.get("rows_dropped") and pg.get("restart_size"):
+            if restarted:
+                return {"error": f"分页裁剪后重取仍被裁剪（restart_size={pg.get('restart_size')}），导出中止"}
+            restarted = True
+            rows_out = []
+            page, size = 0, int(pg["restart_size"])
+            total = _as_export_int(pg.get("total"))
+            continue
+        rows_out.extend(batch)
+        if len(rows_out) >= max_rows:
+            rows_out = rows_out[:max_rows]
+            break
+        if pg:
+            if pg.get("has_more") and pg.get("next_page") is not None:
+                page = int(pg["next_page"])
+                continue
+            break
+        # 无 pagination：设备自身分页——total 已知且未取完则继续翻页
+        if total and len(rows_out) < total and batch:
+            page += 1
+            continue
+        break
+
+    if not rows_out:
+        return {"error": "查询结果为空（0 行），未生成文件", "total": total or 0}
+
+    # ---- 解析列：columns 显式指定，否则用首行字段的并集（保持出现顺序）----
+    def _field_names():
+        keys: list = []
+        for row in rows_out[:20]:
+            if isinstance(row, dict):
+                for k in row.keys():
+                    if k not in keys:
+                        keys.append(k)
+        return keys
+
+    field_names = [str(c) for c in columns] if columns else _field_names()
+    if not field_names:
+        return {"error": "无法识别数据行字段（行不是对象结构），无法导出为 Excel"}
+
+    # ---- 写 xlsx ----
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = _safe_sheet_title(sheet_name or "", "数据")
+    ws.append(field_names)
+    for c in range(1, len(field_names) + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="F3F4F6")
+    def _cell(v):
+        v = _coerce_cell(v)
+        if isinstance(v, (list, dict)):
+            v = json.dumps(v, ensure_ascii=False)
+        return v
+
+    for row in rows_out:
+        if not isinstance(row, dict):
+            row = {"value": row}
+            if "value" not in field_names:
+                field_names.append("value")
+                ws.cell(row=1, column=len(field_names), value="value").font = Font(bold=True)
+        ws.append([_cell(row.get(f)) for f in field_names])
+    ws.freeze_panes = "A2"
+    for c in range(1, len(field_names) + 1):
+        widest = max(
+            [len(str(field_names[c - 1]))] + [
+                len(str(row.get(field_names[c - 1], ""))) if isinstance(row, dict) else 0
+                for row in rows_out[:200]
+            ]
+        )
+        ws.column_dimensions[get_column_letter(c)].width = min(max(widest * 1.8 + 2, 8), 50)
+
+    # ---- 保存并注册为智能体文件 ----
+    from app.database import SessionLocal
+    from app.models.agent_file import AgentFile
+
+    upload_dir = _agent_upload_dir()
+    os.makedirs(upload_dir, exist_ok=True)
+    clean_name = _sanitize_doc_name((file_name or "设备数据导出").strip(), "xlsx")
+    if not clean_name.lower().endswith(".xlsx"):
+        clean_name += ".xlsx"
+    stored = f"{_uuid.uuid4().hex}.xlsx"
+    abs_path = os.path.join(upload_dir, stored)
+    wb.save(abs_path)
+    db = SessionLocal()
+    try:
+        rec = AgentFile(
+            original_name=clean_name,
+            stored_name=stored,
+            file_path=abs_path,
+            file_type="xlsx",
+            file_size=os.path.getsize(abs_path),
+            agent_id=agent_id,
+            created_by=user_id,
+            source="agent",
+        )
+        db.add(rec)
+        db.commit()
+        db.refresh(rec)
+        return {
+            "ok": True,
+            "file_id": rec.id,
+            "file_name": rec.original_name,
+            "file_type": "xlsx",
+            "file_size": rec.file_size,
+            "rows": len(rows_out),
+            "columns": field_names,
+            "total": total if total is not None else len(rows_out),
+            "pages": pages,
+            "download_url": f"/api/v1/agent-files/{rec.id}/download",
+            "hint": "服务端已直接分页拉全量并写入 Excel，无需再逐页查询或用 append_document 追加",
+        }
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("导出设备数据到 Excel 失败: action_id=%s", action_id)
+        return {"error": f"保存导出文件失败: {exc}"}
+    finally:
+        db.close()
+
+
+def _as_export_int(value) -> int | None:
+    try:
+        v = int(value)
+        return v if v >= 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> Callable:
@@ -1088,6 +1497,10 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["save_document_as_agent_file"] = _partial(
             save_document_as_agent_file, agent_id=agent_id, user_id=user_id
         )
+        # 文档追加（append_document 工具）：分批写大文档，避免单次参数过长
+        namespace["append_document_as_agent_file"] = _partial(
+            append_document_as_agent_file, agent_id=agent_id, user_id=user_id
+        )
     except Exception:  # pragma: no cover
         logger.debug("文件助手作用域注入失败，回退直接注入")
         namespace["read_uploaded_file"] = read_uploaded_file
@@ -1095,6 +1508,7 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["save_workbook_as_agent_file"] = save_workbook_as_agent_file
         namespace["save_json_as_agent_file"] = save_json_as_agent_file
         namespace["save_document_as_agent_file"] = save_document_as_agent_file
+        namespace["append_document_as_agent_file"] = append_document_as_agent_file
     # 模板驱动改造新增：按表头名称定位列（含模糊匹配）+ JSON 写回上传库（save_template）
     namespace["find_col"] = find_col
     # expand_risk_detail 未传模板时的标准 22 列白名单（与技能文档一致）
@@ -1133,6 +1547,11 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
 
         namespace["execute_device_action_by_id"] = _partial(
             execute_device_action_by_id, agent_id=agent_id, user_id=user_id
+        )
+        # 服务端全量分页导出 Excel（export_device_action_to_excel 设备工具使用）：
+        # 大明细场景绕过 LLM 传数，避免逐页查询 + generate/append 的分钟级耗时
+        namespace["export_device_action_to_excel"] = _partial(
+            export_device_action_to_excel, agent_id=agent_id, user_id=user_id
         )
     except ImportError:  # pragma: no cover
         logger.debug("action_executor 未安装，工具命名空间不注入 execute_device_action_by_id")

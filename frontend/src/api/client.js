@@ -440,8 +440,15 @@ export const skills = {
 
 // ============ 智能体文件（不做 RAG，原样存储供 read_document 工具读取） ============
 export const agentFiles = {
-  // 列表：默认显示公共文件 + 本人上传；传 agent_id 时进一步限定为该智能体的文件
-  list: (agent_id) => request(`/agent-files${agent_id ? `?agent_id=${agent_id}` : ''}`),
+  // 列表：默认显示公共文件 + 本人上传；传 agent_id 时进一步限定为该智能体的文件；
+  // source='upload' 只取用户上传（对话中工具生成的文件 source='agent'，不进已上传列表）
+  list: (agent_id, source) => {
+    const params = []
+    if (agent_id) params.push(`agent_id=${agent_id}`)
+    if (source) params.push(`source=${source}`)
+    const qs = params.length ? `?${params.join('&')}` : ''
+    return request(`/agent-files${qs}`)
+  },
   // 上传：可选归属智能体（agent_id），实现文件按智能体+用户双层隔离
   upload: (file, agent_id) => {
     const fd = new FormData()
@@ -569,6 +576,8 @@ export const devices = {
   create: (body) => request('/devices', { method: 'POST', body }),
   update: (id, body) => request(`/devices/${id}`, { method: 'PUT', body }),
   remove: (id) => request(`/devices/${id}`, { method: 'DELETE' }),
+  // 批量删除设备（ids 为设备 ID 数组）
+  batchRemove: (ids) => request('/devices/batch-delete', { method: 'POST', body: { ids } }),
   // 测试设备连接
   test: (id) => request(`/devices/${id}/test`, { method: 'POST' }),
   // 批量健康检查

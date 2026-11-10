@@ -369,24 +369,100 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "xlsx 中每个表格转为独立工作表（表头加粗+冻结），文字写入「文档」表。"
             "当用户要求『生成/导出文档、写一份报告、整理成 Word/Excel/Markdown 文件』时调用本工具，"
             "把要写入文档的数据、分析结论直接填充到 content 中（支持结合工具查询结果与上下文动态生成）。"
+            "调用时必须同时提供 file_name 与 content 两个参数：file_name 为输出文件名（可不含扩展名），"
+            "content 为完整的 Markdown 正文，严禁传空字符串占位；生成 Excel 表格时传 format='xlsx'。"
+            "明细行数很多（上百行）时不要试图一次写完：先用本工具写入标题、表头和首批数据行（≤50 行）生成文件，"
+            "再用 append_document 工具按返回的 file_id 分批追加剩余行（每批 ≤50 行）。"
             "返回 {ok, file_name, file_id, file_type, file_size, download_url}，用户可在对话工具卡片或智能体文件库下载。"
             "调用示例：generate_document(file_name='资产风险分析报告', format='docx', content='# 概况\\n本期共发现 3 个风险。\\n\\n## 风险清单\\n| IP | 等级 |\\n| --- | --- |\\n| 1.1.1.1 | 高 |', options={'title': '周报', 'font_size': 12})"
         ),
         "parameters_schema": [
-            {"name": "file_name", "type": "String", "required": True, "description": "文件名（可不含扩展名，如 '资产分析报告'；非法字符会被自动清洗）"},
-            {"name": "content", "type": "String", "required": True, "description": "文档正文（Markdown 语法）：把要写入文档的数据、结论、表格直接填充进来"},
-            {"name": "format", "type": "String", "required": False, "description": "目标格式：docx（默认）/ xlsx / md"},
+            {"name": "file_name", "type": "String", "required": True, "description": "输出文件名（必填，可不含扩展名，如 '资产分析报告' 或 '主机清单.xlsx'；非法字符会被自动清洗；缺省时按 options.title 或时间戳自动生成）"},
+            {"name": "content", "type": "String", "required": True, "description": "文档正文（Markdown 语法，必填）：把要写入文档的数据、结论、表格直接填充进来；明细很多时先写表头+首批行，剩余行用 append_document 追加"},
+            {"name": "format", "type": "String", "required": False, "description": "目标格式：docx / xlsx / md；不传时按 file_name 扩展名推断，无扩展名默认 docx"},
             {"name": "options", "type": "Object", "required": False, "description": "可选格式配置对象：{title: 文档大标题, body_font: 正文字体（docx，默认微软雅黑）, font_size: 正文字号（docx，默认11）, header_bold: 表头加粗（xlsx，默认true）, freeze_header: 冻结表头（xlsx，默认true）}"},
         ],
         "code": (
             "async def run(**kwargs):\n"
-            "    file_name = kwargs.get('file_name') or ''\n"
-            "    content = kwargs.get('content') or ''\n"
-            "    fmt = kwargs.get('format') or 'docx'\n"
+            "    # 参数名兼容：模型偶尔用 filename / fileName / name 等别名传文件名\n"
+            "    file_name = (\n"
+            "        kwargs.get('file_name') or kwargs.get('filename') or kwargs.get('fileName')\n"
+            "        or kwargs.get('name') or ''\n"
+            "    )\n"
+            "    file_name = str(file_name).strip()\n"
+            "    content = kwargs.get('content')\n"
+            "    if content is None:\n"
+            "        content = kwargs.get('body') or kwargs.get('markdown') or ''\n"
+            "    content = str(content)\n"
+            "    fmt = str(kwargs.get('format') or '').strip().lower()\n"
             "    options = kwargs.get('options') or None\n"
+            "    # 未显式指定格式时按文件名扩展名推断，避免 '主机清单.xlsx' 被写成 .docx\n"
+            "    if not fmt:\n"
+            "        lower = file_name.lower()\n"
+            "        if lower.endswith('.xlsx') or lower.endswith('.xls'):\n"
+            "            fmt = 'xlsx'\n"
+            "        elif lower.endswith('.md') or lower.endswith('.markdown'):\n"
+            "            fmt = 'md'\n"
+            "        else:\n"
+            "            fmt = 'docx'\n"
+            "    # 文件名缺失时自动补全：优先 options.title，其次时间戳，避免直接报参数错误\n"
             "    if not file_name:\n"
-            "        return {'error': '请提供 file_name 参数（文档文件名）'}\n"
+            "        title = ''\n"
+            "        if isinstance(options, dict):\n"
+            "            title = str(options.get('title') or '').strip()\n"
+            "        if title:\n"
+            "            file_name = title\n"
+            "        else:\n"
+            "            now = datetime.now()\n"
+            "            # 沙箱未开放 __import__，strftime 内部会触发导入，改用 % 格式化\n"
+            "            file_name = '文档_%04d%02d%02d_%02d%02d%02d' % (\n"
+            "                now.year, now.month, now.day, now.hour, now.minute, now.second\n"
+            "            )\n"
+            "    if not content.strip():\n"
+            "        return {\n"
+            "            'error': 'content 参数为空：严禁传空字符串占位，必须把要写入文档的 Markdown 正文直接填入 content',\n"
+            "            'hint': (\n"
+            "                '若明细行数很多：先用本工具写入表头+前 50 行生成文件，'\n"
+            "                '再用 append_document(file_id, content) 分批追加剩余数据行（每批 ≤50 行），'\n"
+            "                '不要因为数据量大而传空 content 或只给示例'\n"
+            "            ),\n"
+            "        }\n"
             "    return save_document_as_agent_file(content, file_name, fmt, options)\n"
+        ),
+        "tool_type": "code",
+        "category": "file_operations",
+        "enabled": True,
+    },
+    {
+        "name": "append_document",
+        "description": (
+            "向已生成的文档（generate_document 的输出文件）追加内容并重新渲染，用于分批生成大文档。"
+            "适用场景：完整明细行数很多（如上百行）时，单次 generate_document 会因 content 过长而失败——"
+            "正确做法是先 generate_document 写入标题、表头和首批数据行（≤50 行），再多次调用本工具追加剩余行（每批 ≤50 行），"
+            "直到全部行写完。"
+            "追加同一张表的数据行时：content 直接以 | 数据行 | 开头逐行追加，不要重复表头；"
+            "要新开章节或新表时：先空一行，再加 #/## 标题或新表头。"
+            "file_id 为 generate_document 返回的文件 ID。"
+            "返回 {ok, file_id, file_name, file_type, file_size, appended_chars, total_chars, download_url}。"
+            "调用示例：append_document(file_id=123, content='| 10.0.0.2 | 8.0 | 业务A |\\n| 10.0.0.3 | 5.7 | 业务B |')"
+        ),
+        "parameters_schema": [
+            {"name": "file_id", "type": "Number", "required": True, "description": "目标文件 ID（generate_document 返回的 file_id，追加内容写入该文件）"},
+            {"name": "content", "type": "String", "required": True, "description": "要追加的 Markdown 片段（必填）：延续表格时直接以 | 数据行 | 开头，不要重复表头"},
+        ],
+        "code": (
+            "async def run(**kwargs):\n"
+            "    file_id = kwargs.get('file_id') or kwargs.get('fileId')\n"
+            "    content = kwargs.get('content')\n"
+            "    if content is None:\n"
+            "        content = kwargs.get('body') or ''\n"
+            "    content = str(content)\n"
+            "    if not content.strip():\n"
+            "        return {\n"
+            "            'error': '追加内容不能为空：请把要追加的 Markdown 片段（如后续数据行）直接填入 content',\n"
+            "            'hint': '延续表格时直接以 | 数据行 | 开头逐行追加，不要重复表头，也不要传空字符串',\n"
+            "        }\n"
+            "    return append_document_as_agent_file(file_id, content)\n"
         ),
         "tool_type": "code",
         "category": "file_operations",

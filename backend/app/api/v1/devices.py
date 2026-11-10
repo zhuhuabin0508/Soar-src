@@ -108,6 +108,12 @@ class ActionTestRequest(BaseModel):
     params: dict = Field(default_factory=dict, description="测试参数键值对")
 
 
+class BatchDeleteRequest(BaseModel):
+    """批量删除设备请求体。"""
+
+    ids: list[int] = Field(..., min_length=1, description="待删除的设备 ID 列表")
+
+
 class FromTemplateRequest(BaseModel):
     """从模板创建设备请求体。"""
 
@@ -424,19 +430,9 @@ def update_device(
     return to_dict(device, exclude={"api_key", "password"})
 
 
-@router.delete("/{device_id}")
-def delete_device(
-    device_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
-) -> dict:
-    """删除安全设备（同时级联清理动作、接收渠道及其关联数据，并停止监听线程）。"""
-    logger.info("删除设备: id=%s", device_id)
-    device = db.query(Device).filter(Device.id == device_id).first()
-    if device is None:
-        raise HTTPException(status_code=404, detail="Device not found")
-    device_name = device.name
+def _delete_device_cascade(db: Session, device: Device) -> None:
+    """级联清理设备关联数据并删除设备（不做 commit，由调用方控制事务）。"""
+    device_id = device.id
 
     # 级联清理：该设备下的日志接收渠道（含明细/指标），并停止对应监听线程
     try:
@@ -467,6 +463,86 @@ def delete_device(
     # 级联删除该设备下所有动作
     db.query(DeviceAction).filter(DeviceAction.device_id == device_id).delete()
     db.delete(device)
+
+
+@router.post("/batch-delete")
+def batch_delete_devices(
+    body: BatchDeleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+) -> dict:
+    """批量删除安全设备。
+
+    - 逐台级联清理动作、接收渠道与调用日志，并停止监听线程；
+    - 单台失败不影响其他设备，失败项在 failed 中返回；
+    - 返回实际删除数量，供前端提示与状态清理。
+    """
+    ids = list(dict.fromkeys(body.ids))
+    logger.info("批量删除设备: ids=%s, count=%s", ids, len(ids))
+
+    found = {d.id: d for d in db.query(Device).filter(Device.id.in_(ids)).all()}
+    deleted_ids: list[int] = []
+    deleted_names: list[str] = []
+    failed: list[dict] = []
+
+    for did in ids:
+        device = found.get(did)
+        if device is None:
+            failed.append({"id": did, "reason": "设备不存在"})
+            continue
+        try:
+            name = device.name
+            _delete_device_cascade(db, device)
+            db.commit()
+            deleted_ids.append(did)
+            deleted_names.append(name)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning("批量删除设备失败: id=%s, error=%s", did, exc)
+            failed.append({"id": did, "reason": str(exc) or "删除失败"})
+
+    logger.info("批量删除设备完成: deleted=%s, failed=%s", len(deleted_ids), len(failed))
+    log_audit(
+        db,
+        user_id=user.id,
+        username=user.username,
+        action="delete",
+        resource_type="device",
+        resource_id=",".join(str(i) for i in deleted_ids) or None,
+        detail={
+            "batch": True,
+            "requested": ids,
+            "deleted_ids": deleted_ids,
+            "deleted_names": deleted_names,
+            "failed": failed,
+        },
+        ip_address=get_client_ip(request),
+        result="success" if not failed else "failed",
+    )
+    return {
+        "ok": not failed,
+        "deleted": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+        "failed": failed,
+    }
+
+
+@router.delete("/{device_id}")
+def delete_device(
+    device_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+) -> dict:
+    """删除安全设备（同时级联清理动作、接收渠道及其关联数据，并停止监听线程）。"""
+    logger.info("删除设备: id=%s", device_id)
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device_name = device.name
+
+    _delete_device_cascade(db, device)
     db.commit()
     logger.info("设备已删除: id=%s", device_id)
     log_audit(

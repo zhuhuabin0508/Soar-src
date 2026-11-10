@@ -205,7 +205,21 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         # signature -> (result_hash, repeat_count)
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        # signature -> 成功结果内容（同 turn 相同参数重复调用时直接复用）
+        self._successful_results: dict[ToolCallSignature, str] = {}
         self._halt_decision: Optional[ToolGuardrailDecision] = None
+
+    def recall_success(self, signature: ToolCallSignature | None) -> Optional[str]:
+        """返回同 turn 内相同签名已成功的结果；没有则返回 None。"""
+        if signature is None:
+            return None
+        return self._successful_results.get(signature)
+
+    def remember_success(self, signature: ToolCallSignature | None, content: str) -> None:
+        """记录一次成功调用，供同 turn 内相同参数复用（避免重复下发）。"""
+        if signature is None or not content:
+            return
+        self._successful_results[signature] = content
 
     @property
     def halt_decision(self) -> Optional[ToolGuardrailDecision]:

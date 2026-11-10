@@ -51,12 +51,18 @@ def persist_new_messages(db, agent_id: int, session_id: str, user_id: int, new_m
         role = m.get("role", "user")
         if role not in ("user", "assistant", "tool"):
             continue
+        content = m.get("content", "") or ""
+        # 带 tool_calls 的 assistant 消息只是 ReAct 迭代的中间叙述（“我先查一下…”
+        # 会在每轮重复），若原样入库，历史回放会出现多个重复段落的气泡。
+        # 这里丢弃中间叙述，仅保留最终回答；工具调用本身仍完整保留。
+        if role == "assistant" and m.get("tool_calls"):
+            content = ""
         db.add(ChatMessage(
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
             role=role,
-            content=m.get("content", "") or "",
+            content=content,
             tool_calls=m.get("tool_calls") if role == "assistant" else None,
             tool_call_id=m.get("tool_call_id", "") or "" if role == "tool" else "",
             name=m.get("name", "") or "" if role == "tool" else "",
@@ -179,6 +185,13 @@ class AgentRun:
                         pass
                 yield chunk
                 await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            # 客户端断开连接（停止生成/关闭页面）会取消整个 SSE 生成器，
+            # CancelledError 是 BaseException，不拦会被当成"正常结束"落库，
+            # 出现 status=success 但 reply 为空、无最终回答的假象
+            exec_status = "cancelled"
+            error_msg = "客户端连接中断，本轮回复未完成"
+            raise
         except Exception as exc:
             logger.exception("Agent SSE 失败: %s", exc)
             exec_status = "failed"

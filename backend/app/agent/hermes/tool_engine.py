@@ -14,6 +14,7 @@ Stage B 扩展点（guardrails / budget / middleware）通过 _execute_one 的�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Callable, Optional
@@ -42,6 +43,7 @@ from app.agent.hermes.tool_search import (
     is_bridge_tool,
     resolve_underlying_call,
 )
+from app.agent.hermes.tool_result_classification import result_error_message
 from app.agent.hermes.types import ToolCall, ToolEntry, ToolResult
 from app.agent.hermes.verification import (
     WRITE_TOOLS_REQUIRING_VERIFICATION,
@@ -51,6 +53,12 @@ from app.agent.hermes.verification import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 通用能力工具：与具体业务领域无关，由引擎自动挂载到所有智能体，无需在
+# enabled_tools 中手动配置。LLM 依据工具 description 中的调用时机从用户
+# 自然语言指令中自主识别并调用（如"生成 excel 文档"→ generate_document）。
+# 运维侧仍可在工具管理中把工具 enabled 置为 false 停用（停用后不挂载）。
+AUTO_CAPABILITY_TOOL_NAMES: tuple[str, ...] = ("generate_document", "append_document")
 
 
 def _coerce_primitive_args(args: dict) -> dict:
@@ -85,6 +93,27 @@ def _coerce_primitive_args(args: dict) -> dict:
         else:
             coerced[k] = v
     return coerced
+
+
+def _result_indicates_error(result: Any) -> bool:
+    """按结果语义判断工具是否失败。
+
+    不能只看 ``"error" in result``：``execute_device_action`` 等工具在成功时也会
+    返回 ``"error": null``，按 key 判断会把成功误判为失败，导致界面显示“异常”、
+    guardrail 误计数并触发模型重复重试。
+    """
+    if isinstance(result, dict):
+        return result_error_message(result) is not None
+    if isinstance(result, str):
+        text = result.strip()
+        if not text.startswith("{"):
+            return False
+        try:
+            parsed = json.loads(text)
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(parsed, dict) and result_error_message(parsed) is not None
+    return False
 
 
 class HermesToolEngine:
@@ -176,9 +205,11 @@ class HermesToolEngine:
         """从 Agent 配置构建工具注册表。"""
         # 1. DB 工具（code + http；framework 类型由 executor 注入，不在此注册）
         self._register_db_tools()
-        # 2. 知识库工具
+        # 2. 通用能力工具（文档生成等）：无需在智能体工具列表中手动配置，自动挂载
+        self._register_capability_tools()
+        # 3. 知识库工具
         self._register_kb_tools()
-        # 3. 资产检索工具（启用 search_assets 即注册；检索全部类型，见 _register_asset_tools）
+        # 4. 资产检索工具（启用 search_assets 即注册；检索全部类型，见 _register_asset_tools）
         self._register_asset_tools()
         self._register_workflow_tools()
         # 注意：内置安全工具（check_whitelist 等）已迁移为 DB code 类型工具，
@@ -194,57 +225,84 @@ class HermesToolEngine:
         enabled_tools = self.agent.enabled_tools or []
         if not enabled_tools:
             return
+        for name in enabled_tools:
+            self._register_db_tool(name)
+
+    def _register_capability_tools(self) -> None:
+        """自动挂载通用能力工具（见 ``AUTO_CAPABILITY_TOOL_NAMES``）。
+
+        这些工具解决的是"用户自然语言提到生成文档时必须先手工把工具加进
+        智能体工具列表"的问题：只要工具在 DB 中存在且启用，就对本智能体可见，
+        由 LLM 根据 description 自主判断是否调用。
+        """
+        for name in AUTO_CAPABILITY_TOOL_NAMES:
+            self._register_db_tool(name, warn_missing=False)
+
+    def _register_db_tool(self, name: str, *, warn_missing: bool = True) -> bool:
+        """按名称从 DB 加载并注册单个 code/http 工具。
+
+        Args:
+            name: 工具名称。
+            warn_missing: 工具不存在/未启用时是否输出 warning（能力工具自动挂载
+                在种子同步前属正常情况，用 debug 记录）。
+
+        Returns:
+            是否成功注册（已注册/框架类型/未启用/加载失败均返回 False）。
+        """
+        if not name or name in self._registry:
+            return False
         from app.models.tool import Tool
 
-        for name in enabled_tools:
-            tool = self.db.query(Tool).filter(Tool.name == name, Tool.enabled.is_(True)).first()
-            if tool is None:
-                logger.warning("DB 工具未找到或未启用: %s", name)
-                continue
-            # framework 类型工具（delegate_task/clarify 等）由 executor 作为 extra_tool_defs
-            # 注入并在 _react_loop 中拦截处理，不走 tool_engine 执行管线
-            if (tool.tool_type or "code").lower() == "framework":
-                continue
-            if name == "search_assets":
-                continue
-            try:
-                from app.core.tool_runner import load_tool_function
+        tool = self.db.query(Tool).filter(Tool.name == name, Tool.enabled.is_(True)).first()
+        if tool is None:
+            log = logger.warning if warn_missing else logger.debug
+            log("DB 工具未找到或未启用: %s", name)
+            return False
+        # framework 类型工具（delegate_task/clarify 等）由 executor 作为 extra_tool_defs
+        # 注入并在 _react_loop 中拦截处理，不走 tool_engine 执行管线
+        if (tool.tool_type or "code").lower() == "framework":
+            return False
+        if name == "search_assets":
+            return False
+        try:
+            from app.core.tool_runner import load_tool_function
 
-                run_fn = load_tool_function(
-                    tool,
-                    enabled_kbs=self.agent.enabled_kbs or [],
-                    agent_id=self.agent.id,
-                    user_id=self.user_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("DB 工具加载失败: %s, error=%s", name, exc)
-                continue
-
-            from app.agent.tool_builders import _build_args_model
-
-            args_model = _build_args_model(tool.name, tool.parameters_schema)
-            tool_type = (getattr(tool, "tool_type", "code") or "code").lower()
-            if getattr(tool, "is_preset", False):
-                source = "builtin"
-            elif tool_type == "http":
-                source = "db_http"
-            else:
-                source = "db_code"
-
-            # 判断并行安全性：HTTP 工具默认 barrier，code 工具按名称判断
-            parallel_safe = self._is_parallel_safe(name)
-            # 不可信包装：HTTP 工具结果可能含外部内容
-            untrusted = tool_type == "http" or name.startswith("http_") or name.startswith("openapi_")
-
-            self._registry[name] = ToolEntry(
-                name=name,
-                description=tool.description or f"DB 工具 {name}",
-                args_schema=args_model,
-                coroutine=self._make_safe_coroutine(run_fn, name),
-                source=source,
-                parallel_safe=parallel_safe,
-                untrusted=untrusted,
+            run_fn = load_tool_function(
+                tool,
+                enabled_kbs=self.agent.enabled_kbs or [],
+                agent_id=self.agent.id,
+                user_id=self.user_id,
             )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DB 工具加载失败: %s, error=%s", name, exc)
+            return False
+
+        from app.agent.tool_builders import _build_args_model
+
+        args_model = _build_args_model(tool.name, tool.parameters_schema)
+        tool_type = (getattr(tool, "tool_type", "code") or "code").lower()
+        if getattr(tool, "is_preset", False):
+            source = "builtin"
+        elif tool_type == "http":
+            source = "db_http"
+        else:
+            source = "db_code"
+
+        # 判断并行安全性：HTTP 工具默认 barrier，code 工具按名称判断
+        parallel_safe = self._is_parallel_safe(name)
+        # 不可信包装：HTTP 工具结果可能含外部内容
+        untrusted = tool_type == "http" or name.startswith("http_") or name.startswith("openapi_")
+
+        self._registry[name] = ToolEntry(
+            name=name,
+            description=tool.description or f"DB 工具 {name}",
+            args_schema=args_model,
+            coroutine=self._make_safe_coroutine(run_fn, name),
+            source=source,
+            parallel_safe=parallel_safe,
+            untrusted=untrusted,
+        )
+        return True
 
     def _register_kb_tools(self) -> None:
         """注册知识库检索工具。"""
@@ -662,6 +720,32 @@ class HermesToolEngine:
                     guardrail_action=guard_decision.action,
                 )
 
+        # 3.5 同 turn 相同参数的重复调用：直接复用上次成功结果，不再真正下发。
+        # 避免模型在结果被截断/误判失败后，用完全相同的参数反复执行同一设备动作。
+        if (
+            self.guardrail_controller is not None
+            and guard_decision is not None
+            and guard_decision.signature is not None
+        ):
+            cached = self.guardrail_controller.recall_success(guard_decision.signature)
+            if cached is not None:
+                duration_ms = int((time.time() - start_time) * 1000)
+                self._log_tool(
+                    "info",
+                    f"工具 {effective_name} 相同参数已成功执行过，复用上次结果（未重复下发）",
+                )
+                return ToolResult(
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                    content=(
+                        "[复用结果] 本 turn 内已用相同参数成功调用过该工具，本次未重复执行。"
+                        "请直接使用以下结果，不要再次调用相同参数：\n" + cached
+                    ),
+                    is_error=False,
+                    duration_ms=duration_ms,
+                    guardrail_action="allow",
+                )
+
         # 4. verification：写工具证据验证
         if self.verification_config is not None and effective_name in WRITE_TOOLS_REQUIRING_VERIFICATION:
             verify_context = {
@@ -715,6 +799,36 @@ class HermesToolEngine:
             # 纯数字字符串 → int，浮点字符串 → float，"true"/"false" → bool
             call_args = _coerce_primitive_args(call_args)
 
+        # 模型输出的参数 JSON 不完整（未闭合）且完全没有解出参数时，直接返回可操作性提示，
+        # 避免进入工具内部后报「请提供 file_name 参数」这类误导性的参数校验错误。
+        if tc.malformed and not call_args:
+            required: list[str] = []
+            if entry.args_schema is not None:
+                try:
+                    required = list(entry.args_schema.model_json_schema().get("required") or [])
+                except Exception:  # noqa: BLE001
+                    required = []
+            if required:
+                duration_ms = int((time.time() - start_time) * 1000)
+                self._log_tool(
+                    "warning",
+                    f"工具 {effective_name} 参数 JSON 不完整，已阻断执行",
+                )
+                return ToolResult(
+                    tool_call_id=tc.id,
+                    name=tc.name,
+                    content={
+                        "error": f"工具 {effective_name} 的调用参数不完整，缺少有效参数",
+                        "hint": (
+                            "请重新调用并补齐参数，参数较多时精简内容后重试。"
+                            f"本次调用必须提供参数: {', '.join(required)}"
+                        ),
+                    },
+                    is_error=True,
+                    duration_ms=duration_ms,
+                    guardrail_action="allow",
+                )
+
         # 工具执行：长耗时 I/O 使用短会话，执行完归还连接
         from app.database import close_db_session
 
@@ -729,7 +843,7 @@ class HermesToolEngine:
             raw_result = await asyncio.wait_for(
                 entry.coroutine(**call_args), timeout=tool_timeout
             )
-            is_error = isinstance(raw_result, dict) and "error" in raw_result
+            is_error = _result_indicates_error(raw_result)
         except asyncio.TimeoutError:
             logger.warning("工具 %s 执行超时（%ss），已终止", effective_name, tool_timeout)
             raw_result = {"error": f"工具执行超时（{tool_timeout:.0f}秒），已终止"}
@@ -766,6 +880,10 @@ class HermesToolEngine:
 
         wrapped = maybe_wrap_untrusted(effective_name, raw_result)
         result_str = self._stringify(wrapped)
+
+        # 记录成功结果（同 turn 相同参数再次调用时直接复用，见 3.5）
+        if not is_error and self.guardrail_controller is not None and guard_decision is not None:
+            self.guardrail_controller.remember_success(guard_decision.signature, result_str)
 
         # 追加 guardrail warn 指导（halt 由 executor 检查 halt_decision 终止 turn）
         if guard_decision is not None and guard_decision.action == "warn":
