@@ -543,6 +543,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
           selectable={canEdit}
           selectedKeys={selected}
           onSelectChange={handleSelectChange}
+          stickyHeader
           maxHeight="26rem"
           emptyText={keyword || enableFilter ? '没有符合筛选条件的白名单' : '安博通全局白名单为空'}
           emptyDescription={

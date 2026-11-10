@@ -71,18 +71,25 @@ def main_db() -> Iterator[Session]:
 
 
 def close_db_session(db: Session | None) -> None:
-    """结束会话并归还连接（长 I/O 前调用，调用方不得再使用该 Session）。"""
+    """结束会话并归还连接（长 I/O 前调用）。
+
+    会话本身可继续复用（下次查询自动重建连接），但调用方不应再依赖其中有
+    未提交的变更。关闭前先 ``expunge_all()`` 把实例带已加载属性摘出：
+    直接 ``rollback()+close()`` 会使会话内实例属性过期并被逐出，此后调用方
+    读取任何属性（如 device.name / action.auth_type）都会抛
+    DetachedInstanceError（手动封禁 500 即由此引发）。
+    """
     if db is None:
         return
     try:
-        if db.new or db.dirty or db.deleted:
+        # 未提交的变更（new/dirty/deleted）随会话结束一并丢弃：expunge 使
+        # 待插入对象退回 transient、未 flush 的修改不再落库，与 rollback 同效
+        try:
+            db.expunge_all()
+        except Exception:  # noqa: BLE001
+            logger.debug("摘出会话实例失败", exc_info=True)
+        if db.in_transaction():
             db.rollback()
-        else:
-            try:
-                if db.in_transaction():
-                    db.rollback()
-            except Exception:  # noqa: BLE001
-                db.rollback()
         db.close()
     except Exception:  # noqa: BLE001
         logger.debug("关闭数据库会话失败", exc_info=True)

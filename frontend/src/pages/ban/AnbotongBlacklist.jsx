@@ -347,6 +347,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
           loading={blQuery ? blQueryLoading : (blacklistLoading && !blacklist.items.length)}
           rowKey="blist"
           selectable={false}
+          stickyHeader
           maxHeight="26rem"
           emptyText={blQuery ? '未查到：该 IP 不在黑名单中' : (blacklist.page > 1 ? '本页无数据' : '设备黑名单为空')}
           emptyDescription={blQuery ? '设备返回 404，黑名单中没有该 IP 的条目' : (blacklist.page > 1 ? '该页码已超出设备黑名单范围，请返回上一页' : '安博通阻断器上当前没有任何黑名单条目')}

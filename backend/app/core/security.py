@@ -551,6 +551,7 @@ def run_lightweight_migrations(engine) -> None:
     - knowledge_documents 表新增 updated_at / segment_count 列。
     - agents 表新增 enabled_skills 列（启用的技能 id 列表，注入 system prompt）。
     - tools 表新增 tool_type / http_config / category 列。
+    - ban_hit_stats 表 hit_total / last_hit 列扩为 BIGINT（累计命中可超 int4）。
 
     线程安全：使用 PostgreSQL advisory lock 防止多实例并发执行 DDL。
     锁 ID 77001 为本项目专用，避免与其他应用冲突。
@@ -1145,6 +1146,28 @@ def run_lightweight_migrations(engine) -> None:
             "asset_tags",
             {"category": "VARCHAR(64)"},
         )
+        # ban_hit_stats 表 hit_total / last_hit 列扩为 BIGINT：
+        # 高频拦截 IP 的累计命中可超 int4 上限（21.4 亿），实测已有条目逼近该值，
+        # 同步 UPDATE 报 integer out of range 导致大屏封禁IP统计/重保拦截趋势 500。
+        # 模型已改为 BigInteger，此处为老库把 integer 扩为 bigint，幂等（已达标则跳过）
+        try:
+            insp_bhs = inspect(engine)
+            if insp_bhs.has_table("ban_hit_stats"):
+                for col_name in ("hit_total", "last_hit"):
+                    col = next(
+                        (c for c in insp_bhs.get_columns("ban_hit_stats") if c["name"] == col_name),
+                        None,
+                    )
+                    if col is not None and str(col.get("type")).upper() == "INTEGER":
+                        with engine.begin() as conn:
+                            conn.execute(text(
+                                f'ALTER TABLE "ban_hit_stats" ALTER COLUMN "{col_name}" TYPE BIGINT'
+                            ))
+                        logger.info(
+                            "轻量迁移: ban_hit_stats.%s 列已扩为 BIGINT", col_name
+                        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ban_hit_stats 列扩宽失败: %s", exc)
         # assets 表索引变更：从唯一索引改为普通索引
         # 聚合模式（allow_aggregate=True）下同一标识可有多条不同部门记录，
         # 唯一性由应用层根据模板配置控制，不再用 DB 唯一约束。
