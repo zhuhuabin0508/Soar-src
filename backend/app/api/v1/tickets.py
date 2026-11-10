@@ -399,6 +399,20 @@ def _sla_remaining(ticket: Ticket, records: list, now, config: dict) -> tuple[fl
     return remaining, remaining < 0, True
 
 
+def _ticket_overdue(t: Ticket, records: list, now, config: dict) -> bool:
+    """工单「当前超时」判定（大屏超时预警与工单中心列表/超时筛选统一口径）。
+
+    - 未提交过节点：响应目标到期即超时；
+    - 已提交过节点：只看解决目标（响应曾经超标属历史事实，不计入当前预警）；
+    - 暂停工单以暂停时刻冻结评估；已完成/已取消不参与当前预警。
+    """
+    if t.status not in ("processing", "paused"):
+        return False
+    sla_now = (t.paused_at or now) if t.status == "paused" else now
+    _, overdue, _ = _sla_remaining(t, records, sla_now, config)
+    return overdue
+
+
 def _sla_overdue_conditions(db: Session, config: dict, now) -> list:
     """SLA 已超时的 SQL 过滤条件（处理中/暂停中且响应或解决目标已到期）。
 
@@ -1480,18 +1494,9 @@ def _monitor_light(db: Session, now, today_start) -> dict:
         for r in records:
             by_ticket.setdefault(r.ticket_id, []).append(r)
     sla_config = get_sla_config(db)
-    # 暂停中 SLA 冻结：以暂停时刻作为评估基准，避免暂停期间被判超时
-    sla_eval = {
-        tid: evaluate_ticket_sla(
-            t, by_ticket.get(tid, []),
-            (t.paused_at or now) if t.status == "paused" else now,
-            sla_config,
-        )
-        for tid, t in eval_tickets.items()
-    }
-    # 超时预警口径：暂停工单 SLA 已冻结，即使暂停前已超时也不计入预警
+    # 超时预警口径：与工单中心「超时」筛选一致（暂停工单按暂停时刻冻结评估）
     kpi["timeout_warning"] = sum(
-        1 for t in processing if t.status != "paused" and sla_eval[t.id]["timeout"]
+        1 for t in processing if _ticket_overdue(t, by_ticket.get(t.id, []), now, sla_config)
     )
 
     latest = []
@@ -1506,8 +1511,7 @@ def _monitor_light(db: Session, now, today_start) -> dict:
             "status_label": STATUS_LABELS.get(t.status, t.status),
             "current_node_name": t.current_node_name or t.current_node_key,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-            # 暂停工单不计超时预警（SLA 冻结）
-            "timeout": sla_eval[t.id]["timeout"] and t.status != "paused",
+            "timeout": _ticket_overdue(t, by_ticket.get(t.id, []), now, sla_config),
             "remind_count": t.remind_count or 0,
         })
 
@@ -1526,10 +1530,14 @@ def _monitor_light(db: Session, now, today_start) -> dict:
 
 # 全量黑名单翻页上限（单页 LIST_PAGE_SIZE=1000，20 页 = 2 万条，超出以 truncated 标记）
 _BLACKLIST_FETCH_MAX_PAGES = 20
-# 全量拉取结果缓存 TTL（秒）：卡片轮询间隔可低至 10s，缓存避免高频打设备
-_BLACKLIST_CACHE_TTL_SECONDS = 10.0
+# 全量拉取结果缓存 TTL（秒）：万级条目分页拉取一轮可达分钟级，短 TTL 会让
+# 高频轮询退化为连续全量拉取打爆设备；60s 让轮询绝大多数命中缓存
+_BLACKLIST_CACHE_TTL_SECONDS = 60.0
 _blacklist_cache: dict = {"at": 0.0, "items": [], "truncated": False}
 _blacklist_cache_lock = threading.Lock()
+# 全量拉取 single-flight 锁：并发请求（两卡 + 轮询叠加）共用一次进行中的拉取，
+# 后到者在锁上等待并直接复用其结果，避免多个分钟级翻页请求同时压到设备
+_blacklist_fetch_lock = threading.Lock()
 # 命中累计表同步锁：并发请求同时触发全量拉取时串行化合并，避免增量重复累计
 _ban_hit_sync_lock = threading.Lock()
 
@@ -1581,8 +1589,12 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
     """将本次拉取的设备黑名单条目并入命中累计表（ban_hit_stats，历史累计口径）。
 
     - 新条目：hit_total = last_hit = 当前 hit_num；
-    - 已有条目：设备侧 hit_num 单调递增，取差值计入累计；当前值小于 last_hit
-      （解封后重新封禁，设备计数清零重计）时按新一轮全量计入；
+    - 已有条目：设备侧 hit_num 单调递增，取差值计入累计；
+    - 「解封后重新封禁」的全额重计必须同时满足两个条件：设备计数回落
+      （hit < last_hit）**且 effectTime 前进**（重封会刷新生效时间）。只看计数
+      回落会把乱序快照误判为重封——并发全量拉取时代旧快照后到，一轮误重计
+      就把全表当前计数整轮再加一遍（实测 2 小时膨胀 72 倍）；此时跳过本条
+      不改写（不下调 last_hit，避免下一轮再全量重计一次）；
     - 条目从设备消失（解封/到期）不删除记录：累计值保留，统计只增不减。
 
     同一批条目重复同步幂等（last_hit 已更新为当前值，差值为 0）。
@@ -1603,8 +1615,9 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
                              effect_time=eff, first_seen_at=now, last_seen_at=now)
             db.add(row)
             rows[blist] = row  # 同批同 blist 去重
-        else:
-            delta = hit - row.last_hit if hit >= row.last_hit else hit
+        elif hit >= row.last_hit:
+            # 正常增量：设备计数不低于上次记录，差值计入累计
+            delta = hit - row.last_hit
             # 仅在命中 / 生效时间真正变化时才更新 last_seen_at：
             # 无条件赋新时间戳会把全表行标记 dirty，每次同步产生全表 UPDATE
             changed = delta > 0 or (eff is not None and eff != row.effect_time)
@@ -1615,50 +1628,78 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
                 row.effect_time = eff
             if changed:
                 row.last_seen_at = now
+        elif eff is not None and row.effect_time is not None and eff > row.effect_time:
+            # 真实重封：effectTime 前进且设备计数清零，按新一轮全量计入
+            row.hit_total = (row.hit_total or 0) + hit
+            row.last_hit = hit
+            row.effect_time = eff
+            row.last_seen_at = now
+        # else：计数回落但 effectTime 未前进 —— 乱序快照 / 设备抖动，
+        # 跳过本条（不改写 last_hit / hit_total）。
+        # 已知限制（有意保守）：若历史行 effect_time 为 NULL 或设备重封后
+        # 不返回 effectTime，真实重封无法识别，将跳过并少计该条增量，
+        # 直到设备计数重新超过 last_hit 才恢复正常——宁少计勿误多计。
     db.commit()
 
 
 def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
-    """翻页拉取安博通阻断器黑名单全量条目（带 TTL 缓存）。
+    """翻页拉取安博通阻断器黑名单全量条目（带 TTL 缓存 + single-flight 合并）。
 
     每次真实拉取成功后同步命中累计表（历史累计口径数据源，见 _sync_ban_hit_stats）；
     缓存命中时不重复同步。Returns: (items, error, truncated)：error 非 None 时
     items 为空；truncated=True 表示超出翻页上限，仅统计到前
     ``_BLACKLIST_FETCH_MAX_PAGES`` 页。
+
+    万级条目分页拉取一轮可达分钟级：并发请求（封禁IP统计卡 / 重保拦截趋势卡
+    及其轮询叠加）在 single-flight 锁上排队，共用首个请求的拉取结果——等锁
+    期间若缓存已新鲜则直接返回缓存；首请求失败时后到者依次重试拉取。
     """
     now_ts = time.monotonic()
     with _blacklist_cache_lock:
         if _blacklist_cache["items"] and now_ts - _blacklist_cache["at"] < _BLACKLIST_CACHE_TTL_SECONDS:
             return _blacklist_cache["items"], None, _blacklist_cache["truncated"]
 
-    from app.devices.anbotong import LIST_PAGE_SIZE, list_blacklist_on_anbotong
+    with _blacklist_fetch_lock:
+        # 等锁期间前一个请求可能已完成拉取并刷新缓存：double-check 后直接复用
+        now_ts = time.monotonic()
+        with _blacklist_cache_lock:
+            if _blacklist_cache["items"] and now_ts - _blacklist_cache["at"] < _BLACKLIST_CACHE_TTL_SECONDS:
+                return _blacklist_cache["items"], None, _blacklist_cache["truncated"]
 
-    items: list[dict] = []
-    truncated = False
-    page = 1
-    while page <= _BLACKLIST_FETCH_MAX_PAGES:
-        res = list_blacklist_on_anbotong(db, page=page, count=LIST_PAGE_SIZE, source="monitor")
-        if not res.get("success"):
-            # 首页失败：整体失败；翻页中途失败：保留已拉到的部分（数据可能不全但可展示）
-            if page == 1:
-                return [], res.get("error") or "安博通黑名单接口调用失败", False
-            logger.warning("黑名单全量拉取在第 %d 页中断: %s", page, res.get("error"))
-            break
-        items.extend(res.get("items") or [])
-        if not res.get("page_full"):
-            break
-        page += 1
-    else:
-        truncated = True
-        logger.warning("黑名单条目超过 %d 页上限，统计可能不全", _BLACKLIST_FETCH_MAX_PAGES)
+        from app.devices.anbotong import LIST_PAGE_SIZE, list_blacklist_on_anbotong
 
-    # 并入命中累计表（串行化：并发双拉取时第二次同步幂等，不重复累计增量）
-    with _ban_hit_sync_lock:
-        _sync_ban_hit_stats(db, items)
+        items: list[dict] = []
+        truncated = False
+        page = 1
+        while page <= _BLACKLIST_FETCH_MAX_PAGES:
+            res = list_blacklist_on_anbotong(db, page=page, count=LIST_PAGE_SIZE, source="monitor")
+            if not res.get("success"):
+                # 首页失败：整体失败；翻页中途失败：保留已拉到的部分（数据可能不全但可展示）
+                if page == 1:
+                    return [], res.get("error") or "安博通黑名单接口调用失败", False
+                logger.warning("黑名单全量拉取在第 %d 页中断: %s", page, res.get("error"))
+                break
+            items.extend(res.get("items") or [])
+            if not res.get("page_full"):
+                break
+            page += 1
+        else:
+            truncated = True
+            logger.warning("黑名单条目超过 %d 页上限，统计可能不全", _BLACKLIST_FETCH_MAX_PAGES)
 
-    with _blacklist_cache_lock:
-        _blacklist_cache.update(at=now_ts, items=items, truncated=truncated)
-    return items, None, truncated
+        # 并入命中累计表（串行化：并发双拉取时第二次同步幂等，不重复累计增量）。
+        # 同步失败（如历史遗留的列溢出）不阻断大屏请求：回滚后按表内既有累计值
+        # 返回统计，仅记录告警等待下次拉取重试同步
+        with _ban_hit_sync_lock:
+            try:
+                _sync_ban_hit_stats(db, items)
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                logger.warning("黑名单命中累计表同步失败（本次按旧累计值返回）: %s", exc)
+
+        with _blacklist_cache_lock:
+            _blacklist_cache.update(at=now_ts, items=items, truncated=truncated)
+        return items, None, truncated
 
 
 @router.get("/monitor/ban-live")
@@ -1899,9 +1940,10 @@ def ticket_monitor_payload(
         if r.action == "submit" and r.created_at and r.created_at >= today_start
     }
     active_now = [t for t in processing if t.id in today_submit_ids]
-    # 超时预警口径：暂停工单 SLA 已冻结，即使暂停前已超时也不计入预警
+    # 超时预警口径：与工单中心「超时」筛选一致（暂停工单按暂停时刻冻结评估）
     timeout_warn = [
-        t for t in processing if t.status != "paused" and sla_eval[t.id]["timeout"]
+        t for t in processing
+        if _ticket_overdue(t, by_ticket.get(t.id, []), now, sla_config)
     ]
     kpi = {
         "total": len(tickets),
@@ -1927,8 +1969,7 @@ def ticket_monitor_payload(
             "status_label": STATUS_LABELS.get(t.status, t.status),
             "current_node_name": t.current_node_name or t.current_node_key,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-            # 暂停工单不计超时预警（SLA 冻结）
-            "timeout": sla_eval[t.id]["timeout"] and t.status != "paused",
+            "timeout": _ticket_overdue(t, by_ticket.get(t.id, []), now, sla_config),
             "remind_count": t.remind_count or 0,
         })
 
@@ -2207,8 +2248,8 @@ def ticket_monitor_payload(
                 "closed_at": t.closed_at.isoformat() if t.closed_at else None,
                 # 统计分组：暂停工单归属「处理中」，供大屏下钻筛选与 KPI 同口径
                 "status_group": "processing" if t.status in ("processing", "paused") else t.status,
-                # SLA 超时预警（进行中工单超目标；暂停工单 SLA 冻结，不计预警）
-                "timeout": ev["timeout"] and t.status != "paused",
+                # SLA 超时预警（口径与工单中心超时筛选一致；暂停工单冻结评估）
+                "timeout": _ticket_overdue(t, by_ticket.get(t.id, []), now, sla_config),
                 # 今日活跃（进行中且今日有提交流转），与 KPI processing_active 口径一致
                 "active_today": t.status in ("processing", "paused") and t.id in today_submit_ids,
                 "response_minutes": ev["response_minutes"],
