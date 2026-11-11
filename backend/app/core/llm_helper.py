@@ -61,6 +61,13 @@ def _no_proxy_http_client(base_url: str = "", timeout: float = 60) -> httpx.Clie
     return httpx.Client(timeout=timeout)
 
 
+def _no_proxy_async_client(base_url: str = "", timeout: float = 60) -> httpx.AsyncClient:
+    """``_no_proxy_http_client`` 的 Async 版：IP 地址直连、域名走默认代理。"""
+    if _is_ip_url(base_url):
+        return httpx.AsyncClient(timeout=timeout, trust_env=False)
+    return httpx.AsyncClient(timeout=timeout)
+
+
 def clean_base_url(raw: str) -> str:
     """清理 base_url：循环去除首尾的空白、斜杠、反斜杠，直到稳定。
 

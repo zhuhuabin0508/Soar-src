@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from app.core.llm_helper import clean_base_url
+from app.core.llm_helper import _no_proxy_async_client, clean_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +165,8 @@ async def embed_texts(
         multimodal_url = _resolve_multimodal_url(cfg.base_url or "")
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            # IP 型 base_url 直连（与 llm_helper 约定一致），域名走默认代理
+            async with _no_proxy_async_client(cfg.base_url or "", 30) as client:
                 if use_multimodal:
                     # 已知多模态模型：直接逐条调用 /embeddings/multimodal
                     for j, text in enumerate(miss_texts):

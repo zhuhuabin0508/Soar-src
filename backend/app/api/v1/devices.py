@@ -215,7 +215,9 @@ def _test_device_connection(device: Device) -> tuple[bool, int | None, int | Non
     for idx, url in enumerate(candidates):
         start = time.perf_counter()
         try:
-            with httpx.Client(timeout=timeout, verify=verify) as client:
+            # 设备对接走本机网络直连：忽略 HTTP_PROXY/HTTPS_PROXY 环境变量，
+            # 避免设备请求被转发到代理（隧道异常时表现为 Errno 104 连接重置）
+            with httpx.Client(timeout=timeout, verify=verify, trust_env=False) as client:
                 r = client.get(url, headers=headers, auth=auth)
             latency = int((time.perf_counter() - start) * 1000)
             if r.status_code < 400:

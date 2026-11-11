@@ -66,6 +66,9 @@ services:
       - backups:/app/backups
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      HTTP_PROXY: http://172.19.0.1:8999
+      HTTPS_PROXY: http://172.19.0.1:8999
+      NO_PROXY: localhost,127.0.0.1,postgres,redis
       PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soar}
       DB_USER: ${POSTGRES_USER:-postgres}
@@ -201,6 +204,12 @@ networks:
   # 若不存在，dev.sh up 会先创建；已存在则直接加入（服务器上沿用原网络，数据卷不受影响）。
   soar-net:
     name: config_default
+    # 固定子网与网关：backend 的代理地址(172.19.0.1:8999)依赖该网关 IP，
+    # 不固定的话网络重建后网关漂移会导致代理静默失效
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
+          gateway: 172.19.0.1
 
 volumes:
   pgdata:

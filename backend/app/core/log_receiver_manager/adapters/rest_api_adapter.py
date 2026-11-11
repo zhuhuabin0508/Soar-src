@@ -146,7 +146,8 @@ class RestApiAdapter(BaseAdapter):
                 body = json.dumps(body_template, ensure_ascii=False, default=str)
                 headers.setdefault("Content-Type", "application/json")
 
-            with httpx.Client(timeout=timeout, verify=verify_tls) as client:
+            # 设备/日志源对接走本机网络直连，忽略代理环境变量
+            with httpx.Client(timeout=timeout, verify=verify_tls, trust_env=False) as client:
                 resp = client.request(method, url, headers=headers, params=req_params, auth=auth, content=body)
             if resp.status_code >= 400:
                 raise RuntimeError(f"接口返回 HTTP {resp.status_code}: {resp.text[:200]}")

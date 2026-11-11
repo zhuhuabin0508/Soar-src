@@ -224,7 +224,8 @@ def sync_device_hosts(db: Session, device: Device, *, user_id: int = 0, mode: st
     try:
         comid, jwt, signkey = _qingteng_login(device, timeout, verify)
         phase = "拉取主机清单"
-        with httpx.Client(timeout=timeout, verify=verify) as client:
+        # 设备对接走本机网络直连，忽略代理环境变量
+        with httpx.Client(timeout=timeout, verify=verify, trust_env=False) as client:
             entries = _fetch_all_hosts(client, base_url, comid, jwt, signkey)
 
         phase = "写入数据库"

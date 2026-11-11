@@ -255,7 +255,8 @@ def _qingteng_login(device: Device, timeout: float, verify: bool):
         raise ValueError("设备未配置 api_url")
     username = decrypt_device_secret(device.username or "")
     password = decrypt_device_secret(device.password or "")
-    with httpx.Client(timeout=timeout, verify=verify) as client:
+    # 设备对接走本机网络直连，忽略代理环境变量
+    with httpx.Client(timeout=timeout, verify=verify, trust_env=False) as client:
         resp = client.post(
             f"{base_url}/v1/api/auth",
             json={"username": username, "password": password},
@@ -473,7 +474,8 @@ def execute_device_action(
             request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
 
     def _do_request() -> httpx.Response:
-        with httpx.Client(timeout=timeout, verify=verify) as client:
+        # 设备对接走本机网络直连，忽略代理环境变量
+        with httpx.Client(timeout=timeout, verify=verify, trust_env=False) as client:
             return client.request(
                 method=method,
                 url=url,

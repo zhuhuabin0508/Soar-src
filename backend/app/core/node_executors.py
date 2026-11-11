@@ -1149,6 +1149,8 @@ async def execute_llm(
             # OpenAI 兼容接口
             import httpx
 
+            from app.core.llm_helper import _no_proxy_http_client
+
             base = (cfg.base_url or "https://api.openai.com/v1").strip()
             if base.endswith("/chat/completions"):
                 url = base
@@ -1174,7 +1176,8 @@ async def execute_llm(
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             }
-            with httpx.Client(timeout=60) as client:
+            # IP 型 base_url 直连（与 llm_helper 约定一致），域名走默认代理
+            with _no_proxy_http_client(base, 60) as client:
                 r = client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
                 log(nid, _ERROR, f"LLM 节点：HTTP {r.status_code}: {r.text[:300]}")

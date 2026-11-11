@@ -82,7 +82,7 @@ def _ping_config(cfg) -> tuple[bool, str, Optional[int]]:
 
     # Embedding 模型走 /embeddings 端点
     if (cfg.model_type or "chat").lower() == "embedding":
-        from app.core.llm_helper import clean_base_url
+        from app.core.llm_helper import _no_proxy_http_client, clean_base_url
 
         base = clean_base_url(cfg.base_url or "https://api.openai.com/v1")
         if base.endswith("/embeddings/multimodal"):
@@ -97,7 +97,7 @@ def _ping_config(cfg) -> tuple[bool, str, Optional[int]]:
         payload = {"model": cfg.model_name or "text-embedding-ada-002", "input": ["ping"]}
         t0 = _time.monotonic()
         try:
-            with httpx.Client(timeout=15) as client:
+            with _no_proxy_http_client(base, 15) as client:
                 r = client.post(url, json=payload, headers=headers)
             latency_ms = int((_time.monotonic() - t0) * 1000)
             if r.status_code != 200:
@@ -127,7 +127,7 @@ def _ping_config(cfg) -> tuple[bool, str, Optional[int]]:
             return False, str(exc)[:300], int((_time.monotonic() - t0) * 1000)
 
     # OpenAI 兼容接口
-    from app.core.llm_helper import clean_base_url
+    from app.core.llm_helper import _no_proxy_http_client, clean_base_url
 
     base = clean_base_url(cfg.base_url or "https://api.openai.com/v1")
     if base.endswith("/chat/completions"):
@@ -144,7 +144,7 @@ def _ping_config(cfg) -> tuple[bool, str, Optional[int]]:
     }
     t0 = _time.monotonic()
     try:
-        with httpx.Client(timeout=15) as client:
+        with _no_proxy_http_client(base, 15) as client:
             r = client.post(url, json=payload, headers=headers)
         latency_ms = int((_time.monotonic() - t0) * 1000)
         if r.status_code != 200:
