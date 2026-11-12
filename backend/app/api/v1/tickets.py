@@ -1879,9 +1879,29 @@ def ticket_monitor_stats(
     （``completed``）工单数，不随 ``flow_id`` 变化（与 KPI「已解决」口径一致）。
     注意：本路由必须注册在 ``GET /{ticket_id}`` 之前，避免 "monitor" 被路径参数吞掉。
     """
-    return ticket_monitor_payload(
-        db, flow_id=flow_id, light=light, include_drill=include_drill, drill_limit=drill_limit
+    # 轻量模式响应小，正常返回 dict；全景走预渲染 JSON 缓存直接回发（跳过
+    # jsonable_encoder 对约 2MB 大响应的逐次编码）
+    if light:
+        return ticket_monitor_payload(db, light=True)
+    return Response(
+        content=ticket_monitor_payload_json(
+            db, flow_id=flow_id, include_drill=include_drill, drill_limit=drill_limit
+        ),
+        media_type="application/json",
     )
+
+
+# —— 大屏全景聚合 TTL 缓存 + single-flight（与 _blacklist_* 同款模式）——
+# 全景聚合每次全量加载工单/流转记录并逐单 SLA 评估，CPU 密集且持有 GIL；大屏
+# 多端（内部路由 + 开放 API）高频轮询叠加时单进程即被打满，拖慢全站数据加载。
+# 相同参数（flow_id / include_drill / drill_limit）的并发请求共用首个请求的重算
+# 结果，TTL 内直接命中缓存；light 模式本身走 SQL 聚合开销小，不缓存。
+# TTL 取 15s 对齐大屏默认刷新间隔；缓存同时保存预渲染 JSON（全景响应约 2MB，
+# jsonable_encoder 逐次编码约 0.2s，直接回放缓存字符串近乎零开销）。
+_MONITOR_PAYLOAD_CACHE_TTL_SECONDS = 15.0
+_monitor_payload_cache: dict[tuple, dict] = {}
+_monitor_payload_cache_lock = threading.Lock()
+_monitor_payload_fetch_lock = threading.Lock()
 
 
 def ticket_monitor_payload(
@@ -1895,12 +1915,78 @@ def ticket_monitor_payload(
 
     响应结构：KPI / 趋势 / 分布 / 团队排名 / 来源平台 / 封禁IP / 流转节点 /
     最新工单 / 下钻集，与 ``GET /tickets/monitor`` 完全一致。
+    全景结果按 (flow_id, include_drill, drill_limit) 缓存 15 秒，并发请求
+    single-flight 合并重算；light 模式直接走 SQL 聚合，不经过缓存。
     """
     now = beijing_now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     # 轻量模式：只算高频区（SQL 聚合 KPI + 最新工单），不加载全量工单/流转记录
     if light:
         return _monitor_light(db, now, today_start)
+
+    cache_key = (flow_id, bool(include_drill), int(drill_limit))
+    now_ts = time.monotonic()
+    with _monitor_payload_cache_lock:
+        hit = _monitor_payload_cache.get(cache_key)
+        if hit and now_ts - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
+            return hit["payload"]
+
+    with _monitor_payload_fetch_lock:
+        # 等锁期间同参请求可能已完成重算并刷新缓存：double-check 后直接复用
+        now_ts = time.monotonic()
+        with _monitor_payload_cache_lock:
+            hit = _monitor_payload_cache.get(cache_key)
+            if hit and now_ts - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
+                return hit["payload"]
+
+        payload = _ticket_monitor_payload_full(db, flow_id, include_drill, drill_limit)
+        # single-flight 内完成渲染，等锁的请求直接回放预渲染 JSON
+        rendered = json.dumps(payload, ensure_ascii=False)
+        with _monitor_payload_cache_lock:
+            # 顺带清理长期无人访问的过期项，防止 flow_id/drill_limit 参数组合膨胀
+            for k in [
+                k for k, v in _monitor_payload_cache.items()
+                if now_ts - v["at"] >= _MONITOR_PAYLOAD_CACHE_TTL_SECONDS * 6
+            ]:
+                _monitor_payload_cache.pop(k, None)
+            _monitor_payload_cache[cache_key] = {"at": now_ts, "payload": payload, "json": rendered}
+        return payload
+
+
+def ticket_monitor_payload_json(
+    db: Session,
+    flow_id: int | None = None,
+    include_drill: bool = True,
+    drill_limit: int = 2000,
+) -> str:
+    """大屏全景聚合的预渲染 JSON（与 ``ticket_monitor_payload`` 同一份缓存）。
+
+    大响应（约 2MB）逐次走 jsonable_encoder 编码开销显著；本函数返回缓存中的
+    预渲染字符串供路由直接以 ``Response`` 回发，跳过逐次编码。缓存未命中时
+    触发重算并渲染（渲染已在 single-flight 内完成，此处必有结果）。
+    """
+    cache_key = (flow_id, bool(include_drill), int(drill_limit))
+    with _monitor_payload_cache_lock:
+        hit = _monitor_payload_cache.get(cache_key)
+        if hit and time.monotonic() - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
+            return hit["json"]
+    payload = ticket_monitor_payload(db, flow_id=flow_id, include_drill=include_drill, drill_limit=drill_limit)
+    with _monitor_payload_cache_lock:
+        hit = _monitor_payload_cache.get(cache_key) or {}
+        if "json" not in hit:
+            hit["json"] = json.dumps(payload, ensure_ascii=False)
+        return hit["json"]
+
+
+def _ticket_monitor_payload_full(
+    db: Session,
+    flow_id: int | None,
+    include_drill: bool,
+    drill_limit: int,
+) -> dict:
+    """大屏全景聚合重算（无缓存）：全量加载 + 应用侧统计，仅由缓存层 single-flight 调用。"""
+    now = beijing_now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     tickets = [t for t in db.query(Ticket).all() if not t.archived]
     records = (

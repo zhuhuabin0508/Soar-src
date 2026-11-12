@@ -6,9 +6,11 @@
 鉴权走 ``app.core.open_api_auth.authenticate_request``（Header: X-API-Key），
 所有调用（含拒绝）由 ``open_api_call_middleware`` 记录到调用日志。
 """
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.open_api_auth import authenticate_request
@@ -79,14 +81,25 @@ def get_resource_data(
     params = dict(request.query_params)
     items, total = meta["handler"](db, params)
 
-    # 聚合类资源（dashboard_stats / ticket_monitor）直接返回 dict，不做分页包装
+    # 聚合类资源（dashboard_stats / ticket_monitor）不做分页包装。
+    # ticket_monitor 全景：handler 直接返回内部路由 TTL 缓存中的预渲染 JSON 文本
+    # （约 2MB），此处拼接外层包装回发，跳过逐次 dumps；light / dashboard_stats
+    # 响应小，dict 现场渲染（数据均为纯 JSON 类型，可安全直出）
     if resource_code in ("dashboard_stats", "ticket_monitor"):
-        return {
-            "code": 0,
-            "message": "ok",
-            "resource": {"code": resource_code, "name": meta["name"]},
-            "data": items,
-        }
+        resource = json.dumps({"code": resource_code, "name": meta["name"]}, ensure_ascii=False)
+        if isinstance(items, str):
+            content = '{"code":0,"message":"ok","resource":' + resource + ',"data":' + items + '}'
+        else:
+            content = json.dumps(
+                {
+                    "code": 0,
+                    "message": "ok",
+                    "resource": {"code": resource_code, "name": meta["name"]},
+                    "data": items,
+                },
+                ensure_ascii=False,
+            )
+        return Response(content=content, media_type="application/json")
 
     page, page_size = _parse_pagination(params)
     return {

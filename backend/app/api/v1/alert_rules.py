@@ -14,6 +14,7 @@
 - 其余：模板 / 统计卡 / 命中记录分页 / 排序 / 批量 / 启停，逻辑不变。
 """
 import json
+import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -49,6 +50,8 @@ router = APIRouter(
     tags=["alert-rules"],
     dependencies=[Depends(get_current_user)],
 )
+
+logger = logging.getLogger(__name__)
 
 VALID_OPS = {
     "eq", "ne", "in", "not_in", "gte", "lte", "gt", "lt",
@@ -302,10 +305,16 @@ def _validate_aggregation(cfg: Optional[AggregationBody]) -> Optional[dict]:
 
 
 def _ensure_group(db: Session, name: str) -> str:
-    """分组不存在时自动创建（导入/保存的分组始终有据可查）。"""
+    """分组不存在时自动创建（导入/保存的分组始终有据可查）。
+
+    会话为 autoflush=False，查询看不到未 flush 的待插入对象；新建后立即
+    flush，避免同请求内多条规则（批量导入）重复创建同名分组，
+    提交时撞 alert_rule_groups.name 唯一键。
+    """
     name = (name or "其他").strip()[:64] or "其他"
     if not db.query(AlertRuleGroup.id).filter(AlertRuleGroup.name == name).first():
         db.add(AlertRuleGroup(name=name, sort_order=999))
+        db.flush()
     return name
 
 
@@ -349,10 +358,11 @@ def _validate(payload: RuleBase, db: Session, exclude_id: Optional[int] = None) 
     stats_config = _validate_stats_config(payload.stats_config) if payload.type == "stats" else None
     field_mapping = _validate_field_mapping(payload.field_mapping)
     alert_aggregation = _validate_aggregation(payload.alert_aggregation)
-    group = _ensure_group(db, payload.group)
     # 作用域校验
     if payload.scope == "device_type" and not payload.device_type.strip():
         raise HTTPException(422, detail="指定设备类型作用域时必须选择设备类型")
+    # 分组创建放在全部校验之后：校验失败的规则不在会话留下待插入分组
+    group = _ensure_group(db, payload.group)
     return {
         "name": payload.name.strip()[:255],
         "description": (payload.description or "")[:512],
@@ -575,10 +585,20 @@ def import_rules(payload: ImportBody, request: Request, db: Session = Depends(ge
             seen_names.add(item.name)
             imported.append(item.name)
         except HTTPException as e:
+            # 校验失败（422）不涉及会话写入，逐条记录后继续
             errors.append(f"第 {idx + 1} 条「{item.name}」：{e.detail}")
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"第 {idx + 1} 条「{item.name}」：{e}")
-    db.commit()
+        except Exception:  # noqa: BLE001
+            # 非预期异常可能使会话进入失败态（如唯一键冲突），整体回滚并终止，
+            # 避免后续查询连环报 PendingRollbackError、提交时裸抛 500
+            db.rollback()
+            logger.exception("告警规则导入第 %s 条处理失败", idx + 1)
+            raise HTTPException(500, detail="导入失败，请稍后重试")
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("告警规则导入落库失败")
+        raise HTTPException(500, detail="导入失败，请稍后重试")
     invalidate_alert_rules_cache()
     _log_audit(request, "alert_rules.import", f"导入告警规则：成功 {len(imported)} / 跳过 {len(skipped)} / 失败 {len(errors)}", current_user)
     return {"imported": len(imported), "skipped": skipped, "errors": errors}

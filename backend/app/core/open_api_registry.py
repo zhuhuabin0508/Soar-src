@@ -329,17 +329,8 @@ def list_executions(db: Session, params: dict) -> tuple[list[dict], int]:
     return items, total
 
 
-def get_ticket_monitor(db: Session, params: dict) -> tuple[dict, int]:
-    """工单监控大屏聚合数据（与内部大屏 ``GET /tickets/monitor`` 同源同口径）。
-
-    支持参数：
-    - ``flow_id``：指定流程模板 ID（缺省自动选取进行中工单最多的流程）
-    - ``light``：轻量模式，仅返回 kpi + latest（供高频轮询）
-    - ``include_drill``：是否下发下钻工单集（0/1，默认 1）
-    - ``drill_limit``：下钻集条数上限（100~2000，默认 2000）
-    """
-    from app.api.v1.tickets import ticket_monitor_payload
-
+def _ticket_monitor_query(params: dict) -> dict:
+    """解析大屏聚合查询参数（开放 API 与内部路由共用口径）。"""
     flow_id = None
     if params.get("flow_id") not in (None, ""):
         try:
@@ -352,11 +343,31 @@ def get_ticket_monitor(db: Session, params: dict) -> tuple[dict, int]:
         drill_limit = max(100, min(int(params.get("drill_limit", 2000)), 2000))
     except (TypeError, ValueError):
         drill_limit = 2000
+    return {"flow_id": flow_id, "light": light, "include_drill": include_drill, "drill_limit": drill_limit}
 
-    payload = ticket_monitor_payload(
-        db, flow_id=flow_id, light=light, include_drill=include_drill, drill_limit=drill_limit
+
+def get_ticket_monitor(db: Session, params: dict) -> tuple[Any, int]:
+    """工单监控大屏聚合数据（与内部大屏 ``GET /tickets/monitor`` 同源同口径）。
+
+    支持参数：
+    - ``flow_id``：指定流程模板 ID（缺省自动选取进行中工单最多的流程）
+    - ``light``：轻量模式，仅返回 kpi + latest（供高频轮询）
+    - ``include_drill``：是否下发下钻工单集（0/1，默认 1）
+    - ``drill_limit``：下钻集条数上限（100~2000，默认 2000）
+
+    全景模式返回**预渲染 JSON 字符串**（复用内部路由的 TTL 缓存，
+    调用方直接拼接回发，跳过约 2MB dict 的逐次 dumps）；light 模式
+    响应小，返回 dict 由调用方现场渲染。
+    """
+    from app.api.v1.tickets import ticket_monitor_payload, ticket_monitor_payload_json
+
+    q = _ticket_monitor_query(params)
+    if q["light"]:
+        return ticket_monitor_payload(db, light=True), 1
+    rendered = ticket_monitor_payload_json(
+        db, flow_id=q["flow_id"], include_drill=q["include_drill"], drill_limit=q["drill_limit"]
     )
-    return payload, 1
+    return rendered, 1
 
 
 def get_dashboard_stats(db: Session, params: dict) -> tuple[dict, int]:
