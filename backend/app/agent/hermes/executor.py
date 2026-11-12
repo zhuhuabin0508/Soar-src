@@ -124,6 +124,24 @@ def _dedupe_paragraphs(text: str) -> str:
     return "\n\n".join(kept)
 
 
+_TRUNCATION_NOTICE = (
+    "\n\n[回复因达到该智能体的最大输出长度限制被截断，以上内容可能不完整。"
+    "请联系管理员在智能体设置中调大「最大输出长度」]"
+)
+
+
+def _final_answer_truncation_notice(finish_reason: Optional[str], content: str) -> Optional[str]:
+    """最终回答被 max_tokens 硬截断时返回可读提示文案，否则返回 None。
+
+    截断的表格/结论会误导用户（表现即“回复不完整”且无任何说明），
+    这里显式告知内容不完整并给出调整路径。空内容交由兜底提示分支
+    （“本轮未生成有效回复”）处理，不叠加截断提示。
+    """
+    if finish_reason == "length" and (content or "").strip():
+        return _TRUNCATION_NOTICE
+    return None
+
+
 class HermesAgentExecutor:
     """Hermes 风格 ReAct 执行器。"""
 
@@ -213,6 +231,13 @@ class HermesAgentExecutor:
         # P4 模型分层（可选）：tool_configs.fast_model_config_id 指定快模型时，
         # ReAct 工具迭代用快模型、grace 收尾仍用主模型；未配置/创建失败则全用主模型
         self.llm_fast = self._build_fast_llm(tool_configs)
+        # 快模型的监控归属元数据（未配置快模型时为空 meta，监控记主模型）
+        _fast_cfg_raw = tool_configs.get("fast_model_config_id")
+        self._fast_model_meta = (
+            self._resolve_model_meta(int(_fast_cfg_raw))
+            if _fast_cfg_raw not in (None, "", 0, "0")
+            else {"model_config_id": None, "model_name": "", "provider": ""}
+        )
         # 模型上下文窗口未存库，用默认预算（200K token 基准；budget_for_context_window(None) 降级为 DEFAULT_BUDGET）
         self.budget_config = budget_for_context_window(None)
 
@@ -370,10 +395,11 @@ class HermesAgentExecutor:
             logger.warning("快模型初始化异常，忽略（用主模型）: %s", exc)
             return None
 
-    def _resolve_model_meta(self) -> dict:
+    def _resolve_model_meta(self, model_config_id: Optional[int] = None) -> dict:
         """解析当前 Agent 使用的模型配置元数据，供监控记录使用。
 
         override.model_config_id 优先于 agent.model_config_id（让监控记录反映实际使用的模型）。
+        传入 model_config_id 时直接解析该配置（如快模型的监控归属）。
 
         Returns:
             ``{"model_config_id", "model_name", "provider"}``，解析失败时各字段为空/None。
@@ -382,9 +408,13 @@ class HermesAgentExecutor:
         try:
             # override 优先：Playground 切换模型后，监控记录应反映实际使用的模型
             cfg_id = (
-                self.override.model_config_id
-                if (self.override and getattr(self.override, "model_config_id", None) is not None)
-                else getattr(self.agent, "model_config_id", None)
+                model_config_id
+                if model_config_id is not None
+                else (
+                    self.override.model_config_id
+                    if (self.override and getattr(self.override, "model_config_id", None) is not None)
+                    else getattr(self.agent, "model_config_id", None)
+                )
             )
             meta["model_config_id"] = cfg_id
             if cfg_id:
@@ -626,6 +656,15 @@ class HermesAgentExecutor:
                     self.messages[-1]["content"] = content
                     self._log("warning", "模型返回空内容（无 tool_calls），已使用兜底提示")
                     yield make_event("token", content=content)
+
+                # 最终回答被长度上限硬截断时附加可读提示（token 已流式输出，
+                # 追加提示事件并同步到持久化消息），避免用户误以为内容完整
+                notice = _final_answer_truncation_notice(self._last_finish_reason, content)
+                if notice:
+                    content += notice
+                    self.messages[-1]["content"] = content
+                    self._log("warning", "最终回答达到长度上限被截断，已附加截断提示")
+                    yield make_event("token", content=notice)
 
                 # 同步记忆（Stage B 接入）
                 if self.enable_memory and self.memory_manager is not None:
@@ -927,8 +966,15 @@ class HermesAgentExecutor:
         from app.agent.hermes.error_classifier import classify_llm_error, should_retry_error
         from app.core.model_call_monitor import ModelCallTimer
 
+        # 重置结束原因：避免上一轮迭代的 finish_reason 残留到本轮
+        self._last_finish_reason = None
+
         # 检查是否可用原生 OpenAI streaming（支持 reasoning_content）
-        raw_async_client = getattr(self.llm, "async_client", None)
+        # ★ P4 模型分层：工具绑定后的 llm_with_tools 是 RunnableBinding，
+        #   其 bound 才是实际迭代用 LLM（快模型）；此前直接读 self.llm，
+        #   流式路径始终请求主模型，快模型配置实际未生效。
+        base_llm = getattr(self.llm_with_tools, "bound", None) or self.llm
+        raw_async_client = getattr(base_llm, "async_client", None)
         use_raw_stream = raw_async_client is not None and hasattr(raw_async_client, "create")
 
         attempt = 0
@@ -949,25 +995,36 @@ class HermesAgentExecutor:
             attempt += 1
             try:
                 self._release_db_for_io()
+                # 监控归属：实际迭代用快模型时记快模型配置，否则记主模型
+                call_meta = (
+                    self._fast_model_meta
+                    if base_llm is getattr(self, "llm_fast", None)
+                    else self._model_meta
+                )
                 with ModelCallTimer(
-                    model_config_id=self._model_meta.get("model_config_id"),
-                    model_name=self._model_meta.get("model_name", ""),
-                    provider=self._model_meta.get("provider", ""),
+                    model_config_id=call_meta.get("model_config_id"),
+                    model_name=call_meta.get("model_name", ""),
+                    provider=call_meta.get("provider", ""),
                     trigger_type="agent_test",
                     agent_id=getattr(self.agent, "id", None),
                 ) as timer:
                     if use_raw_stream:
                         # ===== 原生 OpenAI streaming（支持 reasoning_content） =====
                         api_kwargs: dict = {
-                            "model": self.llm.model_name,
+                            "model": base_llm.model_name,
                             "messages": openai_messages,
                             "stream": True,
                         }
                         # 传递 temperature / max_tokens（None 时不传）
-                        if self.llm.temperature is not None:
-                            api_kwargs["temperature"] = self.llm.temperature
-                        if self.llm.max_tokens is not None:
-                            api_kwargs["max_tokens"] = self.llm.max_tokens
+                        if base_llm.temperature is not None:
+                            api_kwargs["temperature"] = base_llm.temperature
+                        if base_llm.max_tokens is not None:
+                            api_kwargs["max_tokens"] = base_llm.max_tokens
+                        # 推理模型思考深度（模型配置 reasoning_effort：
+                        # GLM-5.3 等推理模型实测 low 可大幅缩短思考耗时）
+                        effort = (getattr(base_llm, "model_kwargs", None) or {}).get("reasoning_effort")
+                        if effort:
+                            api_kwargs["reasoning_effort"] = effort
                         if tool_defs:
                             api_kwargs["tools"] = tool_defs
                         # 请求流式返回 token 用量（最后一个 chunk 包含 usage）
@@ -1203,7 +1260,7 @@ class HermesAgentExecutor:
             logger.warning(
                 "LLM 输出达到 max_tokens 上限被截断: agent_id=%s, max_tokens=%s",
                 getattr(self.agent, "id", None),
-                getattr(self.llm, "max_tokens", None),
+                getattr(base_llm, "max_tokens", None),
             )
             self._log(
                 "warning",

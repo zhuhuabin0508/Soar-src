@@ -489,7 +489,7 @@ function LLMConfig() {
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
     name: '', provider: 'anthropic', api_key: '', base_url: '', model_name: '', model_type: 'chat', is_default: false,
-    temperature: '', max_tokens: '', top_p: '', timeout: '', max_retries: '', org_id: '', project_id: '', enabled: true,
+    temperature: '', max_tokens: '', top_p: '', reasoning_effort: '', timeout: '', max_retries: '', org_id: '', project_id: '', enabled: true,
   })
   const [saving, setSaving] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
@@ -539,7 +539,7 @@ function LLMConfig() {
     setEditing(null)
     setForm({
       name: '', provider: 'anthropic', api_key: '', base_url: '', model_name: '', model_type: 'chat', is_default: false,
-      temperature: '', max_tokens: '', top_p: '', timeout: '', max_retries: '', org_id: '', project_id: '', enabled: true,
+      temperature: '', max_tokens: '', top_p: '', reasoning_effort: '', timeout: '', max_retries: '', org_id: '', project_id: '', enabled: true,
     })
     setDialogTestResult(null)
     setAdvancedOpen(false)
@@ -553,6 +553,7 @@ function LLMConfig() {
       name: row.name || '', provider: row.provider || 'anthropic', api_key: '',
       base_url: row.base_url || '', model_name: row.model_name || '', model_type: row.model_type || 'chat', is_default: !!row.is_default,
       temperature: row.temperature ?? '', max_tokens: row.max_tokens ?? '', top_p: row.top_p ?? '',
+      reasoning_effort: row.reasoning_effort || '',
       timeout: row.timeout ?? '', max_retries: row.max_retries ?? '', org_id: row.org_id || '', project_id: row.project_id || '',
       enabled: row.enabled !== false,
     })
@@ -589,6 +590,7 @@ function LLMConfig() {
         temperature: form.temperature === '' ? null : Number(form.temperature),
         max_tokens: form.max_tokens === '' ? null : Number(form.max_tokens),
         top_p: form.top_p === '' ? null : Number(form.top_p),
+        reasoning_effort: form.reasoning_effort || null,
         timeout: form.timeout === '' ? null : Number(form.timeout),
         max_retries: form.max_retries === '' ? null : Number(form.max_retries),
         org_id: form.org_id || null, project_id: form.project_id || null,
@@ -1024,6 +1026,21 @@ function LLMConfig() {
               <TextInput label="最大重试" value={String(form.max_retries)} onChange={(v) => setField('max_retries')(v)} placeholder="2" />
               {providers[form.provider]?.need_org && <TextInput label="组织 ID" value={form.org_id} onChange={setField('org_id')} placeholder="org-..." />}
               {providers[form.provider]?.need_project && <TextInput label="项目 ID" value={form.project_id} onChange={setField('project_id')} placeholder="project-..." />}
+              {form.provider !== 'anthropic' && (
+                <SelectInput
+                  label="思考深度"
+                  value={form.reasoning_effort}
+                  onChange={setField('reasoning_effort')}
+                  hint="推理模型的思考深度（reasoning effort）。GLM/o 系列/DeepSeek-R1 等推理模型可调低以显著缩短思考耗时；普通模型保持「模型默认」即可。"
+                  options={[
+                    { value: '', label: '模型默认（不传）' },
+                    { value: 'minimal', label: 'minimal（几乎不思考）' },
+                    { value: 'low', label: 'low（浅思考，推荐）' },
+                    { value: 'medium', label: 'medium（中等）' },
+                    { value: 'high', label: 'high（深度思考）' },
+                  ]}
+                />
+              )}
             </div>
           </Section>
         )}

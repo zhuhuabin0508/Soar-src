@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from app.core.timezone import beijing_now, beijing_now_iso
 from app.core.provider_templates import PROVIDER_TEMPLATES, get_provider_template, get_provider_models
+from app.core.llm_helper import normalize_reasoning_effort
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -56,6 +57,10 @@ class LLMConfigBase(BaseModel):
     temperature: Optional[float] = Field(None, description="采样温度")
     max_tokens: Optional[int] = Field(None, description="最大生成 token 数")
     top_p: Optional[float] = Field(None, description="核采样概率")
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description="推理模型思考深度：minimal/low/medium/high；None 表示不传用模型默认。仅 OpenAI 兼容推理模型支持",
+    )
     timeout: Optional[int] = Field(None, description="超时秒数")
     max_retries: Optional[int] = Field(None, description="最大重试次数")
     org_id: Optional[str] = Field(None, description="组织 ID")
@@ -120,6 +125,7 @@ def create_llm_config(body: LLMConfigBase, request: Request, db: Session = Depen
         temperature=body.temperature,
         max_tokens=body.max_tokens,
         top_p=body.top_p,
+        reasoning_effort=normalize_reasoning_effort(body.reasoning_effort),
         timeout=body.timeout,
         max_retries=body.max_retries,
         org_id=body.org_id,
@@ -174,7 +180,8 @@ def update_llm_config(
         ("name", body.name), ("provider", body.provider), ("base_url", body.base_url),
         ("model_name", body.model_name), ("model_type", body.model_type),
         ("is_default", body.is_default), ("temperature", body.temperature),
-        ("max_tokens", body.max_tokens), ("top_p", body.top_p), ("timeout", body.timeout),
+        ("max_tokens", body.max_tokens), ("top_p", body.top_p),
+        ("reasoning_effort", body.reasoning_effort), ("timeout", body.timeout),
         ("max_retries", body.max_retries), ("org_id", body.org_id),
         ("project_id", body.project_id), ("enabled", body.enabled),
     ]
@@ -198,6 +205,8 @@ def update_llm_config(
     config.temperature = body.temperature
     config.max_tokens = body.max_tokens
     config.top_p = body.top_p
+    # 值域归一化（与智能体侧同口径，非法值存 None=不传）
+    config.reasoning_effort = normalize_reasoning_effort(body.reasoning_effort)
     config.timeout = body.timeout
     config.max_retries = body.max_retries
     config.org_id = body.org_id
@@ -266,6 +275,7 @@ def copy_llm_config(config_id: int, db: Session = Depends(get_db)) -> dict:
         temperature=src.temperature,
         max_tokens=src.max_tokens,
         top_p=src.top_p,
+        reasoning_effort=normalize_reasoning_effort(src.reasoning_effort),
         timeout=src.timeout,
         max_retries=src.max_retries,
         org_id=src.org_id,

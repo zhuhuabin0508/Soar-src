@@ -18,6 +18,7 @@ from app.models.execution import Execution
 from app.models.user import User
 from app.schemas.common import paginate, to_dict, to_dict_list
 from app.agent.prompt_assembler import assemble_system_prompt
+from app.core.llm_helper import normalize_reasoning_effort as _normalize_reasoning_effort
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,19 @@ def _create_llm(agent, db, override: "Optional[ChatOverride]" = None):
         if override and override.max_tokens is not None
         else (agent.max_tokens or 1024)
     )
+    # ★ 深度思考参数（推理模型 reasoning effort）：
+    # 优先级：会话覆盖 override > 智能体配置 agent > 模型高级参数 llm_config。
+    # 智能体未配置（None）时沿用模型高级参数的默认值（跟随模型配置）。
+    llm_config = _load_llm_config(db, eff_model_config_id)
+    eff_reasoning_effort = None
+    if override is not None:
+        eff_reasoning_effort = _normalize_reasoning_effort(getattr(override, "reasoning_effort", None))
+    if not eff_reasoning_effort:
+        eff_reasoning_effort = _normalize_reasoning_effort(getattr(agent, "reasoning_effort", None))
+    if not eff_reasoning_effort:
+        eff_reasoning_effort = _normalize_reasoning_effort(
+            getattr(llm_config, "reasoning_effort", None)
+        )
     # 扩展参数：仅 override 非 None 时透传（None 即不传，使用模型默认）
     extra_kwargs: dict = {}
     if override:
@@ -58,13 +72,13 @@ def _create_llm(agent, db, override: "Optional[ChatOverride]" = None):
             if v is not None:
                 extra_kwargs[k] = v
 
-    llm_config = _load_llm_config(db, eff_model_config_id)
     if llm_config is not None and (llm_config.api_key or llm_config.base_url):
         try:
             llm, info = create_llm_from_config(
                 llm_config,
                 temperature=eff_temp,
                 max_tokens=eff_max_tokens,
+                reasoning_effort=eff_reasoning_effort,
                 **extra_kwargs,
             )
             return llm, info
@@ -147,6 +161,9 @@ class AgentBase(BaseModel):
     system_prompt: str | None = Field(None, description="系统提示词")
     temperature: float = Field(0.7, description="采样温度")
     max_tokens: int = Field(1024, description="最大生成 token 数")
+    # 深度思考参数（推理模型 reasoning effort）：minimal/low/medium/high。
+    # None=未配置 → 跟随模型高级参数（llm_configs.reasoning_effort）
+    reasoning_effort: str | None = Field(None, description="深度思考参数：minimal/low/medium/high；None=跟随模型高级参数配置")
     enabled_tools: list[str] | None = Field(None, description="启用的工具名称列表")
     enabled_kbs: list[int] | None = Field(None, description="启用的知识库 id 列表")
     enabled_asset_types: list[str] | None = Field(None, description="启用的资产类型 code 列表")
@@ -341,6 +358,7 @@ def _agent_to_dsl(agent: Agent) -> dict[str, Any]:
         "system_prompt": agent.system_prompt or "",
         "temperature": agent.temperature,
         "max_tokens": agent.max_tokens,
+        "reasoning_effort": getattr(agent, "reasoning_effort", None),
         "enabled_tools": agent.enabled_tools or [],
         "enabled_kbs": agent.enabled_kbs or [],
         "enabled_asset_types": agent.enabled_asset_types or [],
@@ -387,6 +405,7 @@ def _dsl_to_agent_base(dsl: dict[str, Any]) -> AgentBase:
         system_prompt=dsl.get("system_prompt"),
         temperature=float(dsl.get("temperature", 0.7)),
         max_tokens=int(dsl.get("max_tokens", 1024)),
+        reasoning_effort=_normalize_reasoning_effort(dsl.get("reasoning_effort")),
         enabled_tools=dsl.get("enabled_tools") or [],
         enabled_kbs=dsl.get("enabled_kbs") or [],
         enabled_asset_types=dsl.get("enabled_asset_types") or [],
@@ -429,6 +448,10 @@ class ChatOverride(BaseModel):
 
     model_config_id: Optional[int] = Field(None, description="覆盖模型配置 id")
     system_prompt: Optional[str] = Field(None, description="覆盖系统提示词")
+    # 深度思考参数覆盖（会话级，优先于智能体配置与模型高级参数）
+    reasoning_effort: Optional[str] = Field(
+        None, description="覆盖深度思考参数：minimal/low/medium/high；None=不覆盖"
+    )
     temperature: Optional[float] = Field(None, description="覆盖采样温度")
     top_p: Optional[float] = Field(None, description="覆盖核采样概率")
     max_tokens: Optional[int] = Field(None, description="覆盖最大生成 token 数")
@@ -514,6 +537,7 @@ def create_agent_from_dsl(
         system_prompt=base.system_prompt,
         temperature=base.temperature,
         max_tokens=base.max_tokens,
+        reasoning_effort=_normalize_reasoning_effort(base.reasoning_effort),
         enabled_tools=base.enabled_tools or [],
         enabled_kbs=base.enabled_kbs or [],
         enabled_asset_types=base.enabled_asset_types or [],
@@ -578,6 +602,7 @@ def create_agent(
         system_prompt=body.system_prompt,
         temperature=body.temperature,
         max_tokens=body.max_tokens,
+        reasoning_effort=_normalize_reasoning_effort(body.reasoning_effort),
         enabled_tools=body.enabled_tools or [],
         enabled_kbs=body.enabled_kbs or [],
         enabled_asset_types=body.enabled_asset_types or [],
@@ -624,6 +649,7 @@ def update_agent(
     agent.system_prompt = body.system_prompt
     agent.temperature = body.temperature
     agent.max_tokens = body.max_tokens
+    agent.reasoning_effort = _normalize_reasoning_effort(body.reasoning_effort)
     agent.enabled_tools = body.enabled_tools or []
     agent.enabled_kbs = body.enabled_kbs or []
     agent.enabled_asset_types = body.enabled_asset_types or []

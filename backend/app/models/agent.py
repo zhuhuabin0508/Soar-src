@@ -21,6 +21,10 @@ class Agent(Base):
     system_prompt = Column(Text, nullable=True)
     temperature = Column(Float, nullable=False, default=0.7)
     max_tokens = Column(Integer, nullable=False, default=1024)
+    # 深度思考参数（推理模型 reasoning effort）：minimal/low/medium/high。
+    # None 表示未配置 → 跟随模型高级参数（llm_configs.reasoning_effort）；
+    # 配置后优先生效，支持每个智能体独立差异化设置。
+    reasoning_effort = Column(String(32), nullable=True)
     # 启用的工具名称列表（对应 Tool.name）
     enabled_tools = Column(JSON, nullable=True, default=list)
     # 启用的知识库 id 列表

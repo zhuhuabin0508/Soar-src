@@ -132,6 +132,7 @@ function AgentEditor() {
     system_prompt: '',
     temperature: 0.7,
     max_tokens: 1024,
+    reasoning_effort: '',
     context_turns: 10,
     enabled_tools: [],
     enabled_kbs: [],
@@ -522,6 +523,7 @@ function AgentEditor() {
               system_prompt: dsl.system_prompt ?? prev.system_prompt,
               temperature: dsl.temperature ?? prev.temperature,
               max_tokens: dsl.max_tokens ?? prev.max_tokens,
+              reasoning_effort: dsl.reasoning_effort || '',
               enabled_tools: dsl.enabled_tools ?? prev.enabled_tools,
               enabled_kbs: (dsl.enabled_kbs || prev.enabled_kbs).map(String),
               enabled_asset_types: dsl.enabled_asset_types ?? prev.enabled_asset_types,
@@ -594,6 +596,7 @@ function AgentEditor() {
               system_prompt: agent.system_prompt || '',
               temperature: agent.temperature ?? 0.7,
               max_tokens: agent.max_tokens ?? 1024,
+              reasoning_effort: agent.reasoning_effort || '',
               context_turns: agent.context_turns ?? 10,
               enabled_tools: (agent.enabled_tools || []).map(String),
               enabled_kbs: (agent.enabled_kbs || []).map(String),
@@ -659,6 +662,7 @@ function AgentEditor() {
       system_prompt: dsl.system_prompt ?? prev.system_prompt,
       temperature: dsl.temperature ?? prev.temperature,
       max_tokens: dsl.max_tokens ?? prev.max_tokens,
+      reasoning_effort: dsl.reasoning_effort || '',
       enabled_tools: dsl.enabled_tools ?? prev.enabled_tools,
       enabled_kbs: (dsl.enabled_kbs || prev.enabled_kbs).map(String),
       enabled_asset_types: dsl.enabled_asset_types ?? prev.enabled_asset_types,
@@ -716,6 +720,7 @@ function AgentEditor() {
         system_prompt: form.system_prompt,
         temperature: Number(form.temperature),
         max_tokens: Number(form.max_tokens),
+        reasoning_effort: form.reasoning_effort || null,
         context_turns: Number(form.context_turns),
         enabled_tools: form.enabled_tools,
         enabled_kbs: form.enabled_kbs.map((v) => Number(v)),
@@ -1340,6 +1345,19 @@ function AgentEditor() {
                 <NumberInput label="Max Tokens" value={form.max_tokens} onChange={setField('max_tokens')} min={1} max={8192} />
                 <NumberInput label="上下文轮数" value={form.context_turns} onChange={setField('context_turns')} min={1} max={50} />
               </div>
+              <SelectInput
+                label="深度思考"
+                value={form.reasoning_effort}
+                onChange={setField('reasoning_effort')}
+                hint="推理模型的思考深度。智能体级配置优先于模型高级参数；选「跟随模型配置」时使用模型设置里的默认值"
+                options={[
+                  { value: '', label: '跟随模型配置（默认）' },
+                  { value: 'minimal', label: 'minimal（几乎不思考）' },
+                  { value: 'low', label: 'low（浅思考）' },
+                  { value: 'medium', label: 'medium（中等）' },
+                  { value: 'high', label: 'high（深度思考）' },
+                ]}
+              />
             </Card>
             )}
 

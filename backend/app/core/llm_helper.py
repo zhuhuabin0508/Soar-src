@@ -90,6 +90,19 @@ def clean_base_url(raw: str) -> str:
     return cur
 
 
+_VALID_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
+
+
+def normalize_reasoning_effort(v: str | None) -> str | None:
+    """归一化推理模型思考深度参数：非法/空值归 None（None=不传，用模型默认）。
+
+    模型配置（llm_configs）与智能体配置（agents）两侧入库/调用统一走本函数，
+    保持值域口径一致，防止 API 直写脏值后配置意图静默失效。
+    """
+    v = (v or "").strip().lower()
+    return v if v in _VALID_REASONING_EFFORTS else None
+
+
 def normalize_openai_base_url(base_url: str) -> str:
     """规范化 OpenAI 兼容服务的 base_url（供 ChatOpenAI 使用）。
 
@@ -132,6 +145,7 @@ def create_llm_from_config(
     frequency_penalty: Optional[float] = None,
     presence_penalty: Optional[float] = None,
     seed: Optional[int] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> tuple[Any, dict]:
     """根据 LLMConfig 创建 LangChain LLM 实例。
 
@@ -143,6 +157,9 @@ def create_llm_from_config(
         frequency_penalty: 频率惩罚；None 时不传。仅 OpenAI 兼容分支支持。
         presence_penalty: 存在惩罚；None 时不传。仅 OpenAI 兼容分支支持。
         seed: 随机种子；None 时不传。仅 OpenAI 兼容分支支持。
+        reasoning_effort: 推理模型思考深度（minimal/low/medium/high）；None 时不传。
+            经 ``model_kwargs`` 透传到请求体 ``reasoning_effort``（GLM-5.3 /
+            DeepSeek-R1 / o 系列等推理模型支持）。仅 OpenAI 兼容分支支持。
 
     Returns:
         ``(llm, info)``，其中 info 为 ``{"provider", "model"}``。
@@ -176,6 +193,8 @@ def create_llm_from_config(
         if base_url:
             kwargs["anthropic_api_url"] = base_url
         kwargs["http_client"] = _no_proxy_http_client(base_url)
+        if reasoning_effort:
+            logger.warning("Anthropic 不支持 reasoning_effort，已忽略")
         llm = ChatAnthropic(**kwargs)
         logger.info("创建 LLM(anthropic): model=%s", model_name)
         return llm, {"provider": "anthropic", "model": model_name}
@@ -188,6 +207,10 @@ def create_llm_from_config(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    # 推理模型思考深度：经 model_kwargs 透传（LangChain 调用时随请求体下发；
+    # executor 原生流式路径从 model_kwargs 读取后以顶层参数下发）
+    if reasoning_effort:
+        kwargs["model_kwargs"] = {"reasoning_effort": reasoning_effort}
     # OpenAI 兼容分支支持全部扩展参数
     if top_p is not None:
         kwargs["top_p"] = top_p

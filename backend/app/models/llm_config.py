@@ -44,6 +44,10 @@ class LLMConfig(Base):
     temperature = Column(Float, nullable=True)
     max_tokens = Column(Integer, nullable=True)
     top_p = Column(Float, nullable=True)
+    # 推理模型思考深度（reasoning effort）：minimal/low/medium/high，
+    # None 表示不传（用模型默认）。仅 OpenAI 兼容推理模型支持，
+    # 如 GLM-5.3 / o 系列 / DeepSeek-R1 等，经请求体 reasoning_effort 下发。
+    reasoning_effort = Column(String(32), nullable=True)
     timeout = Column(Integer, nullable=True)  # 超时秒数
     max_retries = Column(Integer, nullable=True)
     org_id = Column(String(128), nullable=True)

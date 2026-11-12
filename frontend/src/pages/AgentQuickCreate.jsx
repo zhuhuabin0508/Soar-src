@@ -172,6 +172,7 @@ function AgentQuickCreate() {
       system_prompt: systemPrompt,
       temperature: base?.temperature ?? 0.3,
       max_tokens: base?.max_tokens ?? 1024,
+      reasoning_effort: base?.reasoning_effort ?? null,
       context_turns: 10,
       enabled_tools: enabledTools,
       enabled_kbs: enabledKbs.map(Number),

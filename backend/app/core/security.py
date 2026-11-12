@@ -846,6 +846,9 @@ def run_lightweight_migrations(engine) -> None:
                 "engine": "VARCHAR(16) NOT NULL DEFAULT 'hermes'",
                 "publish_status": "VARCHAR(16) NOT NULL DEFAULT 'published'",
                 "output_mode": "VARCHAR(32)",
+                # 智能体级深度思考参数（minimal/low/medium/high），
+                # 优先于模型高级参数 llm_configs.reasoning_effort，NULL=跟随模型配置
+                "reasoning_effort": "VARCHAR(32)",
             },
         )
         ensure_columns(
@@ -999,6 +1002,13 @@ def run_lightweight_migrations(engine) -> None:
                 "project_id": "VARCHAR(128)",
                 "enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
             },
+        )
+        # llm_configs 表新增 reasoning_effort 列（推理模型思考深度：minimal/low/medium/high，
+        # NULL 表示不传用模型默认；GLM-5.3-Flash 实测 low 可将思考从 ~350 tokens 降至 ~40）
+        ensure_columns(
+            engine,
+            "llm_configs",
+            {"reasoning_effort": "VARCHAR(32)"},
         )
         # model_call_logs 表新增明细增强字段（请求/响应摘要、错误堆栈、来源 IP、用户、会话）
         ensure_columns(
