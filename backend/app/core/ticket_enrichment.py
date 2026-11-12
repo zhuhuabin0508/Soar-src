@@ -511,11 +511,12 @@ def decorate_asset_source_labels(db, enrichment: dict | None) -> dict | None:
 # 威胁情报统一走已注册的 HTTP 工具（工具管理中维护 URL/鉴权/超时）。
 # 工具重命名抗性：先按候选名精确匹配，未命中再按 get_threat 前缀找唯一的
 # enabled http 工具兜底——工具在管理页改名/微调后缀不再破坏安全上下文集成。
-TI_TOOL_NAME = "get_threat_互联网"
+# 注意：候选名只放 HTTP 工具名——不得加入内置 mock 工具名（get_threat_intel，
+# code 类型），否则无序 first() 可能随机命中 mock，情报数据时真时假。
+TI_TOOL_NAME = "get_threat_互联网_知道创宇ip_analysis"
 _TI_TOOL_CANDIDATES = (
     TI_TOOL_NAME,
-    "get_threat_互联网_知道创宇ip_analysis",
-    "get_threat_intel",
+    "get_threat_互联网",  # 历史名兼容（工具改名前创建的工单/文档引用）
 )
 # 归一化结果中保留的原始响应长度上限（防止超长 payload 撑爆 enrichment_data）
 _TI_RAW_MAX_CHARS = 3000
@@ -824,9 +825,13 @@ def _load_ti_tool_run():
 
     db = SessionLocal()
     try:
+        # 精确匹配限定 HTTP 工具 + 按 id 排序，保证确定性命中
+        # （候选中不允许出现 code 类 mock 工具名，见 _TI_TOOL_CANDIDATES 注释）
         tool = db.query(Tool).filter(
-            Tool.name.in_(_TI_TOOL_CANDIDATES), Tool.enabled.is_(True)
-        ).first()
+            Tool.name.in_(_TI_TOOL_CANDIDATES),
+            Tool.tool_type == "http",
+            Tool.enabled.is_(True),
+        ).order_by(Tool.id).first()
         if tool is None:
             tool = db.query(Tool).filter(
                 Tool.name.like("get_threat%"),

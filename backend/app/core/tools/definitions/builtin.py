@@ -197,25 +197,6 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "enabled": True,
     },
     {
-        "name": "get_threat_intel",
-        "description": "查询 IP 威胁情报（恶意判定/威胁标签/威胁类型/严重程度/置信度/首次发现/最后发现/情报来源/威胁描述/地理位置/关联恶意软件/攻击模式）。内网白名单 IP 视为非恶意",
-        "parameters_schema": [
-            {"name": "ip", "type": "String", "required": True, "description": "待查询的 IP 地址"},
-        ],
-        "code": (
-            "async def run(**kwargs):\n"
-            "    ip = kwargs.get('ip') or ''\n"
-            "    # 沙箱命名空间已注入 context_tools.get_threat_intel：按 IP 确定性变化的\n"
-            "    # mock 情报（种子随机，不同 IP 标签/置信度/恶意软件不同），与告警富化/\n"
-            "    # 工单安全上下文同一口径；禁止在此硬编码情报数据，否则所有外网 IP\n"
-            "    # 研判结果会雷同\n"
-            "    return await get_threat_intel(ip)\n"
-        ),
-        "tool_type": "code",
-        "category": "security",
-        "enabled": True,
-    },
-    {
         "name": "check_subnet",
         "description": "查询 IP 所在子网信息（/24 网段 + 网关地址）",
         "parameters_schema": [

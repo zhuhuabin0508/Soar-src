@@ -38,17 +38,6 @@ TOOL_TEMPLATES: list[dict[str, Any]] = [
         ),
     },
     {
-        "name": "get_threat_intel",
-        "description": "查询 IP 的威胁情报，返回是否恶意、标签、置信度。",
-        "parameters_schema": _IP_PARAM,
-        "code": (
-            "async def run(**kwargs):\n"
-            "    from app.tools.context_tools import get_threat_intel\n"
-            "    ip = kwargs.get('ip', '')\n"
-            "    return await get_threat_intel(ip)\n"
-        ),
-    },
-    {
         "name": "check_subnet",
         "description": "查询 IP 所在 /24 子网信息，包括网段与网关。",
         "parameters_schema": _IP_PARAM,
