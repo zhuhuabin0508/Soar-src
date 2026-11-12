@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Shield, Plus, RefreshCw, Download, Upload, Wifi, WifiOff, Files, Columns, CheckSquare,
-  Database, ChevronDown, Activity, Zap, CheckCircle2, FilePlus2, Trash2,
+  Database, ChevronDown, Activity, Zap, CheckCircle2, FilePlus2, Trash2, Library,
 } from 'lucide-react'
 import { devices as devicesApi } from '../../api/client'
 import { Modal } from '../../components/Dialog'
@@ -755,6 +755,14 @@ function DeviceManagement() {
             </button>
             <button type="button" onClick={loadDevices} className="btn-secondary btn-sm" title="刷新设备列表">
               <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/devices/builtin-templates')}
+              className="btn-secondary btn-sm"
+              title="从内置设备库复用模板创建设备"
+            >
+              <Library className="mr-1 h-3.5 w-3.5" /> 内置设备库
             </button>
             <button
               type="button"

@@ -379,6 +379,24 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
             </div>
           )}
 
+          {form.auth_type === 'sangfor_xdr' && (
+            <label className="block">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">联动码（AK/SK）</div>
+              <input
+                className={inputCls}
+                type={showApiKey ? 'text' : 'password'}
+                value={form.api_key}
+                onChange={(e) => set('api_key')(e.target.value)}
+                placeholder="粘贴深信服 XDR 联动码"
+                autoComplete="off"
+              />
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                联动码用于 AK/SK 签名，保存后拆分为 AK/SK 加密存储。
+                {initial?.id ? '已配置时留空表示不修改，重新填写将覆盖。' : ''}
+              </div>
+            </label>
+          )}
+
           {form.auth_type === 'bearer' && (
             <label className="block">
               <div className="mb-1 text-xs font-medium text-muted-foreground">Bearer Token</div>

@@ -92,6 +92,20 @@ def _init_db() -> None:
             seed_builtin_strategies(db)
         except Exception as exc:  # noqa: BLE001
             logger.warning("内置解析策略注册失败（忽略）: %s", exc)
+
+        # 注册内置设备库模板（青藤万相主机安全管理，幂等；已存在时保留用户修改）
+        try:
+            from app.core.device_template_library import (
+                seed_builtin_device_templates,
+                seed_sangfor_xdr_template,
+            )
+            seed_builtin_device_templates(db)
+            # 深信服 XDR 模板（安全告警 / 安全事件全部 OpenAPI 动作）独立幂等注册
+            seed_sangfor_xdr_template(db)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("内置设备库模板注册失败（忽略）: %s", exc)
+            db.rollback()
     finally:
         db.close()
 

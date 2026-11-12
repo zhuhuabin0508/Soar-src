@@ -31,6 +31,10 @@ import {
   normalizeConversations, startNewConversation, updateConversationMessages,
 } from '../utils/chatConversations'
 import { loadActiveSid, loadConversations, saveActiveSid, saveConversations } from '../utils/chatStorage'
+import {
+  abortChatTask, abortTasksForOtherUser, discardChatTasks, discardTaskResult,
+  getChatTask, listChatTasks, startChatStream, subscribeTaskUpdates,
+} from '../store/chatStreamStore'
 import { mergeServerSessions, toDisplayMessages } from '../utils/chatSync'
 import { collectDocFiles } from '../utils/docFiles'
 import { useAuthStore } from '../store/authStore'
@@ -148,6 +152,94 @@ function formatConvTime(ts) {
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
 
+
+/**
+ * 把后台流式任务已生成的助手消息合并回会话列表（按消息 ID 覆盖）。
+ *
+ * 页面在生成过程中卸载 / 重新挂载时，本地会话可能只有部分内容，
+ * 用任务内的完整状态覆盖同 ID 消息即可无缝接续，不出现内容断层。
+ * 会话不存在时返回原引用（由「智能体切换加载」流程统一合并）。
+ */
+function mergeTaskMessage(list, task) {
+  if (!Array.isArray(list) || !task || !task.message) return list
+  const conv = findConversation(list, task.sid)
+  if (!conv) return list
+  // 生成中的任务实时刷新会话时间；已完成任务回放时沿用原时间，避免仅切换页面就把旧会话顶到最前
+  const now =
+    task.status === 'streaming'
+      ? Date.now()
+      : Math.max(conv.updatedAt || 0, task.finishedAt || task.startedAt || 0)
+  return updateConversationMessages(
+    list,
+    task.sid,
+    (msgs) => {
+      let working = msgs
+      // 用户消息可能因切页时尚未落盘而缺失：以任务内的快照补齐，避免只剩半条对话
+      if (task.userMessage && !working.some((m) => m && m.id === task.userMessage.id)) {
+        const aiAt = working.findIndex((m) => m && m.id === task.messageId)
+        const insertAt = aiAt < 0 ? working.length : aiAt
+        working = [
+          ...working.slice(0, insertAt),
+          { ...task.userMessage },
+          ...working.slice(insertAt),
+        ]
+      }
+      const idx = working.findIndex((m) => m && m.id === task.messageId)
+      const incoming = { ...task.message }
+      if (idx < 0) return [...working, incoming]
+      const prev = working[idx]
+      // 保留纯前端的交互状态（澄清已选、子智能体分组展开），
+      // 否则后台任务每次推送都会把它们覆盖回初始值
+      if (Array.isArray(prev.clarifies) && Array.isArray(incoming.clarifies)) {
+        incoming.clarifies = incoming.clarifies.map((c, i) => {
+          const old = prev.clarifies[i]
+          return old && old.answered != null ? { ...c, answered: old.answered } : c
+        })
+      }
+      if (Array.isArray(prev.delegateGroups) && Array.isArray(incoming.delegateGroups)) {
+        const expanded = new Map(prev.delegateGroups.map((g) => [g.subagent_id, g.expanded]))
+        incoming.delegateGroups = incoming.delegateGroups.map((g) => ({
+          ...g,
+          expanded: expanded.has(g.subagent_id) ? expanded.get(g.subagent_id) : g.expanded,
+        }))
+      }
+      const copy = working.slice()
+      copy[idx] = { ...prev, ...incoming }
+      return copy
+    },
+    now
+  )
+}
+
+/** 本地缓存里遗留的「生成中」消息（任务已不在后台运行）：收尾为已完成，避免永久转圈 */
+function settleStaleStreaming(list, liveMessageIds) {
+  if (!Array.isArray(list)) return list
+  let changed = false
+  const next = list.map((conv) => {
+    const msgs = Array.isArray(conv?.messages) ? conv.messages : null
+    if (!msgs || !msgs.some((m) => m && m.status === 'streaming' && !liveMessageIds.has(m.id))) {
+      return conv
+    }
+    changed = true
+    return {
+      ...conv,
+      messages: msgs.map((m) =>
+        m && m.status === 'streaming' && !liveMessageIds.has(m.id) ? { ...m, status: 'done' } : m
+      ),
+    }
+  })
+  return changed ? next : list
+}
+
+/** 把该智能体下仍在后台生成的任务结果合并进会话列表，并收尾无主流的“生成中”消息 */
+function applyPendingTasks(list, userScope, agentId) {
+  const tasks = listChatTasks({ userId: userScope, agentId })
+  let next = list
+  for (const task of tasks) {
+    next = mergeTaskMessage(next, task)
+  }
+  return settleStaleStreaming(next, new Set(tasks.map((t) => t.messageId)))
+}
 
 // 读取置顶列表
 function loadPinned() {
@@ -294,9 +386,33 @@ export default function ChatPage() {
   }, [currentConversations, activeSid])
 
 
-  // ----- 流式状态 -----
-  const [streaming, setStreaming] = useState(false)
-  const abortControllerRef = useRef(null)
+  // ----- 流式状态：由全局后台任务管理器提供（与组件生命周期解耦）-----
+  // 任务在模块级持续运行，切换页面 / 智能体 / 会话都不再中止生成；
+  // 这里只负责把任务状态映射为 UI 的“生成中”标识（按当前活动会话判断）。
+  const [taskVersion, setTaskVersion] = useState(0)
+  const selectedAgentIdRef = useRef(selectedAgentId)
+  useEffect(() => { selectedAgentIdRef.current = selectedAgentId }, [selectedAgentId])
+  const activeTask = useMemo(
+    () => (selectedAgentId && activeSid ? getChatTask(userScope, selectedAgentId, activeSid) : null),
+    [taskVersion, userScope, selectedAgentId, activeSid]
+  )
+  const streaming = activeTask?.status === 'streaming'
+  // 侧栏标识：哪些智能体 / 会话正在后台生成
+  const streamingAgentIds = useMemo(() => {
+    const ids = new Set()
+    for (const task of listChatTasks({ userId: userScope })) {
+      if (task.status === 'streaming') ids.add(task.agentId)
+    }
+    return ids
+  }, [taskVersion, userScope])
+  const streamingSids = useMemo(() => {
+    const sids = new Set()
+    if (!selectedAgentId) return sids
+    for (const task of listChatTasks({ userId: userScope, agentId: selectedAgentId })) {
+      if (task.status === 'streaming') sids.add(task.sid)
+    }
+    return sids
+  }, [taskVersion, userScope, selectedAgentId])
 
   // ----- 输入文本 -----
   const [inputText, setInputText] = useState('')
@@ -345,6 +461,8 @@ export default function ChatPage() {
     deletedSidsRef.current = new Set()
     setConversations({})
     setActiveSids({})
+    // 旧账号的后台生成任务不再需要（token 已变化），中止避免继续消耗与串号
+    abortTasksForOtherUser(userScope)
   }, [userScope])
 
   // ----- 选中智能体 / 账号变化时加载会话：本地缓存秒开 + 服务端完整同步 -----
@@ -364,7 +482,8 @@ export default function ChatPage() {
     const hadCache = cached.length > 0
     const baseList = hadCache ? cached : [createConversation()]
     schedulePersist(agentId)
-    setConversations((prev) => ({ ...prev, [agentId]: baseList }))
+    // 后台仍在生成的会话：把任务内的完整内容合并回来，避免只看到缓存里的半截回复
+    setConversations((prev) => ({ ...prev, [agentId]: applyPendingTasks(baseList, userScope, agentId) }))
     // 活动会话：沿用上次选中的会话（必须存在于列表），否则用列表首条
     const savedSid = loadActiveSid(localStorage, userScope, agentId)
     const sid = findConversation(baseList, savedSid) ? savedSid : baseList[0].sid
@@ -406,7 +525,10 @@ export default function ChatPage() {
       }
       // 所有会话都被删/服务端为空时，保留一条空白会话供继续对话
       if (merged.length === 0) merged = [createConversation()]
-      setConversations((prev) => ({ ...prev, [agentId]: merged }))
+      setConversations((prev) => ({
+        ...prev,
+        [agentId]: applyPendingTasks(merged, userScope, agentId),
+      }))
       schedulePersist(agentId)
 
       let nextActive = sid
@@ -479,24 +601,22 @@ export default function ChatPage() {
     return () => { alive = false }
   }, [agentList, userScope])
 
-  // ----- 中止当前流式 -----
+  // ----- 中止当前会话的生成 -----
+  // 只影响当前活动会话：其它会话 / 其它智能体的后台任务继续生成（并行思考）
   const abortStream = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-      abortControllerRef.current = null
-    }
-    setStreaming(false)
-  }, [])
+    if (!selectedAgentId || !activeSid) return
+    abortChatTask(userScope, selectedAgentId, activeSid)
+  }, [selectedAgentId, activeSid, userScope])
 
   // ----- 切换智能体 -----
+  // 注意：不再中止正在生成的回复。生成任务在全局后台运行，
+  // 切回该智能体时可直接看到完整结果与后续持续输出。
   const selectAgent = useCallback(
     (agentId) => {
       if (agentId === selectedAgentId) return
-      // 中止当前流式
-      if (streaming) abortStream()
       setSelectedAgentId(String(agentId))
     },
-    [selectedAgentId, streaming, abortStream]
+    [selectedAgentId]
   )
 
   // ----- 置顶/取消置顶 -----
@@ -516,7 +636,6 @@ export default function ChatPage() {
   // 用户仍可在左侧「对话历史」中切回查看。
   const newConversation = useCallback(() => {
     if (!selectedAgentId) return
-    if (streaming) abortStream()
     const list = conversationsRef.current[selectedAgentId] || []
     const { list: nextList, sid, created } = startNewConversation(list, activeSid)
     if (!created) {
@@ -528,7 +647,7 @@ export default function ChatPage() {
     saveActiveSid(localStorage, userScope, selectedAgentId, sid)
     setActiveSids((prev) => ({ ...prev, [selectedAgentId]: sid }))
     toast.success('已新建会话，历史对话已保留')
-  }, [selectedAgentId, streaming, abortStream, activeSid, userScope, schedulePersist])
+  }, [selectedAgentId, activeSid, userScope, schedulePersist])
 
   // ----- 切换会话（仅切换上下文，不删除任何记录） -----
   // 若目标会话本地没有消息（如跨浏览器恢复后的会话），按需从服务端拉取。
@@ -540,8 +659,8 @@ export default function ChatPage() {
       // 已选中且本地有消息时无需重复拉取
       if (sid === activeSid && hasMessages) return
       if (sid !== activeSid) {
-        // 切换会话时中止当前流式，避免新会话被写入旧会话的流式结果
-        if (streaming) abortStream()
+        // 切换会话不再中止生成：原会话的回复在后台继续，
+        // 切回时可直接看到完整内容与后续输出
         saveActiveSid(localStorage, userScope, selectedAgentId, sid)
         setActiveSids((prev) => ({ ...prev, [selectedAgentId]: sid }))
       }
@@ -550,7 +669,7 @@ export default function ChatPage() {
       if (hasMessages) return
       await loadConversationMessages(selectedAgentId, sid)
     },
-    [selectedAgentId, activeSid, streaming, abortStream, userScope, loadConversationMessages]
+    [selectedAgentId, activeSid, userScope, loadConversationMessages]
   )
 
   // ----- 清空全部历史（显式操作，需用户在工具栏二次确认）-----
@@ -558,8 +677,9 @@ export default function ChatPage() {
   const clearAllHistory = useCallback(async () => {
     if (!selectedAgentId || deletingRef.current) return
     const agentId = selectedAgentId
-    // 中止流式即可：服务端删除会写墓碑，流式收尾落库时检测到墓碑会跳过，无需等待固定时长
-    if (streaming) abortStream()
+    // 清空历史会删除该智能体的全部会话：丢弃其后台任务，避免结果被回写/回放；
+    // 服务端删除会写墓碑，流式收尾落库时检测到墓碑会跳过
+    discardChatTasks(agentId, null)
 
     deletingRef.current = true
     setDeleting(true)
@@ -585,7 +705,7 @@ export default function ChatPage() {
     saveActiveSid(localStorage, userScope, agentId, fresh[0].sid)
     setActiveSids((prev) => ({ ...prev, [agentId]: fresh[0].sid }))
     toast.success(`已清空 ${previous.length} 个历史会话`)
-  }, [selectedAgentId, streaming, abortStream, userScope, schedulePersist])
+  }, [selectedAgentId, userScope, schedulePersist])
 
   // ----- 删除选中的历史会话（单条 / 多条） -----
   // 与「清空历史」完全独立：只删除传入的 sid，服务端与本地缓存同步删除。
@@ -596,10 +716,8 @@ export default function ChatPage() {
     const agentId = selectedAgentId
     const targets = [...new Set(sids.filter((sid) => typeof sid === 'string' && sid))]
     if (targets.length === 0) return
-    // 删除的是当前正在流式输出的会话时先中止；服务端墓碑保证流式收尾不会复活会话
-    if (streaming && targets.includes(activeSidsRef.current[agentId] || '')) {
-      abortStream()
-    }
+    // 被删除会话的后台任务先丢弃：中止生成且不回写结果，避免已删除的对话被复活
+    discardChatTasks(agentId, targets)
 
     deletingRef.current = true
     setDeleting(true)
@@ -652,7 +770,7 @@ export default function ChatPage() {
     } else {
       toast.success(`已删除 ${deleted.size} 个对话`)
     }
-  }, [selectedAgentId, streaming, abortStream, userScope, schedulePersist])
+  }, [selectedAgentId, userScope, schedulePersist])
 
   // ----- 更新当前活动会话的消息列表（其它会话不受影响） -----
   const updateMessages = useCallback(
@@ -721,6 +839,42 @@ export default function ChatPage() {
     loadUploadedFiles()
     loadLlmConfigs()
   }, [loadUploadedFiles, loadLlmConfigs])
+
+  // ----- 后台流式任务：把生成中的内容实时镜像回本地会话 -----
+  // 任务在全局模块中运行，与页面生命周期无关；这里只做展示层同步：
+  // - 无论当前停留在哪个智能体 / 页面，任务更新都会写回对应会话；
+  // - 页面重新挂载时 subscribeTaskUpdates 会回放任务现状，内容无断层。
+  const loadUploadedFilesRef = useRef(loadUploadedFiles)
+  useEffect(() => { loadUploadedFilesRef.current = loadUploadedFiles }, [loadUploadedFiles])
+  // 已处理过“完成”的任务：避免重复刷新附件列表
+  const completedTaskKeysRef = useRef(new Set())
+
+  useEffect(() => {
+    const unsub = subscribeTaskUpdates((task) => {
+      if (!task || task.userId !== String(userScope ?? '')) return
+      setConversations((prev) => {
+        const list = prev[task.agentId]
+        if (!Array.isArray(list)) return prev
+        const next = mergeTaskMessage(list, task)
+        return next === list ? prev : { ...prev, [task.agentId]: next }
+      })
+      if (task.status !== 'streaming') {
+        // 最终结果落盘（页面已卸载时由任务管理器自身写缓存兜底）
+        schedulePersist(task.agentId)
+        if (
+          task.agentId === String(selectedAgentIdRef.current) &&
+          !completedTaskKeysRef.current.has(task.key)
+        ) {
+          completedTaskKeysRef.current.add(task.key)
+          // 智能体可能通过工具生成了输出文件：刷新附件列表
+          loadUploadedFilesRef.current?.()
+        }
+      }
+      // 驱动 streaming / 侧栏“生成中”标识重新计算
+      setTaskVersion((v) => v + 1)
+    })
+    return unsub
+  }, [userScope, schedulePersist])
 
   // ----- 上传文件 -----
   const handleFileUpload = useCallback(
@@ -851,368 +1005,25 @@ export default function ChatPage() {
     }
     updateMessages((prev) => [...prev, userMsg, aiMsg])
     setInputText('')
-    setStreaming(true)
-
-    // 2. 发起 SSE 流式请求
-    const controller = new AbortController()
-    abortControllerRef.current = controller
-    try {
-      const resp = await agentsApi.chatStream(
-        selectedAgentId,
-        messageText,
-        controller.signal,
-        activeSid || 'default',
-        overridePayload,
-      )
-
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => '')
-        // 后端对已删除会话返回 409（软删除墓碑）：提示用户新建会话，
-        // 不再把消息写回被删除的会话（服务端同样会拒绝落库）。
-        let detail = errText
-        try {
-          const parsed = JSON.parse(errText)
-          detail = parsed?.detail || parsed?.message || errText
-        } catch {
-          // 非 JSON 响应体：沿用原文
-        }
-        if (resp.status === 409) {
-          toast.error(detail || '该对话已被删除，请新建会话后重试')
-        }
-        throw new Error(detail || `HTTP ${resp.status}`)
-      }
-
-      const reader = resp.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let fullText = ''
-      // 节流缓冲：累积 token/thinking 内容，每 60ms 批量更新 UI
-      // 避免 240+184 个事件逐个触发 React 重渲染导致浏览器卡死
-      let pendingContent = ''
-      let pendingThinking = ''
-      let flushTimer = null
-      const flushPending = () => {
-        if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null }
-        if (!pendingContent && !pendingThinking) return
-        const cDelta = pendingContent
-        const tDelta = pendingThinking
-        pendingContent = ''
-        pendingThinking = ''
-        updateMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== aiMsg.id) return m
-            const next = { ...m }
-            if (cDelta) next.content = (m.content || '') + cDelta
-            if (tDelta) next.thinking = (m.thinking || '') + tDelta
-            return next
-          })
-        )
-      }
-      const scheduleFlush = () => {
-        if (flushTimer === null) {
-          flushTimer = setTimeout(flushPending, 60)
-        }
-      }
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try {
-            const data = JSON.parse(line.slice(6))
-
-              // ===== Hermes 引擎事件 =====
-              switch (data.type) {
-                case 'thinking':
-                  pendingThinking += data.content || ''
-                  scheduleFlush()
-                  break
-                case 'status':
-                  // 引擎状态消息（如「正在执行 N 个工具调用…」），加入执行过程日志
-                  updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            statusMsgs: [...(m.statusMsgs || []), data.message || ''],
-                          }
-                        : m
-                    )
-                  )
-                  break
-                case 'log':
-                  // 引擎日志（level + message），加入执行过程日志
-                  updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            statusMsgs: [
-                              ...(m.statusMsgs || []),
-                              `[${data.level || 'info'}] ${data.message || ''}`,
-                            ],
-                          }
-                        : m
-                    )
-                  )
-                  break
-                case 'token':
-                  fullText += data.content || ''
-                  pendingContent += data.content || ''
-                  scheduleFlush()
-                  break
-                case 'tool_start':
-                  flushPending()
-                  updateMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== aiMsg.id) return m
-                      // ReAct 每轮迭代都会先输出一段“我先查询…”的中间叙述，
-                      // 若全部累积在回答气泡里就会重复出现相同段落。
-                      // 这里把本轮已输出的叙述移入执行过程，气泡只保留最终回答。
-                      const narration = (m.content || '').trim()
-                      return {
-                        ...m,
-                        content: '',
-                        statusMsgs: narration
-                          ? [...(m.statusMsgs || []), `[分析] ${narration}`]
-                          : m.statusMsgs || [],
-                        toolCalls: [
-                          ...(m.toolCalls || []),
-                          {
-                            name: data.tool_name || '',
-                            call_id: data.tool_call_id || '',
-                            status: 'running',
-                            message: data.message || '',
-                          },
-                        ],
-                      }
-                    })
-                  )
-                  break
-                case 'tool_end':
-                  updateMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== aiMsg.id) return m
-                      const tcs = [...(m.toolCalls || [])]
-                      const idx = tcs.findIndex(
-                        (tc) => tc.call_id === data.tool_call_id && tc.status === 'running'
-                      )
-                      if (idx >= 0) {
-                        tcs[idx] = {
-                          ...tcs[idx],
-                          status: 'done',
-                          result: data.result,
-                          message: data.message || tcs[idx].message,
-                        }
-                      }
-                      return { ...m, toolCalls: tcs }
-                    })
-                  )
-                  break
-                case 'reset':
-                  // 后端检测到退化输出（重复计划叙述）并重试/去重：
-                  // 清空当前气泡中已流式的退化文本（移入执行过程日志，超长截断），
-                  // 最终回答以下一轮 token / done 事件内容为准
-                  flushPending()
-                  fullText = ''
-                  updateMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== aiMsg.id) return m
-                      const narration = (m.content || '').trim()
-                      const brief = narration
-                        ? `[分析] ${narration.slice(0, 300)}${narration.length > 300 ? '…（已重置）' : ''}`
-                        : ''
-                      return {
-                        ...m,
-                        content: '',
-                        statusMsgs: brief
-                          ? [...(m.statusMsgs || []), brief]
-                          : m.statusMsgs || [],
-                      }
-                    })
-                  )
-                  break
-                case 'file':
-                  // 工具生成的输出文件：附加到 AI 消息，气泡内提供下载卡片
-                  flushPending()
-                  updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            files: [
-                              ...(m.files || []).filter((x) => x.file_id !== data.file_id),
-                              {
-                                file_id: data.file_id,
-                                file_name: data.file_name || '',
-                                rows: data.rows ?? null,
-                                columns: data.columns ?? null,
-                              },
-                            ],
-                          }
-                        : m
-                    )
-                  )
-                  break
-                case 'clarify':
-                  // 澄清提问：智能体无法确定目标（如多台设备都可查主机信息）时
-                  // 向用户提问，前端渲染选项卡片，用户点击选项进入下一轮
-                  flushPending()
-                  updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            clarifies: [
-                              ...(m.clarifies || []),
-                              {
-                                question: data.question || '',
-                                choices: Array.isArray(data.choices)
-                                  ? data.choices.filter((c) => c != null && String(c).trim() !== '')
-                                  : [],
-                                answered: null,
-                              },
-                            ],
-                          }
-                        : m
-                    )
-                  )
-                  break
-                case 'delegate': {
-                  const info = data.result || {}
-                  const sid = info.subagent_id || 'unknown'
-                  const evt = info.event || {}
-                  updateMessages((prev) =>
-                    prev.map((m) => {
-                      if (m.id !== aiMsg.id) return m
-                      const groups = [...(m.delegateGroups || [])]
-                      let gIdx = groups.findIndex((g) => g.subagent_id === sid)
-                      if (gIdx < 0) {
-                        groups.push({
-                          subagent_id: sid,
-                          task_index: info.task_index ?? 0,
-                          status: 'running',
-                          goal: '',
-                          events: [],
-                          expanded: false,
-                        })
-                        gIdx = groups.length - 1
-                      }
-                      if (evt.type === 'start' && evt.message) {
-                        groups[gIdx].goal = evt.message
-                      }
-                      if (evt.type === 'done') groups[gIdx].status = 'completed'
-                      else if (evt.type === 'error') groups[gIdx].status = 'failed'
-                      groups[gIdx].events.push({
-                        type: evt.type || 'unknown',
-                        content: evt.content || '',
-                        message: evt.message || '',
-                        tool_name: evt.tool_name || '',
-                        result: evt.result ?? null,
-                      })
-                      return { ...m, delegateGroups: groups }
-                    })
-                  )
-                  break
-                }
-                case 'done':
-                  flushPending()
-                  // 回答气泡只保留最终一轮 LLM 回复：中间轮次的叙述已在 tool_start
-                  // 时移入执行过程，这里不再回退到 fullText（否则会把每轮重复的
-                  // 分析拼接成一段重复回复）。
-                  updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            content: m.content || data.content || '',
-                            status: 'done',
-                            usage: data.usage || null,
-                          }
-                        : m
-                    )
-                  )
-                  break
-                case 'error':
-                  flushPending()
-                  updateMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === aiMsg.id
-                        ? {
-                            ...m,
-                            status: 'error',
-                            content: m.content || `[错误] ${data.message || ''}`,
-                          }
-                        : m
-                    )
-                  )
-                  break
-                default:
-                  break
-              }
-          } catch {
-            // JSON 解析错误忽略
-          }
-        }
-      }
-
-      // 流结束但未收到 done 事件，标记为 done
-      flushPending()
-      updateMessages((prev) =>
-        prev.map((m) =>
-          m.id === aiMsg.id && m.status === 'streaming'
-            ? {
-                ...m,
-                // 有工具调用时中间叙述已进入执行过程，不再用 fullText 回填
-                content: m.content || ((m.toolCalls || []).length ? '' : fullText),
-                status: 'done',
-              }
-            : m
-        )
-      )
-    } catch (err) {
-      flushPending()
-      if (err.name === 'AbortError') {
-        // 用户主动中止
-        updateMessages((prev) =>
-          prev.map((m) =>
-            m.id === aiMsg.id && m.status === 'streaming'
-              ? {
-                  ...m,
-                  status: 'done',
-                  content: m.content + '\n\n_[已中止]_',
-                }
-              : m
-          )
-        )
-      } else {
-        updateMessages((prev) =>
-          prev.map((m) =>
-            m.id === aiMsg.id
-              ? {
-                  ...m,
-                  status: 'error',
-                  content: m.content || `[请求失败] ${err.message || err}`,
-                }
-              : m
-          )
-        )
-      }
-    } finally {
-      setStreaming(false)
-      abortControllerRef.current = null
-      // 刷新文件列表：智能体可能通过工具生成了输出文件（如 expand_risk_detail 的展开表）
-      loadUploadedFiles()
+    // 2. 交给全局后台任务管理器生成：与组件生命周期解耦，
+    //    切换页面 / 智能体 / 会话都不会中断，切回时可继续看到完整输出与后续内容。
+    const task = startChatStream({
+      userId: userScope,
+      agentId: selectedAgentId,
+      sid: activeSid || 'default',
+      text: messageText,
+      override: overridePayload,
+      messageId: aiMsg.id,
+      userMessage: userMsg,
+    })
+    if (!task) {
+      // 同一会话已有后台任务在生成：撤回占位气泡与未发出的用户消息，
+      // 避免留下一条从未发往后端、永远没有回复的消息并落盘
+      updateMessages((prev) => prev.filter((m) => m.id !== aiMsg.id && m.id !== userMsg.id))
+      setInputText(messageText)
+      toast.info('该对话正在生成回复，请稍候')
     }
-    // 注意：activeSid 必须在依赖里——新建/切换会话会改变 session_id，
-    // 缺失该依赖会让 sendText 闭包住旧值，下一句话仍带旧会话 ID 发出，
-    // 后端按旧会话加载历史，表现为"切换了会话但上下文还串着"。
-  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, loadUploadedFiles, activeSid])
+  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, activeSid, userScope])
 
   // ----- 发送消息（输入框入口，读取 inputText）-----
   const sendMessage = useCallback(() => {
@@ -1265,6 +1076,10 @@ export default function ChatPage() {
       )
       const pureText = fileWrapMatch ? fileWrapMatch[1] : userText
       // 删除用户消息及之后所有消息（含目标 AI 消息）
+      // 同时丢弃这些助手消息的后台结果：避免重新挂载时把已删除的旧回复回放回来
+      for (const m of msgs.slice(userIdx)) {
+        if (m.role === 'assistant') discardTaskResult(m.id)
+      }
       updateMessages((prev) => prev.slice(0, userIdx))
       // 直接调用 sendText，避免依赖 inputText state 时序
       sendText(pureText)
@@ -1275,6 +1090,7 @@ export default function ChatPage() {
   // ----- 删除单条消息 -----
   const deleteMessage = useCallback(
     (msgId) => {
+      discardTaskResult(msgId)
       updateMessages((prev) => prev.filter((m) => m.id !== msgId))
     },
     [updateMessages]
@@ -1289,7 +1105,10 @@ export default function ChatPage() {
       const msgs = currentMessages
       const userIdx = msgs.findIndex((m) => m.id === msgId && m.role === 'user')
       if (userIdx < 0) return
-      // 删除该用户消息及之后所有消息
+      // 删除该用户消息及之后所有消息；同时丢弃被移除助手消息的后台结果
+      for (const m of msgs.slice(userIdx)) {
+        if (m.role === 'assistant') discardTaskResult(m.id)
+      }
       updateMessages((prev) => prev.slice(0, userIdx))
       // 直接用新文本发送（不依赖 inputText state）
       sendText(newText)
@@ -1354,10 +1173,8 @@ export default function ChatPage() {
     (a) => String(a.id) === String(selectedAgentId)
   )
 
-  // ----- 页面卸载时中止流式 -----
-  useEffect(() => {
-    return () => abortStream()
-  }, [abortStream])
+  // 注意：这里刻意不做“卸载时中止流式”——生成任务由全局后台管理器执行，
+  // 离开页面 / 切换智能体后仍需继续生成，切回时可看到完整结果。
 
   return (
     <div className="flex h-full w-full overflow-hidden">
@@ -1382,6 +1199,8 @@ export default function ChatPage() {
         onDeleteConversations={deleteConversations}
         deleting={deleting}
         userScope={userScope}
+        streamingAgentIds={streamingAgentIds}
+        streamingSids={streamingSids}
       />
 
       {/* ===== 右侧主区域 ===== */}
@@ -1438,6 +1257,8 @@ function ChatSidebar({
   onDeleteConversations,
   deleting = false,
   userScope = '',
+  streamingAgentIds,
+  streamingSids,
 }) {
   // ----- 历史会话删除：选择模式 + 二次确认 -----
   const [selectMode, setSelectMode] = useState(false)
@@ -1578,6 +1399,7 @@ function ChatSidebar({
             selectedAgentId={selectedAgentId}
             onSelect={onSelect}
             onTogglePin={onTogglePin}
+            streamingAgentIds={streamingAgentIds}
             defaultExpanded
           />
         )}
@@ -1590,6 +1412,7 @@ function ChatSidebar({
             selectedAgentId={selectedAgentId}
             onSelect={onSelect}
             onTogglePin={onTogglePin}
+            streamingAgentIds={streamingAgentIds}
             defaultExpanded
           />
         )}
@@ -1699,9 +1522,17 @@ function ChatSidebar({
                       className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-primary' : 'text-muted-foreground'}`}
                     />
                     <span className="min-w-0 flex-1 truncate">{conv.title || '新对话'}</span>
-                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                      {formatConvTime(conv.updatedAt)}
-                    </span>
+                    {streamingSids?.has(conv.sid) ? (
+                      // 该会话正在后台生成：切走也不会中断，回来继续看输出
+                      <Loader2
+                        className="h-3 w-3 shrink-0 animate-spin text-primary"
+                        aria-label="正在生成回复"
+                      />
+                    ) : (
+                      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                        {formatConvTime(conv.updatedAt)}
+                      </span>
+                    )}
                   </button>
                   {!selectMode && (
                     <button
@@ -1747,6 +1578,7 @@ function AgentGroup({
   selectedAgentId,
   onSelect,
   onTogglePin,
+  streamingAgentIds,
   defaultExpanded = true,
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
@@ -1770,6 +1602,7 @@ function AgentGroup({
               key={agent.id}
               agent={agent}
               selected={String(agent.id) === String(selectedAgentId)}
+              streaming={streamingAgentIds?.has(String(agent.id))}
               onSelect={onSelect}
               onTogglePin={onTogglePin}
             />
@@ -1781,7 +1614,7 @@ function AgentGroup({
 }
 
 // 单个智能体条目（仅头像 + 名称，不展示描述）
-function AgentItem({ agent, selected, onSelect, onTogglePin }) {
+function AgentItem({ agent, selected, streaming, onSelect, onTogglePin }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const name = agent.name || `智能体 ${agent.id}`
   const avatar = agent.avatar
@@ -1812,7 +1645,16 @@ function AgentItem({ agent, selected, onSelect, onTogglePin }) {
       </div>
       {/* 名称 */}
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium" title={name}>{name}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium" title={name}>{name}</span>
+          {streaming && (
+            <span
+              className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary"
+              title="正在后台生成回复"
+              aria-label="正在后台生成回复"
+            />
+          )}
+        </div>
       </div>
       {/* 右键菜单触发 */}
       <button

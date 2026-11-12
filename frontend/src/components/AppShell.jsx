@@ -110,6 +110,7 @@ export const NAV_GROUPS = [
         perm: ['device', 'view'],
         children: [
           { to: '/devices', icon: Shield, label: '设备列表', end: true, perm: ['device', 'view'] },
+          { to: '/devices/builtin-templates', icon: Library, label: '内置设备库', end: true, perm: ['device', 'view'] },
           { to: '/receivers', icon: Radio, label: '接收器', end: true, perm: ['device', 'view'] },
           { to: '/source-entries', icon: ListTree, label: '数据源条目', end: true, perm: ['device', 'view'] },
           { to: '/strategies', icon: FileJson, label: '解析模板', end: true, perm: ['strategy', 'view'] },
@@ -198,6 +199,7 @@ const BREADCRUMB_MAP = {
   '/knowledge-base': ['工作室', '知识库'],
   '/llm-configs': ['连接配置', '模型设置'],
   '/devices': ['连接配置', '设备对接', '设备列表'],
+  '/devices/builtin-templates': ['连接配置', '设备对接', '内置设备库'],
   '/device-onboard': ['连接配置', '设备对接', '设备接入指引'],
   '/executions': ['运行监控', '日志中心'],
   '/logs': ['运行监控', '日志中心'],

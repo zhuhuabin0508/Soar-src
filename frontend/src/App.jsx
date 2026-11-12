@@ -22,6 +22,7 @@ import KnowledgeBase from './pages/KnowledgeBase'
 import SkillList from './pages/SkillList'
 import LLMConfig from './pages/LLMConfig'
 import DeviceManagement from './pages/devices/DeviceManagement'
+import BuiltinDeviceLibrary from './pages/devices/BuiltinDeviceLibrary'
 import DeviceOnboard from './pages/devices/DeviceOnboard'
 import AgentMonitor from './pages/AgentMonitor'
 import ApprovalCenter from './pages/ApprovalCenter'
@@ -154,6 +155,7 @@ const router = createBrowserRouter([
           { path: '/skills', element: <RequirePermission perm={['skill', 'view']} label="技能库"><SkillList /></RequirePermission> },
           { path: '/llm-configs', element: <RequirePermission perm={['llm_config', 'view']} label="模型设置"><LLMConfig /></RequirePermission> },
           { path: '/devices', element: <RequirePermission perm={['device', 'view']} label="设备对接"><DeviceManagement /></RequirePermission> },
+          { path: '/devices/builtin-templates', element: <RequirePermission perm={['device', 'view']} label="设备对接"><BuiltinDeviceLibrary /></RequirePermission> },
           { path: '/device-onboard', element: <RequirePermission perm={['device', 'view']} label="设备对接"><DeviceOnboard /></RequirePermission> },
           { path: '/approvals', element: <RequirePermission perm={['approval', 'view']} label="工作台"><ApprovalCenter /></RequirePermission> },
           { path: '/executions', element: <RequirePermission perm={['execution', 'view']} label="日志中心"><LogCenter /></RequirePermission> },

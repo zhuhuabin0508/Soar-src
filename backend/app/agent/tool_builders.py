@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 _TYPE_MAP = {
     "String": str,
+    "Integer": int,
     "Number": float,
     "Boolean": bool,
     "Object": dict,

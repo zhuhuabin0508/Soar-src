@@ -1,7 +1,7 @@
 // 动作表单、模板选择/创建、动作测试抽屉、动作历史弹窗
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Files, TestTube, X } from 'lucide-react'
+import { Check, Files, TestTube, Wand2, X } from 'lucide-react'
 import { Modal } from '../../components/Dialog'
 import { toast } from '../../store/toastStore'
 import { inputCls, textareaCls } from '../../components/property/FormControls'
@@ -18,8 +18,10 @@ import {
   DEVICE_TYPE_LABELS,
   HTTP_METHODS,
   RISK_OPTIONS,
+  buildMockTestParams,
   fmtRelative,
   fmtTime,
+  normalizeTestParams,
   safeParseJson,
   truncate,
 } from './constants'
@@ -545,6 +547,19 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
   })
   const hasParamErrors = Object.keys(paramErrors).length > 0
 
+  // 占位符承载字段填写提示（过长时截断，完整说明放在输入框 title）
+  const placeholderOf = (p) => (p.description ? truncate(p.description, 60) : `请输入 ${p.name}`)
+
+  // 一键填充：按字段类型/格式/约束生成合规测试数据
+  const handleAutoFill = () => {
+    const mock = buildMockTestParams(action)
+    const count = Object.keys(mock).length
+    setParams(mock)
+    setParamTouched({})
+    if (count) toast.success(`已按字段规则填充 ${count} 个测试参数`)
+    else toast.info('此动作没有可自动填充的参数')
+  }
+
   const renderParamInput = (p) => {
     const val = params[p.name] ?? ''
     const setVal = (v) => setParams((prev) => ({ ...prev, [p.name]: v }))
@@ -578,15 +593,17 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
     }
     const touched = !!paramTouched[p.name]
     const err = paramErrors[p.name]
+    const isNumeric = ['number', 'integer', 'int'].includes(String(p.type || '').toLowerCase())
     return (
       <div className="w-full">
         <input
           className={`${inputCls}${touched && err ? ' border-destructive ring-1 ring-destructive' : ''}`}
-          type={p.type === 'number' ? 'number' : 'text'}
+          type={isNumeric ? 'number' : 'text'}
           value={val}
           onChange={(e) => setVal(e.target.value)}
           onBlur={() => setParamTouched((prev) => ({ ...prev, [p.name]: true }))}
-          placeholder={p.description || `请输入 ${p.name}`}
+          placeholder={placeholderOf(p)}
+          title={p.description || ''}
         />
         {touched && err && <div className="mt-1 text-[11px] text-destructive">{err}</div>}
       </div>
@@ -621,9 +638,21 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
           <div className="flex flex-col gap-4">
             {/* 参数输入 */}
             <div>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                参数输入
-              </h3>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  参数输入
+                </h3>
+                {schema.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleAutoFill}
+                    className="btn-secondary btn-sm"
+                    title="按字段类型与约束生成合规测试数据，一键填入"
+                  >
+                    <Wand2 className="mr-1 h-3 w-3" /> 智能填充
+                  </button>
+                )}
+              </div>
               {schema.length === 0 ? (
                 <div className="rounded-md border border-dashed border-border bg-background px-3 py-3 text-center text-xs text-muted-foreground">
                   此动作未定义参数
@@ -631,16 +660,13 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
               ) : (
                 <div className="flex flex-col gap-3">
                   {schema.map((p) => (
-                    <label key={p.name}>
+                    <label key={p.name} title={p.description || undefined}>
                       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                         <span>{p.name}</span>
                         <code className="rounded bg-secondary px-1 text-[10px] text-muted-foreground">
                           {p.type}
                         </code>
                         {p.required && <span className="text-destructive">*</span>}
-                        {p.description && (
-                          <span className="text-muted-foreground">— {p.description}</span>
-                        )}
                       </div>
                       {renderParamInput(p)}
                     </label>
@@ -730,7 +756,7 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
                 toast.warning(Object.values(paramErrors)[0])
                 return
               }
-              onRun(params)
+              onRun(normalizeTestParams(schema, params))
             }}
             disabled={running}
             className="btn-primary btn-sm"

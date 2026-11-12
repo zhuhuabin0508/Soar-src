@@ -1150,6 +1150,37 @@ def run_lightweight_migrations(engine) -> None:
                     )
         except Exception as exc:  # noqa: BLE001
             logger.warning("assets.ip 列扩宽失败: %s", exc)
+        # 设备动作描述列扩宽：内置 XDR 动作描述含接口口径/参数说明可超 512 字符，
+        # 模型已改为 String(2000)，此处为老库把 varchar(<2000) 扩到 varchar(2000)，
+        # 幂等（已达标则跳过）
+        for _desc_table in ("device_actions", "device_builtin_template_actions"):
+            try:
+                _insp_desc = inspect(engine)
+                if not _insp_desc.has_table(_desc_table):
+                    continue
+                _desc_col = next(
+                    (
+                        c
+                        for c in _insp_desc.get_columns(_desc_table)
+                        if c["name"] == "description"
+                    ),
+                    None,
+                )
+                _cur_len = (
+                    getattr(_desc_col.get("type"), "length", None) if _desc_col else None
+                )
+                if _cur_len is not None and _cur_len < 2000:
+                    with engine.begin() as conn:
+                        conn.execute(text(
+                            f'ALTER TABLE "{_desc_table}" '
+                            f'ALTER COLUMN "description" TYPE VARCHAR(2000)'
+                        ))
+                    logger.info(
+                        "轻量迁移: %s.description 列已扩为 VARCHAR(2000)（原 %s 字符）",
+                        _desc_table, _cur_len,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("%s.description 列扩宽失败: %s", _desc_table, exc)
         # asset_tags 表新增 category 列（标签分类）
         ensure_columns(
             engine,

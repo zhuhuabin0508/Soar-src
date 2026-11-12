@@ -7,6 +7,7 @@ import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
 import { validateSingleIP } from '../../utils/ipValidation'
+import { useTableFillHeight } from '../../hooks/useTableFillHeight'
 
 // 设备侧时长（秒，-1 为永久）→ 中文
 const fmtDeviceDuration = (sec) => {
@@ -251,6 +252,11 @@ export default function AnbotongBlacklist({ embedded = false }) {
     ? Math.max(1, Math.ceil(blTotal.total / blacklistPageSize))
     : null
 
+  // 列表高度自适应：占满容器剩余可展示区域（分页栏作为下方保留区参与计算）
+  const tableBoxRef = useRef(null)
+  const paginationRef = useRef(null)
+  const tableMaxHeight = useTableFillHeight(tableBoxRef, paginationRef)
+
   const content = (
     <Card>
       {/* 头部：标题 + 设备标识 ｜ 右侧工具区（自动刷新 + 立即刷新，均次级操作用 ghost） */}
@@ -339,8 +345,8 @@ export default function AnbotongBlacklist({ embedded = false }) {
           {blacklist.note}（请返回上一页）
         </div>
       )}
-      {/* 表格主体：列表页主体区，独立横滚 + 给足纵向扫读空间（不再双重限高） */}
-      <div className="mt-3">
+      {/* 表格主体：列表页主体区，独立横滚 + 高度自适应容器剩余空间（随窗口尺寸重新测量） */}
+      <div ref={tableBoxRef} className="mt-3">
         <DataTable
           columns={columns}
           data={blQuery ? (blQuery.found && blQuery.entry ? [blQuery.entry] : []) : blacklist.items}
@@ -348,7 +354,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
           rowKey="blist"
           selectable={false}
           stickyHeader
-          maxHeight="26rem"
+          maxHeight={tableMaxHeight ?? '26rem'}
           emptyText={blQuery ? '未查到：该 IP 不在黑名单中' : (blacklist.page > 1 ? '本页无数据' : '设备黑名单为空')}
           emptyDescription={blQuery ? '设备返回 404，黑名单中没有该 IP 的条目' : (blacklist.page > 1 ? '该页码已超出设备黑名单范围，请返回上一页' : '安博通阻断器上当前没有任何黑名单条目')}
           emptyIcon={Inbox}
@@ -356,7 +362,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
       </div>
       {/* 底部分页栏：左侧总页数/总条数，右侧每页条数与翻页；查询模式隐藏，避免与单条详情混淆 */}
       {blacklist.paginated && !blQuery && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <div ref={paginationRef} className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {blTotal.total != null
               ? `第 ${blacklistPage} / ${blTotalPages} 页 · 共 ${blTotal.total} 条`

@@ -251,6 +251,23 @@ def _apply_device_fields(device: Device, body: DeviceBase, *, is_create: bool) -
     device.version = body.version
     device.ip_address = body.ip_address
     device.api_url = body.api_url
+    # 深信服 XDR：支持在 API Key 中直接填写联动码，落库前拆分为 AK/SK 存储，
+    # 避免超过 api_key 字段长度且保证执行器可直接签名。
+    if body.auth_type == "sangfor_xdr" and body.api_key:
+        try:
+            from app.tools.xdr_openapi import parse_auth_code
+
+            ak, sk = parse_auth_code(body.api_key.strip())
+            body.api_key, body.password = ak, sk
+        except Exception as exc:  # noqa: BLE001
+            # 联动码格式解析失败：保留原样存储，兼容「api_key 填 AK、
+            # password 填 SK」的手工分填方式；但记录告警，避免用户本意
+            # 粘贴联动码却格式错误时静默落库错配凭据、调用期才暴露 401
+            logger.warning(
+                "深信服 XDR 联动码解析失败（%s），将按 AK/SK 分填方式存储；"
+                "若本意为粘贴联动码，请检查格式",
+                exc,
+            )
     # 更新时凭据留空表示不修改（列表接口不下发凭据，编辑表单默认为空）
     if is_create or body.api_key:
         device.api_key = encrypt_device_secret(body.api_key)

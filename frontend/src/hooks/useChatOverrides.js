@@ -28,7 +28,7 @@ const LS_OVERRIDES_PREFIX = 'soar_chat_overrides_'
 export const PARAM_DEFS = {
   temperature: { label: 'Temperature', desc: '采样温度，越高越随机创造性', min: 0, max: 2, step: 0.1, defaultValue: 0.7 },
   top_p: { label: 'Top P', desc: '核采样概率，限制候选 token 累计概率', min: 0, max: 1, step: 0.05, defaultValue: 1 },
-  max_tokens: { label: 'Max Tokens', desc: '最大生成 token 数', min: 1, max: 8192, step: 1, defaultValue: 1024 },
+  max_tokens: { label: 'Max Tokens', desc: '最大生成 token 数（推理模型的思考也计入，建议 16K 以上）', min: 1, max: 65536, step: 1, defaultValue: 1024 },
   frequency_penalty: { label: 'Frequency Penalty', desc: '频率惩罚，降低已出现 token 的概率', min: -2, max: 2, step: 0.1, defaultValue: 0 },
   presence_penalty: { label: 'Presence Penalty', desc: '存在惩罚，鼓励引入新话题', min: -2, max: 2, step: 0.1, defaultValue: 0 },
   seed: { label: 'Seed', desc: '随机种子，固定种子可复现结果', min: 0, max: 999999, step: 1, defaultValue: null },

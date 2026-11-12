@@ -1342,7 +1342,7 @@ function AgentEditor() {
               />
               <div className="grid grid-cols-3 gap-2">
                 <NumberInput label="温度" value={form.temperature} onChange={setField('temperature')} min={0} max={2} step={0.1} hint="0=确定，2=发散" />
-                <NumberInput label="Max Tokens" value={form.max_tokens} onChange={setField('max_tokens')} min={1} max={8192} />
+                <NumberInput label="Max Tokens" value={form.max_tokens} onChange={setField('max_tokens')} min={1} max={65536} hint="推理模型思考计入额度，建议 16K+" />
                 <NumberInput label="上下文轮数" value={form.context_turns} onChange={setField('context_turns')} min={1} max={50} />
               </div>
               <SelectInput

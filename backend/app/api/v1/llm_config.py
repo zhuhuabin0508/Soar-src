@@ -84,6 +84,51 @@ def _set_default(db: Session, config_id: int) -> None:
     db.query(LLMConfig).filter(LLMConfig.id == config_id).update({LLMConfig.is_default: True})
 
 
+def _parse_sse_chat_stream(text: str) -> tuple[str, str, dict]:
+    """解析 OpenAI 兼容的 SSE 流式响应，聚合正文、思维链和 token 用量。
+
+    部分网关（如 new-api）对个别模型通道强制返回 ``text/event-stream``，
+    即使请求体里传 ``stream=false`` 也不生效，因此测试连通性时需兼容 SSE。
+
+    Returns:
+        ``(content, reasoning, usage)``
+    """
+    import json
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    usage: dict = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(chunk, dict):
+            continue
+        if chunk.get("usage"):
+            usage = chunk["usage"] or {}
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0] or {}
+        delta = choice.get("delta") or {}
+        message = choice.get("message") or {}
+        val = delta.get("content") or message.get("content")
+        if isinstance(val, str):
+            content_parts.append(val)
+        # 推理模型（GLM/DeepSeek-R1 等）的思维链字段
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if isinstance(reasoning, str):
+            reasoning_parts.append(reasoning)
+    return "".join(content_parts), "".join(reasoning_parts), usage
+
+
 def _update_health(db: Session, config_id: int, status: str, error: str = "", latency_ms: Optional[int] = None) -> None:
     """更新配置的健康状态。"""
     db.query(LLMConfig).filter(LLMConfig.id == config_id).update({
@@ -485,7 +530,7 @@ def test_llm_config(config_id: int, db: Session = Depends(get_db)) -> dict:
             llm_kwargs = {
                 "model": cfg.model_name or "claude-3-5-sonnet-20241022",
                 "api_key": api_key,
-                "max_tokens": 50,
+                "max_tokens": 1024,
             }
             if cfg.base_url:
                 llm_kwargs["anthropic_api_url"] = cfg.base_url
@@ -535,7 +580,7 @@ def test_llm_config(config_id: int, db: Session = Depends(get_db)) -> dict:
         payload = {
             "model": cfg.model_name or "gpt-3.5-turbo",
             "messages": [{"role": "user", "content": "回复OK两个字"}],
-            "max_tokens": 50,
+            "max_tokens": 1024,
         }
 
         from app.core.model_call_monitor import record_model_call
@@ -561,10 +606,24 @@ def test_llm_config(config_id: int, db: Session = Depends(get_db)) -> dict:
                         "error": err,
                         "model": cfg.model_name,
                         "latency_ms": latency_ms}
-            data = r.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            # 提取 token 用量
-            usage = data.get("usage", {}) or {}
+            # 部分网关对个别模型通道强制返回 SSE（忽略 stream=false），需按流式聚合
+            ctype = (r.headers.get("content-type") or "").lower()
+            if "text/event-stream" in ctype or r.text.lstrip().startswith("data:"):
+                content, reasoning, usage = _parse_sse_chat_stream(r.text)
+                logger.info(
+                    "LLM 配置测试收到 SSE 流式响应: id=%s, content_len=%d, reasoning_len=%d",
+                    config_id, len(content), len(reasoning),
+                )
+                # 推理模型的思维链可能耗尽 token 导致正文为空，提示中带上思维链长度
+                if not content and reasoning:
+                    content = f"（模型仅返回思维链，共 {len(reasoning)} 字）"
+            else:
+                if not r.text.strip():
+                    raise ValueError("HTTP 200 但响应体为空，无法解析模型返回")
+                data = r.json()
+                content = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                # 提取 token 用量
+                usage = data.get("usage", {}) or {}
             record_model_call(
                 model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
                 status="success", latency_ms=latency_ms,

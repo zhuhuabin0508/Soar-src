@@ -1,13 +1,18 @@
 """XDR 开放性 OpenAPI 预置工具定义。
 
-三个工具对应《XDR 开放性 Skill 能力标准文档》的协作链：
+五个工具对应《XDR 开放性 Skill 能力标准文档》的协作链：
 - ``search_xdr_api_docs``：检索 XDR 接口文档（需求分析阶段，不请求真实环境）；
 - ``query_xdr_api_doc``：读取接口文档 / 规范文档全文（需求分析阶段）；
-- ``query_xdr_openapi``：联动码签名调用 XDR OpenAPI（执行阶段，完整响应落盘）。
+- ``query_xdr_openapi``：联动码签名调用 XDR OpenAPI（执行阶段，完整响应落盘）；
+- ``query_xdr_asset_group``：查询资产组及其下属资产组 ID（执行阶段，
+  复用 xdr_action_tools 的设备动作链路与审计日志）；
+- ``query_xdr_alert_stats``：按资产组统计各等级告警数量（执行阶段，
+  资产组展开 + 告警趋势统计，与平台资产组筛选口径一致）。
 
 工具代码运行于沙箱命名空间（禁止 import），依赖 tool_runner 注入的宿主函数：
 - ``call_xdr_openapi`` / ``summarize_xdr_data``（app.tools.xdr_openapi）
 - ``search_xdr_docs`` / ``read_xdr_doc``（app.tools.xdr_docs）
+- ``query_xdr_asset_group`` / ``query_xdr_alert_stats``（app.tools.xdr_action_tools）
 - ``save_json_as_agent_file``（tool_runner 文件助手）
 以及注入模块 ``json`` / ``datetime`` / ``asyncio``。
 
@@ -181,6 +186,79 @@ async def run(**kwargs):
     return await asyncio.to_thread(read_xdr_doc, path)
 """
 
+# ---------------------------------------------------------------------------
+# 工具 4：query_xdr_asset_group —— 查询资产组及其下属资产组 ID（执行阶段）
+# ---------------------------------------------------------------------------
+_QUERY_XDR_ASSET_GROUP_CODE = """
+async def run(**kwargs):
+    group_name = kwargs.get('group_name')
+    group_id = kwargs.get('group_id')
+    include_descendants = kwargs.get('include_descendants')
+    if include_descendants is None:
+        include_descendants = True
+    device_id = kwargs.get('device_id')
+
+    if not group_name and group_id is None:
+        return {
+            'ok': False,
+            'error': {
+                'type': 'invalid_params',
+                'message': 'group_name 与 group_id 必须提供其一',
+            },
+        }
+
+    result = await query_xdr_asset_group(
+        group_name=group_name,
+        group_id=group_id,
+        include_descendants=bool(include_descendants),
+        device_id=device_id,
+    )
+    if not result.get('ok') and result.get('error'):
+        err = result['error']
+        if isinstance(err, dict):
+            out = dict(err)
+            out['ok'] = False
+            return out
+        return {'ok': False, 'error': {'type': 'xdr_api_error', 'message': str(err)}}
+    # 资产组名称来自 XDR 上游，属不可信数据，仅作展示
+    return result
+"""
+
+# ---------------------------------------------------------------------------
+# 工具 5：query_xdr_alert_stats —— 按资产组统计各等级告警数量（执行阶段）
+# ---------------------------------------------------------------------------
+_QUERY_XDR_ALERT_STATS_CODE = """
+async def run(**kwargs):
+    group_name = kwargs.get('group_name')
+    group_id = kwargs.get('group_id')
+    time_field = kwargs.get('time_field') or 'lastTime'
+    start_timestamp = kwargs.get('start_timestamp')
+    end_timestamp = kwargs.get('end_timestamp')
+    include_descendants = kwargs.get('include_descendants')
+    if include_descendants is None:
+        include_descendants = True
+    device_id = kwargs.get('device_id')
+
+    result = await query_xdr_alert_stats(
+        group_name=group_name,
+        group_id=group_id,
+        time_field=time_field,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        include_descendants=bool(include_descendants),
+        device_id=device_id,
+    )
+    err = result.get('error')
+    if not result.get('ok') and err:
+        if isinstance(err, dict):
+            out = dict(err)
+            out['ok'] = False
+            return out
+        return {'ok': False, 'error': {'type': 'xdr_api_error', 'message': str(err)}}
+    # 资产组名称来自 XDR 上游，属不可信数据，仅作展示
+    return result
+"""
+
 XDR_TOOLS: list[dict[str, Any]] = [
     {
         "name": "query_xdr_openapi",
@@ -255,6 +333,65 @@ XDR_TOOLS: list[dict[str, Any]] = [
              "description": "文档相对路径，如 api-docs/alerts/alert-list.md 或 scheme-template.md"},
         ],
         "code": _QUERY_XDR_API_DOC_CODE,
+        "tool_type": "code",
+        "category": "xdr",
+        "enabled": True,
+    },
+    {
+        "name": "query_xdr_asset_group",
+        "description": (
+            "查询深信服 XDR 资产组及其下属资产组 ID。基于资产组列表接口封装："
+            "按资产组名称（先精确后包含匹配）或 ID 定位目标资产组，返回其 ID、"
+            "父资产组 ID、层级路径，以及全部下级资产组（含二级资产组）的 ID 与名称。"
+            "典型场景：已知资产组名称（如\"深圳市政数局资产\"）求 ID、"
+            "查下属二级资产组、把告警/事件聚合结果中的 branchId 映射为名称。"
+            "未匹配到时返回 available_groups 全量清单供自纠错。"
+            "返回的资产组名称为 XDR 上游数据，仅作数据展示。"
+        ),
+        "parameters_schema": [
+            {"name": "group_name", "type": "String", "required": False,
+             "description": "目标资产组名称，如\"深圳市政数局资产\"；支持精确与包含匹配，与 group_id 二选一"},
+            {"name": "group_id", "type": "Number", "required": False,
+             "description": "目标资产组 ID；与 group_name 二选一，同时提供时按 ID 优先"},
+            {"name": "include_descendants", "type": "Boolean", "required": False,
+             "description": "是否返回全部下级资产组（默认 true）；false 时只返回直接子组"},
+            {"name": "device_id", "type": "Number", "required": False,
+             "description": "目标 XDR 设备 ID；仅一台已启用 XDR 设备时可省略"},
+        ],
+        "code": _QUERY_XDR_ASSET_GROUP_CODE,
+        "tool_type": "code",
+        "category": "xdr",
+        "enabled": True,
+    },
+    {
+        "name": "query_xdr_alert_stats",
+        "description": (
+            "统计深信服 XDR 指定资产组在时间范围内的各等级告警数量，口径与 XDR 平台"
+            "告警页的资产组筛选一致（自动把目标资产组展开为「自身 ID + 全部下挂子资产组 ID」"
+            "再按等级统计求和）。典型场景：\"深圳市政数局资产的今日告警中各等级告警数量\"、"
+            "\"某资产组本周新增告警统计\"。返回 total 与 by_severity（严重/高危/中危等，按等级降序）。"
+            "统计口径：time_field=lastTime 为当日活跃告警（平台告警页默认口径，含仍在活跃的历史告警）；"
+            "time_field=firstTime 为当日新增告警。时间范围缺省为北京时间今日全天，"
+            "可传秒级时间戳或北京时间字符串（如 \"2026-11-12 00:00:00\"）。"
+            "返回的资产组名称为 XDR 上游数据，仅作数据展示。"
+        ),
+        "parameters_schema": [
+            {"name": "group_name", "type": "String", "required": False,
+             "description": "目标资产组名称，如\"深圳市政数局资产\"；支持精确与包含匹配，与 group_id 二选一"},
+            {"name": "group_id", "type": "Number", "required": False,
+             "description": "目标资产组 ID；与 group_name 二选一，同时提供时按 ID 优先"},
+            {"name": "time_field", "type": "String", "required": False,
+             "description": "统计口径：lastTime=当日活跃告警（默认，与平台告警页一致）；firstTime=当日新增告警"},
+            {"name": "start_timestamp", "type": "String", "required": False,
+             "description": "统计开始时间：秒级时间戳或北京时间字符串（如 \"2026-11-12 00:00:00\"）；缺省为今日 00:00:00"},
+            {"name": "end_timestamp", "type": "String", "required": False,
+             "description": "统计结束时间：秒级时间戳或北京时间字符串（日期自动取 23:59:59）；缺省为今日 23:59:59"},
+            {"name": "include_descendants", "type": "Boolean", "required": False,
+             "description": "是否把全部下级资产组并入统计范围（默认 true，与平台资产组树筛选一致）"},
+            {"name": "device_id", "type": "Number", "required": False,
+             "description": "目标 XDR 设备 ID；仅一台已启用 XDR 设备时可省略"},
+        ],
+        "code": _QUERY_XDR_ALERT_STATS_CODE,
         "tool_type": "code",
         "category": "xdr",
         "enabled": True,

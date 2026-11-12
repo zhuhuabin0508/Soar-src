@@ -28,6 +28,7 @@ from app.models.chat_message import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.deliverable import ServiceCategory, Deliverable
 from app.models.device import Device, DeviceAction
+from app.models.device_template import DeviceTemplate, DeviceTemplateAction
 from app.models.duty import (
     DutyMember,
     DutyRecord,
@@ -143,6 +144,8 @@ __all__ = [
     "BackupRecord",
     "Device",
     "DeviceAction",
+    "DeviceTemplate",
+    "DeviceTemplateAction",
     "ResourceShare",
     "ServiceCategory",
     "Deliverable",

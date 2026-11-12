@@ -42,8 +42,8 @@ def _cleanup_removed_and_legacy(db: Session) -> int:
     return removed
 
 
-def _sync_preset_tool(db: Session, defn: dict, seed_code_map: dict[str, str]) -> tuple[bool, bool, bool, bool]:
-    inserted = categorized = repaired = source_synced = False
+def _sync_preset_tool(db: Session, defn: dict, seed_code_map: dict[str, str]) -> tuple[bool, bool, bool, bool, bool]:
+    inserted = categorized = repaired = source_synced = desc_synced = False
     name = defn["name"]
     existing = db.query(Tool).filter(Tool.name == name).first()
     if existing is not None:
@@ -56,6 +56,14 @@ def _sync_preset_tool(db: Session, defn: dict, seed_code_map: dict[str, str]) ->
         if expected_source and getattr(existing, "tool_source", None) != expected_source:
             existing.tool_source = expected_source
             source_synced = True
+        # 预置工具的定义以目录为准：description / parameters_schema 变化时同步
+        # （如 XDR 动作描述补充「计数首选」路由提示），避免 DB 行停留在旧文案
+        if defn.get("description") and existing.description != defn["description"]:
+            existing.description = defn["description"]
+            desc_synced = True
+        if defn.get("parameters_schema") and existing.parameters_schema != defn["parameters_schema"]:
+            existing.parameters_schema = defn["parameters_schema"]
+            desc_synced = True
         seed_code = seed_code_map.get(name)
         if (
             seed_code
@@ -66,11 +74,11 @@ def _sync_preset_tool(db: Session, defn: dict, seed_code_map: dict[str, str]) ->
             logger.warning("工具 %s 代码含 import 语句（沙箱禁止），自动修复为 seed 版本", name)
             existing.code = seed_code
             repaired = True
-        return inserted, categorized, repaired, source_synced
+        return inserted, categorized, repaired, source_synced, desc_synced
 
     db.add(Tool(**defn))
     inserted = True
-    return inserted, categorized, repaired, source_synced
+    return inserted, categorized, repaired, source_synced, desc_synced
 
 
 def ensure_preset_tools() -> None:
@@ -83,22 +91,24 @@ def ensure_preset_tools() -> None:
             db.commit()
             logger.info("已清理 %d 个退役/遗留工具", removed)
 
-        inserted = categorized = repaired = source_synced = 0
+        inserted = categorized = repaired = source_synced = desc_synced = 0
         for defn in ToolCatalog.preset_definitions():
-            ins, cat, rep, src = _sync_preset_tool(db, defn, seed_code_map)
+            ins, cat, rep, src, desc = _sync_preset_tool(db, defn, seed_code_map)
             inserted += int(ins)
             categorized += int(cat)
             repaired += int(rep)
             source_synced += int(src)
+            desc_synced += int(desc)
 
-        if inserted or categorized or repaired or source_synced:
+        if inserted or categorized or repaired or source_synced or desc_synced:
             db.commit()
             logger.info(
-                "工具目录同步: 新插入 %d，补充分类 %d，代码修复 %d，来源标记 %d（共 %d 个预置定义）",
+                "工具目录同步: 新插入 %d，补充分类 %d，代码修复 %d，来源标记 %d，定义同步 %d（共 %d 个预置定义）",
                 inserted,
                 categorized,
                 repaired,
                 source_synced,
+                desc_synced,
                 len(ToolCatalog.preset_definitions()),
             )
         else:

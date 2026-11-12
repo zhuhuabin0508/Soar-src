@@ -10,6 +10,7 @@ import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
 import { splitIPExpression, validateSingleIP, isBanDomain } from '../../utils/ipValidation'
+import { useTableFillHeight } from '../../hooks/useTableFillHeight'
 
 // 设备侧时长（秒，-1 为永久）→ 中文（与安博通黑名单页展示口径一致）
 const fmtDeviceDuration = (sec) => {
@@ -430,6 +431,12 @@ export default function AnbotongWhitelist({ embedded = false }) {
   }, [canEdit, deleting, doDelete])
 
   const selectedCount = selected.length
+
+  // 列表高度自适应：占满容器剩余可展示区域（分页栏作为下方保留区参与计算）
+  const tableBoxRef = useRef(null)
+  const paginationRef = useRef(null)
+  const tableMaxHeight = useTableFillHeight(tableBoxRef, paginationRef)
+
   const content = (
     <Card>
       {/* 头部：标题 + 同步状态 ｜ 右侧工具区（立即同步 / 新增 / 批量删除） */}
@@ -533,8 +540,8 @@ export default function AnbotongWhitelist({ embedded = false }) {
         </div>
       )}
 
-      {/* 表格主体 */}
-      <div className="mt-3">
+      {/* 表格主体（高度自适应容器剩余空间，随窗口尺寸重新测量） */}
+      <div ref={tableBoxRef} className="mt-3">
         <DataTable
           columns={columns}
           data={data.items}
@@ -544,7 +551,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
           selectedKeys={selected}
           onSelectChange={handleSelectChange}
           stickyHeader
-          maxHeight="26rem"
+          maxHeight={tableMaxHeight ?? '26rem'}
           emptyText={keyword || enableFilter ? '没有符合筛选条件的白名单' : '安博通全局白名单为空'}
           emptyDescription={
             keyword || enableFilter
@@ -556,7 +563,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
       </div>
 
       {/* 分页栏：左侧总页数/总条数，右侧每页条数与翻页（与黑名单页一致） */}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+      <div ref={paginationRef} className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
           第 {page} / {Math.max(1, Math.ceil(data.total / pageSize))} 页 · 共 {data.total} 条
         </span>

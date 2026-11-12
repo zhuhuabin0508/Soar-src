@@ -1572,6 +1572,29 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["read_xdr_doc"] = read_xdr_doc
     except ImportError:  # pragma: no cover
         logger.debug("XDR OpenAPI 模块未安装，工具命名空间不注入 XDR 函数")
+    # 深信服 XDR 设备动作工具包统一入口：按 action_key 解析设备/动作并执行，
+    # 内部复用 execute_device_action（AK/SK 签名、超时、重试、审计日志）。
+    # 通过 partial 绑定 agent_id/user_id，工具代码无需显式传递审计上下文。
+    try:
+        from functools import partial as _partial
+
+        from app.tools.xdr_action_tools import (
+            query_xdr_alert_stats,
+            query_xdr_asset_group,
+            run_xdr_action,
+        )
+
+        namespace["run_xdr_action"] = _partial(
+            run_xdr_action, agent_id=agent_id, user_id=user_id
+        )
+        namespace["query_xdr_asset_group"] = _partial(
+            query_xdr_asset_group, agent_id=agent_id, user_id=user_id
+        )
+        namespace["query_xdr_alert_stats"] = _partial(
+            query_xdr_alert_stats, agent_id=agent_id, user_id=user_id
+        )
+    except ImportError:  # pragma: no cover
+        logger.debug("xdr_action_tools 未安装，工具命名空间不注入 run_xdr_action")
     try:
         import openpyxl  # noqa: F401
         namespace["openpyxl"] = openpyxl

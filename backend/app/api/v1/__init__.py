@@ -21,6 +21,7 @@ from app.api.v1 import (
     bigscreen,
     dashboard,
     deliverables,
+    device_templates,
     devices,
     duty,
     executions,
@@ -76,6 +77,8 @@ api_router.include_router(tools_manage.router)
 api_router.include_router(llm_config.router)
 # 安全设备与设备动作管理
 api_router.include_router(devices.router)
+# 内置设备库（模板条目与模板动作，复用模板创建设备）
+api_router.include_router(device_templates.router)
 # 智能体
 api_router.include_router(agents.router)
 # 知识库

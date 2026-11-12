@@ -586,6 +586,33 @@ export const devices = {
   templates: () => request('/devices/templates'),
   // 从模板创建设备
   fromTemplate: (body) => request('/devices/from-template', { method: 'POST', body }),
+  // ---- 内置设备库（模板条目 + 固化动作）----
+  builtinTemplates: {
+    list: (params = {}) => {
+      const q = new URLSearchParams()
+      Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') q.set(k, v) })
+      return request(`/devices/builtin-templates${q.toString() ? `?${q.toString()}` : ''}`)
+    },
+    get: (id) => request(`/devices/builtin-templates/${id}`),
+    create: (body) => request('/devices/builtin-templates', { method: 'POST', body }),
+    update: (id, body) => request(`/devices/builtin-templates/${id}`, { method: 'PUT', body }),
+    remove: (id) => request(`/devices/builtin-templates/${id}`, { method: 'DELETE' }),
+    // 从现有设备识别入库（快照基础信息 + 全部动作）
+    fromDevice: (body) => request('/devices/builtin-templates/from-device', { method: 'POST', body }),
+    // 复用模板一键创建设备（完整复制模板动作）
+    instantiate: (id, body) =>
+      request(`/devices/builtin-templates/${id}/instantiate`, { method: 'POST', body }),
+    // 模板动作 CRUD
+    listActions: (id) => request(`/devices/builtin-templates/${id}/actions`),
+    createAction: (id, body) =>
+      request(`/devices/builtin-templates/${id}/actions`, { method: 'POST', body }),
+    updateAction: (id, actionId, body) =>
+      request(`/devices/builtin-templates/${id}/actions/${actionId}`, { method: 'PUT', body }),
+    removeAction: (id, actionId) =>
+      request(`/devices/builtin-templates/${id}/actions/${actionId}`, { method: 'DELETE' }),
+    // 模板操作日志
+    logs: (id, limit = 30) => request(`/devices/builtin-templates/${id}/logs?limit=${limit}`),
+  },
   // 导入导出
   export: (ids) => {
     const q = Array.isArray(ids) && ids.length ? `?ids=${ids.join(',')}` : ''

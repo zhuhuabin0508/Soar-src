@@ -75,7 +75,7 @@ class DeviceAction(Base):
     body_template = Column(String(4096), nullable=False, default="", comment="请求体模板")
     auth_type = Column(String(32), nullable=False, default="api_key", comment="认证方式: api_key/basic/bearer/none")
     enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
-    description = Column(String(512), nullable=False, default="", comment="动作描述")
+    description = Column(String(2000), nullable=False, default="", comment="动作描述（含接口口径/参数说明，可超 512 字符）")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -90,7 +90,13 @@ def _record_device_call_isolated(
         close_db_session(db)
 
 
-def _build_request(device: Device, action: DeviceAction, params: dict[str, Any]):
+def _build_request(
+    device: Device,
+    action: DeviceAction,
+    params: dict[str, Any],
+    *,
+    skip_required_check: bool = False,
+):
     """统一构造设备调用的 (method, url, headers, auth, body)，供各链路复用。"""
     # schema 默认值 / 取值映射：路径占位符与请求体模板共用
     # （调用方未传参时用默认值回填，避免占位符原样下发导致设备 4xx）
@@ -117,8 +123,10 @@ def _build_request(device: Device, action: DeviceAction, params: dict[str, Any])
         logger.warning("解析动作 params_schema 默认值失败，忽略: action_id=%s", action.id)
         schema_items = []
 
-    # 必填参数校验：调用方未传且无默认值时直接失败，避免占位符原样下发
-    for _p in schema_items:
+    # 必填参数校验：调用方未传且无默认值时直接失败，避免占位符原样下发。
+    # 智能体工具层（如 XDR 工具包）已按纠正后的 schema 校验过，可跳过此处
+    # 对原始 schema 的校验（原始 schema 可能把文档子结构字段误标为顶层必填）。
+    for _p in ([] if skip_required_check else schema_items):
         _name = _p.get("name")
         if not _p.get("required") or not _name:
             continue
@@ -329,6 +337,110 @@ def _qingteng_signheaders(
     return headers, req_body, url
 
 
+def _sangfor_xdr_sign(
+    device: Device,
+    action: DeviceAction,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    params: dict[str, Any],
+    req_body: Any,
+):
+    """深信服 XDR OpenAPI 签名（AK/SK 联动码，HMAC-SHA256）。
+
+    联动码存放在设备的 api_key 字段（AES 加密存储），由执行器解密后解析出 AK/SK。
+    GET 请求参数按 Query 下发；POST 请求体序列化后与签名使用同一份字节。
+    返回 (headers, req_body, final_url)。
+    """
+    from urllib.parse import urlparse
+
+    from app.tools.xdr_openapi import (
+        _build_sorted_query_string,
+        _format_sign_date,
+        _hmac_sha256_hex_upper,
+        _payload_transform,
+        _serialize_body,
+        _sha256_hex_upper,
+        _sign_header_handler,
+        _url_transform,
+        parse_auth_code,
+    )
+
+    auth_code = decrypt_device_secret(device.api_key or "")
+    secret = decrypt_device_secret(device.password or "")
+    if auth_code and secret:
+        # 内置模板复用设备时已将联动码拆分为 AK(api_key)/SK(password)
+        ak, sk = auth_code, secret
+    elif auth_code:
+        try:
+            ak, sk = parse_auth_code(auth_code)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"XDR 联动码解析失败: {exc}") from exc
+    else:
+        raise ValueError("设备未配置 XDR 联动码（请在 API Key 中填写联动码）")
+
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    query: dict[str, Any] = {}
+    if method == "GET":
+        # GET 接口按文档要求使用 Query 参数：schema 默认值 + 调用参数，不下发请求体
+        merged = {}
+        try:
+            for item in json.loads(action.params_schema or "[]"):
+                if isinstance(item, dict) and item.get("name") and "default" in item:
+                    merged[item["name"]] = item["default"]
+        except Exception:  # noqa: BLE001
+            logger.warning("解析 XDR 动作参数默认值失败，忽略: action_id=%s", action.id)
+        for k, v in params.items():
+            if k in merged and (v is None or (isinstance(v, str) and not v.strip())):
+                continue
+            merged[k] = v
+        query = {
+            k: v for k, v in merged.items()
+            if v is not None and not (isinstance(v, str) and v.strip() == "")
+        }
+        query_string = _build_sorted_query_string(query)
+        url = f"{parsed.scheme}://{parsed.netloc}{path}"
+        if query_string:
+            url = f"{url}?{query_string}"
+        req_body = None
+
+    raw_body_bytes, raw_body_str = _serialize_body(req_body)
+    del raw_body_bytes  # 发送与签名共用 raw_body_str，避免二次序列化差异
+
+    sign_headers = {
+        k: v for k, v in headers.items() if str(k).lower() != "content-type"
+    }
+    sign_headers["sdk-host"] = parsed.netloc
+    sign_headers["sdk-content-type"] = "application/json"
+    sign_date = _format_sign_date()
+    sign_headers["sign-date"] = sign_date
+
+    header_str, sign_header_str = _sign_header_handler(sign_headers)
+    canonical = (
+        method
+        + "\n"
+        + _url_transform(path)
+        + "\n"
+        + (_build_sorted_query_string(query) if method == "GET" else "")
+        + "\n"
+        + header_str
+        + sign_header_str
+        + "\n"
+        + _payload_transform(raw_body_str)
+    )
+    signature = _hmac_sha256_hex_upper(sk, f"HMAC-SHA256\n{sign_date}\n{_sha256_hex_upper(canonical)}")
+    out_headers = dict(sign_headers)
+    out_headers.update({
+        "Authorization": (
+            f"algorithm=HMAC-SHA256, Access={ak}, "
+            f"SignedHeaders={sign_header_str}, Signature={signature}"
+        ),
+        "Content-Type": "application/json",
+    })
+    return out_headers, (raw_body_str or None), url
+
+
 def _validate_action_params(action: DeviceAction, params: dict[str, Any]) -> None:
     """按 params_schema 校验 IP 类参数（type=ip/cidr），非法抛 ValueError。
 
@@ -373,6 +485,7 @@ def execute_device_action(
     user_id: Optional[int] = None,
     source_ip: Optional[str] = None,
     skip_log: bool = False,
+    skip_required_check: bool = False,
 ) -> dict[str, Any]:
     """实际调用设备 API 执行指定动作（统一执行引擎）。
 
@@ -414,7 +527,9 @@ def execute_device_action(
     max_retries = device.max_retries if device.max_retries is not None else 0
 
     try:
-        method, url, headers, auth, req_body = _build_request(device, action, params)
+        method, url, headers, auth, req_body = _build_request(
+            device, action, params, skip_required_check=skip_required_check
+        )
     except ValueError as exc:
         return {"success": False, "status_code": None, "response_body": None,
                 "error": str(exc), "latency_ms": 0}
@@ -472,6 +587,29 @@ def execute_device_action(
             )
             # 签名可能为 GET 追加查询串，审计摘要更新为最终 URL
             request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
+
+    # 深信服 XDR：AK/SK 联动码签名；GET 参数转 Query，其余走 JSON 请求体。
+    if auth_type == "sangfor_xdr":
+        try:
+            headers, req_body, url = _sangfor_xdr_sign(
+                device, action, method, url, headers, params, req_body
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}: {exc}"
+            logger.warning("深信服 XDR 签名失败: %s", msg)
+            if not skip_log:
+                _record_device_call_isolated(
+                    device, action, source=source,
+                    workflow_id=workflow_id, agent_id=agent_id,
+                    user_id=user_id, source_ip=source_ip,
+                    request_summary=request_summary, status="failed",
+                    latency_ms=0, error_message=msg,
+                )
+            return {"success": False, "status_code": None, "response_body": None,
+                    "error": msg, "latency_ms": 0}
+        request_summary = json.dumps(
+            {"url": url, "method": method, "auth": "sangfor_xdr"}, ensure_ascii=False
+        )
 
     def _do_request() -> httpx.Response:
         # 设备对接走本机网络直连，忽略代理环境变量

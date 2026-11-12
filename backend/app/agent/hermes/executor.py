@@ -199,6 +199,8 @@ class HermesAgentExecutor:
         self._malformed_tool_ids: set[str] = set()
         # 退化最终回答（重复计划叙述）的重试次数：每次执行最多重试一次
         self._degenerate_retries = 0
+        # 空最终回答（推理模型思维链耗尽 max_tokens 等）的重试次数：最多重试一次
+        self._empty_response_retries = 0
         # 上一次 LLM 调用的 finish_reason（"length" 表示输出被 max_tokens 截断）
         self._last_finish_reason: Optional[str] = None
         # Token 用量累积（每次 _call_llm_stream 后更新，供监控记录读取）
@@ -649,9 +651,46 @@ class HermesAgentExecutor:
                         self.messages[-1]["content"] = content
                         self._log("warning", "重试后仍为重复叙述，已按段落去重输出")
 
-                # 模型返回空内容（输出被长度上限截断、或仅输出 reasoning）时，
-                # 给出可读兜底提示，避免前端出现空白回答气泡
+                # 模型返回空内容（推理模型思维链耗尽 max_tokens 被截断，或仅输出
+                # reasoning 未输出正文）时：先注入纠正消息并临时提高输出上限重试
+                # 一次；仍为空则给出可读兜底提示，避免前端出现空白回答气泡
                 if not (content or "").strip():
+                    if self._empty_response_retries < 1:
+                        self._empty_response_retries += 1
+                        truncated = self._last_finish_reason == "length"
+                        self._log(
+                            "warning",
+                            "模型返回空内容（无 tool_calls，finish_reason=%s），"
+                            "注入纠正消息并提高输出上限后重试一次"
+                            % (self._last_finish_reason or "unknown"),
+                        )
+                        yield make_event("status", message="模型未产出正文，正在提高输出上限重新生成最终回答")
+                        # 临时提高输出上限（推理模型思维链计入输出 token，8K 级
+                        # 配额易被耗尽）；本次执行实例内生效，不影响配置持久化
+                        orig_max_tokens = getattr(self.llm, "max_tokens", None)
+                        if orig_max_tokens:
+                            try:
+                                # 翻倍但封顶 65536；原上限已高于 65536 时
+                                # 不得反向调低，否则重试更易再次被截断
+                                self.llm.max_tokens = max(
+                                    int(orig_max_tokens),
+                                    min(int(orig_max_tokens) * 2, 65536),
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        # role 用 system：LLM 可见（OpenAI 格式透传），但
+                        # persist_new_messages 只入库 user/assistant/tool，
+                        # 该内部纠正消息不会污染对话历史，也不会被历史回放
+                        self.messages.append({
+                            "role": "system",
+                            "content": (
+                                "你上一轮没有输出任何正文"
+                                + ("（思考过程耗尽了输出长度上限，回复被截断）" if truncated else "")
+                                + "。请直接给出最终回答：用简洁的中文汇总已完成的操作与关键结果，"
+                                "不要展开长篇思考，不要再调用工具。"
+                            ),
+                        })
+                        continue
                     content = "本轮未生成有效回复：请补充或拆分问题后重试。"
                     self.messages[-1]["content"] = content
                     self._log("warning", "模型返回空内容（无 tool_calls），已使用兜底提示")
@@ -1055,7 +1094,13 @@ class HermesAgentExecutor:
                             # ★ 提取 reasoning_content → thinking 事件
                             # GLM-5.2 / DeepSeek-R1 等推理模型将思维链放在此字段，
                             # 而非 content。LangChain 0.2.0 的 astream() 会丢弃它。
-                            reasoning = getattr(delta, "reasoning_content", None) or ""
+                            # GLM-5.3 部分网关/版本使用 reasoning 字段名，需同时兼容，
+                            # 否则推理阶段（可能长达数分钟）前端完全无输出。
+                            reasoning = (
+                                getattr(delta, "reasoning_content", None)
+                                or getattr(delta, "reasoning", None)
+                                or ""
+                            )
                             if reasoning:
                                 full_reasoning += reasoning
                                 self._thinking_chars += len(reasoning)

@@ -187,7 +187,7 @@ export default function DeviceOnboard() {
 
   // ===== 认证方式动态必填字段 =====
   const needUserPass = ['basic', 'qingteng'].includes(respForm.authType)
-  const needApiKey = ['api_key', 'bearer'].includes(respForm.authType)
+  const needApiKey = ['api_key', 'bearer', 'sangfor_xdr'].includes(respForm.authType)
 
   // ===== 步骤校验（按 key） =====
   const canNext = () => {
@@ -381,7 +381,14 @@ export default function DeviceOnboard() {
     <PageContainer>
       <PageHeader
         title="设备接入指引"
-        actions={<Button variant="ghost" onClick={() => navigate('/devices')}>返回设备列表</Button>}
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => navigate('/devices/builtin-templates')}>
+              <Boxes className="mr-1.5 h-4 w-4" /> 从内置设备库复用
+            </Button>
+            <Button variant="ghost" onClick={() => navigate('/devices')}>返回设备列表</Button>
+          </>
+        }
       />
       {/* 步骤条 */}
       <div className="mb-6 flex items-center">
@@ -934,10 +941,15 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
           {needApiKey && (
             <div>
               <label className={labelCls}>
-                {form.authType === 'bearer' ? 'Bearer Token' : 'API Key'} <span className="text-destructive">*</span>
+                {form.authType === 'bearer'
+                  ? 'Bearer Token'
+                  : form.authType === 'sangfor_xdr'
+                    ? '联动码（AK/SK）'
+                    : 'API Key'} <span className="text-destructive">*</span>
               </label>
               <input type="password" className={inputCls} value={form.apiKey}
-                onChange={(e) => onChange({ apiKey: e.target.value })} placeholder="认证凭据" />
+                onChange={(e) => onChange({ apiKey: e.target.value })}
+                placeholder={form.authType === 'sangfor_xdr' ? '粘贴深信服 XDR 联动码' : '认证凭据'} />
             </div>
           )}
         </div>

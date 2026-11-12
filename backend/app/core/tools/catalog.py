@@ -7,6 +7,7 @@ from app.core.tools.definitions import (
     LEGACY_DEPRECATED_TOOL_NAMES,
     REMOVED_BUILTIN_TOOLS,
     SECURITY_TOOLS,
+    XDR_ACTION_TOOLS,
     XDR_TOOLS,
 )
 from app.core.tools.types import (
@@ -41,7 +42,7 @@ class ToolCatalog:
     def builtin_definitions(cls) -> list[dict[str, Any]]:
         return [
             cls._with_source(t, TOOL_SOURCE_BUILTIN)
-            for t in HERMES_BUILTIN_TOOLS + XDR_TOOLS
+            for t in HERMES_BUILTIN_TOOLS + XDR_TOOLS + XDR_ACTION_TOOLS
             if t["name"] not in REMOVED_BUILTIN_TOOLS
         ]
 

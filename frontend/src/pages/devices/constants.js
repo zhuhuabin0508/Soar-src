@@ -95,6 +95,7 @@ export const DEVICE_AUTH_TYPES = [
   { value: 'oauth2', label: 'OAuth2' },
   { value: 'mtls', label: 'mTLS 双向证书' },
   { value: 'qingteng', label: '青藤签名 (JWT/Sign)' },
+  { value: 'sangfor_xdr', label: '深信服 XDR 联动码签名 (AK/SK)' },
 ]
 
 // 动作认证方式
@@ -104,6 +105,7 @@ export const ACTION_AUTH_TYPES = [
   { value: 'api_key', label: 'API Key' },
   { value: 'bearer', label: 'Bearer Token' },
   { value: 'qingteng', label: '青藤签名 (JWT/Sign)' },
+  { value: 'sangfor_xdr', label: '深信服 XDR 联动码签名 (AK/SK)' },
 ]
 
 // 参数类型支持
@@ -213,4 +215,161 @@ export function successRate(action) {
   const ok = action.success_count_24h ?? 0
   if (!total) return null
   return ok / total
+}
+
+// ============ 动作测试：模拟数据生成 ============
+// 依据 params_schema 的类型/格式/约束与 action.example_payload 生成一组测试参数：
+// 必填参数一定覆盖，可选参数优先取示例值/默认值，可直接发起接口可用性验证。
+const MOCK_IP = '192.0.2.10' // TEST-NET-1，保留给文档与测试使用
+const MOCK_CIDR = '192.0.2.0/24'
+const MOCK_DOMAIN = 'example.com'
+
+function mockUuid() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
+  } catch {
+    // 非安全上下文下降级为手工拼装
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+  })
+}
+
+// 起止时间类参数统一用「最近 7 天」，避免示例里的历史时间戳失效
+function isStartTimeParam(lname) {
+  return /(timestamp|time)$/.test(lname) && /^(start|begin|from)/.test(lname)
+}
+function isEndTimeParam(lname) {
+  return /(timestamp|time)$/.test(lname) && /^(end|to|finish|until)/.test(lname)
+}
+
+// 复杂类型在表单里以 JSON 文本展示
+function toInputValue(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return ''
+  }
+}
+
+function mockJsonValue(lname, kind) {
+  if (kind === 'object') return '{}'
+  if (/uuid|ids$|^ids$/.test(lname)) return JSON.stringify([mockUuid()])
+  if (/ips$|^ips$/.test(lname)) return JSON.stringify([MOCK_IP])
+  if (/(tags?|labels?)$/.test(lname)) return JSON.stringify(['test'])
+  return '[]'
+}
+
+function mockValue(spec, lname, type, nowSec) {
+  if (spec.default !== undefined && spec.default !== null && spec.default !== '') {
+    return toInputValue(spec.default)
+  }
+  if (type === 'boolean') return true
+  if (type === 'enum') {
+    return Array.isArray(spec.options) && spec.options.length ? spec.options[0] : ''
+  }
+  if (type === 'ip') return MOCK_IP
+  if (type === 'cidr') return MOCK_CIDR
+  if (type === 'port') return 443
+  if (type === 'domain') return MOCK_DOMAIN
+  if (type === 'duration') return '1小时'
+  if (type === 'array') return mockJsonValue(lname, 'array')
+  if (type === 'object' || type === 'json') return mockJsonValue(lname, 'object')
+  if (['integer', 'int', 'number'].includes(type)) {
+    if (lname === 'page') return 1
+    if (/(pagesize|size|limit|top|count)$/.test(lname)) return 5
+    if (/(timestamp|time)$/.test(lname)) return nowSec
+    const min = spec.min ?? spec.minimum
+    const num = Number(min)
+    return min !== undefined && min !== null && Number.isFinite(num) ? num : 1
+  }
+  // 字符串：按常见字段名给出符合格式约束的样例
+  if (lname === 'timefield') return 'lastTime'
+  if (/uuid/.test(lname)) return mockUuid()
+  if (/(^ip$|ip$|ips$|srcip|dstip|hostip)/.test(lname)) return MOCK_IP
+  if (/(domain|hostname)/.test(lname)) return MOCK_DOMAIN
+  if (/(comment|remark|note|reason)/.test(lname)) return '自动化测试'
+  if (/name$/.test(lname)) return 'auto-test'
+  return 'test'
+}
+
+/**
+ * 生成动作测试参数（用于「智能填充」）。
+ * @param {object} action 设备动作（含 params_schema / example_payload）
+ * @param {number} now 当前毫秒时间戳（便于测试注入）
+ */
+export function buildMockTestParams(action, now = Date.now()) {
+  const schema = safeParseJson(action?.params_schema, [])
+  const example = safeParseJson(action?.example_payload, null)
+  const exampleObj =
+    example && typeof example === 'object' && !Array.isArray(example) ? example : null
+  const nowSec = Math.floor(now / 1000)
+  const out = {}
+  ;(Array.isArray(schema) ? schema : []).forEach((spec) => {
+    const name = spec?.name
+    if (!name) return
+    const lname = String(name).toLowerCase()
+    const type = String(spec.type || 'string').toLowerCase()
+    if (isStartTimeParam(lname)) {
+      out[name] = nowSec - 7 * 86400
+      return
+    }
+    if (isEndTimeParam(lname)) {
+      out[name] = nowSec
+      return
+    }
+    const exVal = exampleObj?.[name]
+    if (exVal !== undefined && exVal !== null && exVal !== '') {
+      out[name] = toInputValue(exVal)
+      return
+    }
+    if (!spec.required) {
+      // 可选参数不塞无关条件，仅在声明了默认值时填充
+      if (spec.default !== undefined && spec.default !== null && spec.default !== '') {
+        out[name] = toInputValue(spec.default)
+      }
+      return
+    }
+    out[name] = mockValue(spec, lname, type, nowSec)
+  })
+  return out
+}
+
+/**
+ * 提交前按 schema 归一化参数类型：
+ * 表单输入都是字符串，这里把 integer/number/boolean/array/object 转成后端期望的类型，
+ * 并丢弃空值（后端按「未填写」处理）。
+ */
+export function normalizeTestParams(schema, params) {
+  const out = {}
+  ;(Array.isArray(schema) ? schema : []).forEach((spec) => {
+    const name = spec?.name
+    if (!name) return
+    const raw = params?.[name]
+    if (raw === undefined || raw === null || raw === '') return
+    const type = String(spec.type || '').toLowerCase()
+    if (['integer', 'int'].includes(type)) {
+      const num = Number(raw)
+      out[name] = Number.isFinite(num) ? Math.trunc(num) : raw
+    } else if (type === 'number') {
+      const num = Number(raw)
+      out[name] = Number.isFinite(num) ? num : raw
+    } else if (type === 'boolean') {
+      out[name] = typeof raw === 'boolean' ? raw : String(raw).toLowerCase() === 'true'
+    } else if (['array', 'object', 'json'].includes(type) && typeof raw === 'string') {
+      try {
+        out[name] = JSON.parse(raw)
+      } catch {
+        out[name] = raw
+      }
+    } else {
+      out[name] = raw
+    }
+  })
+  return out
 }
