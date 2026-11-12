@@ -8,8 +8,10 @@
    ``asset.source`` 为主命中来源（发现命中 ``"asset_discovery"``，
    否则清单命中 ``"asset_inventory"``），``discovery`` / ``inventory``
    键各携完整命中结果（可同时命中并列展示）；
-2. 威胁情报（``auto_intel``，默认开启）：复用工具 ``get_threat_intel``
-   （app.tools.context_tools），并发批量查（信号量限流防打爆情报源）；
+2. 威胁情报（``auto_intel``，默认开启）：统一经已注册工具
+   ``get_threat_互联网``（HTTP 工具，平台工具执行口径 load_tool_function →
+   run_http_tool）拉取真实情报，响应归一化为原有 threat 结构；并发批量查
+   （信号量限流防打爆情报源），工具缺失/禁用/调用失败按「情报查询失败」降级；
 3. 智能体研判（``auto_agent``，默认关闭）：调用 IP 风险研判智能体
    （``agent_client.analyze_ip_risk``，输出模式 ban_risk_analyze）。
    结果仅保留 risk_level / action / monitoring_advice / reasons。
@@ -24,7 +26,7 @@ v2 结构（多 IP，写入 ``Ticket.enrichment_data``，随工单全程流转�
           "roles": ["src_ip"],            # 该 IP 出现的角色（可同时 src+dst）
           "detail": "full",                # full / lite 存储分级（见 _entry_tier）
           "asset": {...同 v1 匹配结构...},
-          "threat": {...get_threat_intel 原样，lite 时仅保留精简键...},
+          "threat": {...get_threat_互联网 工具响应归一化，lite 时仅保留精简键...},
           "agent": {"pending": true}       # auto_agent 开启时的占位，
                                            # 由后台线程完成后回写
         }
@@ -63,6 +65,7 @@ v2 结构（多 IP，写入 ``Ticket.enrichment_data``，随工单全程流转�
 import asyncio
 import copy
 import ipaddress
+import json
 import logging
 import threading
 import time
@@ -505,20 +508,365 @@ def decorate_asset_source_labels(db, enrichment: dict | None) -> dict | None:
     return data
 
 
-def _query_threat_intel_batch(ips: list[str]) -> list[dict]:
-    """并发调用 get_threat_intel（信号量限流，单事件循环跑完全部 IP）。
+# 威胁情报统一走已注册的 HTTP 工具（工具管理中维护 URL/鉴权/超时）。
+# 工具重命名抗性：先按候选名精确匹配，未命中再按 get_threat 前缀找唯一的
+# enabled http 工具兜底——工具在管理页改名/微调后缀不再破坏安全上下文集成。
+TI_TOOL_NAME = "get_threat_互联网"
+_TI_TOOL_CANDIDATES = (
+    TI_TOOL_NAME,
+    "get_threat_互联网_知道创宇ip_analysis",
+    "get_threat_intel",
+)
+# 归一化结果中保留的原始响应长度上限（防止超长 payload 撑爆 enrichment_data）
+_TI_RAW_MAX_CHARS = 3000
 
-    单个 IP 查询失败返回 ``{"error": "..."}``，不影响其余 IP。
+_MALICIOUS_TRUE = {"true", "1", "yes", "malicious", "mal", "bad", "恶意", "恶意ip", "风险"}
+_MALICIOUS_FALSE = {"false", "0", "no", "clean", "safe", "安全", "正常", "白名单"}
+_SEVERITY_HIGH = {"high", "critical", "严重", "高", "高危"}
+_SEVERITY_MEDIUM = {"medium", "中", "中危", "moderate"}
+_MALICIOUS_TAG_HINTS = ("恶意", "malicious", "botnet", "c2", "zombie", "扫描", "scan", "攻击", "attack")
+
+
+def _ti_first(payload: dict, *keys, default=None):
+    """按优先级取第一个非空字段值。"""
+    for k in keys:
+        v = payload.get(k)
+        if v not in (None, "", [], {}):
+            return v
+    return default
+
+
+def _ti_coerce_malicious(v) -> Optional[bool]:
+    """bool/int/str 统一转恶意判定；无法识别返回 None。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in _MALICIOUS_TRUE:
+            return True
+        if s in _MALICIOUS_FALSE:
+            return False
+    return None
+
+
+def _ti_coerce_confidence(v) -> Optional[float]:
+    """置信度统一为 0~1 浮点；无法识别返回 None。"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        c = float(v)
+        return round(c / 100, 2) if c > 1 else round(c, 2)
+    if isinstance(v, str):
+        s = v.strip().rstrip("%")
+        try:
+            c = float(s)
+        except ValueError:
+            return None
+        return round(c / 100, 2) if c > 1 else round(c, 2)
+    return None
+
+
+def _ti_coerce_severity(v) -> Optional[str]:
+    """严重程度统一为 low/medium/high；无法识别返回 None。"""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        v = str(int(v))
+    if not isinstance(v, str):
+        return None
+    s = v.strip().lower()
+    if s in _SEVERITY_HIGH:
+        return "high"
+    if s in _SEVERITY_MEDIUM or s == "2":
+        return "medium"
+    if s in ("low", "低", "低危", "1", "3"):
+        return "low"
+    return None
+
+
+def _ti_coerce_str_list(v) -> list:
+    """标签/类型字段统一为字符串列表（支持 list 与分隔符字符串）。"""
+    if isinstance(v, (list, tuple)):
+        return [str(x).strip() for x in v if str(x).strip()]
+    if isinstance(v, str) and v.strip():
+        return [p.strip() for p in v.replace("，", ",").replace("、", ",").split(",") if p.strip()]
+    return []
+
+
+def _ti_geo(payload: dict) -> dict:
+    """地理位置统一为 geo_info 结构（兼容嵌套 geo/location 与平铺字段）。"""
+    geo = None
+    for k in ("geo_info", "geo", "location"):
+        v = payload.get(k)
+        if isinstance(v, dict):
+            geo = v
+            break
+    src = geo if geo is not None else payload
+    return {
+        "country": _ti_first(src, "country", "country_name", "国家"),
+        "region": _ti_first(src, "region", "province", "省份"),
+        "city": _ti_first(src, "city", "城市"),
+        "isp": _ti_first(src, "isp", "operator", "运营商"),
+        "latitude": _ti_first(src, "latitude", "lat"),
+        "longitude": _ti_first(src, "longitude", "lng", "lon"),
+    }
+
+
+_YUNAQ_ATTACK_TOOL_LABELS = [
+    ("attack_type", "攻击类型"),
+    ("recon", "侦察探测"),
+    ("free_attack_tool", "免费攻击工具"),
+    ("commercial_attack_tool", "商业化攻击工具"),
+    ("install_backdoor", "后门植入"),
+    ("c2_control", "C2 控制"),
+    ("webshell_control", "WebShell 控制"),
+    ("proxy_relate", "代理关联"),
+    ("tor_trace", "Tor 链路"),
+    ("tg_robot", "TG 机器人"),
+    ("ddos_attack", "DDoS 攻击"),
+]
+
+
+def _ti_list_items(v) -> list:
+    """攻击工具/时段等列表字段统一转字符串列表（元素可为字符串或对象）。"""
+    out = []
+    if not isinstance(v, (list, tuple)):
+        return out
+    for x in v:
+        if isinstance(x, str) and x.strip():
+            out.append(x.strip())
+        elif isinstance(x, dict):
+            item = next((str(x[k]) for k in ("name", "tool", "desc", "value", "date", "start") if x.get(k) not in (None, "", [])), None)
+            if item:
+                out.append(item)
+    return out
+
+
+def _yunaq_extract(ip: str, data: dict, ti_name: str = TI_TOOL_NAME) -> dict:
+    """gac.yunaq.com ``ip_analysis`` v3 响应结构专用映射。
+
+    实测结构（含 status/data 包装）：``data.basic.addr=[国家,省份,城市]``、
+    ``data.basic.isp/location``、``data.attack_tool``（攻击类型与攻击工具
+    分类明细）、``data.exploit``、``data.history_perform``（active_date/
+    attack_total/attack_hosts_cnt 等攻击统计）、``data.key_period``（攻击
+    活跃关键时段）、``data.device_info``、``data.whois``。
+    未命中威胁标签/攻击记录时判定为非恶意。
     """
-    from app.tools.context_tools import get_threat_intel
+    basic = data.get("basic") if isinstance(data.get("basic"), dict) else {}
+    addr = basic.get("addr") if isinstance(basic.get("addr"), list) else []
+    location = basic.get("location") if isinstance(basic.get("location"), dict) else {}
+    geo_info = {
+        "country": (addr[0] or None) if len(addr) > 0 else None,
+        "region": (addr[1] or None) if len(addr) > 1 else None,
+        "city": (addr[2] or None) if len(addr) > 2 else None,
+        "isp": basic.get("isp") or None,
+        "latitude": location.get("lat") or None,
+        "longitude": location.get("lon") or None,
+    }
+
+    attack_tool = data.get("attack_tool") if isinstance(data.get("attack_tool"), dict) else {}
+    threat_types = _ti_list_items(attack_tool.get("attack_type"))
+    attack_patterns = []
+    for key, label in _YUNAQ_ATTACK_TOOL_LABELS[1:]:
+        for item in _ti_list_items(attack_tool.get(key)):
+            attack_patterns.append(f"{label}：{item}")
+    if isinstance(data.get("exploit"), str) and data.get("exploit").strip():
+        attack_patterns.append(f"漏洞利用：{data['exploit'].strip()}")
+
+    history = data.get("history_perform") if isinstance(data.get("history_perform"), dict) else {}
+    attack_stats = {
+        "total": history.get("attack_total") if isinstance(history.get("attack_total"), int) else 0,
+        "hosts_cnt": history.get("attack_hosts_cnt") if isinstance(history.get("attack_hosts_cnt"), int) else 0,
+    }
+    last_seen = history.get("active_date") or None
+    key_period = _ti_list_items(data.get("key_period"))
+    first_seen = key_period[0] if key_period else None
+
+    device = data.get("device_info") if isinstance(data.get("device_info"), dict) else {}
+    ports = device.get("ports") if isinstance(device.get("ports"), dict) else {}
+    device_info = {
+        "device_type": device.get("device_type") or None,
+        "os": device.get("os") or None,
+        "host_name": device.get("host_name") or None,
+        "ports": [str(p) for p in ports.keys()] if ports else [],
+    }
+    whois = data.get("whois") if isinstance(data.get("whois"), dict) else {}
+    org = whois.get("organization") if isinstance(whois.get("organization"), dict) else {}
+    org_info = {
+        "netname": whois.get("netname") or None,
+        "org_name": org.get("org_name") or whois.get("descr") or None,
+    }
+
+    tags = _ti_coerce_str_list(data.get("tags"))
+    is_malicious = bool(tags or attack_stats["total"] or attack_patterns or threat_types)
+    severity = "high" if is_malicious else "low"
+    conf = 0.85 if is_malicious else 0.0
+
+    desc_parts = []
+    if is_malicious:
+        if tags:
+            desc_parts.append(f"被标记「{'、'.join(tags)}」")
+        if attack_stats["total"]:
+            desc_parts.append(f"历史攻击 {attack_stats['total']} 次（涉及 {attack_stats['hosts_cnt']} 台主机）")
+        if last_seen:
+            desc_parts.append(f"最近活跃 {last_seen}")
+        description = f"该 IP {ip} 经 {ti_name} 查询命中威胁情报：{'，'.join(desc_parts)}。建议立即封禁并排查内网主机与该地址的通信记录。"
+    else:
+        description = f"该 IP {ip} 经 {ti_name} 查询未命中威胁标签与攻击记录，判定为非恶意。"
+
+    return {
+        "ip": ip,
+        "is_malicious": is_malicious,
+        "tags": tags,
+        "confidence": conf,
+        "threat_types": threat_types,
+        "severity": severity,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "source": ti_name,
+        "description": description,
+        "geo_info": geo_info,
+        "related_malware": [],
+        "attack_patterns": attack_patterns,
+        "attack_stats": attack_stats,
+        "device_info": device_info,
+        "org_info": org_info,
+    }
+
+
+def _normalize_tool_threat(ip: str, resp: object, ti_name: str = TI_TOOL_NAME) -> dict:
+    """将威胁情报 HTTP 工具原始响应归一化为安全上下文威胁情报结构。
+
+    优先按 gac.yunaq.com ip_analysis 实际结构映射（地理归属/威胁类型/
+    攻击链/活跃时间/攻击统计/设备特征/归属组织），其他结构走通用映射；
+    输出保持原有 threat 键结构不变（前端展示与 lite 精简零改动），
+    原始响应保留在 ``raw``，未映射字段可供智能体研判兜底。
+
+    Raises:
+        ValueError: 工具返回错误 / 非对象响应（调用方按单 IP 失败处理）。
+    """
+    if not isinstance(resp, dict):
+        raise ValueError(f"工具返回非对象结果: {type(resp).__name__}")
+    if resp.get("error"):
+        raise ValueError(f"工具返回错误: {resp.get('error')}")
+    # 兼容常见外层包装：{"code"/"status": ..., "data": {...}}
+    payload = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+
+    if any(k in payload for k in ("basic", "attack_tool", "history_perform")):
+        result = _yunaq_extract(ip, payload, ti_name=ti_name)
+    else:
+        is_malicious = _ti_coerce_malicious(_ti_first(
+            payload, "is_malicious", "malicious", "is_bad", "is_bad_ip", "judgment", "judge", "is_danger",
+        ))
+        tags = _ti_coerce_str_list(_ti_first(payload, "tags", "tag", "labels", "威胁标签"))
+        if is_malicious is None:
+            # 未显式给出判定时，从标签推断（含恶意类关键词视为恶意）
+            is_malicious = any(any(h in t.lower() for h in _MALICIOUS_TAG_HINTS) for t in tags)
+        confidence = _ti_coerce_confidence(_ti_first(
+            payload, "confidence", "confidence_score", "score", "置信度",
+        ))
+        result = {
+            "ip": ip,
+            "is_malicious": is_malicious,
+            "tags": tags,
+            "confidence": confidence if confidence is not None else (0.85 if is_malicious else 0.0),
+            "threat_types": _ti_coerce_str_list(_ti_first(
+                payload, "threat_types", "types", "attack_types", "威胁类型",
+            )) or tags,
+            "severity": _ti_coerce_severity(_ti_first(
+                payload, "severity", "risk_level", "threat_level", "level", "严重程度",
+            )) or ("high" if is_malicious else "low"),
+            "first_seen": _ti_first(payload, "first_seen", "first_seen_time", "firsttime", "首次发现"),
+            "last_seen": _ti_first(payload, "last_seen", "last_seen_time", "updatetime", "update_time", "最后发现"),
+            "source": _ti_first(payload, "source", "情报来源") or ti_name,
+            "geo_info": _ti_geo(payload),
+            "related_malware": _ti_coerce_str_list(_ti_first(
+                payload, "related_malware", "malware", "malware_family", "关联恶意软件",
+            )),
+            "attack_patterns": _ti_coerce_str_list(_ti_first(
+                payload, "attack_patterns", "attack_methods", "攻击模式",
+            )),
+            "description": _ti_first(
+                payload, "description", "summary", "remark", "judge_desc", "desc", "描述",
+            ) or (
+                f"该 IP {ip} 经 {ti_name} 工具查询"
+                f"{'判定为恶意' if is_malicious else '未判定为恶意'}"
+                + (f"，置信度 {confidence}" if confidence is not None else "") + "。"
+            ),
+        }
+
+    try:
+        raw_text = json.dumps(resp, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        raw_text = str(resp)
+    if len(raw_text) > _TI_RAW_MAX_CHARS:
+        raw_text = raw_text[:_TI_RAW_MAX_CHARS] + "...(truncated)"
+    result["raw"] = raw_text
+    return result
+
+
+def _load_ti_tool_run():
+    """加载已注册的威胁情报工具（平台统一工具执行口径）。
+
+    经 load_tool_function → run_http_tool 执行：工具管理中调整 URL/鉴权/
+    超时等配置后，工单安全上下文的情报拉取即时跟随，无需改代码。
+    查找顺序：候选名精确匹配 → ``get_threat`` 前缀的 enabled http 工具
+    兜底（工具重命名后集成不中断）。
+    工具缺失/禁用/加载失败返回 ``(None, None)``，条目按「情报查询失败」
+    降级，不阻断工单发起与其余 IP 的查询。
+
+    Returns:
+        ``(tool_run, tool_name)`` 元组；tool_run 为可调用对象。
+    """
+    from app.core.tool_runner import load_tool_function
+    from app.database import SessionLocal
+    from app.models.tool import Tool
+
+    db = SessionLocal()
+    try:
+        tool = db.query(Tool).filter(
+            Tool.name.in_(_TI_TOOL_CANDIDATES), Tool.enabled.is_(True)
+        ).first()
+        if tool is None:
+            tool = db.query(Tool).filter(
+                Tool.name.like("get_threat%"),
+                Tool.tool_type == "http",
+                Tool.enabled.is_(True),
+            ).order_by(Tool.id).first()
+        if tool is None:
+            logger.warning(
+                "威胁情报工具未注册或已禁用（候选: %s；或以 get_threat 为前缀的 http 工具），安全上下文情报查询不可用",
+                "、".join(_TI_TOOL_CANDIDATES),
+            )
+            return None, None
+        return load_tool_function(tool), tool.name
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("威胁情报工具加载失败: %s", exc)
+        return None, None
+    finally:
+        db.close()
+
+
+def _query_threat_intel_batch(ips: list[str]) -> list[dict]:
+    """并发执行威胁情报 HTTP 工具（信号量限流，单事件循环跑完全部 IP）。
+
+    按工具入参规范（ip 必填，路径参数由 HTTP 工具 runner 渲染）逐 IP 调用，
+    响应经 _normalize_tool_threat 归一化。单个 IP 查询失败返回
+    ``{"error": "..."}``，不影响其余 IP。
+    """
+    tool_run, ti_tool_name = _load_ti_tool_run()
+    ti_tool_name = ti_tool_name or TI_TOOL_NAME
 
     async def _gather():
+        if tool_run is None:
+            return [{"error": f"威胁情报工具 {ti_tool_name} 不可用", "ip": ip} for ip in ips]
         sem = asyncio.Semaphore(INTEL_CONCURRENCY)
 
         async def _one(ip: str) -> dict:
             async with sem:
                 try:
-                    return await get_threat_intel(ip)
+                    resp = await tool_run(ip=ip)
+                    return _normalize_tool_threat(ip, resp, ti_name=ti_tool_name)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("威胁情报查询失败, ip=%s: %s", ip, exc)
                     return {"error": f"查询失败: {exc}", "ip": ip}

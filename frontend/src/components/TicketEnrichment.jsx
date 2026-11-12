@@ -260,6 +260,10 @@ function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stack
   const t = entry.threat && typeof entry.threat === 'object' ? entry.threat : null
   const geo = t?.geo_info || {}
   const geoText = [geo.country, geo.region, geo.city, geo.isp].filter(Boolean).join(' / ')
+  // 威胁情报扩展字段（get_threat_互联网 归一化新增；旧数据缺键时降级为 --）
+  const d = t?.device_info || {}
+  const deviceText = [d.device_type, d.os, d.host_name, d.ports?.length ? `开放端口：${d.ports.join('、')}` : null].filter(Boolean).join(' / ')
+  const orgText = [t?.org_info?.org_name, t?.org_info?.netname].filter(Boolean).join(' / ')
   const na = <span className="text-muted-foreground">--</span>
   const fmtTime = (v) => (v ? String(v).replace('T', ' ') : na)
   const assetMatch = entry.asset || {}
@@ -349,6 +353,11 @@ function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stack
               <EnrichRow label="关联恶意软件：">{t.related_malware?.length ? t.related_malware.join('、') : na}</EnrichRow>
               <EnrichRow label="情报来源：">{t.source || na}</EnrichRow>
               <EnrichRow label="攻击模式：">{t.attack_patterns?.length ? t.attack_patterns.join('；') : na}</EnrichRow>
+              <EnrichRow label="攻击记录：">
+                {t.attack_stats?.total ? `${t.attack_stats.total} 次 / 涉及 ${t.attack_stats.hosts_cnt ?? 0} 台主机` : na}
+              </EnrichRow>
+              <EnrichRow label="设备特征：">{deviceText || na}</EnrichRow>
+              <EnrichRow label="归属组织：">{orgText || na}</EnrichRow>
             </div>
             <div className="mt-2 flex min-w-0 items-start gap-2 text-[13px]">
               <span className="shrink-0 text-muted-foreground">情报描述：</span>
