@@ -1862,6 +1862,8 @@ def ticket_monitor_stats(
 
     数据均来自真实工单（排除归档），按大屏七个分区一次返回；大屏按「轻量 → 全景」分层轮询：
     ``light=1`` 只算 KPI + 最新工单（高频），全景（趋势/分布/团队/平台/封禁/流转/下钻集）低频刷新。
+    聚合在 ``ticket_monitor_payload`` 内按参数 TTL 缓存；过期后轮询先返回上一份快照，重算在
+    后台线程用独立会话进行，避免大屏高频请求把 uvicorn 进程 CPU 打满。
     ``include_drill=0`` 不下发下钻工单集（默认轮询用），大屏打开下钻弹窗时再按需请求。
     需要独立权限 ticket_monitor:view（叠加 router 级 ticket:view）。
     提交团队排名 ``team_stats``：按各流程模板首节点「提交团队」字段聚合（按 label 定位，
@@ -1891,17 +1893,163 @@ def ticket_monitor_stats(
     )
 
 
-# —— 大屏全景聚合 TTL 缓存 + single-flight（与 _blacklist_* 同款模式）——
-# 全景聚合每次全量加载工单/流转记录并逐单 SLA 评估，CPU 密集且持有 GIL；大屏
-# 多端（内部路由 + 开放 API）高频轮询叠加时单进程即被打满，拖慢全站数据加载。
-# 相同参数（flow_id / include_drill / drill_limit）的并发请求共用首个请求的重算
-# 结果，TTL 内直接命中缓存；light 模式本身走 SQL 聚合开销小，不缓存。
-# TTL 取 15s 对齐大屏默认刷新间隔；缓存同时保存预渲染 JSON（全景响应约 2MB，
-# jsonable_encoder 逐次编码约 0.2s，直接回放缓存字符串近乎零开销）。
+# —— 工单监控聚合：TTL + stale-while-revalidate + 按键 single-flight + 预渲染 JSON ——
+# 全景每次全量加载工单/流转并逐单 SLA 评估，CPU 密集且持有 GIL；多块大屏与开放
+# API 同进程轮询会叠加打满 CPU。TTL 内直接命中；过期先回上一份快照，重算放后台
+# 线程（独立 DB 会话），请求线程不扫表。冷启动无快照时本次请求同步算一次。
+# 全景缓存预渲染 JSON（约 2MB，避免逐次 jsonable_encoder）。轻量与全景分键互不等锁。
 _MONITOR_PAYLOAD_CACHE_TTL_SECONDS = 15.0
+_MONITOR_REFRESH_BACKOFF_SECONDS = 30.0
 _monitor_payload_cache: dict[tuple, dict] = {}
+_monitor_refresh_not_before: dict[tuple, float] = {}
 _monitor_payload_cache_lock = threading.Lock()
-_monitor_payload_fetch_lock = threading.Lock()
+_monitor_payload_flight_locks: dict[tuple, threading.Lock] = {}
+_monitor_payload_flight_guard = threading.Lock()
+
+
+def _monitor_payload_cache_key(
+    flow_id: int | None, light: bool, include_drill: bool, drill_limit: int,
+) -> tuple:
+    if light:
+        return ("light",)
+    return ("full", flow_id, bool(include_drill), int(drill_limit))
+
+
+def _monitor_payload_flight_lock(key: tuple) -> threading.Lock:
+    with _monitor_payload_flight_guard:
+        lock = _monitor_payload_flight_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _monitor_payload_flight_locks[key] = lock
+        return lock
+
+
+def _monitor_payload_cache_get(key: tuple):
+    now_ts = time.monotonic()
+    with _monitor_payload_cache_lock:
+        hit = _monitor_payload_cache.get(key)
+        if hit and now_ts - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
+            return hit["payload"]
+    return None
+
+
+def _monitor_payload_cache_peek(key: tuple):
+    with _monitor_payload_cache_lock:
+        hit = _monitor_payload_cache.get(key)
+        return hit["payload"] if hit else None
+
+
+def _open_monitor_refresh_session() -> Session:
+    from app.database import SessionLocal
+    return SessionLocal()
+
+
+def _close_monitor_refresh_session(db: Session | None) -> None:
+    if db is None:
+        return
+    try:
+        db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("工单监控聚合后台刷新关闭会话失败: %s", exc)
+
+
+def _monitor_refresh_in_backoff(key: tuple) -> bool:
+    now_ts = time.monotonic()
+    with _monitor_payload_cache_lock:
+        return now_ts < _monitor_refresh_not_before.get(key, 0.0)
+
+
+def _mark_monitor_refresh_backoff(key: tuple) -> None:
+    with _monitor_payload_cache_lock:
+        _monitor_refresh_not_before[key] = time.monotonic() + _MONITOR_REFRESH_BACKOFF_SECONDS
+
+
+def _clear_monitor_refresh_backoff(key: tuple) -> None:
+    with _monitor_payload_cache_lock:
+        _monitor_refresh_not_before.pop(key, None)
+
+
+def _purge_stale_monitor_cache_entries(now_ts: float) -> None:
+    with _monitor_payload_cache_lock:
+        for k in [
+            k for k, v in _monitor_payload_cache.items()
+            if now_ts - v["at"] >= _MONITOR_PAYLOAD_CACHE_TTL_SECONDS * 6
+        ]:
+            _monitor_payload_cache.pop(k, None)
+
+
+def _store_monitor_payload(key: tuple, payload: dict, *, light: bool) -> None:
+    now_ts = time.monotonic()
+    entry: dict = {"at": now_ts, "payload": payload}
+    if not light:
+        entry["json"] = json.dumps(payload, ensure_ascii=False)
+    with _monitor_payload_cache_lock:
+        _purge_stale_monitor_cache_entries(now_ts)
+        _monitor_payload_cache[key] = entry
+
+
+def _compute_ticket_monitor_payload(
+    db: Session,
+    flow_id: int | None,
+    light: bool,
+    include_drill: bool,
+    drill_limit: int,
+) -> dict:
+    now = beijing_now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if light:
+        return _monitor_light(db, now, today_start)
+    return _ticket_monitor_payload_full(db, flow_id, include_drill, drill_limit)
+
+
+def _refresh_monitor_payload(
+    db: Session,
+    key: tuple,
+    flow_id: int | None,
+    light: bool,
+    include_drill: bool,
+    drill_limit: int,
+) -> dict:
+    payload = _compute_ticket_monitor_payload(
+        db, flow_id, light, include_drill, drill_limit,
+    )
+    _store_monitor_payload(key, payload, light=light)
+    return payload
+
+
+def _schedule_monitor_refresh(
+    key: tuple,
+    flow_id: int | None,
+    light: bool,
+    include_drill: bool,
+    drill_limit: int,
+) -> None:
+    if _monitor_refresh_in_backoff(key):
+        return
+    lock = _monitor_payload_flight_lock(key)
+    if not lock.acquire(blocking=False):
+        return
+
+    def _run() -> None:
+        db = None
+        try:
+            if _monitor_payload_cache_get(key) is not None:
+                return
+            db = _open_monitor_refresh_session()
+            _refresh_monitor_payload(db, key, flow_id, light, include_drill, drill_limit)
+            _clear_monitor_refresh_backoff(key)
+        except Exception as exc:  # noqa: BLE001
+            _mark_monitor_refresh_backoff(key)
+            logger.warning("工单监控聚合后台刷新失败（继续返回上一份快照）: %s", exc)
+        finally:
+            _close_monitor_refresh_session(db)
+            lock.release()
+
+    try:
+        threading.Thread(target=_run, name="ticket-monitor-refresh", daemon=True).start()
+    except Exception:
+        lock.release()
+        raise
 
 
 def ticket_monitor_payload(
@@ -1915,42 +2063,25 @@ def ticket_monitor_payload(
 
     响应结构：KPI / 趋势 / 分布 / 团队排名 / 来源平台 / 封禁IP / 流转节点 /
     最新工单 / 下钻集，与 ``GET /tickets/monitor`` 完全一致。
-    全景结果按 (flow_id, include_drill, drill_limit) 缓存 15 秒，并发请求
-    single-flight 合并重算；light 模式直接走 SQL 聚合，不经过缓存。
+    轻量/全景按参数分键缓存 15s；过期返回上一份并由后台线程刷新；冷启动同步重算。
     """
-    now = beijing_now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    # 轻量模式：只算高频区（SQL 聚合 KPI + 最新工单），不加载全量工单/流转记录
-    if light:
-        return _monitor_light(db, now, today_start)
+    key = _monitor_payload_cache_key(flow_id, light, include_drill, drill_limit)
+    cached = _monitor_payload_cache_get(key)
+    if cached is not None:
+        return cached
 
-    cache_key = (flow_id, bool(include_drill), int(drill_limit))
-    now_ts = time.monotonic()
-    with _monitor_payload_cache_lock:
-        hit = _monitor_payload_cache.get(cache_key)
-        if hit and now_ts - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
-            return hit["payload"]
+    stale = _monitor_payload_cache_peek(key)
+    if stale is not None:
+        _schedule_monitor_refresh(key, flow_id, light, include_drill, drill_limit)
+        return stale
 
-    with _monitor_payload_fetch_lock:
-        # 等锁期间同参请求可能已完成重算并刷新缓存：double-check 后直接复用
-        now_ts = time.monotonic()
-        with _monitor_payload_cache_lock:
-            hit = _monitor_payload_cache.get(cache_key)
-            if hit and now_ts - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
-                return hit["payload"]
-
-        payload = _ticket_monitor_payload_full(db, flow_id, include_drill, drill_limit)
-        # single-flight 内完成渲染，等锁的请求直接回放预渲染 JSON
-        rendered = json.dumps(payload, ensure_ascii=False)
-        with _monitor_payload_cache_lock:
-            # 顺带清理长期无人访问的过期项，防止 flow_id/drill_limit 参数组合膨胀
-            for k in [
-                k for k, v in _monitor_payload_cache.items()
-                if now_ts - v["at"] >= _MONITOR_PAYLOAD_CACHE_TTL_SECONDS * 6
-            ]:
-                _monitor_payload_cache.pop(k, None)
-            _monitor_payload_cache[cache_key] = {"at": now_ts, "payload": payload, "json": rendered}
-        return payload
+    with _monitor_payload_flight_lock(key):
+        cached = _monitor_payload_cache_get(key)
+        if cached is not None:
+            return cached
+        return _refresh_monitor_payload(
+            db, key, flow_id, light, include_drill, drill_limit,
+        )
 
 
 def ticket_monitor_payload_json(
@@ -1959,23 +2090,32 @@ def ticket_monitor_payload_json(
     include_drill: bool = True,
     drill_limit: int = 2000,
 ) -> str:
-    """大屏全景聚合的预渲染 JSON（与 ``ticket_monitor_payload`` 同一份缓存）。
+    """大屏全景预渲染 JSON（与 ``ticket_monitor_payload`` 同一份 TTL 缓存）。
 
-    大响应（约 2MB）逐次走 jsonable_encoder 编码开销显著；本函数返回缓存中的
-    预渲染字符串供路由直接以 ``Response`` 回发，跳过逐次编码。缓存未命中时
-    触发重算并渲染（渲染已在 single-flight 内完成，此处必有结果）。
+    返回值仅为 ``data`` 段 JSON 文本（非 HTTP 包装层）。开放 API
+    ``get_ticket_monitor`` 全景模式复用本函数，由 ``open_api`` 路由
+    用字符串拼接外层 ``code/resource`` 回发，避免对约 2MB dict 再 dumps。
+    与内部 ``GET /tickets/monitor`` 全景 ``Response(content=...)`` 同源。
     """
-    cache_key = (flow_id, bool(include_drill), int(drill_limit))
+    key = _monitor_payload_cache_key(flow_id, False, include_drill, drill_limit)
+    now_ts = time.monotonic()
+    stale_json: str | None = None
     with _monitor_payload_cache_lock:
-        hit = _monitor_payload_cache.get(cache_key)
-        if hit and time.monotonic() - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
+        hit = _monitor_payload_cache.get(key)
+        if hit and "json" in hit:
+            if now_ts - hit["at"] < _MONITOR_PAYLOAD_CACHE_TTL_SECONDS:
+                return hit["json"]
+            stale_json = hit["json"]
+    if stale_json is not None:
+        _schedule_monitor_refresh(key, flow_id, False, include_drill, drill_limit)
+        return stale_json
+
+    ticket_monitor_payload(db, flow_id=flow_id, include_drill=include_drill, drill_limit=drill_limit)
+    with _monitor_payload_cache_lock:
+        hit = _monitor_payload_cache.get(key) or {}
+        if "json" in hit:
             return hit["json"]
-    payload = ticket_monitor_payload(db, flow_id=flow_id, include_drill=include_drill, drill_limit=drill_limit)
-    with _monitor_payload_cache_lock:
-        hit = _monitor_payload_cache.get(cache_key) or {}
-        if "json" not in hit:
-            hit["json"] = json.dumps(payload, ensure_ascii=False)
-        return hit["json"]
+    return json.dumps(hit.get("payload") or {}, ensure_ascii=False)
 
 
 def _ticket_monitor_payload_full(
