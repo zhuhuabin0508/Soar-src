@@ -706,6 +706,12 @@ def run_lightweight_migrations(engine) -> None:
             "workflows",
             {"env_vars": "JSON"},
         )
+        # deliverables 表新增 content_hash 列（上传判重：同目录同内容自动跳过）
+        ensure_columns(
+            engine,
+            "deliverables",
+            {"content_hash": "VARCHAR(64)"},
+        )
         # users 表新增 role_id 列（关联 roles 表）
         ensure_columns(
             engine,

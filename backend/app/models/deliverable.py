@@ -68,6 +68,7 @@ class Deliverable(Base):
     - ``stored_name``：落盘文件名（uuid + 扩展名，避免重名/路径穿越）。
     - ``file_size``：文件字节数。
     - ``file_ext``：小写扩展名（白名单校验后的值）。
+    - ``content_hash``：文件内容 SHA-256（上传判重：同目录同内容自动跳过）。
     """
 
     __tablename__ = "deliverables"
@@ -81,6 +82,7 @@ class Deliverable(Base):
     stored_name = Column(String(100), nullable=False)
     file_size = Column(Integer, nullable=False, default=0)
     file_ext = Column(String(10), nullable=False)
+    content_hash = Column(String(64), nullable=True)
     created_by = Column(Integer, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

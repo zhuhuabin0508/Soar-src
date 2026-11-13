@@ -683,7 +683,9 @@ export default function DeliverableManagement() {
 
     setUploading(true)
     let successCount = 0
+    let duplicateCount = 0
     let failCount = 0
+    const duplicates = []
     for (const item of pending) {
       // 标记为 uploading
       setUploadModal((prev) => ({
@@ -693,7 +695,7 @@ export default function DeliverableManagement() {
         ),
       }))
       try {
-        await deliverablesApi.upload(activeCatId, item.file, {
+        const res = await deliverablesApi.upload(activeCatId, item.file, {
           name: item.file.name.replace(/\.[^.]+$/, ''),
           version: uploadModal.version.trim(),
           description: uploadModal.description.trim(),
@@ -701,6 +703,26 @@ export default function DeliverableManagement() {
             ? item.relativePath
             : '',
         })
+        if (res?.duplicate) {
+          // 同目录内容完全一致：后端不落盘，直接标记重复跳过
+          duplicateCount++
+          const existingName = res.existing_name || '同目录已有材料'
+          duplicates.push({ filename: item.file.name, existingName })
+          setUploadModal((prev) => ({
+            ...prev,
+            files: prev.files.map((f) =>
+              f === item
+                ? {
+                    ...f,
+                    status: 'duplicate',
+                    existingName,
+                    error: `与目录中已有材料「${existingName}」内容相同，已自动跳过`,
+                  }
+                : f
+            ),
+          }))
+          continue
+        }
         successCount++
         setUploadModal((prev) => ({
           ...prev,
@@ -721,13 +743,28 @@ export default function DeliverableManagement() {
     }
 
     setUploading(false)
-    if (failCount === 0) {
+    // 重复文件说明：列出文件名 + 目录中已存在的材料名，最多展示 5 个
+    const dupDetail = duplicates.length
+      ? duplicates.slice(0, 5)
+        .map((d) => `${d.filename}（已有「${d.existingName}」）`)
+        .join('、') + (duplicates.length > 5 ? ` 等 ${duplicates.length} 个` : '')
+      : ''
+    if (successCount === 0 && duplicateCount === 0) {
+      toast.error(`全部 ${failCount} 个文件上传失败`)
+    } else if (failCount === 0 && duplicateCount === 0) {
       toast.success(`全部 ${successCount} 个文件上传成功`)
       setUploadModal(null)
-    } else if (successCount === 0) {
-      toast.error(`全部 ${failCount} 个文件上传失败`)
+    } else if (failCount === 0) {
+      toast.warning(
+        `已自动跳过 ${duplicateCount} 个重复文件${successCount ? `，成功上传 ${successCount} 个` : ''}。重复文件：${dupDetail}`,
+        { title: '上传完成：发现重复文件', duration: 8000 }
+      )
     } else {
-      toast.warning(`上传完成：成功 ${successCount} 个，失败 ${failCount} 个`)
+      toast.warning(
+        `成功 ${successCount} 个，重复跳过 ${duplicateCount} 个，失败 ${failCount} 个` +
+        (dupDetail ? `。重复文件：${dupDetail}` : ''),
+        { title: '上传完成', duration: 8000 }
+      )
     }
     await loadDeliverables()
     await loadCategories()
@@ -2639,8 +2676,8 @@ export default function DeliverableManagement() {
                 disabled={uploading || (uploadModal.files || []).every((f) => f.status !== 'pending')}
                 onClick={handleUpload}
               >
-                上传{(uploadModal.files || []).filter((f) => f.status !== 'success').length > 0
-                  ? ` (${(uploadModal.files || []).filter((f) => f.status !== 'success').length})`
+                上传{(uploadModal.files || []).filter((f) => f.status === 'pending').length > 0
+                  ? ` (${(uploadModal.files || []).filter((f) => f.status === 'pending').length})`
                   : ''}
               </Button>
             </>
@@ -2748,21 +2785,28 @@ export default function DeliverableManagement() {
 
           {/* 待上传列表 */}
           {(uploadModal.files || []).length > 0 && (
-            <div className="mt-3 max-h-44 overflow-y-auto rounded-md border border-border">
+            <div className="mt-3 max-h-56 overflow-y-auto rounded-md border border-border">
               {(uploadModal.files || []).map((item, idx) => (
                 <div
                   key={idx}
-                  className="relative flex items-center gap-2 border-b border-border px-3 py-1.5 last:border-0"
+                  className={`relative flex items-center gap-2 border-b border-border px-3 py-1.5 last:border-0 ${item.status === 'duplicate' ? 'bg-amber-500/[0.06]' : ''}`}
                 >
                   <FileIcon ext={(item.file.name.split('.').pop() || '').toLowerCase()} className="h-3.5 w-3.5" />
-                  <span
-                    className="min-w-0 flex-1 truncate text-xs text-foreground"
-                    title={item.relativePath || item.file.name}
-                  >
-                    {(item.relativePath && item.relativePath.includes('/'))
-                      ? item.relativePath.replace(/\//g, ' / ')
-                      : item.file.name}
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className="truncate text-xs text-foreground"
+                      title={item.relativePath || item.file.name}
+                    >
+                      {(item.relativePath && item.relativePath.includes('/'))
+                        ? item.relativePath.replace(/\//g, ' / ')
+                        : item.file.name}
+                    </div>
+                    {item.status === 'duplicate' && (
+                      <div className="mt-0.5 truncate text-[11px] text-amber-600" title={item.error}>
+                        已跳过：与目录中已有材料「{item.existingName || '同目录已有材料'}」内容相同
+                      </div>
+                    )}
+                  </div>
                   <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
                     {fmtSize(item.file.size)}
                   </span>
@@ -2776,6 +2820,14 @@ export default function DeliverableManagement() {
                   {item.status === 'failed' && (
                     <span className="shrink-0" title={item.error}>
                       <XCircle className="h-3.5 w-3.5 text-red-500" />
+                    </span>
+                  )}
+                  {item.status === 'duplicate' && (
+                    <span
+                      className="shrink-0 whitespace-nowrap rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700"
+                      title={item.error}
+                    >
+                      重复已跳过
                     </span>
                   )}
                   {/* 移除按钮（上传中禁用） */}

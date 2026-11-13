@@ -10,6 +10,7 @@
 - 批量下载打包为 zip，文件名冲突自动追加序号；
 - 权限：view 可查看/下载，edit 可上传/编辑，delete 可删除。
 """
+import hashlib
 import io
 import logging
 import os
@@ -19,7 +20,7 @@ from datetime import datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -81,6 +82,53 @@ def _stored_path(stored_name: str) -> str:
     if not stored_name or "/" in stored_name or "\\" in stored_name or ".." in stored_name:
         raise HTTPException(status_code=400, detail="非法文件名")
     return os.path.join(UPLOAD_DIR, stored_name)
+
+
+def _find_duplicate(
+    db: Session, category_id: int, content: bytes, content_hash: str
+) -> Deliverable | None:
+    """同目录下按文件内容判重，命中返回已有材料记录。
+
+    口径：仅同一目录内、文件内容完全相同（SHA-256）才算重复；
+    同名的不同内容（新版本）不算重复。存量记录可能没有 content_hash，
+    此时只对同大小候选比对磁盘内容，命中后回填哈希，保证老数据也能识别。
+    """
+    hit = (
+        db.query(Deliverable)
+        .filter(
+            Deliverable.category_id == category_id,
+            Deliverable.content_hash == content_hash,
+        )
+        .order_by(Deliverable.id.asc())
+        .first()
+    )
+    if hit is not None:
+        return hit
+
+    candidates = (
+        db.query(Deliverable)
+        .filter(
+            Deliverable.category_id == category_id,
+            Deliverable.content_hash.is_(None),
+            Deliverable.file_size == len(content),
+        )
+        .order_by(Deliverable.id.asc())
+        .all()
+    )
+    for cand in candidates:
+        try:
+            hasher = hashlib.sha256()
+            with open(_stored_path(cand.stored_name), "rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+        except (OSError, HTTPException) as exc:
+            logger.warning("判重时读取存量文件失败: %s (%s)", cand.stored_name, exc)
+            continue
+        if hasher.hexdigest() == content_hash:
+            cand.content_hash = content_hash
+            db.commit()
+            return cand
+    return None
 
 
 def _validate_upload(file: UploadFile) -> str:
@@ -1158,6 +1206,24 @@ async def upload_deliverable(
         else root_category
     )
 
+    # 同目录内容判重：完全相同的文件自动跳过，避免重复材料
+    content_hash = hashlib.sha256(content).hexdigest()
+    duplicate = _find_duplicate(db, target_category.id, content, content_hash)
+    if duplicate is not None:
+        logger.info(
+            "上传判重命中，已跳过: category_id=%s, file=%s, existing_id=%s, operator=%s",
+            target_category.id, filename, duplicate.id, current_user.username,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                **duplicate.to_dict(),
+                "duplicate": True,
+                "existing_id": duplicate.id,
+                "existing_name": duplicate.name,
+            },
+        )
+
     stored_name = f"{datetime.utcnow():%Y%m%d}_{uuid.uuid4().hex[:12]}.{ext}"
     with open(_stored_path(stored_name), "wb") as f:
         f.write(content)
@@ -1171,6 +1237,7 @@ async def upload_deliverable(
         stored_name=stored_name,
         file_size=len(content),
         file_ext=ext,
+        content_hash=content_hash,
         created_by=current_user.id,
     )
     db.add(deliverable)
@@ -1328,6 +1395,7 @@ async def update_deliverable(
         deliverable.stored_name = stored_name
         deliverable.file_size = len(content)
         deliverable.file_ext = ext
+        deliverable.content_hash = hashlib.sha256(content).hexdigest()
         # 删除旧文件（失败仅记日志）
         try:
             old_path = _stored_path(old_stored)
