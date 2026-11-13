@@ -1811,14 +1811,15 @@ function WhitelistQueryBox({ ticketIps = [], wlMap = null, progress = null, onRe
   )
 }
 
-// ============ IP地址库匹配（内置 4 类 IPv4 库）：独立卡片 ============
+// ============ IP地址库匹配（内置 5 类 IPv4 库）：独立卡片 ============
 
-// 4 库徽标配色（与「IP地址库」页面口径一致）
+// 5 库徽标配色（与「IP地址库」页面口径一致）
 const IP_LIB_THEME = {
   cloud_cn: 'bg-sky-500/15 text-sky-600',
   geo_cn: 'bg-violet-500/15 text-violet-600',
   holder_cn: 'bg-emerald-500/15 text-emerald-600',
   overseas: 'bg-amber-500/15 text-amber-600',
+  hk_mo: 'bg-rose-500/15 text-rose-600',
 }
 
 // 各库在安全上下文内最值得展示的归属字段（按库类型顺序排列，空值自动跳过）
@@ -1834,6 +1835,11 @@ const IP_LIB_DETAIL_FIELDS = {
     ['alloc_date', '分配日期'], ['rir_registry', 'RIR 管理机构'],
   ],
   overseas: [
+    ['holder_name', '注册持有者'], ['isp', '运营商'], ['country_geo', '国家地区'],
+    ['province', '省份'], ['city', '城市'], ['reg_status', '登记状态'],
+    ['alloc_date', '分配日期'], ['rir_registry', 'RIR 管理机构'],
+  ],
+  hk_mo: [
     ['holder_name', '注册持有者'], ['isp', '运营商'], ['country_geo', '国家地区'],
     ['province', '省份'], ['city', '城市'], ['reg_status', '登记状态'],
     ['alloc_date', '分配日期'], ['rir_registry', 'RIR 管理机构'],
@@ -1860,7 +1866,7 @@ function IpLibraryMatchBox({ ips = [], ipMap = null, progress = null, onRetry })
     else next.add(ip)
     return next
   })
-  const desc = '将本工单 IPv4 与内置 4 类地址库（云服务 / APNIC 地理 / APNIC 持有者 / 境外）比对，校验归属网段与运营商信息'
+  const desc = '将本工单 IPv4 与内置 5 类地址库（云服务 / APNIC 地理 / APNIC 持有者 / 境外 / 香港澳门）比对，校验归属网段与运营商信息'
   return (
     <div className="flex min-w-0 flex-col rounded-md border border-border bg-secondary/40 p-3">
       <div className="flex flex-wrap items-center gap-2">

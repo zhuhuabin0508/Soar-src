@@ -5,7 +5,7 @@
 // - 导入：CSV 上传 → Celery 异步任务 → 轮询批次进度；批次历史 Drawer
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Database, Download, Globe2, History, Loader2, RefreshCw, Search,
+  Database, Download, Globe2, History, Loader2, MapPin, RefreshCw, Search,
   SlidersHorizontal, Upload, X,
 } from 'lucide-react'
 import { ipLibraryApi } from '../api/ipLibrary'
@@ -23,8 +23,11 @@ const LIB_THEME = {
   geo_cn: 'bg-violet-500/15 text-violet-600 dark:text-violet-400',
   holder_cn: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
   overseas: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+  hk_mo: 'bg-rose-500/15 text-rose-600 dark:text-rose-400',
 }
-const LIB_ICON = { cloud_cn: Globe2, geo_cn: Database, holder_cn: Database, overseas: Globe2 }
+const LIB_ICON = {
+  cloud_cn: Globe2, geo_cn: Database, holder_cn: Database, overseas: Globe2, hk_mo: MapPin,
+}
 
 // 全库联合查询时的结果列（从 14 个业务列中取安全运营最关心的子集）
 const MERGED_COLS = [
@@ -136,22 +139,38 @@ function ImportModal({ open, libraries, onClose, onFinish }) {
   const pickRef = useRef(null)
   const canImport = hasPermission('ip_library', 'edit')
 
-  useEffect(() => {
-    if (open) {
-      setLib('cloud_cn')
-      setMode('full')
-      setFile(null)
-      setFileError('')
-      setStage('pick')
-      setProgress({ percent: 0, phase: '', note: '', batch: null })
-      setError('')
-    }
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [open])
+  // 阶段/开关引用：打开弹窗时据此决定是否重置，避免清掉后台导入中的进度
+  const stageRef = useRef(stage)
+  useEffect(() => { stageRef.current = stage }, [stage])
+  const openRef = useRef(open)
+  useEffect(() => { openRef.current = open }, [open])
 
   const stopPoll = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
+
+  const resetForm = () => {
+    setFile(null)
+    setFileError('')
+    setError('')
+    setStage('pick')
+    setProgress({ percent: 0, phase: '', note: '', batch: null })
+  }
+
+  // 打开弹窗：仅在选择文件态重置表单；进行中/已完成的任务保留进度与结果视图
+  useEffect(() => {
+    if (!open) return
+    if (stageRef.current !== 'pick') return
+    setLib('cloud_cn')
+    setMode('full')
+    resetForm()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  // 仅在组件卸载时停止轮询：关闭弹窗后后台导入继续轮询，完成后用 toast 告知结果
+  useEffect(() => () => stopPoll(), [])
+
+  const libLabel = libraries.find((l) => l.library_type === lib)?.label || lib
 
   const startPoll = (batchId) => {
     stopPoll()
@@ -163,9 +182,12 @@ function ImportModal({ open, libraries, onClose, onFinish }) {
           stopPoll()
           setStage('success')
           onFinish()
+          // 弹窗已关闭时通过 toast 告知导入结果
+          if (!openRef.current) toast.success(`IP地址库导入完成：${libLabel}`)
         } else if (b.status === 'failed') {
           stopPoll()
           setStage('failed')
+          if (!openRef.current) toast.error(`IP地址库导入失败：${b.note || '未知原因'}`)
         }
       } catch { /* 单次轮询失败忽略，下次重试 */ }
     }, 1500)
@@ -197,18 +219,30 @@ function ImportModal({ open, libraries, onClose, onFinish }) {
   }
 
   const busy = stage === 'uploading' || stage === 'running'
-  const libLabel = libraries.find((l) => l.library_type === lib)?.label || lib
+  const busyUploading = stage === 'uploading'
+
+  // 关闭弹窗：后台导入中仅隐藏进度视图，任务继续执行
+  const handleClose = () => {
+    if (stage === 'running') toast.info('导入任务已在后台继续，可在「批次历史」查看进度')
+    onClose()
+  }
 
   return (
     <Modal
       open={open}
       title="导入 IP 地址库 CSV"
-      onClose={busy ? undefined : onClose}
+      onClose={busyUploading ? undefined : handleClose}
       size="md"
       footer={
         <>
           {(stage === 'success' || stage === 'failed') && (
-            <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
+            <>
+              <Button variant="secondary" size="sm" onClick={resetForm}>继续导入</Button>
+              <Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>
+            </>
+          )}
+          {stage === 'running' && (
+            <Button variant="secondary" size="sm" onClick={handleClose}>后台运行</Button>
           )}
           {stage === 'pick' && (
             <>
@@ -281,7 +315,7 @@ function ImportModal({ open, libraries, onClose, onFinish }) {
             />
           </div>
           <div className="text-xs text-muted-foreground">
-            后台异步执行中，可关闭此窗口继续其他操作，进度可在「批次历史」中查看。
+            后台异步执行中，关闭窗口后导入仍会继续，进度可在「批次历史」中查看。
           </div>
         </div>
       )}
@@ -319,19 +353,27 @@ function BatchDrawer({ open, onClose, libraries }) {
   const [loading, setLoading] = useState(false)
   const libLabel = (t) => libraries.find((l) => l.library_type === t)?.label || t
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const data = await ipLibraryApi.batches('', 50)
       setBatches(data.items || [])
     } catch (e) {
-      toast.error(e.message || '批次历史加载失败')
+      if (!silent) toast.error(e.message || '批次历史加载失败')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [])
 
   useEffect(() => { if (open) load() }, [open, load])
+
+  // 存在排队中 / 导入中的批次时自动刷新，便于关闭导入弹窗后继续跟踪进度
+  const hasActive = batches.some((b) => b.status === 'pending' || b.status === 'running')
+  useEffect(() => {
+    if (!open || !hasActive) return
+    const timer = setInterval(() => load(true), 3000)
+    return () => clearInterval(timer)
+  }, [open, hasActive, load])
 
   return (
     <Drawer
@@ -342,7 +384,7 @@ function BatchDrawer({ open, onClose, libraries }) {
       footer={<Button variant="secondary" size="sm" onClick={onClose}>关闭</Button>}
     >
       <div className="mb-3 flex justify-end">
-        <Button variant="secondary" size="sm" onClick={load} disabled={loading}>
+        <Button variant="secondary" size="sm" onClick={() => load()} disabled={loading}>
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} 刷新
         </Button>
       </div>
@@ -512,7 +554,7 @@ export default function IpLibrary() {
     <PageContainer>
       <PageHeader
         title="IP地址库"
-        description="中国大陆云服务 / APNIC 运营商地理 / APNIC 注册持有者 / 境外 IPv4 网段数据：支持 IP 精确归属、网段与关键词查询"
+        description="中国大陆云服务 / APNIC 运营商地理 / APNIC 注册持有者 / 境外 IPv4 / 香港澳门 IPv4 网段数据：支持 IP 精确归属、网段与关键词查询"
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={loadMeta} disabled={metaLoading}>
@@ -531,7 +573,7 @@ export default function IpLibrary() {
       />
 
       {/* 概览统计卡片 */}
-      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 2xl:grid-cols-5">
         {meta.libraries.map((lib) => <LibraryCard key={lib.library_type} lib={lib} />)}
       </div>
 

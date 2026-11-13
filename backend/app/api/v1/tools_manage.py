@@ -11,6 +11,8 @@
 """
 import json
 import logging
+import re
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -23,7 +25,7 @@ from app.core.tool_templates import TOOL_TEMPLATES
 from app.core.tools.catalog import ToolCatalog
 from app.core.tools.types import TOOL_SOURCE_CUSTOM
 from app.database import get_db
-from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, require_permission, require_role, resource_can_edit
+from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, is_admin, require_permission, require_role, resource_can_edit
 from app.models.tool import Tool
 from app.models.agent import Agent
 from app.models.user import User
@@ -84,6 +86,94 @@ class DebugChatRequest(BaseModel):
     """工具对话调试请求体。"""
 
     message: str = Field(..., description="用户自然语言输入")
+
+
+# ---------------------------------------------------------------------------
+# 工具导入 / 导出辅助
+# ---------------------------------------------------------------------------
+# 导出时敏感字段的占位符；导入覆盖时遇到占位符沿用库中旧值
+_REDACTED = "__REDACTED__"
+_SECRET_FIELD_RE = re.compile(
+    r"(token|secret|password|passwd|api[_-]?key|authorization|access[_-]?key|salt)", re.I
+)
+_EXPORT_FIELDS = (
+    "name", "description", "parameters_schema", "code", "enabled",
+    "tool_type", "category", "tags", "http_config",
+)
+
+
+class ToolImportRequest(BaseModel):
+    """工具导入请求体（可直接提交导出文件内容）。"""
+
+    tools: list[dict[str, Any]] = Field(..., description="工具数组（导出文件的 tools 字段）")
+    overwrite: bool = Field(False, description="同名工具是否覆盖（默认跳过）")
+    dry_run: bool = Field(False, description="仅校验不落库")
+
+
+def _redact_secrets(value: Any) -> Any:
+    """递归脱敏：字段名命中密钥关键字，或 headers 中 key 命中。"""
+    if isinstance(value, dict):
+        out = {}
+        for key, val in value.items():
+            if isinstance(val, str) and _SECRET_FIELD_RE.search(str(key)):
+                out[key] = _REDACTED
+            else:
+                out[key] = _redact_secrets(val)
+        return out
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("key"), str)
+                and isinstance(item.get("value"), str)
+                and _SECRET_FIELD_RE.search(item["key"])
+            ):
+                out.append({**item, "value": _REDACTED})
+            else:
+                out.append(_redact_secrets(item))
+        return out
+    return value
+
+
+def _merge_redacted(new: Any, old: Any) -> Any:
+    """把导入中的脱敏占位符替换为库中旧值，避免覆盖时清空密钥。"""
+    if new == _REDACTED:
+        return old
+    if isinstance(new, dict) and isinstance(old, dict):
+        return {k: _merge_redacted(v, old.get(k)) for k, v in new.items()}
+    if (
+        isinstance(new, list)
+        and isinstance(old, list)
+        and new
+        and all(isinstance(i, dict) and "key" in i for i in new)
+    ):
+        # headers 等 [{key, value}] 结构按 key 对齐，避免顺序变化错位
+        old_by_key = {i.get("key"): i for i in old if isinstance(i, dict)}
+        return [_merge_redacted(item, old_by_key.get(item.get("key"))) for item in new]
+    return new
+
+
+def _contains_redacted(value: Any) -> bool:
+    """判断配置中是否含脱敏占位符（新建时需提示用户补齐密钥）。"""
+    if value == _REDACTED:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_redacted(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_redacted(v) for v in value)
+    return False
+
+
+def _strip_redacted(value: Any) -> Any:
+    """新建工具时无旧值可复用，占位符置空由用户回填。"""
+    if value == _REDACTED:
+        return ""
+    if isinstance(value, dict):
+        return {k: _strip_redacted(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_redacted(v) for v in value]
+    return value
 
 
 @router.get("", dependencies=[Depends(require_permission("tool", "view"))])
@@ -147,6 +237,142 @@ def list_tool_catalog() -> dict:
             for t in preset
         ],
     }
+
+
+@router.get("/export", dependencies=[Depends(require_permission("tool", "view"))])
+def export_tools(
+    ids: str | None = None,
+    include_preset: bool = False,
+    include_secrets: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """导出工具配置为可迁移 JSON（用于跨环境部署/备份）。
+
+    - ``ids``：逗号分隔的工具 ID；缺省导出全部（默认可编辑的自定义工具）
+    - ``include_secrets``：默认脱敏 token/secret/apikey/headers 等敏感值，
+      导出文件可安全入库；仅管理员可导出明文
+    """
+    if include_secrets and not is_admin(current_user, db):
+        raise HTTPException(status_code=403, detail="仅管理员可导出含密钥的工具配置")
+    query = db.query(Tool)
+    if ids:
+        try:
+            id_list = [int(i) for i in ids.split(",") if i.strip()]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="ids 需为逗号分隔的整数") from exc
+        if not id_list:
+            raise HTTPException(status_code=400, detail="ids 为空")
+        query = query.filter(Tool.id.in_(id_list))
+    # ids 同样受 include_preset 约束：预置工具重复导入会被拒绝，导出也不默认包含
+    if not include_preset:
+        query = query.filter(Tool.is_preset.is_(False))
+    tools = query.order_by(Tool.id.asc()).all()
+    items = []
+    for tool in tools:
+        item = {field: getattr(tool, field) for field in _EXPORT_FIELDS}
+        if not include_secrets:
+            item["http_config"] = _redact_secrets(item.get("http_config"))
+        items.append(item)
+    logger.info("导出工具: count=%d, include_secrets=%s", len(items), include_secrets)
+    return {
+        "schema_version": 1,
+        "exported_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "include_secrets": include_secrets,
+        "tools": items,
+    }
+
+
+@router.post("/import", dependencies=[Depends(require_permission("tool", "edit"))])
+def import_tools(
+    body: ToolImportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """导入工具配置（兼容导出文件整体或仅 ``tools`` 数组）。
+
+    - 按 ``name`` 匹配：已存在默认跳过，``overwrite=true`` 时覆盖
+    - 覆盖时导出文件中的脱敏占位符沿用库中已有密钥，不会被清空
+    - 与平台预置工具重名、框架内置工具均拒绝导入，避免污染种子
+    """
+    if not body.tools:
+        raise HTTPException(status_code=400, detail="tools 为空")
+    preset_index = ToolCatalog.preset_name_index()
+    result: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "failed": [], "warnings": []}
+    for raw in body.tools:
+        name = str(raw.get("name") or "").strip()
+        try:
+            if not name:
+                raise ValueError("缺少 name")
+            tool_type = str(raw.get("tool_type") or "code")
+            if tool_type not in ("code", "http"):
+                raise ValueError(f"不支持导入 tool_type={tool_type}")
+            if preset_index.get(name):
+                raise ValueError("与平台预置工具重名")
+            existing = db.query(Tool).filter(Tool.name == name).first()
+            if existing is not None and not body.overwrite:
+                result["skipped"] += 1
+                continue
+            if existing is not None:
+                if getattr(existing, "is_preset", False):
+                    raise ValueError("内置工具不可被导入覆盖")
+                check_resource_ownership(current_user, db, "tool", existing.id, existing)
+                # 仅覆盖导入文件中显式提供的字段：缺失字段保留库中现值，
+                # 避免手工裁剪过的文件把已有配置（尤其 http_config 密钥）静默清空
+                if "description" in raw:
+                    existing.description = raw.get("description") or ""
+                if "parameters_schema" in raw:
+                    existing.parameters_schema = raw.get("parameters_schema")
+                if "code" in raw:
+                    existing.code = raw.get("code") or ""
+                if "enabled" in raw:
+                    existing.enabled = bool(raw.get("enabled"))
+                if "tool_type" in raw:
+                    existing.tool_type = tool_type
+                if "category" in raw:
+                    existing.category = raw.get("category")
+                if "tags" in raw:
+                    existing.tags = raw.get("tags")
+                # 脱敏占位符回填库中旧值，避免覆盖时把密钥清空
+                if "http_config" in raw:
+                    existing.http_config = _merge_redacted(raw.get("http_config"), existing.http_config)
+                if not body.dry_run:
+                    db.commit()
+                    clear_tool_cache(name)
+                result["updated"] += 1
+            else:
+                if _contains_redacted(raw.get("http_config")):
+                    result["warnings"].append(f"{name}: 密钥字段已脱敏，请在编辑页补齐后再启用")
+                tool = Tool(
+                    name=name,
+                    description=raw.get("description") or "",
+                    parameters_schema=raw.get("parameters_schema"),
+                    code=raw.get("code") or "",
+                    enabled=bool(raw.get("enabled", True)),
+                    tool_type=tool_type,
+                    category=raw.get("category"),
+                    tags=raw.get("tags"),
+                    http_config=_strip_redacted(raw.get("http_config")),
+                    tool_source=TOOL_SOURCE_CUSTOM,
+                    created_by=current_user.id,
+                )
+                db.add(tool)
+                if not body.dry_run:
+                    db.commit()
+                result["created"] += 1
+        except HTTPException as exc:
+            # 单个工具无权限/被拒绝时不影响其余工具导入
+            db.rollback()
+            result["failed"].append({"name": name or "(未命名)", "error": exc.detail})
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning("导入工具失败: name=%s, err=%s", name or "(未命名)", exc)
+            result["failed"].append({"name": name or "(未命名)", "error": str(exc)})
+    logger.info(
+        "导入工具完成: created=%d, updated=%d, skipped=%d, failed=%d",
+        result["created"], result["updated"], result["skipped"], len(result["failed"]),
+    )
+    return result
 
 
 @router.post("", status_code=201, dependencies=[Depends(require_permission("tool", "edit"))])

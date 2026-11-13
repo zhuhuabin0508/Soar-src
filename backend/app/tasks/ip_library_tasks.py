@@ -67,8 +67,10 @@ _HEADER_MAPS = {
         "GeoIP国家代码": "geo_country_code",
         "地理信息状态": "geo_status",
     },
+    "hk_mo": None,  # 与 overseas 同构
 }
 _HEADER_MAPS["holder_cn"] = _HEADER_MAPS["overseas"]
+_HEADER_MAPS["hk_mo"] = _HEADER_MAPS["overseas"]
 
 
 def _update_batch(batch_id: int, **fields) -> None:

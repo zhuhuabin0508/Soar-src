@@ -1,11 +1,12 @@
-"""IP地址信息库 ORM 模型：4 库独立分表 + 导入批次表。
+"""IP地址信息库 ORM 模型：5 库独立分表 + 导入批次表。
 
-四个数据源（CSV 导入）各一张表，schema 按各自 CSV 列定义：
+五个数据源（CSV 导入）各一张表，schema 按各自 CSV 列定义：
 
 - ``cloud_cn``   中国大陆云服务IPv4合集（CIDR + 云服务商名称）
 - ``geo_cn``     中国大陆APNIC分配及运营商地理信息（网段 + 运营商/省市/状态/分配日期）
 - ``holder_cn``  中国大陆APNIC含注册持有者（14 列：持有者/运营商/地理/RIR 字段）
 - ``overseas``   境外IPv4地址库（与 ``holder_cn`` 同构 14 列）
+- ``hk_mo``      香港澳门IPv4地址库（与 ``holder_cn`` 同构 14 列）
 
 通用列设计（与 ``asset_ip_intervals`` 同一套已验证模式，见 app/models/asset.py）：
 
@@ -96,6 +97,12 @@ LIBRARY_DEFS = {
         "fields": list(_HOLDER_FIELDS),
         "search_fields": list(_HOLDER_SEARCH),
     },
+    "hk_mo": {
+        "label": "香港澳门IPv4（APNIC及运营商地理）",
+        "table": "ip_lib_hk_mo",
+        "fields": list(_HOLDER_FIELDS),
+        "search_fields": list(_HOLDER_SEARCH),
+    },
 }
 
 
@@ -166,12 +173,14 @@ IpLibCloudCn = _build_library_model("IpLibCloudCn", "cloud_cn")
 IpLibGeoCn = _build_library_model("IpLibGeoCn", "geo_cn")
 IpLibHolderCn = _build_library_model("IpLibHolderCn", "holder_cn")
 IpLibOverseas = _build_library_model("IpLibOverseas", "overseas")
+IpLibHkMo = _build_library_model("IpLibHkMo", "hk_mo")
 
 LIBRARY_MODELS = {
     "cloud_cn": IpLibCloudCn,
     "geo_cn": IpLibGeoCn,
     "holder_cn": IpLibHolderCn,
     "overseas": IpLibOverseas,
+    "hk_mo": IpLibHkMo,
 }
 
 

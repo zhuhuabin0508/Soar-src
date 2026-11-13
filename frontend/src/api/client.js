@@ -211,6 +211,16 @@ export const tools = {
   test: (id, parameters) =>
     request(`/tools/${id}/test`, { method: 'POST', body: { parameters } }),
   templates: () => request('/tools/templates'),
+  // 导出工具配置：ids 逗号分隔，缺省导出全部自定义工具（密钥默认脱敏）
+  export: (params = {}) => {
+    const qs = new URLSearchParams()
+    if (params.ids) qs.set('ids', params.ids)
+    if (params.includeSecrets) qs.set('include_secrets', 'true')
+    const q = qs.toString()
+    return request(`/tools/export${q ? `?${q}` : ''}`)
+  },
+  // 导入工具配置（导出文件内容），overwrite 控制同名覆盖
+  import: (body) => request('/tools/import', { method: 'POST', body }),
   // 推断工具的输入输出 schema
   inferredSchema: (id) => request(`/tools/${id}/inferred-schema`),
   // 解析 OpenAPI/Swagger JSON 或 URL，返回操作列表
