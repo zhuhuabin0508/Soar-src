@@ -39,7 +39,9 @@ export default function PageTransition({ children, className = '' }) {
       className={`page-transition min-h-0 h-full ${className}`}
       style={{
         opacity: visible ? 1 : 0,
-        transform: visible ? 'translateY(0)' : 'translateY(4px)',
+        // 动画结束后必须回到 none：非 none 的 transform 会成为固定定位元素的包含块，
+        // 导致页面内的 fixed 弹层（预览/弹窗/右键菜单）脱离视口、跟随页面滚动
+        transform: visible ? 'none' : 'translateY(4px)',
         transition: 'opacity 200ms ease-out, transform 200ms ease-out',
       }}
     >

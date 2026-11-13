@@ -2316,7 +2316,7 @@ export default function DeliverableManagement() {
           onClick={closePreview}
         >
           <div
-            className="flex h-[min(92vh,920px)] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+            className="flex h-[min(92vh,920px)] w-[min(1024px,94vw)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-3">
