@@ -1970,12 +1970,13 @@ def _clear_monitor_refresh_backoff(key: tuple) -> None:
 
 
 def _purge_stale_monitor_cache_entries(now_ts: float) -> None:
-    with _monitor_payload_cache_lock:
-        for k in [
-            k for k, v in _monitor_payload_cache.items()
-            if now_ts - v["at"] >= _MONITOR_PAYLOAD_CACHE_TTL_SECONDS * 6
-        ]:
-            _monitor_payload_cache.pop(k, None)
+    # 约定调用方已持有 _monitor_payload_cache_lock（唯一调用点 _store_monitor_payload）；
+    # 本函数不得再获取该锁——threading.Lock 非重入，嵌套获取会自死锁并永久持有全局锁
+    for k in [
+        k for k, v in _monitor_payload_cache.items()
+        if now_ts - v["at"] >= _MONITOR_PAYLOAD_CACHE_TTL_SECONDS * 6
+    ]:
+        _monitor_payload_cache.pop(k, None)
 
 
 def _store_monitor_payload(key: tuple, payload: dict, *, light: bool) -> None:

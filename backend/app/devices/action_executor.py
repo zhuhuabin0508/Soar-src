@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time as _time
+from types import SimpleNamespace
 from urllib.parse import quote as _quote
 from urllib.parse import urlencode as _urlencode
 from typing import Any, Optional
@@ -540,41 +541,55 @@ def execute_device_action(
     # 审计摘要须在青藤登录前构造：登录失败路径的 record_device_call 也会引用
     request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
 
-    from app.database import close_db_session
+    # rollback 会使会话内全部实例属性过期，过期后任何一次属性访问（如下方
+    # auth_type）都会触发惰性刷新、重新开启事务并占用连接池连接，贯穿整个
+    # 设备 HTTP（含青藤登录与重试退避）。因此先把 HTTP 阶段需要的属性快照成
+    # 纯值对象，rollback 后到 HTTP 结束一律使用快照，不再触碰 ORM 实例。
+    dev_snap = SimpleNamespace(
+        id=device.id, name=device.name, api_url=device.api_url,
+        auth_type=device.auth_type, username=device.username,
+        password=device.password, api_key=device.api_key,
+    )
+    act_snap = SimpleNamespace(
+        id=action.id, name=action.name, auth_type=action.auth_type,
+        params_schema=action.params_schema,
+    )
 
-    # 外部 HTTP 不占用调用方 Session（工作流常传入联动会话）。
-    # 注意：close_db_session 内部的 rollback 会使会话内 ORM 实例属性过期，
-    # 随后访问 action.auth_type / device.id 等会抛 DetachedInstanceError。
-    # 因此先把本次执行需要的实例从会话摘出（保留已加载属性），再关闭会话。
+    # 外部 HTTP 不占用调用方 Session 连接（工作流常传入联动会话）。
+    # 注意：这里只能结束当前事务把连接还回连接池，绝不能 close()/expunge
+    # 会话——调用方（工作台解封、到期自动解封、导入同步、联动回滚等）在设备
+    # 调用返回后还要更新同一批 ORM 实例并落库；close/expunge 会使实例脱离
+    # 会话，后续赋值静默丢失（表现为：接口返回成功、审计已记录，但封禁/
+    # 解封状态永不更新）。rollback 后实例仍 attached（留在会话内），属性已
+    # 过期但调用方可按需惰性刷新，后续读写均正常。
     if db is not None:
         try:
-            db.expunge(device)
-            db.expunge(action)
+            if db.in_transaction():
+                db.rollback()
         except Exception:  # noqa: BLE001
             pass
-    close_db_session(db)
 
     # 青藤签名协议：登录换取 comId/jwt/signKey 并对本业务请求做 SHA1 签名。
     # 若动作指向登录接口本身，则直接携带账号密码发送，不再走签名流程。
-    auth_type = action.auth_type or "api_key"
+    auth_type = act_snap.auth_type or "api_key"
     if auth_type == "inherit":  # 动作继承设备的认证方式
-        auth_type = device.auth_type or "api_key"
+        auth_type = dev_snap.auth_type or "api_key"
     if auth_type == "qingteng":
         if "/v1/api/auth" in url:
             req_body = {
-                "username": decrypt_device_secret(device.username or ""),
-                "password": decrypt_device_secret(device.password or ""),
+                "username": decrypt_device_secret(dev_snap.username or ""),
+                "password": decrypt_device_secret(dev_snap.password or ""),
             }
             headers["Content-Type"] = "application/json"
         else:
             try:
-                comid, jwt, signkey = _qingteng_login(device, timeout, verify)
+                comid, jwt, signkey = _qingteng_login(dev_snap, timeout, verify)
             except Exception as exc:  # noqa: BLE001
                 msg = f"{type(exc).__name__}: {exc}"
                 logger.warning("青藤登录失败: %s", msg)
                 if not skip_log:
                     _record_device_call_isolated(
-                        device, action, source=source,
+                        dev_snap, act_snap, source=source,
                         workflow_id=workflow_id, agent_id=agent_id,
                         user_id=user_id, source_ip=source_ip,
                         request_summary=request_summary, status="failed",
@@ -592,14 +607,14 @@ def execute_device_action(
     if auth_type == "sangfor_xdr":
         try:
             headers, req_body, url = _sangfor_xdr_sign(
-                device, action, method, url, headers, params, req_body
+                dev_snap, act_snap, method, url, headers, params, req_body
             )
         except Exception as exc:  # noqa: BLE001
             msg = f"{type(exc).__name__}: {exc}"
             logger.warning("深信服 XDR 签名失败: %s", msg)
             if not skip_log:
                 _record_device_call_isolated(
-                    device, action, source=source,
+                    dev_snap, act_snap, source=source,
                     workflow_id=workflow_id, agent_id=agent_id,
                     user_id=user_id, source_ip=source_ip,
                     request_summary=request_summary, status="failed",
@@ -624,7 +639,7 @@ def execute_device_action(
             )
 
     logger.info("调用设备 API: %s %s, auth=%s, device=%s, action=%s",
-                method, url, action.auth_type or "api_key", device.id, action.id)
+                method, url, act_snap.auth_type or "api_key", dev_snap.id, act_snap.id)
 
     # 失败自动重试（带简单退避）
     last_exc = None
@@ -650,7 +665,7 @@ def execute_device_action(
         logger.warning("设备 API 请求异常: %s", msg)
         if not skip_log:
             _record_device_call_isolated(
-                device, action, source=source,
+                dev_snap, act_snap, source=source,
                 workflow_id=workflow_id, agent_id=agent_id,
                 user_id=user_id, source_ip=source_ip,
                 request_summary=request_summary, status="failed",
@@ -667,11 +682,11 @@ def execute_device_action(
     success = r.status_code < 400
     error = None if success else f"HTTP {r.status_code}"
     logger.info("设备动作执行完成: status=%s, success=%s, device=%s, action=%s",
-                r.status_code, success, device.id, action.id)
+                r.status_code, success, dev_snap.id, act_snap.id)
 
     if not skip_log:
         _record_device_call_isolated(
-            device, action, source=source,
+            dev_snap, act_snap, source=source,
             workflow_id=workflow_id, agent_id=agent_id, user_id=user_id,
             source_ip=source_ip, request_summary=request_summary,
             response_summary=json.dumps(resp_body, ensure_ascii=False)[:2000],

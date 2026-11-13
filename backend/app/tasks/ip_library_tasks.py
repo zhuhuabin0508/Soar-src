@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 # 导入规模上限与分块大小（境外库 76 万行、CSV 实际 113MB，覆盖到百万级）
 MAX_ROWS = 1_000_000
 MAX_FILE_SIZE = 200 * 1024 * 1024
-UPSERT_CHUNK = 5000
+# 大分块减少提交次数（76 万行 152 次 → 38 次 fsync），2 万行约占内存 20MB
+UPSERT_CHUNK = 20_000
 
 # 网段列在各库 CSV 中的表头（云服务库为「IPv4 CIDR」，其余为「IPv4网段」）
 _NET_HEADERS = ("IPv4网段", "IPv4 CIDR", "ipv4网段", "ipv4 cidr")
@@ -128,9 +129,11 @@ def _parse_net(text: str):
 
 @celery_app.task(
     name="import_ip_library",
-    # 大文件导入耗时保护（覆盖全局 300/360s：76 万行 CSV 目标 <90s，留足余量）
-    soft_time_limit=600,
-    time_limit=660,
+    # 大文件导入耗时保护（覆盖全局 300/360s）。实测每行 upsert 需维护 13 列 trgm GIN
+    # + GiST ip_range 索引，吞吐约 1,100-1,900 行/s，境外库 76 万行约 660s+，
+    # full 重跑时存量行走 UPDATE 路径更慢，按 100 万行上限给足 30 分钟
+    soft_time_limit=1800,
+    time_limit=1860,
 )
 def import_ip_library(batch_id: int, library_type: str, mode: str, file_path: str) -> dict:
     """异步导入一个库分表 CSV（流式解析 + 分块 upsert），进度回写批次记录。"""

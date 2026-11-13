@@ -10,7 +10,8 @@
 
 成功判定：
 - 封禁：HTTP < 400 **且** 业务 ``code=1``（下发失败绝不能落「生效中」平台记录）；
-- 解封：仅 HTTP < 400（条目可能本就不在设备上，端态目标已达成，不阻塞平台解封）。
+- 解封：HTTP < 400，或设备返回 404（条目本就不在设备上，端态目标已达成，
+  按幂等成功处理，不阻塞平台解封）。
 """
 import logging
 from typing import Any, Optional
@@ -238,8 +239,15 @@ def check_block_result(result: dict[str, Any]) -> tuple[bool, str]:
 
 
 def check_unblock_result(result: dict[str, Any]) -> tuple[bool, str]:
-    """解封结果判定：只看 HTTP 层（条目可能本就不在设备上）。"""
+    """解封结果判定：只看 HTTP 层（条目可能本就不在设备上）。
+
+    设备对黑名单中不存在的条目返回 404（重复解封/到期已清理/控制台已删），
+    端态目标已达成，按幂等成功处理；否则平台记录会永远卡在「生效中」，
+    与设备侧实际状态不一致。与安博通黑名单行内解封的 404 口径保持一致。
+    """
     if not result.get("success"):
+        if result.get("status_code") == 404:
+            return True, ""
         err = str(result.get("error") or "设备调用失败")
         if result.get("status_code"):
             err = f"{err}（HTTP {result.get('status_code')}）"
