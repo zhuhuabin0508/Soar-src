@@ -91,7 +91,8 @@ def _find_duplicate(
 
     口径：仅同一目录内、文件内容完全相同（SHA-256）才算重复；
     同名的不同内容（新版本）不算重复。存量记录可能没有 content_hash，
-    此时只对同大小候选比对磁盘内容，命中后回填哈希，保证老数据也能识别。
+    此时只对同大小候选比对磁盘内容，并无论是否命中都回填哈希，
+    避免后续每次上传重复读取同一批老文件。
     """
     hit = (
         db.query(Deliverable)
@@ -115,6 +116,8 @@ def _find_duplicate(
         .order_by(Deliverable.id.asc())
         .all()
     )
+    found: Deliverable | None = None
+    compared = False
     for cand in candidates:
         try:
             hasher = hashlib.sha256()
@@ -124,11 +127,16 @@ def _find_duplicate(
         except (OSError, HTTPException) as exc:
             logger.warning("判重时读取存量文件失败: %s (%s)", cand.stored_name, exc)
             continue
-        if hasher.hexdigest() == content_hash:
-            cand.content_hash = content_hash
-            db.commit()
-            return cand
-    return None
+        digest = hasher.hexdigest()
+        # 回填哈希：未命中的候选也写回，保证每个存量文件最多被读一次
+        cand.content_hash = digest
+        compared = True
+        if digest == content_hash and found is None:
+            found = cand
+    if compared:
+        # 只 flush 不 commit：由调用方决定事务边界，避免请求中途提前提交
+        db.flush()
+    return found
 
 
 def _validate_upload(file: UploadFile) -> str:
@@ -1210,6 +1218,8 @@ async def upload_deliverable(
     content_hash = hashlib.sha256(content).hexdigest()
     duplicate = _find_duplicate(db, target_category.id, content, content_hash)
     if duplicate is not None:
+        # 判重过程中可能回填了存量哈希，此处统一提交
+        db.commit()
         logger.info(
             "上传判重命中，已跳过: category_id=%s, file=%s, existing_id=%s, operator=%s",
             target_category.id, filename, duplicate.id, current_user.username,
@@ -1387,6 +1397,14 @@ async def update_deliverable(
             raise HTTPException(status_code=400, detail="文件大小不能超过 200MB")
         if len(content) == 0:
             raise HTTPException(status_code=400, detail="文件内容为空")
+        content_hash = hashlib.sha256(content).hexdigest()
+        # 与上传同口径：同目录内容相同则拒绝，避免绕过判重制造重复材料
+        duplicate = _find_duplicate(db, deliverable.category_id, content, content_hash)
+        if duplicate is not None and duplicate.id != deliverable.id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"同目录已有内容相同的材料「{duplicate.name}」，无需重复上传",
+            )
         old_stored = deliverable.stored_name
         stored_name = f"{datetime.utcnow():%Y%m%d}_{uuid.uuid4().hex[:12]}.{ext}"
         with open(_stored_path(stored_name), "wb") as f:
@@ -1395,7 +1413,7 @@ async def update_deliverable(
         deliverable.stored_name = stored_name
         deliverable.file_size = len(content)
         deliverable.file_ext = ext
-        deliverable.content_hash = hashlib.sha256(content).hexdigest()
+        deliverable.content_hash = content_hash
         # 删除旧文件（失败仅记日志）
         try:
             old_path = _stored_path(old_stored)

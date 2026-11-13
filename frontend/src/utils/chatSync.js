@@ -75,9 +75,15 @@ export function mergeServerSessions(localList, serverSessions, options = {}) {
       continue
     }
     // 时间以服务端为准：不同浏览器/设备的本地时钟可能偏差，用服务端时间排序才不会错乱
+    // 标题优先级：本地手动命名 > 服务端标题 > 本地自动推导标题。
+    // 手动命名标记 titleCustom 可避免服务端按首条消息生成的标题覆盖用户自定义名称。
     merged.push({
       ...conv,
-      title: conv.title || remote.title,
+      title:
+        conv.titleCustom === true
+          ? conv.title || remote.title
+          : remote.title || conv.title,
+      titleCustom: conv.titleCustom === true,
       createdAt: remote.createdAt || conv.createdAt,
       updatedAt: remote.updatedAt || conv.updatedAt,
       synced: true,

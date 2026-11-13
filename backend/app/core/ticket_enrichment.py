@@ -27,6 +27,9 @@ v2 结构（多 IP，写入 ``Ticket.enrichment_data``，随工单全程流转�
           "detail": "full",                # full / lite 存储分级（见 _entry_tier）
           "asset": {...同 v1 匹配结构...},
           "threat": {...get_threat_互联网 工具响应归一化，lite 时仅保留精简键...},
+          "ti_360": {...360 IOC 统一接口归一化；IP 实体另含
+                     geo_info（360 IP 批量查询地区信息，
+                     失败/未返回时兜底「地区信息未知」）...},
           "agent": {"pending": true}       # auto_agent 开启时的占位，
                                            # 由后台线程完成后回写
         }
@@ -67,6 +70,7 @@ import copy
 import ipaddress
 import json
 import logging
+import re
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -133,11 +137,41 @@ def _submit_bg_task(key: str, target, *args) -> None:
     future.add_done_callback(_cleanup)
 
 
-def _extract_ips(value) -> tuple[list[str], list[str]]:
-    """字段值 → (有效单 IP 列表, 非单 IP 条目列表)。
+# 合法域名正则（RFC1034/1035 简化）：至少两级标签、总长 ≤253、
+# 标签 1-63 字符且不以 - 开头/结尾；不含协议/路径/端口等杂质
+_DOMAIN_RE = re.compile(
+    r"(?=^.{1,253}$)^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    r"(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$"
+)
 
-    多值表达式按逗号/分号分隔逐段校验：合法单 IP 进入研判；网段/
-    范围/非法文本记入 skipped（调用方写入 errors 提示不参与研判）。
+
+def _is_entity_ip(entity: str) -> bool:
+    """判断实体是否为合法 IP（IPv4/IPv6）。"""
+    try:
+        ipaddress.ip_address(entity)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_domain_token(entity: str) -> bool:
+    """判断字符串是否为可研判的域名实体（非 IP、无协议/路径/端口杂质）。"""
+    return bool(_DOMAIN_RE.match(entity or ""))
+
+
+def _ioc_category(entity: str) -> str:
+    """360 IOC 接口 category 自动识别：IP → ``ip``，其余 → ``domain``。"""
+    return "ip" if _is_entity_ip(entity) else "domain"
+
+
+def _extract_ips(value) -> tuple[list[str], list[str]]:
+    """字段值 → (有效实体列表, 不参与研判的条目列表)。
+
+    多值表达式按逗号/分号分隔逐段校验：合法单 IP 优先进入研判；
+    非段不是 IP 时尝试域名匹配（360 情报支持 domain 类实体）；
+    网段/范围/其他非法文本记入 skipped（调用方写入 errors 提示不参与研判）。
+    返回的实体列表同时可含 IP 与域名，由后续链路按实体类型分流
+    （资产匹配/知道创宇/智能体仅 IP；360 情报 IP 与域名均可）。
     """
     if value is None:
         return [], []
@@ -150,25 +184,73 @@ def _extract_ips(value) -> tuple[list[str], list[str]]:
         part = part.strip()
         if not part:
             continue
-        try:
-            ipaddress.ip_address(part)
-        except ValueError:
-            if part not in skipped:
-                skipped.append(part)
-            continue
-        if part not in ips:
-            ips.append(part)
+        if _is_entity_ip(part) or _is_domain_token(part):
+            if part not in ips:
+                ips.append(part)
+        elif part not in skipped:
+            skipped.append(part)
     return ips, skipped
 
 
+# 域名类字段 key（域名或 URL 实体入口；360 情报支持 domain 类实体）
+_DOMAIN_ROLES = ("domain_url", "domain")
+
+
+def _url_host(token: str) -> str:
+    """从域名/URL token 中剥取 host（去协议/路径/端口）。
+
+    支持 ``evil.com``、``http://evil.com/a?b=1``、``https://1.2.3.4:8080/x``
+    及 ``http://[::1]:8080/`` 形态；剥取失败返回原文（由调用方校验）。
+    """
+    t = token
+    if "://" in t:
+        t = t.split("://", 1)[1]
+    t = t.split("/", 1)[0]
+    if t.startswith("[") and "]" in t:  # http://[::1]:8080/
+        return t.split("]", 1)[0].lstrip("[")
+    if ":" in t:  # host:port（仅对合法 IPv4/域名主机剥端口）
+        head, _, tail = t.rpartition(":")
+        if tail.isdigit() and (_is_entity_ip(head) or _is_domain_token(head)):
+            return head
+    return t
+
+
+def _extract_domains(value) -> tuple[list[str], list[str]]:
+    """域名/URL 字段值 → (实体列表, 非法条目列表)。
+
+    每段先剥协议/路径/端口取 host，host 为合法域名或 IP 即进入研判
+    （URL 直接填 IP 形态的场景）；其余记入 skipped。
+    """
+    if value is None:
+        return [], []
+    s = str(value).strip()
+    if not s:
+        return [], []
+    entities: list[str] = []
+    skipped: list[str] = []
+    for part in s.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        host = _url_host(part)
+        if _is_domain_token(host) or _is_entity_ip(host):
+            if host not in entities:
+                entities.append(host)
+        elif part not in skipped:
+            skipped.append(part)
+    return entities, skipped
+
+
 def _locate_ip_fields(field_defs: list, values: dict) -> list[dict]:
-    """从首节点字段定义中定位 src_ip / dst_ip 字段并提取全部有效 IP。
+    """从首节点字段定义中定位实体字段并提取全部有效实体（IP 或域名）。
 
     匹配规则：字段 key 为 src_ip / dst_ip（兜底 alert_field_mapping），
-    且字段值含至少一个有效 IP。返回 ``[{role, label, ips, skipped,
-    asset, intel, agent}]``，其中 ``asset``（资产匹配）与 ``intel``
-    （威胁情报）默认 True、``agent``（智能体研判）默认 False；仅有旧
-    合并键 ``auto_enrich`` 的存量模板按其值兜底。
+    值可为 IP 或域名；domain_url / domain 字段（域名或 URL，URL 自动
+    剥取 host）也纳入研判（360 情报支持 domain 类实体）。返回
+    ``[{role, label, ips, skipped, asset, intel, agent}]``（``ips`` 键承载
+    IP/域名实体列表），其中 ``asset``（资产匹配）与 ``intel``（威胁
+    情报）默认 True、``agent``（智能体研判）默认 False；仅有旧合并键
+    ``auto_enrich`` 的存量模板按其值兜底。
     """
     found: list[dict] = []
     for f in field_defs or []:
@@ -177,9 +259,16 @@ def _locate_ip_fields(field_defs: list, values: dict) -> list[dict]:
         key = str(f.get("key") or "")
         mapping = str(f.get("alert_field_mapping") or "")
         role = key if key in _IP_ROLES else (mapping if mapping in _IP_ROLES else "")
+        extractor = _extract_ips
+        if not role:
+            # 域名/URL 字段（domain_url/domain）：360 情报的 domain 实体入口
+            d_role = key if key in _DOMAIN_ROLES else (mapping if mapping in _DOMAIN_ROLES else "")
+            if d_role:
+                role = d_role
+                extractor = _extract_domains
         if not role or any(item["role"] == role for item in found):
             continue
-        ips, skipped = _extract_ips(values.get(key))
+        ips, skipped = extractor(values.get(key))
         if not ips:
             continue
         legacy = f.get("auto_enrich")
@@ -882,6 +971,347 @@ def _query_threat_intel_batch(ips: list[str]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# 360 威胁情报（IOC 对外输出统一接口）：加载 / 归一化 / 批量查询
+# ---------------------------------------------------------------------------
+
+TI_TOOL_NAME_360 = "get_threat_互联网_360_ioc"
+_TI_TOOL_CANDIDATES_360 = (
+    TI_TOOL_NAME_360,
+    "get_threat_互联网_360",
+)
+
+# 危害等级 → 中文标签（level 0-100 整十分级；文档口径：
+# 30 以下白 / 30 未知 / 40-50 低危 / 60 中危 / 70 高危 / 80-100 超危）
+_360_LEVEL_LABELS: tuple[tuple[int, str], ...] = (
+    (80, "超危"), (70, "高危"), (60, "中危"), (40, "低危"), (30, "未知"), (0, "白名单"),
+)
+
+# 活跃状态 → 中文标签
+_360_STATUS_LABELS = {
+    "ACTIVE": "活跃",
+    "OVER": "过期/失效",
+    "SINKHOLE": "已 Sinkhole 处置",
+    "UNKNOWN": "未知",
+}
+
+
+def _360_level_label(level: int) -> str:
+    """按 360 文档口径把 level（0-100）映射为中文等级标签。"""
+    for threshold, label in _360_LEVEL_LABELS:
+        if level >= threshold:
+            return label
+    return "未知"
+
+
+def _normalize_360_result(entity: str, resp: object, tool_name: str = TI_TOOL_NAME_360) -> dict:
+    """将 360 IOC 统一接口响应归一化为安全上下文 ``ti_360`` 结构。
+
+    全字段保留（危害等级/置信度/活跃状态/病毒名称/用途/时间线/威胁标签
+    及其 ttps 分类），原始响应截断存 ``raw``。业务错误（code != "0"）
+    或工具错误抛 ValueError（调用方按单实体失败处理）。
+    """
+    if not isinstance(resp, dict):
+        raise ValueError(f"360 工具返回非对象结果: {type(resp).__name__}")
+    if resp.get("error"):
+        raise ValueError(f"360 工具返回错误: {resp.get('error')}")
+    code = str(resp.get("code", "0"))
+    if code != "0":
+        raise ValueError(f"360 接口业务错误: code={code}, msg={resp.get('msg')}")
+    raw_items = resp.get("data") if isinstance(resp.get("data"), list) else []
+    results: list[dict] = []
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        tags: list[dict] = []
+        for tg in it.get("tags") or []:
+            if not isinstance(tg, dict):
+                continue
+            ttps = tg.get("ttps") if isinstance(tg.get("ttps"), dict) else {}
+            tags.append({
+                "name": tg.get("name") or tg.get("id") or "",
+                "id": tg.get("id") or "",
+                "desc": tg.get("desc") or "",
+                "severity": tg.get("severity"),
+                "source": tg.get("source"),
+                "tag_type": tg.get("tag_type") or ttps.get("ti_showname") or "",
+                "ti_type_main": ttps.get("ti_type_main") or "",
+                "ti_type_sub": ttps.get("ti_type_sub") or "",
+                "status": tg.get("status") or "",
+            })
+        try:
+            level = int(it.get("level") or 0)
+        except (TypeError, ValueError):
+            level = 0
+        status_raw = str(it.get("status") or "UNKNOWN")
+        results.append({
+            "ioc": it.get("ioc") or entity,
+            "ioc_type": it.get("ioc_type") or "",
+            "level": level,
+            "level_label": _360_level_label(level),
+            "confidence": it.get("confidence"),
+            "status": status_raw,
+            "status_label": _360_STATUS_LABELS.get(status_raw, status_raw),
+            "first_time": it.get("first_time") or "",
+            "last_time": it.get("last_time") or "",
+            "expire_time": it.get("expire_time") or "",
+            "malware": it.get("malware") or "",
+            "function": [str(x) for x in (it.get("function") or []) if x],
+            "hit_ioc": it.get("hit_ioc") or "",
+            "tags": tags,
+        })
+    out = {
+        "entity": entity,
+        "category": _ioc_category(entity),
+        "tool_name": tool_name,
+        "results": results,
+    }
+    try:
+        raw_text = json.dumps(resp, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        raw_text = str(resp)
+    if len(raw_text) > _TI_RAW_MAX_CHARS:
+        raw_text = raw_text[:_TI_RAW_MAX_CHARS] + "...(truncated)"
+    out["raw"] = raw_text
+    return out
+
+
+def _load_ti_tool_run_360():
+    """加载 360 威胁情报 HTTP 工具（候选名精确匹配，不做前缀兜底——
+    避免误抓其他情报源工具）。工具缺失/禁用/加载失败返回 ``(None, None)``
+    （调用方按「跳过 360 研判」处理，不阻断其余链路）。
+
+    Returns:
+        ``(tool_run, tool_name)`` 元组；tool_run 为可调用对象。
+    """
+    from app.core.tool_runner import load_tool_function
+    from app.database import SessionLocal
+    from app.models.tool import Tool
+
+    db = SessionLocal()
+    try:
+        tool = db.query(Tool).filter(
+            Tool.name.in_(_TI_TOOL_CANDIDATES_360),
+            Tool.tool_type == "http",
+            Tool.enabled.is_(True),
+        ).order_by(Tool.id).first()
+        if tool is None:
+            return None, None
+        return load_tool_function(tool), tool.name
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("360 威胁情报工具加载失败: %s", exc)
+        return None, None
+    finally:
+        db.close()
+
+
+def _query_360_batch(entities: list[str]) -> list[dict]:
+    """并发查询 360 威胁情报（category 按实体类型自动识别：IP→ip，域名→domain）。
+
+    工具未注册/禁用时返回空列表（调用方对条目不写 ``ti_360`` 键，
+    前端不渲染 360 卡片）；单实体查询失败返回 ``{"error": "..."}``
+    （条目 ``ti_360=None``，前端按失败态展示并支持重新研判重试）。
+    """
+    tool_run, tool_name = _load_ti_tool_run_360()
+    if tool_run is None:
+        logger.warning(
+            "360 威胁情报工具未注册或已禁用（候选: %s），安全上下文跳过 360 研判",
+            "、".join(_TI_TOOL_CANDIDATES_360),
+        )
+        return []
+
+    async def _gather():
+        sem = asyncio.Semaphore(INTEL_CONCURRENCY)
+
+        async def _one(entity: str) -> dict:
+            async with sem:
+                try:
+                    resp = await tool_run(query=entity, category=_ioc_category(entity))
+                    return _normalize_360_result(entity, resp, tool_name=tool_name)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("360 威胁情报查询失败, entity=%s: %s", entity, exc)
+                    return {"error": f"查询失败: {exc}", "entity": entity}
+
+        return await asyncio.gather(*[_one(e) for e in entities])
+
+    return asyncio.run(_gather())
+
+
+# ---------------------------------------------------------------------------
+# 360 IP 情报批量查询（IP 地区信息）：加载 / 提取 / 批量查询
+# ---------------------------------------------------------------------------
+
+IP_BATCH_TOOL_NAME_360 = "get_threat_互联网_360_ip_batch"
+_TI_TOOL_CANDIDATES_360_IP_BATCH = (
+    IP_BATCH_TOOL_NAME_360,
+)
+
+# IP 批量查询接口单次上限（文档口径：最多 50 个 IP）
+_360_IP_BATCH_SIZE = 50
+
+# 地区信息未知兜底文案（工具缺失/调用失败/未返回地区信息时填充）
+_GEO_UNKNOWN_TEXT = "地区信息未知"
+
+
+def _geo_unknown() -> dict:
+    """地区信息未知兜底结构（前端整体展示「地区信息未知」）。"""
+    return {"region_text": _GEO_UNKNOWN_TEXT, "unknown": True}
+
+
+def _normalize_360_ip_geo(geo: dict) -> dict:
+    """geo_info → 结构化地区字段 + 拼接文本 ``region_text``。
+
+    拼接格式（结构化字段 + 摘要文本二合一，各项缺省自动跳过）::
+
+        region_text = "国家 省份 城市 · 运营商/注册机构 · ASN AS组织"
+        # 例："中国 上海市 上海市 · 阿里云 · AS37963 CNNIC-ALIBABA-CN-NET-AP"
+
+    全部字段为空视为「未返回地区信息」，返回兜底结构由调用方统一处理。
+    """
+    country = str(geo.get("country") or "").strip()
+    province = str(geo.get("province") or "").strip()
+    city = str(geo.get("city") or "").strip()
+    operator = str(geo.get("operator") or "").strip()
+    as_org = str(geo.get("as") or "").strip()
+    # asn=0（如私网 IP 返回的全空 geo_info）视为无效，避免拼出「AS0」
+    try:
+        asn_num = int(geo.get("asn")) if geo.get("asn") not in (None, "") else None
+    except (TypeError, ValueError):
+        asn_num = None
+    asn = asn_num if asn_num is not None and asn_num > 0 else None
+    if asn is not None:
+        asn_text = f"AS{asn}" + (f" {as_org}" if as_org else "")
+    elif as_org:
+        asn_text = as_org
+    else:
+        asn_text = ""
+    location = " ".join(x for x in (country, province, city) if x)
+    parts = [p for p in (location, operator, asn_text) if p]
+    if not parts:
+        return _geo_unknown()
+    return {
+        "country": country,
+        "province": province,
+        "city": city,
+        "operator": operator,
+        "as_org": as_org,
+        "asn": asn,
+        "region_text": " · ".join(parts),
+    }
+
+
+def _extract_360_ip_batch_geo(resp: object) -> dict[str, dict]:
+    """解析 360 IP 情报批量查询响应 → ``{ip: geo_info 结构}``。
+
+    响应结构（errno=2000 业务成功）::
+
+        {"errno": 2000, "result": {"<ip>": {"tags": [...], "summary": {
+            "geo_info": {"country", "province", "city", "operator", "as", "asn"},
+            ...}}}, "invalid": []}
+
+    ``invalid`` 中与 ``result`` 未覆盖的 IP 不进入返回（调用方按
+    「地区信息未知」兜底）；响应非对象 / 工具错误 / errno != 2000 抛
+    ValueError（由批量查询函数按批降级为空 map）。
+    """
+    if not isinstance(resp, dict):
+        raise ValueError(f"360 IP 批量工具返回非对象结果: {type(resp).__name__}")
+    if resp.get("error"):
+        raise ValueError(f"360 IP 批量工具返回错误: {resp.get('error')}")
+    try:
+        errno = int(resp.get("errno") or 0)
+    except (TypeError, ValueError):
+        errno = -1
+    if errno != 2000:
+        raise ValueError(f"360 IP 批量接口业务错误: errno={errno}, msg={resp.get('msg')}")
+    result = resp.get("result")
+    if not isinstance(result, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for ip, item in result.items():
+        if not isinstance(item, dict):
+            continue
+        summary = item.get("summary") if isinstance(item.get("summary"), dict) else item
+        geo = summary.get("geo_info")
+        if not isinstance(geo, dict):
+            continue
+        normalized = _normalize_360_ip_geo(geo)
+        if not normalized.get("unknown"):
+            out[ip] = normalized
+    return out
+
+
+def _load_ip_batch_tool_run_360():
+    """加载 360 IP 情报批量查询 HTTP 工具（候选名精确匹配）。
+
+    工具缺失/禁用/加载失败返回 ``(None, None)``（调用方按
+    「地区信息未知」兜底，不阻断其余研判链路）。
+    """
+    from app.core.tool_runner import load_tool_function
+    from app.database import SessionLocal
+    from app.models.tool import Tool
+
+    db = SessionLocal()
+    try:
+        tool = db.query(Tool).filter(
+            Tool.name.in_(_TI_TOOL_CANDIDATES_360_IP_BATCH),
+            Tool.tool_type == "http",
+            Tool.enabled.is_(True),
+        ).order_by(Tool.id).first()
+        if tool is None:
+            return None, None
+        return load_tool_function(tool), tool.name
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("360 IP 批量查询工具加载失败: %s", exc)
+        return None, None
+    finally:
+        db.close()
+
+
+def _query_360_ip_batch_geo(ips: list[str]) -> dict[str, dict]:
+    """批量查询 IP 地区情报 → ``{ip: geo_info}``（仅 IP 实体，域名不适用）。
+
+    按 360 接口单次上限（50 个）自动分批、信号量并发查询；工具未注册/
+    禁用/单批失败时对应 IP 不进入返回（调用方统一兜底「地区信息未知」），
+    不影响原有威胁情报链路。
+    """
+    if not ips:
+        return {}
+    tool_run, _tool_name = _load_ip_batch_tool_run_360()
+    if tool_run is None:
+        logger.warning(
+            "360 IP 批量查询工具未注册或已禁用（候选: %s），地区信息按「未知」兜底",
+            "、".join(_TI_TOOL_CANDIDATES_360_IP_BATCH),
+        )
+        return {}
+    batches = [
+        ips[i:i + _360_IP_BATCH_SIZE]
+        for i in range(0, len(ips), _360_IP_BATCH_SIZE)
+    ]
+
+    async def _gather():
+        sem = asyncio.Semaphore(INTEL_CONCURRENCY)
+
+        async def _one(batch: list[str]) -> dict[str, dict]:
+            async with sem:
+                try:
+                    resp = await tool_run(param=",".join(batch))
+                    return _extract_360_ip_batch_geo(resp)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "360 IP 批量查询失败（%s 等 %d 个 IP）: %s",
+                        batch[0], len(batch), exc,
+                    )
+                    return {}
+
+        maps = await asyncio.gather(*[_one(b) for b in batches])
+        merged: dict[str, dict] = {}
+        for m in maps:
+            merged.update(m)
+        return merged
+
+    return asyncio.run(_gather())
+
+
+# ---------------------------------------------------------------------------
 # v2 多 IP：查询执行 / 存储分级 / 统计
 # ---------------------------------------------------------------------------
 
@@ -938,8 +1368,12 @@ def _asset_criticality(asset: dict | None) -> str:
     return str((fields or {}).get("criticality") or "")
 
 
-def _entry_tier(idx: int, asset: dict | None, threat: dict | None) -> str:
-    """存储分级：风险 IP 保留全字段（full），其余精简（lite）。"""
+def _entry_tier(idx: int, asset: dict | None, threat: dict | None, ti360: dict | None = None) -> str:
+    """存储分级：风险实体保留全字段（full），其余精简（lite）。
+
+    360 情报中危（level ≥ 60）及以上的实体也升为 full（任一情报源
+    命中恶意即保留全量明细）。
+    """
     if idx < LITE_FULL_TOP:
         return "full"
     if isinstance(threat, dict):
@@ -947,9 +1381,22 @@ def _entry_tier(idx: int, asset: dict | None, threat: dict | None) -> str:
             return "full"
         if threat.get("severity") in ("high", "critical"):
             return "full"
+    if isinstance(ti360, dict) and _ti360_max_level(ti360) >= 60:
+        return "full"
     if _asset_criticality(asset) in ("high", "critical"):
         return "full"
     return "lite"
+
+
+def _ti360_max_level(ti360: dict) -> int:
+    """取 360 情报结果中的最高危害等级（level 0-100；无结果返回 -1）。"""
+    levels = [r.get("level") or 0 for r in (ti360.get("results") or [])]
+    return max(levels) if levels else -1
+
+
+def _ti360_malicious(ti360) -> bool:
+    """360 口径恶意判定：任一结果 level ≥ 60（中危起步视同恶意）。"""
+    return isinstance(ti360, dict) and _ti360_max_level(ti360) >= 60
 
 
 def _lite_asset(asset: dict) -> dict:
@@ -977,12 +1424,40 @@ def _lite_threat(threat: dict) -> dict:
     }
 
 
+def _lite_ti_360(ti360: dict) -> dict:
+    """lite 档 360 情报：仅保留结论级精简键（详情可重新研判升级 full）。"""
+    return {
+        "entity": ti360.get("entity"),
+        "category": ti360.get("category"),
+        "tool_name": ti360.get("tool_name"),
+        # 地区信息体量小，lite 档原样保留（IP 实体）
+        "geo_info": ti360.get("geo_info"),
+        "results": [
+            {
+                "ioc": r.get("ioc"),
+                "ioc_type": r.get("ioc_type"),
+                "level": r.get("level"),
+                "level_label": r.get("level_label"),
+                "confidence": r.get("confidence"),
+                "status": r.get("status"),
+                "status_label": r.get("status_label"),
+                "malware": r.get("malware"),
+                "tags": [
+                    {"name": tg.get("name"), "severity": tg.get("severity")}
+                    for tg in (r.get("tags") or [])[:2]
+                ],
+            }
+            for r in (ti360.get("results") or [])
+        ],
+    }
+
+
 def _apply_tier(entry: dict, idx: int, force_full: bool = False) -> None:
     """按分级就地瘦身 entry：full 原样保留，lite 剔除大字段。"""
     if force_full:
         entry["detail"] = "full"
         return
-    tier = _entry_tier(idx, entry.get("asset"), entry.get("threat"))
+    tier = _entry_tier(idx, entry.get("asset"), entry.get("threat"), entry.get("ti_360"))
     entry["detail"] = tier
     if tier == "lite":
         asset = entry.get("asset")
@@ -991,6 +1466,9 @@ def _apply_tier(entry: dict, idx: int, force_full: bool = False) -> None:
         threat = entry.get("threat")
         if isinstance(threat, dict):
             entry["threat"] = _lite_threat(threat)
+        ti360 = entry.get("ti_360")
+        if isinstance(ti360, dict):
+            entry["ti_360"] = _lite_ti_360(ti360)
 
 
 def _compute_stats(entries: list[dict], total_original: int | None = None) -> dict:
@@ -998,12 +1476,15 @@ def _compute_stats(entries: list[dict], total_original: int | None = None) -> di
 
     pending 条目（后台研判中）不计入各风险维度；``intel_failed`` 以
     显式 ``threat=None`` 判定（未开启情报的条目无 threat 键，不算失败）；
-    ``asset_failed`` 以 asset.error 键判定。
+    ``asset_failed`` 以 asset.error 键判定。``malicious`` /
+    ``severity_high`` 为双情报源（知道创宇 + 360）去重口径：知道创宇
+    ``is_malicious`` 或 360 level ≥ 60 记恶意；任一源高危记高危。
     """
     stats = {
         "total": len(entries),
         "src": sum(1 for e in entries if "src_ip" in (e.get("roles") or [])),
         "dst": sum(1 for e in entries if "dst_ip" in (e.get("roles") or [])),
+        "domain": sum(1 for e in entries if e.get("entity_type") == "domain"),
         "malicious": 0,
         "severity_high": 0,
         "asset_matched": 0,
@@ -1017,14 +1498,27 @@ def _compute_stats(entries: list[dict], total_original: int | None = None) -> di
     for e in entries:
         if e.get("pending") or e.get("requery_pending"):
             continue
+        malicious = False
+        severity_high = False
         t = e.get("threat")
         if t is None and "threat" in e:
             stats["intel_failed"] += 1
         elif isinstance(t, dict):
             if t.get("is_malicious"):
-                stats["malicious"] += 1
+                malicious = True
             if t.get("severity") in ("high", "critical"):
-                stats["severity_high"] += 1
+                severity_high = True
+        ti360 = e.get("ti_360")
+        if isinstance(ti360, dict) and ti360.get("results"):
+            levels = [r.get("level") or 0 for r in ti360["results"]]
+            if any(lv >= 60 for lv in levels):
+                malicious = True
+            if any(lv >= 70 for lv in levels):
+                severity_high = True
+        if malicious:
+            stats["malicious"] += 1
+        if severity_high:
+            stats["severity_high"] += 1
         a = e.get("asset")
         if isinstance(a, dict):
             if a.get("error"):
@@ -1041,34 +1535,69 @@ def _query_and_build_entries(
 ) -> tuple[list[dict], list[str]]:
     """对 plan_ips（``[{ip, roles, asset, intel, agent}]``）执行查询并组装 entries。
 
+    实体可为 IP 或域名（``ip`` 键承载），按实体类型自动分流：
+    资产匹配 / 知道创宇情报 / 智能体研判仅对 IP 实体生效；
+    360 情报对 IP 与域名均可（category 按实体类型自动识别）。
+
     返回 ``(entries, errors)``：entries 与 plan_ips 等长同序；agent 仅写
-    ``{"pending": True}`` 占位（由后台线程完成）。
+    ``{"pending": True}`` 占位（由后台线程完成）。360 结果写入
+    ``entry["ti_360"]``（工具未注册时不写键，前端不渲染 360 卡片；
+    查询失败写 ``None``，前端按失败态展示）；IP 实体另将 360 IP 批量
+    情报的地区信息拼接至 ``ti_360.geo_info``（批量查询失败/未返回
+    地区时兜底「地区信息未知」，域名实体不适用不写键）。
     """
-    asset_ips = [p["ip"] for p in plan_ips if p.get("asset")]
-    intel_ips = [p["ip"] for p in plan_ips if p.get("intel")]
+    # 资产匹配与知道创宇情报仅支持 IP 实体
+    asset_ips = [p["ip"] for p in plan_ips if p.get("asset") and _is_entity_ip(p["ip"])]
+    intel_ips = [p["ip"] for p in plan_ips if p.get("intel") and _is_entity_ip(p["ip"])]
+    # 360 情报支持 IP 与域名：intel 开启的实体全部参与
+    entities_360 = [p["ip"] for p in plan_ips if p.get("intel")]
     assets = _query_assets(db, asset_ips)
     threats = _query_threat_intel_batch(intel_ips) if intel_ips else []
     threat_map = dict(zip(intel_ips, threats))
+    ti360_map = dict(zip(entities_360, _query_360_batch(entities_360))) if entities_360 else {}
+    # 360 IP 批量情报（地区信息）：仅 IP 实体适用；查询失败/未返回地区
+    # 由下方条目组装时统一兜底「地区信息未知」，不影响原有情报链路
+    geo_map = _query_360_ip_batch_geo(
+        [e for e in entities_360 if _is_entity_ip(e)]
+    )
 
     entries: list[dict] = []
     errors: list[str] = []
     for idx, p in enumerate(plan_ips):
         ip = p["ip"]
+        is_domain = not _is_entity_ip(ip)
         entry: dict = {"ip": ip, "roles": list(p.get("roles") or [])}
-        if p.get("asset"):
+        if is_domain:
+            entry["entity_type"] = "domain"
+        if p.get("asset") and not is_domain:
             asset, err = assets.get(ip, ({"matched": False}, None))
             entry["asset"] = asset
             if err:
                 errors.append(err)
         if p.get("intel"):
-            t = threat_map.get(ip)
-            if isinstance(t, dict) and not t.get("error"):
-                entry["threat"] = t
-            else:
-                entry["threat"] = None
-                reason = t.get("error") if isinstance(t, dict) else "未知错误"
-                errors.append(f"{ip} 威胁情报查询失败: {reason}")
-        if p.get("agent"):
+            if not is_domain:
+                # 知道创宇情报（IP 情报源，仅支持 IP 实体）
+                t = threat_map.get(ip)
+                if isinstance(t, dict) and not t.get("error"):
+                    entry["threat"] = t
+                else:
+                    entry["threat"] = None
+                    reason = t.get("error") if isinstance(t, dict) else "未知错误"
+                    errors.append(f"{ip} 威胁情报查询失败: {reason}")
+            # 360 情报（IP 与域名均可，category 自动识别）
+            if ip in ti360_map:
+                t360 = ti360_map[ip]
+                if isinstance(t360, dict) and not t360.get("error"):
+                    entry["ti_360"] = t360
+                    if not is_domain:
+                        # 360 IP 批量情报地区信息拼接到 ti_360.geo_info
+                        # （查询失败/未返回地区兜底「地区信息未知」，不中断流程）
+                        entry["ti_360"]["geo_info"] = geo_map.get(ip) or _geo_unknown()
+                else:
+                    entry["ti_360"] = None
+                    reason = t360.get("error") if isinstance(t360, dict) else "未知错误"
+                    errors.append(f"{ip} 360威胁情报查询失败: {reason}")
+        if p.get("agent") and not is_domain:
             entry["agent"] = {"pending": True}
         _apply_tier(entry, idx, force_full=force_full)
         entries.append(entry)
@@ -1251,7 +1780,7 @@ def build_ticket_enrichment(
         for token in item.get("skipped") or []:
             errors.append(
                 f"{item['label']} 含不参与自动研判的条目：{token}"
-                "（自动研判仅支持单个 IP，网段/范围/文本条目已跳过）"
+                "（自动研判仅支持单个 IP 或域名，网段/范围/文本条目已跳过）"
             )
 
     truncated = len(order) > MAX_ENRICH_IPS
@@ -1367,8 +1896,11 @@ def _enrichment_bg_worker(ticket_id: int, plan: dict, title: str) -> None:
             "工单自动研判后台回写完成: ticket=%s, ip数=%d, 错误=%d",
             ticket_id, len(merged), len(errors),
         )
-        # 链式执行智能体研判（同线程串行，避免与 enrichment 回写并发覆盖）
-        agent_ips = [p["ip"] for p in plan["ips"] if p.get("agent")]
+        # 链式执行智能体研判（同线程串行，避免与 enrichment 回写并发覆盖；
+        # 智能体仅支持 IP 研判，域名实体跳过）
+        agent_ips = [
+            p["ip"] for p in plan["ips"] if p.get("agent") and _is_entity_ip(p["ip"])
+        ]
         if agent_ips:
             _run_agent_analysis_for_ips(session, ticket_id, agent_ips, title)
     except Exception:  # noqa: BLE001

@@ -64,17 +64,17 @@ const MODULE_GROUPS = [
   {
     key: 'workspace',
     label: '运营中心',
-    modules: ['dashboard', 'bigscreen', 'bigscreen2', 'approval', 'chat'],
+    modules: ['dashboard', 'bigscreen', 'bigscreen2', 'approval', 'ban_workflow', 'chat'],
   },
   {
     key: 'orchestration',
     label: '智能体编排',
-    modules: ['agent', 'workflow_list', 'workflow_editor', 'ban_workflow', 'skill', 'tool', 'knowledge_base'],
+    modules: ['agent', 'workflow_list', 'workflow_editor', 'skill', 'tool', 'knowledge_base'],
   },
   {
     key: 'resources',
     label: '资源管理',
-    modules: ['asset_overview', 'asset_list', 'asset_templates', 'asset_discovery', 'deliverable'],
+    modules: ['asset_overview', 'asset_list', 'asset_templates', 'asset_discovery', 'ip_library', 'deliverable'],
   },
   {
     key: 'operations',
@@ -89,7 +89,7 @@ const MODULE_GROUPS = [
   {
     key: 'config',
     label: '连接配置',
-    modules: ['llm_config', 'device', 'strategy', 'alert', 'monitor'],
+    modules: ['llm_config', 'device', 'strategy', 'alert', 'alert_rule', 'monitor'],
   },
   {
     key: 'monitor',
@@ -104,7 +104,7 @@ const MODULE_GROUPS = [
 ]
 
 // 所有动作列表（用于表头）
-const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export']
+const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'handle', 'pause']
 
 // 检查是否拥有全部权限
 function hasAllPermissions(permissions, moduleDef) {

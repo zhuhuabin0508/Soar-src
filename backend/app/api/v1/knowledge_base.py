@@ -13,7 +13,7 @@ from app.core.file_parser import parse_file_content, parse_filename
 from app.core.kb_retriever import search_kb
 from app.core.kb_service import ingest_document, list_segments, reingest_document
 from app.database import get_db
-from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, require_role, resource_can_edit
+from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, require_permission, require_role, resource_can_edit
 from app.models.knowledge_base import KnowledgeBase, KnowledgeDocument, KnowledgeSegment
 from app.models.user import User
 from app.schemas.common import to_dict
@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/knowledge-bases",
     tags=["knowledge-bases"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[
+        Depends(get_current_user),
+        Depends(require_permission("knowledge_base", "view")),
+    ],
 )
 
 # 上传文件保存目录：backend/uploads/
@@ -250,7 +253,7 @@ def list_knowledge_bases(
     return result
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 def create_knowledge_base(
     body: KBBase,
     db: Session = Depends(get_db),
@@ -285,7 +288,7 @@ def create_knowledge_base(
     return _kb_to_dict(kb)
 
 
-@router.put("/{kb_id}")
+@router.put("/{kb_id}", dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 def update_knowledge_base(
     kb_id: int,
     body: KBBase,
@@ -341,7 +344,7 @@ def get_knowledge_base(
     return data
 
 
-@router.delete("/{kb_id}")
+@router.delete("/{kb_id}", dependencies=[Depends(require_permission("knowledge_base", "delete"))])
 def delete_knowledge_base(
     kb_id: int,
     db: Session = Depends(get_db),
@@ -470,7 +473,7 @@ def download_document_file(
     )
 
 
-@router.post("/{kb_id}/documents", status_code=201)
+@router.post("/{kb_id}/documents", status_code=201, dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def create_document(
     kb_id: int,
     body: DocBase,
@@ -513,7 +516,7 @@ async def create_document(
     return to_dict(doc)
 
 
-@router.put("/{kb_id}/documents/{doc_id}")
+@router.put("/{kb_id}/documents/{doc_id}", dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def update_document(
     kb_id: int,
     doc_id: int,
@@ -561,7 +564,7 @@ async def update_document(
     return to_dict(doc)
 
 
-@router.post("/{kb_id}/documents/upload", status_code=201)
+@router.post("/{kb_id}/documents/upload", status_code=201, dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def upload_document(
     kb_id: int,
     file: UploadFile = File(...),
@@ -586,7 +589,7 @@ async def upload_document(
     return _doc_public_dict(doc, include_content=False)
 
 
-@router.post("/{kb_id}/documents/upload-batch", status_code=201)
+@router.post("/{kb_id}/documents/upload-batch", status_code=201, dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def upload_documents_batch(
     kb_id: int,
     files: list[UploadFile] = File(...),
@@ -614,7 +617,7 @@ async def upload_documents_batch(
     return {"ok": True, "documents": saved, "errors": errors}
 
 
-@router.post("/{kb_id}/documents/{doc_id}/replace", status_code=200)
+@router.post("/{kb_id}/documents/{doc_id}/replace", status_code=200, dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def replace_document_file(
     kb_id: int,
     doc_id: int,
@@ -639,7 +642,7 @@ async def replace_document_file(
     return _doc_public_dict(doc, include_content=False)
 
 
-@router.patch("/{kb_id}/documents/{doc_id}/enabled")
+@router.patch("/{kb_id}/documents/{doc_id}/enabled", dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 def set_document_enabled(
     kb_id: int,
     doc_id: int,
@@ -664,7 +667,7 @@ def set_document_enabled(
     return _doc_public_dict(doc, include_content=False)
 
 
-@router.post("/{kb_id}/documents/batch")
+@router.post("/{kb_id}/documents/batch", dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def batch_documents(
     kb_id: int,
     body: BatchDocsBody,
@@ -730,7 +733,7 @@ class FetchUrlRequest(BaseModel):
     retrieval_weight: int = Field(1, description="检索权重")
 
 
-@router.post("/{kb_id}/documents/fetch-url", status_code=201)
+@router.post("/{kb_id}/documents/fetch-url", status_code=201, dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def fetch_url_document(
     kb_id: int,
     body: FetchUrlRequest,
@@ -801,7 +804,7 @@ async def fetch_url_document(
     return to_dict(doc)
 
 
-@router.delete("/{kb_id}/documents/{doc_id}")
+@router.delete("/{kb_id}/documents/{doc_id}", dependencies=[Depends(require_permission("knowledge_base", "delete"))])
 def delete_document(
     kb_id: int,
     doc_id: int,
@@ -891,7 +894,7 @@ def get_document_segments(
     }
 
 
-@router.post("/{kb_id}/documents/{doc_id}/reparse")
+@router.post("/{kb_id}/documents/{doc_id}/reparse", dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def reparse_document(
     kb_id: int,
     doc_id: int,
@@ -924,7 +927,7 @@ async def reparse_document(
     return {"doc_id": doc_id, "status": "parsing", "message": "已启动后台重新解析"}
 
 
-@router.post("/{kb_id}/reparse-all")
+@router.post("/{kb_id}/reparse-all", dependencies=[Depends(require_permission("knowledge_base", "edit"))])
 async def reparse_all_documents(
     kb_id: int,
     db: Session = Depends(get_db),
@@ -958,7 +961,7 @@ async def reparse_all_documents(
     return {"ok": True, "total": len(results), "results": results}
 
 
-@router.post("/{kb_id}/search")
+@router.post("/{kb_id}/search", dependencies=[Depends(require_permission("knowledge_base", "view"))])
 async def search_knowledge_base(
     kb_id: int,
     body: SearchRequest,
@@ -993,7 +996,7 @@ class FileQueryRequest(BaseModel):
     limit: int = Field(20, description="返回行数上限")
 
 
-@router.post("/{kb_id}/file-query")
+@router.post("/{kb_id}/file-query", dependencies=[Depends(require_permission("knowledge_base", "view"))])
 def file_query(
     kb_id: int,
     body: FileQueryRequest,

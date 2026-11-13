@@ -15,7 +15,7 @@ from app.dependencies import (
     get_current_user,
     get_firewall_device,
     get_tool_registry,
-    require_role,
+    require_permission,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,10 @@ class BlockIPRequest(BaseModel):
     reason: str
 
 
-@router.get("/query/{ip}")
+@router.get(
+    "/query/{ip}",
+    dependencies=[Depends(require_permission("tool", "view"))],
+)
 async def query_ip(
     ip: str,
     registry: ToolRegistry = Depends(get_tool_registry),
@@ -71,7 +74,10 @@ async def query_ip(
     return result
 
 
-@router.post("/block_ip", dependencies=[Depends(require_role("admin", "analyst"))])
+@router.post(
+    "/block_ip",
+    dependencies=[Depends(require_permission("tool", "execute"))],
+)
 async def block_ip(
     body: BlockIPRequest,
     firewall: FirewallDevice = Depends(get_firewall_device),

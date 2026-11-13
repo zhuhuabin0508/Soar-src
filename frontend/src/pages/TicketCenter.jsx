@@ -1499,7 +1499,7 @@ export default function TicketCenter() {
           {currentFlow && (
             <div>
               <label className={labelCls}>
-                抄送<span className="ml-1 font-normal text-muted-foreground">发起后自动通知抄送对象，工单完结时再次通知结果</span>
+                抄送
               </label>
               <div className="flex flex-wrap items-center gap-1">
                 {currentFlow.cc_targets?.length
@@ -1644,9 +1644,7 @@ export default function TicketCenter() {
                   )}
                 </div>
                 <div className="border-t border-emerald-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
-                  白名单为全局豁免规则，命中后请确认处置方式；数据来自后端本地同步索引（约 5 秒与设备同步）
-                  {whitelistCheck.tookMs != null && `；匹配耗时 ${whitelistCheck.tookMs}ms`}
-                  {whitelistCheck.updatedAt && `；同步于 ${fmtTime(whitelistCheck.updatedAt)}`}
+                  白名单为全局豁免规则，命中后请确认处置方式
                 </div>
               </aside>
             )}
@@ -1716,9 +1714,6 @@ export default function TicketCenter() {
                     )}
                   </div>
                 ))}
-              </div>
-              <div className="border-t border-amber-500/20 px-3 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                按源/目的 IP 匹配同流程的历史工单（处置中/已完成），点击工单号可查看详情与处置结论
               </div>
             </aside>
             )}

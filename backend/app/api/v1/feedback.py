@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from app.core.permissions import DEFAULT_ROLES, has_permission, migrate_permissions
 from app.core.sanitizer import sanitize_text
 from app.database import get_db
-from app.dependencies import get_current_user, is_admin
+from app.dependencies import get_current_user, is_admin, require_permission
 from app.models.feedback import Feedback, FeedbackHistory
 from app.models.role import Role
 from app.models.notification import Notification
@@ -507,7 +507,7 @@ def list_my_feedbacks(
 
 # ============ 10. 管理员反馈列表 ============
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("feedback", "view"))])
 def list_feedbacks(
     type: Optional[str] = Query(None, description="反馈类型筛选"),
     status: Optional[str] = Query(None, description="状态筛选"),
@@ -591,7 +591,7 @@ def list_feedbacks(
 
 # ============ 4.5 反馈统计（admin；须在 /{feedback_id} 之前注册，避免被路径参数拦截） ============
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(require_permission("feedback", "view"))])
 def feedback_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -671,7 +671,7 @@ def feedback_stats(
     }
 
 
-@router.get("/assignees")
+@router.get("/assignees", dependencies=[Depends(require_permission("feedback", "view"))])
 def list_feedback_assignees(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -767,7 +767,7 @@ def update_feedback(
 
 # ============ 7. 管理员回复 ============
 
-@router.post("/{feedback_id}/replies")
+@router.post("/{feedback_id}/replies", dependencies=[Depends(require_permission("feedback", "edit"))])
 def reply_feedback(
     feedback_id: int,
     body: ReplyCreate,
@@ -834,7 +834,7 @@ def reply_feedback(
 
 # ============ 8. 管理员改状态 ============
 
-@router.put("/{feedback_id}/status")
+@router.put("/{feedback_id}/status", dependencies=[Depends(require_permission("feedback", "edit"))])
 def update_feedback_status(
     feedback_id: int,
     body: StatusUpdate,
@@ -878,7 +878,7 @@ def update_feedback_status(
     return _feedback_detail(db, feedback)
 
 
-@router.put("/{feedback_id}/assignee")
+@router.put("/{feedback_id}/assignee", dependencies=[Depends(require_permission("feedback", "edit"))])
 def assign_feedback(
     feedback_id: int,
     body: AssigneeUpdate,
@@ -1070,7 +1070,7 @@ def download_attachment(
 
 # ============ 11. 批量操作 ============
 
-@router.post("/batch")
+@router.post("/batch", dependencies=[Depends(require_permission("feedback", "edit"))])
 def batch_action(
     body: BatchAction,
     db: Session = Depends(get_db),
@@ -1129,7 +1129,11 @@ def batch_action(
 
 # ============ 12. 删除反馈（admin only，硬删除） ============
 
-@router.delete("/{feedback_id}", status_code=204)
+@router.delete(
+    "/{feedback_id}",
+    status_code=204,
+    dependencies=[Depends(require_permission("feedback", "delete"))],
+)
 def delete_feedback(
     feedback_id: int,
     db: Session = Depends(get_db),

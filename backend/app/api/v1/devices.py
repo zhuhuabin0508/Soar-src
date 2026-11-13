@@ -26,7 +26,7 @@ from app.core.security import decrypt_device_secret, encrypt_device_secret, vali
 from app.core.ticket_device_action import parse_params_schema, prepare_device_params
 from app.core.timezone import beijing_now, beijing_now_iso
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user, require_permission
 from app.devices.action_executor import execute_device_action
 from app.models.device import Device, DeviceAction, DeviceCallLog
 from app.models.user import User
@@ -34,10 +34,11 @@ from app.schemas.common import paginate, to_dict, to_dict_list
 
 logger = logging.getLogger(__name__)
 
-# 读操作：仅需登录；写操作：要求 admin 角色
+# 读操作：device:view（router 基线）；写操作：追加 device:edit
 router = APIRouter(
     prefix="/devices",
     tags=["devices"],
+    dependencies=[Depends(require_permission("device", "view"))],
 )
 
 
@@ -365,7 +366,7 @@ def create_device(
     body: DeviceBase,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """创建安全设备。"""
     logger.info("创建设备: name=%s, type=%s", body.name, body.type)
@@ -395,7 +396,7 @@ def update_device(
     body: DeviceBase,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """更新安全设备（字段级变更审计，密码留空不修改）。"""
     logger.info("更新设备: id=%s", device_id)
@@ -489,7 +490,7 @@ def batch_delete_devices(
     body: BatchDeleteRequest,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """批量删除安全设备。
 
@@ -552,7 +553,7 @@ def delete_device(
     device_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """删除安全设备（同时级联清理动作、接收渠道及其关联数据，并停止监听线程）。"""
     logger.info("删除设备: id=%s", device_id)
@@ -597,7 +598,7 @@ def create_device_from_template(
     body: FromTemplateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """从模板创建设备（含预置动作）。"""
     template = get_device_template(body.template_key)
@@ -686,7 +687,7 @@ def create_device_from_template(
     return {"device": to_dict(device, exclude={"api_key", "username", "password"}), "actions_created": created_actions}
 
 
-@router.get("/export", dependencies=[Depends(require_role("admin"))])
+@router.get("/export", dependencies=[Depends(require_permission("device", "edit"))])
 def export_devices(
     ids: str = Query("", description="逗号分隔的设备 ID，为空则导出全部"),
     db: Session = Depends(get_db),
@@ -707,7 +708,8 @@ def export_devices(
     devices = query.order_by(Device.created_at.desc()).all()
     items: list[dict] = []
     for d in devices:
-        item = to_dict(d)
+        # 凭据字段不随导出下发（与列表/详情同口径，导出文件可能被转发留存）
+        item = to_dict(d, exclude={"api_key", "username", "password"})
         actions = (
             db.query(DeviceAction)
             .filter(DeviceAction.device_id == d.id)
@@ -724,7 +726,7 @@ def import_devices(
     body: ImportDevicesRequest,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """导入设备配置（JSON，含动作）。"""
     created_devices = 0
@@ -826,7 +828,7 @@ def import_devices(
 def health_check_all(
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """手动触发所有启用设备的健康检查。"""
     devices = db.query(Device).filter(Device.enabled.is_(True)).all()
@@ -878,7 +880,7 @@ def test_device_connection(
     device_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """测试设备连接：GET 设备 api_url 健康检查端点，更新连接状态。"""
     logger.info("测试设备连接: id=%s", device_id)
@@ -1030,7 +1032,7 @@ def create_device_action(
     body: DeviceActionBase,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """为指定设备创建动作。"""
     logger.info("创建设备动作: device_id=%s, name=%s", device_id, body.name)
@@ -1065,7 +1067,7 @@ def update_device_action(
     body: DeviceActionBase,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """更新设备动作（version+1 版本管理）。"""
     logger.info("更新设备动作: device_id=%s, action_id=%s", device_id, action_id)
@@ -1121,7 +1123,7 @@ def delete_device_action(
     action_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """删除设备动作。"""
     logger.info("删除设备动作: device_id=%s, action_id=%s", device_id, action_id)
@@ -1158,7 +1160,7 @@ def toggle_device_action(
     action_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """快速切换动作启用状态。"""
     action = (
@@ -1198,7 +1200,7 @@ def test_device_action(
     body: ActionTestRequest,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """实际调用设备 API 测试动作是否可用。
 

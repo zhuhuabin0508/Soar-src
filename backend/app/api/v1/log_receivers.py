@@ -33,7 +33,7 @@ from app.core.log_receiver_manager.entry_registry import (
 )
 from app.core.timezone import BEIJING_TZ, beijing_now
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user, require_permission
 from app.models.device import Device
 from app.models.log_receiver import (
     DeviceReceiveLog,
@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/log-receivers",
     tags=["log-receivers"],
+    dependencies=[Depends(require_permission("device", "view"))],
 )
 
 
@@ -421,7 +422,7 @@ def create_receiver(
     body: LogReceiverBase,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """创建接收器并立即应用（启动监听）。"""
     _validate_payload(body)
@@ -910,13 +911,13 @@ def entry_failure_samples(
     }
 
 
-@router.put("/entries/{entry_id}", dependencies=[Depends(require_role("admin"))])
+@router.put("/entries/{entry_id}", dependencies=[Depends(require_permission("device", "edit"))])
 def update_source_entry(
     entry_id: int,
     body: SourceEntryUpdate,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """更新来源条目（名称/关联设备/启停/解析策略/流水线覆盖），同进程缓存立即失效。"""
     rec = db.query(LogSourceEntry).filter(LogSourceEntry.id == entry_id).first()
@@ -979,7 +980,7 @@ def delete_source_entry(
     entry_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> None:
     """删除来源条目（该来源再次发日志时会按发现开关重新自动创建）。"""
     rec = db.query(LogSourceEntry).filter(LogSourceEntry.id == entry_id).first()
@@ -1007,7 +1008,7 @@ def batch_delete_source_entries(
     body: SourceEntryBatchDelete,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """批量删除某接收器下的来源条目。"""
     if not body.ids:
@@ -1063,7 +1064,7 @@ def update_receiver(
     body: LogReceiverBase,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> dict:
     """更新接收器，若被启用则重启监听以应用新配置。"""
     rec = db.query(LogReceiver).filter(LogReceiver.id == receiver_id).first()
@@ -1138,7 +1139,7 @@ def reload_receiver(
     receiver_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> ReceiverReloadResponse:
     """启停/重启指定接收器的监听线程。"""
     rec = db.query(LogReceiver).filter(LogReceiver.id == receiver_id).first()
@@ -1181,7 +1182,7 @@ def delete_receiver(
     receiver_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require_permission("device", "edit")),
 ) -> None:
     """删除接收器并停止监听。"""
     rec = db.query(LogReceiver).filter(LogReceiver.id == receiver_id).first()

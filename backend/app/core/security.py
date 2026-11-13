@@ -712,6 +712,15 @@ def run_lightweight_migrations(engine) -> None:
             "deliverables",
             {"content_hash": "VARCHAR(64)"},
         )
+        # 判重查询条件为 (category_id, content_hash)，补复合索引避免全表扫描
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_deliverables_category_content_hash "
+                    "ON deliverables (category_id, content_hash)"
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("deliverables 判重索引创建失败（忽略）: %s", exc)
         # users 表新增 role_id 列（关联 roles 表）
         ensure_columns(
             engine,

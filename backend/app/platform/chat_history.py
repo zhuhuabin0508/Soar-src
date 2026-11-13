@@ -249,6 +249,47 @@ def upsert_chat_session(
     return row
 
 
+def rename_chat_session(
+    db,
+    agent_id: int,
+    user_id: int,
+    session_id: str,
+    title: str,
+    commit: bool = True,
+):
+    """重命名会话标题（仅当前用户、未删除的会话）。
+
+    - 只更新 title，不改 updated_at：重命名不应把旧会话顶到列表最前面；
+    - 会话不存在（尚未发送过消息、或已被删除）时返回 None，由接口决定提示，
+      前端可保留本地标题，待会话首次落库后自然同步。
+    """
+    from app.models.chat_session import ChatSession
+
+    clean = (title or "").strip()
+    if not clean:
+        return None
+    if len(clean) > SESSION_TITLE_MAX:
+        clean = f"{clean[:SESSION_TITLE_MAX]}…"
+
+    row = (
+        db.query(ChatSession)
+        .filter(
+            ChatSession.agent_id == int(agent_id),
+            ChatSession.user_id == int(user_id),
+            ChatSession.session_id == session_id,
+            ChatSession.deleted_at.is_(None),
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    row.title = clean
+    if commit:
+        db.commit()
+        db.refresh(row)
+    return row
+
+
 def list_chat_sessions(
     db,
     agent_id: int,

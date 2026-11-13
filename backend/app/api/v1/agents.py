@@ -479,7 +479,7 @@ class ResumeRequest(BaseModel):
     decision: str = Field("approve", description="审批决定：approve | reject")
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("agent", "view"))])
 def list_agents(
     usable: bool = Query(False, description="仅返回已发布、可在对话中使用的智能体"),
     db: Session = Depends(get_db),
@@ -498,7 +498,7 @@ def list_agents(
     ]
 
 
-@router.get("/templates")
+@router.get("/templates", dependencies=[Depends(require_permission("agent", "view"))])
 def list_public_agent_templates(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -521,7 +521,7 @@ def list_public_agent_templates(
     return out
 
 
-@router.post("/from-dsl", status_code=201)
+@router.post("/from-dsl", status_code=201, dependencies=[Depends(require_permission("agent", "edit"))])
 def create_agent_from_dsl(
     body: AgentFromDslRequest,
     db: Session = Depends(get_db),
@@ -562,7 +562,7 @@ def create_agent_from_dsl(
     return to_dict(agent)
 
 
-@router.get("/{agent_id}")
+@router.get("/{agent_id}", dependencies=[Depends(require_permission("agent", "view"))])
 def get_agent(
     agent_id: int,
     db: Session = Depends(get_db),
@@ -587,7 +587,7 @@ def get_agent(
     return data
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_permission("agent", "edit"))])
 def create_agent(
     body: AgentBase,
     db: Session = Depends(get_db),
@@ -629,7 +629,7 @@ def create_agent(
     return to_dict(agent)
 
 
-@router.put("/{agent_id}")
+@router.put("/{agent_id}", dependencies=[Depends(require_permission("agent", "edit"))])
 def update_agent(
     agent_id: int,
     body: AgentBase,
@@ -676,7 +676,7 @@ def update_agent(
     return to_dict(agent)
 
 
-@router.get("/{agent_id}/dsl")
+@router.get("/{agent_id}/dsl", dependencies=[Depends(require_permission("agent", "view"))])
 def export_agent_dsl(
     agent_id: int,
     db: Session = Depends(get_db),
@@ -689,7 +689,7 @@ def export_agent_dsl(
     return _agent_to_dsl(agent)
 
 
-@router.post("/{agent_id}/publish")
+@router.post("/{agent_id}/publish", dependencies=[Depends(require_permission("agent", "edit"))])
 def publish_agent(
     agent_id: int,
     db: Session = Depends(get_db),
@@ -707,7 +707,7 @@ def publish_agent(
     return _agent_item(agent, resource_can_edit(current_user, db, agent, shared_ids))
 
 
-@router.post("/{agent_id}/publish-template")
+@router.post("/{agent_id}/publish-template", dependencies=[Depends(require_permission("agent", "edit"))])
 def publish_agent_as_template(
     agent_id: int,
     body: PublishTemplateRequest,
@@ -730,7 +730,7 @@ def publish_agent_as_template(
     return to_dict(agent)
 
 
-@router.delete("/{agent_id}")
+@router.delete("/{agent_id}", dependencies=[Depends(require_permission("agent", "delete"))])
 def delete_agent(
     agent_id: int,
     db: Session = Depends(get_db),
@@ -774,7 +774,7 @@ def delete_agent(
     return {"ok": True}
 
 
-@router.post("/{agent_id}/test")
+@router.post("/{agent_id}/test", dependencies=[Depends(require_permission("agent", "execute"))])
 async def test_agent(
     agent_id: int, body: AgentTestRequest, db: Session = Depends(get_db)
 ) -> dict:
@@ -884,7 +884,7 @@ async def test_agent(
     }
 
 
-@router.post("/{agent_id}/test/stream")
+@router.post("/{agent_id}/test/stream", dependencies=[Depends(require_permission("agent", "execute"))])
 async def test_agent_stream(
     agent_id: int,
     body: AgentTestRequest,
@@ -1041,6 +1041,52 @@ async def get_chat_session_messages(
     }
 
 
+class ChatSessionRenameBody(BaseModel):
+    """会话重命名请求体。"""
+
+    title: str = Field(..., min_length=1, max_length=200, description="新的会话标题")
+
+
+@router.patch("/{agent_id}/chat/sessions/{session_id}")
+async def rename_chat_session_api(
+    agent_id: int,
+    session_id: str,
+    body: ChatSessionRenameBody,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("agent", "execute")),
+):
+    """重命名指定会话的标题（仅影响当前用户自己的会话）。
+
+    只更新标题，不刷新 ``updated_at``，避免重命名把旧会话顶到列表最前面。
+    该会话尚未落库（新建后还没发送消息）时返回 404，前端保留本地标题即可。
+    """
+    agent = db.query(Agent).filter(Agent.id == agent_id).first()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    sid = _normalize_session_id(session_id)
+
+    from app.platform.chat_history import rename_chat_session, serialize_session
+
+    row = rename_chat_session(
+        db, agent_id, int(current_user.id), sid, body.title
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="会话不存在或尚未创建，请先发送消息")
+
+    from app.core.audit import log_audit
+    log_audit(
+        db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="agent.chat_session.rename",
+        resource_type="agent",
+        resource_id=str(agent_id),
+        detail=f"重命名会话: session={sid}",
+    )
+
+    return serialize_session(row)
+
+
 @router.delete("/{agent_id}/chat/session")
 async def clear_chat_session(
     agent_id: int,
@@ -1175,7 +1221,7 @@ async def resume_workflow_run(
     return await _resume_workflow_run(agent_id, run_id, body, db, current_user)
 
 
-@router.get("/{agent_id}/executions")
+@router.get("/{agent_id}/executions", dependencies=[Depends(require_permission("agent", "view"))])
 def list_agent_executions(
     agent_id: int,
     limit: int = Query(50, ge=1, le=500, description="返回条数上限（不传 page 时生效）"),
@@ -1204,7 +1250,7 @@ def list_agent_executions(
     return [to_dict(e) for e in base_q.limit(limit).all()]
 
 
-@router.get("/{agent_id}/monitor")
+@router.get("/{agent_id}/monitor", dependencies=[Depends(require_permission("agent", "view"))])
 def agent_monitor_stats(agent_id: int, db: Session = Depends(get_db)) -> dict:
     """返回智能体监控统计数据。
 
@@ -1269,7 +1315,7 @@ def agent_monitor_stats(agent_id: int, db: Session = Depends(get_db)) -> dict:
 # ============================================================================
 
 
-@router.get("/{agent_id}/tool-search-status")
+@router.get("/{agent_id}/tool-search-status", dependencies=[Depends(require_permission("agent", "view"))])
 def agent_tool_search_status(agent_id: int, db: Session = Depends(get_db)) -> dict:
     """返回智能体的工具搜索状态与装配预览。
 

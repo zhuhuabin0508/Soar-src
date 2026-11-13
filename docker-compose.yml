@@ -135,6 +135,8 @@ services:
     command: ["celery", "-A", "app.core.celery_app", "worker", "-l", "info"]
     volumes:
       - ./backend/app:/app/app
+      # IP地址库等异步导入任务需读取 backend 保存的上传文件（uploads 卷共享）
+      - uploads:/app/uploads
     environment:
       PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soar}

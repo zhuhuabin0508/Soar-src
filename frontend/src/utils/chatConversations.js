@@ -15,6 +15,8 @@
 export const MAX_CONVERSATIONS = 500
 /** 单个会话最多保留的消息条数（按游标分页拉取完整历史后，本地保留上限） */
 export const MAX_MESSAGES_PER_CONVERSATION = 2000
+/** 会话标题最大长度（与后端 SESSION_TITLE_MAX 保持一致） */
+export const SESSION_TITLE_MAX = 60
 
 /** 「仅附件」消息的文件注入前缀：`[用户上传了以下文件…]\n\n<原始输入>` */
 const FILE_WRAP_RE = /^\[用户上传了以下文件[^\]]*\]\s*\n\n([\s\S]*)$/
@@ -51,12 +53,53 @@ export function createConversation({ sid, now = Date.now() } = {}) {
   return {
     sid: sid || genConversationSid(),
     title: '',
+    // 标题是否由用户手动命名：为 true 时跨端同步以本地标题为准，
+    // 避免服务端按首条消息自动生成的标题覆盖用户自定义名称
+    titleCustom: false,
     createdAt: now,
     updatedAt: now,
     // 新会话尚未在服务端落库；服务端列表确认后由合并逻辑置为 true
     synced: false,
     messages: [],
   }
+}
+
+/**
+ * 重命名会话（纯函数，不修改原数组）。
+ *
+ * - 标题去首尾空白并截断到 SESSION_TITLE_MAX；空标题视为清除自定义名称；
+ * - 不修改 updatedAt：重命名不应改变会话在列表中的时间排序；
+ * - 会话不存在时返回原数组引用，调用方据此判断是否无效操作。
+ */
+export function renameConversation(list, sid, title) {
+  const conversations = Array.isArray(list) ? list : []
+  const idx = conversations.findIndex((c) => c && c.sid === sid)
+  if (idx < 0) return list
+  const clean = typeof title === 'string' ? title.trim().slice(0, SESSION_TITLE_MAX) : ''
+  const next = conversations.slice()
+  next[idx] = {
+    ...conversations[idx],
+    title: clean,
+    titleCustom: clean.length > 0,
+  }
+  return next
+}
+
+/**
+ * 按「置顶优先 + 最近更新」排序（纯函数，不修改原数组）。
+ *
+ * 置顶会话内部同样按 updatedAt 倒序，保证新消息到达时排序仍然自然。
+ */
+export function sortConversationsByPinned(list, pinnedSids) {
+  const pins = pinnedSids instanceof Set ? pinnedSids : new Set(pinnedSids || [])
+  const conversations = Array.isArray(list) ? list.slice() : []
+  conversations.sort((a, b) => {
+    const pa = pins.has(a?.sid) ? 1 : 0
+    const pb = pins.has(b?.sid) ? 1 : 0
+    if (pa !== pb) return pb - pa
+    return (b?.updatedAt || 0) - (a?.updatedAt || 0)
+  })
+  return conversations
 }
 
 /** 会话是否为空（没有任何消息） */
@@ -97,6 +140,7 @@ export function normalizeConversations(raw) {
     out.push({
       sid,
       title: typeof item.title === 'string' ? item.title : deriveConversationTitle(messages),
+      titleCustom: item.titleCustom === true,
       createdAt,
       updatedAt,
       // 是否已在服务端确认存在：用于跨浏览器删除同步（曾同步过但服务端消失 -> 移除）。

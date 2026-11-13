@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom'
 import {
   ShieldCheck, ShieldBan, Database, AlertTriangle, Bot, Sparkles, Search,
   Download, Copy, Check, RefreshCw, ChevronDown, ChevronRight, X, Loader2, ListCollapse,
+  Radar, Globe, Activity, MapPin,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from './ConfirmDialog'
@@ -27,6 +28,7 @@ import { inputCls, hintCls } from './property/FormControls'
 import { guardNavPermission, hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
 import banWorkflowApi from '../api/banWorkflow'
+import { ipLibraryApi } from '../api/ipLibrary'
 import { exportEnrichmentXlsx } from '../utils/ticketEnrichExport'
 import { flatFieldDefs } from '../utils/ticketFlow'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -224,7 +226,7 @@ function DiscoveryMatchFields({ asset, fallbackIp }) {
   return (
     <div className="space-y-2">
       {matches.map((m, idx) => (
-        <div key={m.source_id || m.cmdb_id || idx} className={multi ? 'rounded border border-border/60 bg-background/60 p-2' : ''}>
+        <div key={m.source_id || m.cmdb_id || idx} className={multi ? 'rounded border border-border bg-background/60 p-2' : ''}>
           {multi ? (
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <SourceLabel tone="discovery" sm>{m.source_label || m.resource_label || '资产发现'}</SourceLabel>
@@ -252,12 +254,153 @@ function DiscoveryMatchFields({ asset, fallbackIp }) {
   )
 }
 
-// ============ 单 IP 详情块（v1/v2 共用；entry 含 ip/roles/threat/asset/agent） ============
+// ============ 360 威胁情报展示（ti_360 归一化结构，全字段） ============
 
-function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stacked = false }) {
+// 危害等级徽标（level 0-100 整十分级：80+ 超危 / 70-79 高危 / 60-69 中危 / 40-59 低危 / 30 未知 / <30 白名单）
+function ti360LevelCls(level) {
+  if (level >= 80) return 'border-red-600/50 bg-red-600/15 text-red-400'
+  if (level >= 70) return 'border-red-500/50 bg-red-500/15 text-red-400'
+  if (level >= 60) return 'border-orange-500/50 bg-orange-500/15 text-orange-400'
+  if (level >= 40) return 'border-yellow-500/50 bg-yellow-500/15 text-yellow-500'
+  if (level >= 30) return 'border-border bg-muted text-muted-foreground'
+  return 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400'
+}
+
+// 活跃状态徽标（ACTIVE 活跃 / OVER 过期 / SINKHOLE 处置 / UNKNOWN 未知）
+function ti360StatusCls(status) {
+  if (status === 'ACTIVE') return 'border-red-500/50 bg-red-500/10 text-red-400'
+  if (status === 'SINKHOLE') return 'border-violet-500/50 bg-violet-500/15 text-violet-300'
+  if (status === 'OVER') return 'border-border bg-muted text-muted-foreground'
+  return 'border-border bg-muted text-muted-foreground'
+}
+
+// 威胁标签徽标（severity 严重度：数值越高越红）
+function ti360TagCls(sev) {
+  const s = Number(sev)
+  if (s >= 4) return 'border-red-600/50 bg-red-600/15 text-red-400'
+  if (s >= 3) return 'border-red-500/50 bg-red-500/15 text-red-400'
+  if (s >= 2) return 'border-orange-500/50 bg-orange-500/15 text-orange-400'
+  if (s >= 1) return 'border-yellow-500/50 bg-yellow-500/15 text-yellow-500'
+  return 'border-border bg-muted text-muted-foreground'
+}
+
+// 威胁标签列表（details 折叠：名称/分类常驻，描述与分类明细展开可见）
+function TI360TagList({ tags }) {
+  if (!tags?.length) return null
+  return (
+    <div className="min-w-0 space-y-1.5">
+      {tags.map((tag, i) => (
+        <details key={`${tag.name}-${i}`} className="group min-w-0 rounded-md border border-border bg-background/50">
+          <summary className="flex cursor-pointer list-none flex-wrap items-center gap-1.5 px-2.5 py-1.5 text-xs [&::-webkit-details-marker]:hidden">
+            <span className={`whitespace-nowrap rounded border px-1.5 py-0.5 font-medium ${ti360TagCls(tag.severity)}`}>{tag.name || '--'}</span>
+            {tag.tag_type && <span className="text-muted-foreground">{tag.tag_type}</span>}
+            {tag.severity != null && tag.severity !== '' && (
+              <span className="text-muted-foreground">严重度 {tag.severity}</span>
+            )}
+            <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+          </summary>
+          <div className="space-y-1.5 border-t border-border px-2.5 py-2 text-xs">
+            {tag.desc ? (
+              <p className="break-words leading-relaxed text-foreground/80">{tag.desc}</p>
+            ) : null}
+            <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground">
+              {(tag.ti_type_main || tag.ti_type_sub) && (
+                <span>威胁分类：{[tag.ti_type_main, tag.ti_type_sub].filter(Boolean).join(' / ')}</span>
+              )}
+              {tag.source && <span>来源：{tag.source}</span>}
+              {tag.id && <span>ID：{tag.id}</span>}
+              {tag.status && <span>状态：{tag.status === '0' ? '启用' : tag.status}</span>}
+            </div>
+          </div>
+        </details>
+      ))}
+    </div>
+  )
+}
+
+// 360 威胁情报主体（results 数组：每实体一块，含基础属性/时间线/威胁标签；
+// geo_info：360 IP 批量查询接口提取的 IP 归属地区，未返回/查询失败时兜底「地区信息未知」）
+function TI360Body({ ti360, fmtTime, na }) {
+  const results = ti360?.results || []
+  const geo = ti360?.geo_info && typeof ti360.geo_info === 'object' ? ti360.geo_info : null
+  const geoKnown = !!geo && !geo.unknown
+  return (
+    <div className="space-y-2.5">
+      {/* IP 归属地区（360 IP 批量情报；域名实体无此块） */}
+      {geo && (
+        <div className="min-w-0 rounded-md border border-border bg-background/50 p-2.5">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <MapPin className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="font-semibold text-foreground">IP 归属地区</span>
+            <span className={`min-w-0 break-all rounded border px-1.5 py-0.5 font-medium ${
+              geoKnown ? 'border-primary/30 bg-primary/10 text-primary' : 'border-border bg-muted text-muted-foreground'
+            }`}>
+              {geo.region_text || '地区信息未知'}
+            </span>
+          </div>
+          {geoKnown && (
+            <div className="mt-1.5 grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+              <EnrichRow label="国家/地区：">{geo.country || na}</EnrichRow>
+              <EnrichRow label="省份：">{geo.province || na}</EnrichRow>
+              <EnrichRow label="城市：">{geo.city || na}</EnrichRow>
+              <EnrichRow label="运营商/注册机构：">{geo.operator || na}</EnrichRow>
+              <EnrichRow label="AS 组织：">{geo.as_org || na}</EnrichRow>
+              <EnrichRow label="ASN：">{geo.asn ?? na}</EnrichRow>
+            </div>
+          )}
+        </div>
+      )}
+      {!results.length ? (
+        <div className="text-[13px] text-muted-foreground">360 情报库未命中该实体</div>
+      ) : (
+        results.map((r, i) => (
+        <div key={`${r.ioc}-${i}`} className="min-w-0 space-y-2 rounded-md border border-border bg-background/50 p-2.5">
+          {/* 头部：IOC 实体 / 类型 / 危害等级 / 活跃状态 */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="inline-flex shrink-0 items-center gap-1 text-primary">
+              {ti360?.category === 'domain' ? <Globe className="h-3.5 w-3.5" /> : <Activity className="h-3.5 w-3.5" />}
+              <span className="break-all font-medium text-foreground">{r.ioc || '--'}</span>
+            </span>
+            {r.ioc_type && <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{r.ioc_type}</span>}
+            <span className={`whitespace-nowrap rounded border px-1.5 py-0.5 font-medium ${ti360LevelCls(r.level)}`}>
+              {r.level_label || '未知'}{r.level != null ? `（${r.level}）` : ''}
+            </span>
+            <span className={`whitespace-nowrap rounded border px-1.5 py-0.5 ${ti360StatusCls(r.status)}`}>
+              {r.status_label || r.status || '未知'}
+            </span>
+          </div>
+          {/* 基础属性 */}
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+            <EnrichRow label="置信度：">{r.confidence != null ? `${r.confidence}%` : na}</EnrichRow>
+            <EnrichRow label="病毒名称：">{r.malware || na}</EnrichRow>
+            <EnrichRow label="威胁用途：">{r.function?.length ? r.function.join('、') : na}</EnrichRow>
+            <EnrichRow label="命中情报：">{r.hit_ioc || na}</EnrichRow>
+            <EnrichRow label="首次发现：">{fmtTime(r.first_time)}</EnrichRow>
+            <EnrichRow label="最近更新：">{fmtTime(r.last_time)}</EnrichRow>
+            <EnrichRow label="情报失效：">{fmtTime(r.expire_time)}</EnrichRow>
+          </div>
+          {/* 威胁标签 */}
+          {r.tags?.length ? (
+            <div className="flex min-w-0 items-start gap-2 text-[13px]">
+              <span className="shrink-0 text-muted-foreground">威胁标签：</span>
+              <div className="min-w-0 flex-1"><TI360TagList tags={r.tags} /></div>
+            </div>
+          ) : null}
+        </div>
+        ))
+      )}
+    </div>
+  )
+}
+
+// ============ 单 IP 详情块（v1/v2 共用；entry 含 ip/roles/threat/ti_360/asset/agent） ============
+
+function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false }) {
   // stacked：抽屉等窄容器场景 —— 资产匹配/威胁情报上下堆叠各占全宽，避免并排窄列导致长字段换行拥挤；
   // 默认（行内展开，页面宽区域）保持 xl 双列布局。
   const t = entry.threat && typeof entry.threat === 'object' ? entry.threat : null
+  const ti360 = entry.ti_360 && typeof entry.ti_360 === 'object' ? entry.ti_360 : null
+  const isDomain = entry.entity_type === 'domain'
   const geo = t?.geo_info || {}
   const geoText = [geo.country, geo.region, geo.city, geo.isp].filter(Boolean).join(' / ')
   // 威胁情报扩展字段（get_threat_互联网 归一化新增；旧数据缺键时降级为 --）
@@ -303,7 +446,7 @@ function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stack
         {assetMatch.matched ? (
           <div className="space-y-2.5">
             {assetMatch.discovery ? (
-              <div className={`min-w-0 rounded-md border border-border/60 border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES.discovery.accent}`}>
+              <div className={`min-w-0 rounded-md border border-border border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES.discovery.accent}`}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <SourceLabel tone="discovery">{assetMatch.discovery.source_label || '资产发现'}</SourceLabel>
                 </div>
@@ -311,7 +454,7 @@ function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stack
               </div>
             ) : null}
             {inventoryAsset ? (
-              <div className={`min-w-0 rounded-md border border-border/60 border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES[legacyTone].accent}`}>
+              <div className={`min-w-0 rounded-md border border-border border-l-2 bg-background/50 p-2.5 ${SOURCE_TONES[legacyTone].accent}`}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <SourceLabel tone={legacyTone}>{inventoryLabel}</SourceLabel>
                 </div>
@@ -320,57 +463,87 @@ function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stack
             ) : null}
           </div>
         ) : (
-          <div className="text-[13px] text-muted-foreground">资产发现与资产清单中均未找到与该 IP 匹配的资产</div>
+          <div className="text-[13px] text-muted-foreground">
+            {isDomain ? '域名实体不参与资产匹配（资产库以 IP 为匹配口径）' : '资产发现与资产清单中均未找到与该 IP 匹配的资产'}
+          </div>
         )}
       </div>
-      {/* 威胁情报子卡 */}
-      <div className="min-w-0 rounded-md border border-border bg-secondary p-3">
-        <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-          <AlertTriangle className="h-3.5 w-3.5 text-primary" />威胁情报
+      {/* 威胁情报大卡：知道创宇 + 360 两张子卡竖向排列 */}
+      <div className="flex min-w-0 flex-col rounded-md border border-border bg-secondary p-3">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-foreground">
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />威胁情报
           {liteHint && <span className="font-normal text-muted-foreground">（精简结果，点击"重新研判"获取完整情报）</span>}
         </div>
-        {t ? (
-          <>
-            <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
-              <EnrichRow label="研判结论：">
-                {t.is_malicious ? <span className="font-medium text-red-500">恶意</span> : <span className="font-medium text-emerald-500">非恶意</span>}
-              </EnrichRow>
-              <EnrichRow label="置信度：">{t.confidence != null ? `${Math.round(t.confidence * 100)}%` : na}</EnrichRow>
-              <EnrichRow label="严重程度：">{t.severity ? (THREAT_SEVERITY_LABELS[t.severity] || t.severity) : na}</EnrichRow>
-              <EnrichRow label="威胁标签：">
-                {t.tags?.length ? (
-                  <span className="flex flex-wrap gap-1">
-                    {t.tags.map((tag) => (
-                      <span key={tag} className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs text-red-500">{tag}</span>
-                    ))}
-                  </span>
-                ) : na}
-              </EnrichRow>
-              <EnrichRow label="威胁类型：">{t.threat_types?.length ? t.threat_types.join('、') : na}</EnrichRow>
-              <EnrichRow label="首次发现：">{fmtTime(t.first_seen)}</EnrichRow>
-              <EnrichRow label="最近发现：">{fmtTime(t.last_seen)}</EnrichRow>
-              <EnrichRow label="地理/归属：">{geoText || na}</EnrichRow>
-              <EnrichRow label="关联恶意软件：">{t.related_malware?.length ? t.related_malware.join('、') : na}</EnrichRow>
-              <EnrichRow label="情报来源：">{t.source || na}</EnrichRow>
-              <EnrichRow label="攻击模式：">{t.attack_patterns?.length ? t.attack_patterns.join('；') : na}</EnrichRow>
-              <EnrichRow label="攻击记录：">
-                {t.attack_stats?.total ? `${t.attack_stats.total} 次 / 涉及 ${t.attack_stats.hosts_cnt ?? 0} 台主机` : na}
-              </EnrichRow>
-              <EnrichRow label="设备特征：">{deviceText || na}</EnrichRow>
-              <EnrichRow label="归属组织：">{orgText || na}</EnrichRow>
+        <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+          {/* 知道创宇威胁情报子卡 */}
+        <div className="min-w-0 rounded-md border border-border bg-background/50 p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-foreground">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-primary" />知道创宇威胁情报
+          </div>
+          {t ? (
+            <>
+              <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+                <EnrichRow label="研判结论：">
+                  {t.is_malicious ? <span className="font-medium text-red-500">恶意</span> : <span className="font-medium text-emerald-500">非恶意</span>}
+                </EnrichRow>
+                <EnrichRow label="置信度：">{t.confidence != null ? `${Math.round(t.confidence * 100)}%` : na}</EnrichRow>
+                <EnrichRow label="严重程度：">{t.severity ? (THREAT_SEVERITY_LABELS[t.severity] || t.severity) : na}</EnrichRow>
+                <EnrichRow label="威胁标签：">
+                  {t.tags?.length ? (
+                    <span className="flex flex-wrap gap-1">
+                      {t.tags.map((tag) => (
+                        <span key={tag} className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs text-red-500">{tag}</span>
+                      ))}
+                    </span>
+                  ) : na}
+                </EnrichRow>
+                <EnrichRow label="威胁类型：">{t.threat_types?.length ? t.threat_types.join('、') : na}</EnrichRow>
+                <EnrichRow label="首次发现：">{fmtTime(t.first_seen)}</EnrichRow>
+                <EnrichRow label="最近发现：">{fmtTime(t.last_seen)}</EnrichRow>
+                <EnrichRow label="地理/归属：">{geoText || na}</EnrichRow>
+                <EnrichRow label="关联恶意软件：">{t.related_malware?.length ? t.related_malware.join('、') : na}</EnrichRow>
+                <EnrichRow label="情报来源：">{t.source || na}</EnrichRow>
+                <EnrichRow label="攻击模式：">{t.attack_patterns?.length ? t.attack_patterns.join('；') : na}</EnrichRow>
+                <EnrichRow label="攻击记录：">
+                  {t.attack_stats?.total ? `${t.attack_stats.total} 次 / 涉及 ${t.attack_stats.hosts_cnt ?? 0} 台主机` : na}
+                </EnrichRow>
+                <EnrichRow label="设备特征：">{deviceText || na}</EnrichRow>
+                <EnrichRow label="归属组织：">{orgText || na}</EnrichRow>
+              </div>
+              <div className="mt-2 flex min-w-0 items-start gap-2 text-[13px]">
+                <span className="shrink-0 text-muted-foreground">情报描述：</span>
+                {t.description
+                  ? <span className="min-w-0 break-words rounded-md bg-muted px-3 py-1.5 leading-relaxed text-foreground">{t.description}</span>
+                  : na}
+              </div>
+            </>
+          ) : entry.threat === null ? (
+            <div className="text-[13px] text-muted-foreground">威胁情报查询失败，可"重新研判"重试</div>
+          ) : isDomain ? (
+            <div className="text-[13px] text-muted-foreground">知道创宇情报仅支持 IP 实体，域名研判请查看 360 威胁情报</div>
+          ) : (
+            <div className="text-[13px] text-muted-foreground">未开启威胁情报查询</div>
+          )}
+        </div>
+        {/* 360 威胁情报子卡（intel 开启且 360 工具可用时渲染） */}
+        {entry.ti_360 !== undefined && (
+          <div className="min-w-0 rounded-md border border-border bg-background/50 p-3">
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-foreground">
+              <Radar className="h-3.5 w-3.5 shrink-0 text-primary" />360威胁情报
+              <span className="font-normal text-muted-foreground">
+                {ti360?.category === 'domain' ? '域名情报' : 'IP 情报'}
+              </span>
             </div>
-            <div className="mt-2 flex min-w-0 items-start gap-2 text-[13px]">
-              <span className="shrink-0 text-muted-foreground">情报描述：</span>
-              {t.description
-                ? <span className="min-w-0 break-words rounded-md bg-muted px-3 py-1.5 leading-relaxed text-foreground">{t.description}</span>
-                : na}
-            </div>
-          </>
-        ) : entry.threat === null ? (
-          <div className="text-[13px] text-muted-foreground">威胁情报查询失败，可"重新研判"重试</div>
-        ) : (
-          <div className="text-[13px] text-muted-foreground">未开启威胁情报查询</div>
+            {ti360 ? (
+              <TI360Body ti360={ti360} fmtTime={fmtTime} na={na} />
+            ) : entry.ti_360 === null ? (
+              <div className="text-[13px] text-muted-foreground">360威胁情报查询失败，可"重新研判"重试</div>
+            ) : (
+              <div className="text-[13px] text-muted-foreground">未开启威胁情报查询</div>
+            )}
+          </div>
         )}
+        </div>
       </div>
       {/* 智能体研判子卡 */}
       {entry.agent !== undefined && (
@@ -423,14 +596,6 @@ function EnrichEntryDetail({ entry, roleText, onFill, onRequery, liteHint, stack
           ) : (
             <div className="text-[13px] text-muted-foreground">智能体研判失败</div>
           )}
-        </div>
-      )}
-      {onRequery && (
-        <div className={`flex items-center gap-2 ${stacked ? '' : 'xl:col-span-2'}`}>
-          <Button size="sm" variant="outline" className="h-7" onClick={onRequery}>
-            <RefreshCw className="mr-1 h-3 w-3" />重新研判该 IP
-          </Button>
-          <span className="text-xs text-muted-foreground">重跑资产匹配与威胁情报，并升级为完整档</span>
         </div>
       )}
     </div>
@@ -497,19 +662,52 @@ const wlFromCache = (ticketId, ips) => {
   return m
 }
 
+// ============ IP地址库匹配：会话级缓存 ============
+// 将工单 IP 与内置 4 类 IPv4 库（云服务 / APNIC 地理 / APNIC 持有者 / 境外）比对；
+// 批量端点单次最多 100 个 IP，命中结果含网段与归属字段。
+const IPLIB_CHUNK = 100
+const _ipLibCache = new Map()   // `${ticketId}::${ip}` → { match_count, matches }
+
+const ipLibCacheKey = (ticketId, ip) => `${ticketId}::${ip}`
+const ipLibFromCache = (ticketId, ips) => {
+  const m = new Map()
+  ips.forEach((ip) => {
+    const st = _ipLibCache.get(ipLibCacheKey(ticketId, ip))
+    if (st) m.set(ip, st)
+  })
+  return m
+}
+// 仅 IPv4 参与库匹配（域名等实体跳过）
+const isIPv4 = (v) => /^(\d{1,3}\.){3}\d{1,3}$/.test(String(v || '').trim())
+
 // ============ 主组件 ============
 
 const VIRTUAL_THRESHOLD = 50     // 超过后启用虚拟滚动 + 详情抽屉
 
-// 风险排序权重：恶意 > 封禁中 > 高危情报 > 重要资产 > 资产命中 > 其他
+// 风险排序权重：恶意（知道创宇/360）> 封禁中 > 高危情报（知道创宇/360）> 重要资产 > 资产命中 > 其他
+// 360 情报最高危害等级（level 0-100；无结果/查询失败返回 -1）
+const ti360MaxLevelOf = (e) => {
+  const rs = e?.ti_360?.results
+  if (!Array.isArray(rs) || !rs.length) return -1
+  return Math.max(...rs.map((r) => Number(r?.level) || 0))
+}
+// 360 情报等级标签（取 level 最高的结果）
+const ti360LabelOf = (e) => {
+  const rs = e?.ti_360?.results
+  if (!Array.isArray(rs) || !rs.length) return ''
+  const top = rs.reduce((a, b) => (Number(b?.level) || 0) > (Number(a?.level) || 0) ? b : a)
+  return top?.level_label || ''
+}
+
 const riskRank = (e, banMap) => {
   let r = 100
-  if (e.threat?.is_malicious) r -= 64
+  const ti360 = ti360MaxLevelOf(e)
+  if (e.threat?.is_malicious || ti360 >= 60) r -= 64
   if (banMap.get(e.ip)?.banned) r -= 32
-  if (isHighSeverity(e.threat?.severity)) r -= 16
+  if (isHighSeverity(e.threat?.severity) || ti360 >= 70) r -= 16
   if (isHighCriticality(e)) r -= 8
   if (e.asset?.matched) r -= 4
-  if (e.threat === null || e.asset?.error) r -= 2
+  if (e.threat === null || e.ti_360 === null || e.asset?.error) r -= 2
   return r
 }
 
@@ -538,14 +736,14 @@ const FILTER_DEFS = [
 const matchesFilters = (e, banMap, filters, wlMap = null) => {
   for (const f of filters) {
     const ban = banMap.get(e.ip)
-    if (f === 'malicious' && !e.threat?.is_malicious) return false
+    if (f === 'malicious' && !(e.threat?.is_malicious || ti360MaxLevelOf(e) >= 60)) return false
     if (f === 'ban' && !ban?.banned) return false
     if (f === 'whitelist' && !wlMap?.get(e.ip)?.matched) return false
-    if (f === 'severityHigh' && !isHighSeverity(e.threat?.severity)) return false
+    if (f === 'severityHigh' && !(isHighSeverity(e.threat?.severity) || ti360MaxLevelOf(e) >= 70)) return false
     if (f === 'asset' && !e.asset?.matched) return false
     if (f === 'assetCritical' && !isHighCriticality(e)) return false
     if (f === 'unmatched' && e.asset?.matched) return false
-    if (f === 'failed' && !(e.threat === null || e.asset?.error)) return false
+    if (f === 'failed' && !(e.threat === null || e.ti_360 === null || e.asset?.error)) return false
   }
   return true
 }
@@ -571,6 +769,29 @@ function StatChip({ tone = 'muted', active = false, onClick, children, title }) 
     >
       {children}
     </button>
+  )
+}
+
+// ============ 安博通黑/白名单列表行（两卡共用，保证逐行样式与对齐一致） ============
+// 行结构固定为 IP + 状态徽标 + 说明，字号/行高/间距/分隔线完全一致；
+// tone 仅表达语义色（red 风险 / emerald 命中 / muted 中性），不改变排版。
+const INTEL_STATUS_CLS = {
+  red: 'bg-red-500/10 text-red-500',
+  emerald: 'bg-emerald-500/10 text-emerald-600',
+  muted: 'bg-muted text-muted-foreground',
+}
+
+function IntelIpRow({ ip, badge, tone = 'muted', note, noteClass = 'text-muted-foreground' }) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5 text-[13px] last:border-b-0">
+      <span className="min-w-0 break-all font-mono font-medium text-foreground">{ip}</span>
+      {badge ? (
+        <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${INTEL_STATUS_CLS[tone] || INTEL_STATUS_CLS.muted}`}>
+          {badge}
+        </span>
+      ) : null}
+      {note ? <span className={`min-w-0 break-all text-[11px] ${noteClass}`}>{note}</span> : null}
+    </div>
   )
 }
 
@@ -629,6 +850,13 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
   // 已自动补查过的 IP（失败不自动重试，避免接口异常时无线循环；手动重试不受限）
   const wlAttemptedRef = useRef(new Set())
 
+  // ===== IP地址库匹配（只读内置 4 库；无 ip_library:view 不查询） =====
+  const canIpLibrary = hasPermission('ip_library', 'view')
+  const ipv4Entries = useMemo(() => entries.filter((e) => isIPv4(e.ip)), [entries])
+  const [ipLibMap, setIpLibMap] = useState(() => ipLibFromCache(ticket.id, ipv4Entries.map((e) => e.ip)))
+  const [ipLibProgress, setIpLibProgress] = useState({ loading: false, done: 0, total: 0, error: '' })
+  const ipLibAttemptedRef = useRef(new Set())
+
   const [requerying, setRequerying] = useState(false)
   const scrollRef = useRef(null)
 
@@ -642,8 +870,9 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
       total: s.total ?? entries.length,
       src: s.src ?? entries.filter((e) => (e.roles || []).includes('src_ip')).length,
       dst: s.dst ?? entries.filter((e) => (e.roles || []).includes('dst_ip')).length,
-      malicious: s.malicious ?? entries.filter((e) => e.threat?.is_malicious).length,
-      severityHigh: s.severity_high ?? entries.filter((e) => isHighSeverity(e.threat?.severity)).length,
+      domain: s.domain ?? entries.filter((e) => e.entity_type === 'domain').length,
+      malicious: s.malicious ?? entries.filter((e) => e.threat?.is_malicious || ti360MaxLevelOf(e) >= 60).length,
+      severityHigh: s.severity_high ?? entries.filter((e) => isHighSeverity(e.threat?.severity) || ti360MaxLevelOf(e) >= 70).length,
       assetMatched: s.asset_matched ?? entries.filter((e) => e.asset?.matched).length,
       assetCritical: s.asset_critical ?? entries.filter((e) => isHighCriticality(e)).length,
       failed: entries.filter((e) => matchesFilters(e, banMap, FAILED_FILTER)).length,
@@ -651,7 +880,6 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
       totalOriginal: s.total_original,
       banned,
       whitelisted: entries.reduce((n, e) => n + (wlMap.get(e.ip)?.matched ? 1 : 0), 0),
-      whitelistQueried: entries.filter((e) => wlMap.has(e.ip)).length,
     }
   }, [enrichment, entries, banMap, wlMap])
 
@@ -759,6 +987,48 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
     runWhitelistQuery(missing)
   }, [isV2, canWhitelist, entries, ticket.id, runWhitelistQuery, wlProgress.loading])
 
+  // ===== IP地址库批量匹配（4 库点查，100 个/批） =====
+  const runIpLibraryQuery = useCallback(async (ips) => {
+    const list = [...new Set((ips || []).filter(isIPv4))]
+    if (!list.length) return
+    setIpLibProgress({ loading: true, done: 0, total: list.length, error: '' })
+    let done = 0
+    try {
+      for (let i = 0; i < list.length; i += IPLIB_CHUNK) {
+        const chunk = list.slice(i, i + IPLIB_CHUNK)
+        // eslint-disable-next-line no-await-in-loop
+        const res = await ipLibraryApi.lookupBatch(chunk)
+        const byIp = new Map((res?.items || []).map((it) => [it.ip, {
+          match_count: it.match_count || 0,
+          matches: Array.isArray(it.matches) ? it.matches : [],
+        }]))
+        chunk.forEach((ip) => {
+          _ipLibCache.set(ipLibCacheKey(ticket.id, ip), byIp.get(ip) || { match_count: 0, matches: [] })
+        })
+        done += chunk.length
+        setIpLibMap(ipLibFromCache(ticket.id, entries.map((e) => e.ip)))
+        setIpLibProgress((p) => ({ ...p, done }))
+      }
+      setIpLibProgress((p) => ({ ...p, loading: false }))
+    } catch (e) {
+      // 库匹配失败不影响安全上下文其余信息展示：展示错误并支持重试
+      setIpLibProgress((p) => ({ ...p, loading: false, error: e?.message || 'IP地址库匹配失败' }))
+    }
+  }, [ticket.id, entries])
+
+  // 进入 Tab / 重新研判新增 IP 时自动匹配未查询过的 IPv4（缓存跳过已查过的）
+  useEffect(() => {
+    if (!isV2 || !canIpLibrary || ipLibProgress.loading) return
+    const missing = entries
+      .map((e) => e.ip)
+      .filter(isIPv4)
+      .filter((ip) => !_ipLibCache.has(ipLibCacheKey(ticket.id, ip)))
+      .filter((ip) => !ipLibAttemptedRef.current.has(ipLibCacheKey(ticket.id, ip)))
+    if (!missing.length) return
+    missing.forEach((ip) => ipLibAttemptedRef.current.add(ipLibCacheKey(ticket.id, ip)))
+    runIpLibraryQuery(missing)
+  }, [isV2, canIpLibrary, entries, ticket.id, runIpLibraryQuery, ipLibProgress.loading])
+
   // ===== 筛选 / 排序 / 分组视图 =====
   const filtered = useMemo(() => {
     const list = entries.filter((e) => matchesFilters(e, banMap, filters, wlMap))
@@ -771,7 +1041,8 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
     // 同一 IP 跨源/目的双角色时只在首个所属分组展示一行（行内"双"标记 + 详情标注完整角色），
     // 避免同一 IP 在多个分组重复出现导致勾选联动与列表膨胀。
     const groups = []
-    const order = ['src_ip', 'dst_ip']
+    // 域名实体（domain_url/domain 角色）单独成组，与源/目的 IP 并列展示
+    const order = ['src_ip', 'dst_ip', 'domain_url', 'domain']
     const present = new Set(entries.flatMap((e) => e.roles || []))
     const shownAll = new Set()     // 未筛选口径：统计双角色被折叠数
     const shown = new Set()        // 筛选后口径：控制行只展示一次
@@ -902,8 +1173,16 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
             {!e.threat?.is_malicious && isHighSeverity(e.threat?.severity) && (
               <span className="whitespace-nowrap rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-600">高危</span>
             )}
-            {e.threat === null && (
+            {e.threat === null && e.ti_360 === undefined && (
               <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">情报失败</span>
+            )}
+            {e.ti_360 === null && (
+              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">360失败</span>
+            )}
+            {ti360MaxLevelOf(e) >= 60 && (
+              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">
+                360{ti360LabelOf(e)}
+              </span>
             )}
             {ban?.banned && (
               <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">封禁中</span>
@@ -943,7 +1222,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
           onChange={() => toggleSelect(e.ip)}
         />
         <span className="w-4 shrink-0 text-muted-foreground" title={roleText}>
-          {(e.roles || []).includes('src_ip') && e.roles.length === 1 ? '源' : (e.roles || []).includes('dst_ip') && e.roles.length === 1 ? '目' : '双'}
+          {(e.roles || []).includes('src_ip') && e.roles.length === 1 ? '源' : (e.roles || []).includes('dst_ip') && e.roles.length === 1 ? '目' : (e.roles || []).includes('domain_url') && e.roles.length === 1 ? '域' : '双'}
         </span>
         <span className="min-w-0 shrink-0 font-mono text-[13px] font-medium text-foreground">{e.ip}</span>
         <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden">{ipBadges(e)}</span>
@@ -996,8 +1275,8 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
             </span>
           )}
           <span className="text-sm text-muted-foreground">
-            IP 共 <span className="font-medium text-foreground">{stats.total}</span> 个
-            （{roleLabels.src_ip ? `${roleLabels.src_ip.replace('IP地址', 'IP')} ${stats.src}` : ''} · {roleLabels.dst_ip ? `${roleLabels.dst_ip.replace('IP地址', 'IP')} ${stats.dst}` : ''}）
+            实体共 <span className="font-medium text-foreground">{stats.total}</span> 个
+            （{roleLabels.src_ip ? `${roleLabels.src_ip.replace('IP地址', 'IP')} ${stats.src}` : ''} · {roleLabels.dst_ip ? `${roleLabels.dst_ip.replace('IP地址', 'IP')} ${stats.dst}` : ''}{stats.domain > 0 ? ` · 域名 ${stats.domain}` : ''}）
           </span>
           {stats.totalOriginal > stats.total && (
             <span className="text-xs text-amber-600" title={`IP 共 ${stats.totalOriginal} 个，超过自动研判上限，仅研判前 ${stats.total} 个`}>
@@ -1057,8 +1336,8 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
         </div>
       </div>
 
-      {/* 封禁状态查询（置顶，进入即自动查询全部 IP；手动查询保留） */}
-      <div className="px-4 pt-3">
+      {/* 安博通黑名单 / 白名单：同一水平层级并排展示；无白名单权限时黑名单独占整行 */}
+      <div className={`px-4 pt-3 ${canWhitelist ? 'grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(280px,1fr))]' : ''}`}>
         <BanQueryBox
           ticketIps={entries.map((e) => e.ip)}
           banMap={banMap}
@@ -1066,53 +1345,27 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
           deviceError={banDeviceError}
           onRetry={() => runBanQuery(entries.map((e) => e.ip))}
         />
-        {/* 安博通白名单匹配结果（只读本地同步索引；命中项在行内展示"白名单"徽标） */}
         {canWhitelist && (
-          <div className="mt-2 rounded-md border border-emerald-500/25 bg-emerald-500/[0.04] px-3 py-2 text-xs">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
-              <span className="font-medium text-foreground">安博通白名单匹配</span>
-              {wlProgress.loading ? (
-                <span className="inline-flex items-center gap-1 text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />校验中 {wlProgress.done}/{wlProgress.total}
-                </span>
-              ) : wlProgress.error ? (
-                <>
-                  <span className="text-amber-600">校验失败：{wlProgress.error}</span>
-                  <button type="button" onClick={() => runWhitelistQuery(entries.map((e) => e.ip))}
-                    className="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 transition hover:bg-amber-500/20">
-                    <RefreshCw className="h-3 w-3" />重试
-                  </button>
-                </>
-              ) : (
-                <span className="text-muted-foreground">
-                  已校验 {stats.whitelistQueried}/{stats.total} 个 IP，命中
-                  <span className={`ml-1 font-semibold ${stats.whitelisted ? 'text-emerald-600' : 'text-foreground'}`}>{stats.whitelisted}</span>
-                  个
-                </span>
-              )}
-            </div>
-            {!wlProgress.loading && !wlProgress.error && stats.whitelisted > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {entries.filter((e) => wlMap.get(e.ip)?.matched).slice(0, 12).map((e) => {
-                  const st = wlMap.get(e.ip)
-                  return (
-                    <span key={e.ip} className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[11px] text-emerald-700">
-                      {e.ip}
-                      <span className="font-sans text-[10px] text-emerald-600/80">
-                        {WL_MATCH_LABEL[st.match_type] || '命中'}{st.entry_total > 1 ? ` · ${st.entry_total} 条` : ''}
-                      </span>
-                    </span>
-                  )
-                })}
-                {stats.whitelisted > 12 && (
-                  <span className="text-[11px] text-muted-foreground">等 {stats.whitelisted} 个</span>
-                )}
-              </div>
-            )}
-          </div>
+          <WhitelistQueryBox
+            ticketIps={entries.map((e) => e.ip)}
+            wlMap={wlMap}
+            progress={wlProgress}
+            onRetry={() => runWhitelistQuery(entries.map((e) => e.ip))}
+          />
         )}
       </div>
+
+      {/* IP地址库匹配：本工单 IPv4 与内置 4 类地址库比对，展示归属网段与运营商/持有者信息 */}
+      {canIpLibrary && ipv4Entries.length > 0 && (
+        <div className="px-4 pt-2.5">
+          <IpLibraryMatchBox
+            ips={ipv4Entries.map((e) => e.ip)}
+            ipMap={ipLibMap}
+            progress={ipLibProgress}
+            onRetry={() => runIpLibraryQuery(ipv4Entries.map((e) => e.ip))}
+          />
+        </div>
+      )}
 
       {/* L2 工具栏 + L3 列表（展开后） */}
       {expanded && (
@@ -1223,14 +1476,14 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                       const roleText = (e.roles || []).map((r) => roleLabels[r] || r).join('、')
                       const open = openRows.has(e.ip)
                       return (
-                        <div key={e.ip} className="border-b border-border/50 last:border-b-0">
+                        <div key={e.ip} className="border-b border-border last:border-b-0">
                           <div className="flex h-11 items-center gap-2 px-2 transition hover:bg-secondary/50">
                             <input type="checkbox" className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
                               checked={selection.has(e.ip)} onChange={() => toggleSelect(e.ip)} />
                             <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left"
                               onClick={() => toggleRow(e.ip)}>
                               <span className="w-4 shrink-0 text-center text-xs text-muted-foreground" title={roleText}>
-                                {(e.roles || []).includes('src_ip') && e.roles.length === 1 ? '源' : (e.roles || []).includes('dst_ip') && e.roles.length === 1 ? '目' : '双'}
+                                {(e.roles || []).includes('src_ip') && e.roles.length === 1 ? '源' : (e.roles || []).includes('dst_ip') && e.roles.length === 1 ? '目' : (e.roles || []).includes('domain_url') && e.roles.length === 1 ? '域' : '双'}
                               </span>
                               <span className="min-w-0 shrink-0 font-mono text-[13px] font-medium text-foreground">{e.ip}</span>
                               <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden">{ipBadges(e)}</span>
@@ -1252,15 +1505,15 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                                 {e.detail === 'lite' && (
                                   <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">精简档</span>
                                 )}
+                                <Button size="sm" variant="outline" className="ml-auto h-7 shrink-0"
+                                  disabled={requerying}
+                                  onClick={() => requeryIps([e.ip])}
+                                  title="重跑资产匹配与威胁情报，并升级为完整档">
+                                  <RefreshCw className="mr-1 h-3 w-3" />重新研判该{e.entity_type === 'domain' ? '域名' : ' IP'}
+                                </Button>
                               </div>
                               <EnrichEntryDetail entry={e} roleText={roleText} onFill={onFill}
-                                liteHint={e.detail === 'lite'}
-                                onRequery={() => requeryIps([e.ip])} />
-                              {wlMap.get(e.ip) && (
-                                <div className="mt-3">
-                                  <WhitelistStatusDetail ip={e.ip} st={wlMap.get(e.ip)} />
-                                </div>
-                              )}
+                                liteHint={e.detail === 'lite'} />
                             </div>
                           )}
                         </div>
@@ -1303,15 +1556,19 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
               </div>
             ) : (
               <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" variant="outline" className="ml-auto h-7 shrink-0"
+                    disabled={requerying}
+                    onClick={() => requeryIps([drawerEntry.ip])}
+                    title="重跑资产匹配与威胁情报，并升级为完整档">
+                    <RefreshCw className="mr-1 h-3 w-3" />重新研判该{drawerEntry.entity_type === 'domain' ? '域名' : ' IP'}
+                  </Button>
+                </div>
                 <EnrichEntryDetail entry={drawerEntry} stacked
                   roleText={(drawerEntry.roles || []).map((r) => roleLabels[r] || r).join('、')}
-                  onFill={onFill} liteHint={drawerEntry.detail === 'lite'}
-                  onRequery={() => requeryIps([drawerEntry.ip])} />
+                  onFill={onFill} liteHint={drawerEntry.detail === 'lite'} />
                 {banMapForEntry(drawerEntry) && (
                   <BanStatusDetail ip={drawerEntry.ip} st={banMapForEntry(drawerEntry)} />
-                )}
-                {wlMap.get(drawerEntry.ip) && (
-                  <WhitelistStatusDetail ip={drawerEntry.ip} st={wlMap.get(drawerEntry.ip)} />
                 )}
               </>
             )}
@@ -1371,67 +1628,7 @@ function BanStatusDetail({ ip, st }) {
             ))}
           </div>
         </div>
-      ) : (
-        <p className="text-[13px] text-muted-foreground">设备上未找到该 IP 的黑名单条目</p>
-      )}
-    </div>
-  )
-}
-
-// ============ 安博通白名单单 IP 详情（命中条目来自后端本地同步索引） ============
-
-function WhitelistStatusDetail({ ip, st }) {
-  if (!st) return null
-  return (
-    <div className={`rounded-md border p-3 ${st.matched ? 'border-emerald-500/30 bg-emerald-500/[0.04]' : 'border-border bg-secondary'}`}>
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-foreground">
-        <ShieldCheck className={`h-3.5 w-3.5 ${st.matched ? 'text-emerald-600' : 'text-primary'}`} />安博通白名单
-        {st.matched ? (
-          <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600">
-            命中{WL_MATCH_LABEL[st.match_type] ? ` · ${WL_MATCH_LABEL[st.match_type]}` : ''}
-          </span>
-        ) : (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">未命中</span>
-        )}
-        <span className="ml-auto font-mono text-[11px] font-normal text-muted-foreground">{ip}</span>
-      </div>
-      {st.matched ? (
-        <div className="space-y-1.5">
-          {st.entries.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">命中白名单，但未返回条目详情（可能已同步变更，请重试）</p>
-          ) : st.entries.map((en, i) => (
-            <div key={`${en.wlist || i}`} className="grid grid-cols-1 gap-x-6 gap-y-1 rounded-md bg-muted p-2.5 text-[12px] leading-relaxed sm:grid-cols-2">
-              <div className="flex min-w-0 items-start gap-2 sm:col-span-2">
-                <span className="shrink-0 text-muted-foreground">白名单条目：</span>
-                <span className="min-w-0 break-all font-mono text-foreground">{en.wlist || '--'}</span>
-              </div>
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="shrink-0 text-muted-foreground">启用：</span>
-                <span className="text-foreground">{fmtBanEntryVal('enable', en.enable)}</span>
-              </div>
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="shrink-0 text-muted-foreground">剩余时长：</span>
-                <span className="text-foreground">{fmtBanEntryVal('leftTime', en.leftTime)}</span>
-              </div>
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="shrink-0 text-muted-foreground">命中次数：</span>
-                <span className="text-foreground">{en.hit_num ?? '--'}</span>
-              </div>
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="shrink-0 text-muted-foreground">原因：</span>
-                <span className="min-w-0 break-words text-foreground">{en.reason || '--'}</span>
-              </div>
-            </div>
-          ))}
-          {st.truncated && (
-            <p className="text-[11px] text-muted-foreground">
-              仅展示前 {st.entries.length} 条，共命中 {st.entry_total} 条
-            </p>
-          )}
-        </div>
-      ) : (
-        <p className="text-[13px] text-muted-foreground">该 IP 未命中安博通白名单，仍按黑名单与资产匹配结果判断风险。</p>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -1472,27 +1669,29 @@ function BanQueryBox({
   const autoBanned = ticketIps.filter((ip) => banMap?.get(ip)?.banned).length
   const autoLoading = !!progress?.loading
   const failedChunks = progress?.failedChunks?.length || 0
+  const desc = autoTotal
+    ? `本工单 ${autoTotal} 个 IP 已自动查询，支持手动查询其他 IP（≤${BAN_CHUNK} 个/次）`
+    : `手动输入 IP 查询阻断器封禁状态（逗号分隔，单次最多 ${BAN_CHUNK} 个）`
 
   return (
-    <div className="rounded-md border border-border bg-secondary/40 p-3">
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <ShieldBan className="h-3.5 w-3.5 text-primary" />
-        <span className="font-medium text-foreground">封禁状态查询（安博通阻断器）</span>
-        {autoTotal ? (
-          <span>已自动查询本工单全部 {autoTotal} 个 IP，也可手动查询列表之外的 IP（逗号分隔，单次最多 {BAN_CHUNK} 个）</span>
-        ) : (
-          <span>如需查询研判列表之外的 IP，可在此手动输入（逗号分隔，单次最多 {BAN_CHUNK} 个）</span>
-        )}
+    <div className="flex min-w-0 flex-col rounded-md border border-border bg-secondary/40 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <ShieldBan className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="text-xs font-semibold text-foreground">安博通黑名单</span>
+        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">阻断器实时</span>
       </div>
+      <p className="mt-1 line-clamp-2 min-h-[2.25rem] text-[11px] leading-relaxed text-muted-foreground" title={desc}>
+        {desc}
+      </p>
 
       {autoTotal > 0 && (
-        <div className="mb-2 space-y-2">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+        <>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
             <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
               已查询 <span className="font-medium text-foreground">{autoDone}/{autoTotal}</span>
             </span>
-            <span className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 ${autoBanned ? 'border-red-500/40 bg-red-500/10 text-red-500' : 'border-border bg-card text-muted-foreground'}`}>
-              封禁中 <span className="font-medium">{autoBanned}</span>
+            <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+              封禁中 <span className="font-medium text-foreground">{autoBanned}</span>
             </span>
             {autoLoading && (
               <span className="inline-flex items-center gap-1 text-muted-foreground">
@@ -1509,33 +1708,20 @@ function BanQueryBox({
               <span className="break-all text-amber-600" title={deviceError}>安博通阻断器不可用</span>
             )}
           </div>
-          <div className="max-h-[220px] overflow-y-auto rounded border border-border/60 bg-background/40">
+          <div className="mt-2 max-h-[200px] overflow-y-auto rounded border border-border bg-background/40">
             {ticketIps.map((ip) => {
               const st = banMap?.get(ip)
-              return (
-                <div key={ip} className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/40 px-2 py-1.5 text-[13px] last:border-b-0">
-                  <span className="min-w-0 break-all font-mono font-medium text-foreground">{ip}</span>
-                  {st ? (
-                    st.banned ? (
-                      <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
-                    ) : (
-                      <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">未封禁</span>
-                    )
-                  ) : autoLoading ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                      <Loader2 className="h-3 w-3 animate-spin" />查询中
-                    </span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">--</span>
-                  )}
-                </div>
-              )
+              if (st) {
+                return <IntelIpRow key={ip} ip={ip} badge={st.banned ? '封禁中' : '未封禁'}
+                  tone={st.banned ? 'red' : 'muted'} />
+              }
+              return <IntelIpRow key={ip} ip={ip} badge="--" note={autoLoading ? '查询中…' : ''} />
             })}
           </div>
-        </div>
+        </>
       )}
 
-      <div className="flex gap-2">
+      <div className="mt-2 flex gap-2">
         <input className={inputCls} placeholder="输入 IP 地址，多个 IP 用逗号分隔"
           value={query} onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) doQuery(query) }} />
@@ -1547,21 +1733,228 @@ function BanQueryBox({
         <div className="mt-2 break-all text-xs text-amber-600">安博通阻断器不可用：{result.device_error}</div>
       )}
       {!!results.length && (
-        <div className="mt-2 space-y-1.5">
+        <div className="mt-2 max-h-[160px] overflow-y-auto rounded border border-border bg-background/40">
           {results.map(([ip, st]) => (
-            <div key={ip} className="flex flex-wrap items-center gap-2 rounded border border-border/60 px-2 py-1.5 text-[13px]">
-              <span className="font-mono font-medium text-foreground">{ip}</span>
-              {st.banned ? (
-                <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
-              ) : (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">未封禁</span>
-              )}
-              {st.error && <span className="text-xs text-red-500">查询失败：{st.error}</span>}
-              {!st.error && st.note && <span className="text-xs text-amber-600">{st.note}</span>}
-            </div>
+            <IntelIpRow key={ip} ip={ip}
+              badge={st.error ? '查询失败' : st.banned ? '封禁中' : '未封禁'}
+              tone={st.error || st.banned ? 'red' : 'muted'}
+              note={st.error || ''}
+              noteClass="text-red-500" />
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// ============ 安博通白名单匹配（本地同步索引）：与黑名单同层级、同结构的并排卡片 ============
+
+function WhitelistQueryBox({ ticketIps = [], wlMap = null, progress = null, onRetry }) {
+  const total = ticketIps.length
+  const done = ticketIps.filter((ip) => wlMap?.has(ip)).length
+  const matched = ticketIps.filter((ip) => wlMap?.get(ip)?.matched).length
+  const loading = !!progress?.loading
+  const desc = `本工单 ${total} 个实体已自动校验，命中项标注匹配方式（精确 / CIDR 包含）`
+  return (
+    <div className="flex min-w-0 flex-col rounded-md border border-border bg-secondary/40 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="text-xs font-semibold text-foreground">安博通白名单</span>
+        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">本地同步索引</span>
+      </div>
+      <p className="mt-1 line-clamp-2 min-h-[2.25rem] text-[11px] leading-relaxed text-muted-foreground" title={desc}>
+        {desc}
+      </p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+          已校验 <span className="font-medium text-foreground">{done}/{total}</span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+          命中 <span className="font-medium text-foreground">{matched}</span>
+        </span>
+        {loading && (
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />校验中 {progress.done}/{progress.total}
+          </span>
+        )}
+        {!loading && progress?.error && (
+          <span className="break-all text-amber-600" title={progress.error}>校验失败：{progress.error}</span>
+        )}
+      </div>
+
+      {total > 0 && (
+        <div className="mt-2 max-h-[200px] overflow-y-auto rounded border border-border bg-background/40">
+          {ticketIps.map((ip) => {
+            const st = wlMap?.get(ip)
+            if (!st) return <IntelIpRow key={ip} ip={ip} badge="--" note={loading ? '校验中…' : ''} />
+            return (
+              <IntelIpRow key={ip} ip={ip}
+                badge={st.matched ? '命中' : '未命中'}
+                tone={st.matched ? 'emerald' : 'muted'}
+                note={st.matched ? [WL_MATCH_LABEL[st.match_type] || '', st.entry_total > 1 ? `${st.entry_total} 条` : ''].filter(Boolean).join(' · ') : ''} />
+            )
+          })}
+        </div>
+      )}
+
+      <div className="mt-2 flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title="白名单命中不免除黑名单与资产风险判定">
+          命中不免除黑名单判定
+        </span>
+        <Button size="sm" className="shrink-0" loading={loading}
+          disabled={!total || loading} onClick={onRetry}>
+          <RefreshCw className="mr-1 h-3.5 w-3.5" />重新校验
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// ============ IP地址库匹配（内置 4 类 IPv4 库）：独立卡片 ============
+
+// 4 库徽标配色（与「IP地址库」页面口径一致）
+const IP_LIB_THEME = {
+  cloud_cn: 'bg-sky-500/15 text-sky-600',
+  geo_cn: 'bg-violet-500/15 text-violet-600',
+  holder_cn: 'bg-emerald-500/15 text-emerald-600',
+  overseas: 'bg-amber-500/15 text-amber-600',
+}
+
+// 各库在安全上下文内最值得展示的归属字段（按库类型顺序排列，空值自动跳过）
+const IP_LIB_DETAIL_FIELDS = {
+  cloud_cn: [['cloud_provider', '云服务商']],
+  geo_cn: [
+    ['isp', '运营商'], ['province', '省份'], ['city', '城市'],
+    ['apnic_status', 'APNIC 状态'], ['apnic_alloc_date', '分配日期'],
+  ],
+  holder_cn: [
+    ['holder_name', '注册持有者'], ['isp', '运营商'], ['country_geo', '国家地区'],
+    ['province', '省份'], ['city', '城市'], ['reg_status', '登记状态'],
+    ['alloc_date', '分配日期'], ['rir_registry', 'RIR 管理机构'],
+  ],
+  overseas: [
+    ['holder_name', '注册持有者'], ['isp', '运营商'], ['country_geo', '国家地区'],
+    ['province', '省份'], ['city', '城市'], ['reg_status', '登记状态'],
+    ['alloc_date', '分配日期'], ['rir_registry', 'RIR 管理机构'],
+  ],
+}
+
+function IpLibBadge({ type, label }) {
+  return (
+    <span className={`inline-flex whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${IP_LIB_THEME[type] || 'bg-muted text-muted-foreground'}`}>
+      {label}
+    </span>
+  )
+}
+
+function IpLibraryMatchBox({ ips = [], ipMap = null, progress = null, onRetry }) {
+  const [openIps, setOpenIps] = useState(() => new Set())
+  const total = ips.length
+  const done = ips.filter((ip) => ipMap?.has(ip)).length
+  const matched = ips.filter((ip) => (ipMap?.get(ip)?.match_count || 0) > 0).length
+  const loading = !!progress?.loading
+  const toggle = (ip) => setOpenIps((prev) => {
+    const next = new Set(prev)
+    if (next.has(ip)) next.delete(ip)
+    else next.add(ip)
+    return next
+  })
+  const desc = '将本工单 IPv4 与内置 4 类地址库（云服务 / APNIC 地理 / APNIC 持有者 / 境外）比对，校验归属网段与运营商信息'
+  return (
+    <div className="flex min-w-0 flex-col rounded-md border border-border bg-secondary/40 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Globe className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="text-xs font-semibold text-foreground">IP地址库匹配</span>
+        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">本地内置库</span>
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground" title={desc}>{desc}</p>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+          已校验 <span className="font-medium text-foreground">{done}/{total}</span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+          匹配 <span className="font-medium text-foreground">{matched}</span>
+        </span>
+        <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
+          未匹配 <span className="font-medium text-foreground">{done - matched}</span>
+        </span>
+        {loading && (
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />校验中 {progress.done}/{progress.total}
+          </span>
+        )}
+        {!loading && progress?.error && (
+          <span className="break-all text-amber-600" title={progress.error}>校验失败：{progress.error}</span>
+        )}
+      </div>
+
+      <div className="mt-2 max-h-[240px] overflow-y-auto rounded border border-border bg-background/40">
+        {ips.map((ip) => {
+          const st = ipMap?.get(ip)
+          const isOpen = openIps.has(ip)
+          // 行内展示命中的库类型徽标（去重，保持 4 库固定顺序）
+          const hitTypes = Object.keys(IP_LIB_THEME).filter(
+            (t) => (st?.matches || []).some((m) => m.library_type === t),
+          )
+          return (
+            <div key={ip} className="border-b border-border last:border-b-0">
+              <button type="button" onClick={() => toggle(ip)}
+                className="flex w-full min-w-0 flex-wrap items-center gap-2 px-2.5 py-1.5 text-left text-[13px] transition hover:bg-background/60">
+                <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                <span className="min-w-0 break-all font-mono font-medium text-foreground">{ip}</span>
+                {st ? (
+                  <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${st.match_count ? INTEL_STATUS_CLS.emerald : INTEL_STATUS_CLS.muted}`}>
+                    {st.match_count ? '已匹配' : '未匹配'}
+                  </span>
+                ) : (
+                  <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">--</span>
+                )}
+                {hitTypes.map((t) => (
+                  <IpLibBadge key={t} type={t}
+                    label={(st.matches.find((m) => m.library_type === t) || {}).library_label || t} />
+                ))}
+                {!st && loading && <span className="text-[11px] text-muted-foreground">校验中…</span>}
+              </button>
+              {isOpen && (
+                <div className="space-y-1.5 px-2.5 pb-2 pl-8">
+                  {!st ? (
+                    <p className="text-[12px] text-muted-foreground">尚未完成校验</p>
+                  ) : st.matches.length === 0 ? (
+                    <p className="text-[12px] text-muted-foreground">未命中任何内置 IPv4 地址库</p>
+                  ) : st.matches.map((m, idx) => (
+                    <div key={`${m.library_type}-${m.id ?? idx}`} className="rounded border border-border bg-card/60 p-2 text-[12px] leading-relaxed">
+                      <div className="mb-1 flex flex-wrap items-center gap-2">
+                        <IpLibBadge type={m.library_type} label={m.library_label} />
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">{m.cidr || '--'}</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+                        {(IP_LIB_DETAIL_FIELDS[m.library_type] || []).filter(([k]) => m[k]).map(([k, label]) => (
+                          <div key={k} className="flex min-w-0 items-start gap-2">
+                            <span className="shrink-0 text-muted-foreground">{label}：</span>
+                            <span className="min-w-0 break-words text-foreground">{m[k]}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="mt-2 flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title="点击 IP 行可展开查看命中网段与归属字段">
+          点击 IP 行展开归属详情
+        </span>
+        <Button size="sm" className="shrink-0" loading={loading}
+          disabled={!total || loading} onClick={onRetry}>
+          <RefreshCw className="mr-1 h-3.5 w-3.5" />重新校验
+        </Button>
+      </div>
     </div>
   )
 }
@@ -1575,7 +1968,6 @@ function LegacyEnrichmentView({ enrichment, onFill }) {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-primary" />
         <span className="font-semibold text-foreground">安全上下文（自动研判）</span>
-        <span className="text-xs text-muted-foreground">发起时按字段开关自动执行资产匹配、威胁情报查询与智能体研判，随工单流转只读展示</span>
         {enrichment.enriched_at && (
           <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">
             研判时间：{new Date(enrichment.enriched_at).toLocaleString('zh-CN', { hour12: false })}

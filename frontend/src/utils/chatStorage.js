@@ -12,6 +12,7 @@
 
 const CONVERSATIONS_PREFIX = 'soar_chat_v2_conversations'
 const ACTIVE_PREFIX = 'soar_chat_v2_active'
+const SESSION_PINNED_PREFIX = 'soar_chat_v2_pinned_sessions'
 
 function scope(userId) {
   return userId === null || userId === undefined || userId === '' ? 'anonymous' : String(userId)
@@ -25,6 +26,11 @@ export function conversationsKey(userId, agentId) {
 /** 当前活动会话缓存 key */
 export function activeSidKey(userId, agentId) {
   return `${ACTIVE_PREFIX}_u${scope(userId)}_a${agentId}`
+}
+
+/** 会话置顶列表缓存 key */
+export function pinnedSessionsKey(userId, agentId) {
+  return `${SESSION_PINNED_PREFIX}_u${scope(userId)}_a${agentId}`
 }
 
 function safeGet(storage, key) {
@@ -83,6 +89,38 @@ export function saveActiveSid(storage, userId, agentId, sid) {
   return safeSet(storage, activeSidKey(userId, agentId), sid || '')
 }
 
+/** 读取会话置顶列表（脏数据/非数组一律降级为空列表） */
+export function loadPinnedSessions(storage, userId, agentId) {
+  const raw = safeGet(storage, pinnedSessionsKey(userId, agentId))
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((sid) => typeof sid === 'string' && sid)
+  } catch {
+    return []
+  }
+}
+
+/** 保存会话置顶列表；返回是否写入成功 */
+export function savePinnedSessions(storage, userId, agentId, sids) {
+  const payload = Array.isArray(sids) ? sids.filter((sid) => typeof sid === 'string' && sid) : []
+  let raw
+  try {
+    raw = JSON.stringify(payload)
+  } catch {
+    return false
+  }
+  return safeSet(storage, pinnedSessionsKey(userId, agentId), raw)
+}
+
+/** 切换置顶状态（纯函数）：返回新数组，不修改入参 */
+export function togglePinnedSid(pinnedSids, sid) {
+  const list = Array.isArray(pinnedSids) ? pinnedSids : []
+  if (!sid) return list
+  return list.includes(sid) ? list.filter((x) => x !== sid) : [...list, sid]
+}
+
 /**
  * 清空**所有用户**的对话缓存（登出 / 凭证失效时调用）。
  *
@@ -101,7 +139,9 @@ export function purgeChatCaches(storage) {
       const key = storage.key(i)
       if (
         key &&
-        (key.startsWith(`${CONVERSATIONS_PREFIX}_`) || key.startsWith(`${ACTIVE_PREFIX}_`))
+        (key.startsWith(`${CONVERSATIONS_PREFIX}_`) ||
+          key.startsWith(`${ACTIVE_PREFIX}_`) ||
+          key.startsWith(`${SESSION_PINNED_PREFIX}_`))
       ) {
         keys.push(key)
       }

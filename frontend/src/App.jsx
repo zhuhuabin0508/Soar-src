@@ -51,6 +51,7 @@ import MyFeedback from './pages/MyFeedback'
 import FeedbackAdmin from './pages/FeedbackAdmin'
 import DeliverableManagement from './pages/DeliverableManagement'
 import GovCloudAssets from './pages/GovCloudAssets'
+import IpLibrary from './pages/IpLibrary'
 import DutyMemberManagement from './pages/DutyMemberManagement'
 import DutySchedule from './pages/DutySchedule'
 import DutyScheduleGraph from './pages/DutyScheduleGraph'
@@ -167,6 +168,7 @@ const router = createBrowserRouter([
           { path: '/assets/templates', element: <RequirePermission perm={['asset_templates', 'view']} label="类型模板"><AssetTemplates /></RequirePermission> },
           { path: '/assets/discovery', element: <RequirePermission perm={['asset_discovery', 'view']} label="资产发现"><GovCloudAssets /></RequirePermission> },
           { path: '/assets/legacy', element: <RequirePermission perm={['asset_list', 'view']} label="资产清单"><Assets /></RequirePermission> },
+          { path: '/ip-library', element: <RequirePermission perm={['ip_library', 'view']} label="IP地址库"><IpLibrary /></RequirePermission> },
           // 大屏路由：菜单隐藏之外再加页面级守卫，无 view 权限时回首页
           { path: '/dashboard', element: <RequirePermission perm={['dashboard', 'view']} label="运营大屏"><Dashboard /></RequirePermission> },
           { path: '/bigscreen', element: <RequirePermission perm={['bigscreen', 'view']} label="盾立方W"><BigScreen /></RequirePermission> },

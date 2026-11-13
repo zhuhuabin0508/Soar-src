@@ -40,8 +40,11 @@ class Tool(Base):
     tags = Column(JSON, nullable=True)
     # HTTP 工具配置（仅 tool_type=='http' 使用）：
     # {method, url, headers:[{key,value}], body_type(json/form/xml/none),
-    #  body_content, auth_type(none/bearer/api_key/oauth2), auth_config,
+    #  body_content(支持 {{param}} 占位符，渲染为嵌套 JSON body),
+    #  auth_type(none/bearer/api_key/oauth2/x360_signature), auth_config,
     #  timeout, retry, response_jsonpath, error_handling}
+    # x360_signature 为 360 网关统一签名（360 情报 API 通用）：
+    #  auth_config={apikey, salt}，每次请求动态计算 X-360-Signature 头
     http_config = Column(JSON, nullable=True)
     # 创建者用户ID（资源级 owner 权限控制），null 表示历史数据/系统创建
     created_by = Column(Integer, nullable=True)

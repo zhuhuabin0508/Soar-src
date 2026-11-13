@@ -1227,6 +1227,7 @@ function ToolEditor() {
                 { value: 'bearer', label: 'API Key (Bearer Token)' },
                 { value: 'api_key', label: 'API Key (自定义 Header/Query)' },
                 { value: 'oauth2', label: 'OAuth 2.0 (预配置 Access Token)' },
+                { value: 'x360_signature', label: '360 网关签名 (X-360-Signature)' },
               ]}
             />
 
@@ -1280,6 +1281,27 @@ function ToolEditor() {
                 />
                 <p className={hintCls}>
                   简化实现：直接填入已通过授权码流程获取的 access_token。完整 OAuth2 流程（Client ID/Secret/授权 URL）将在后续版本支持。
+                </p>
+              </div>
+            )}
+
+            {/* 360 网关统一签名（全系 360 情报 API 通用） */}
+            {form.http_config.auth_type === 'x360_signature' && (
+              <div className="flex flex-col gap-2">
+                <TextInput
+                  label="API Key (apikey)"
+                  value={form.http_config.auth_config.apikey || ''}
+                  onChange={(v) => setHttpField('auth_config')({ ...form.http_config.auth_config, apikey: v })}
+                  placeholder="360 控制台分配的 apikey"
+                />
+                <TextInput
+                  label="Salt（签名盐值）"
+                  value={form.http_config.auth_config.salt || ''}
+                  onChange={(v) => setHttpField('auth_config')({ ...form.http_config.auth_config, salt: v })}
+                  placeholder="360 控制台分配的 salt"
+                />
+                <p className={hintCls}>
+                  每次请求自动计算 X-360-Key / X-360-Nonce / X-360-Timestamp / X-360-Signature 动态签名头，适用于 api.f.360.cn 全系接口。
                 </p>
               </div>
             )}

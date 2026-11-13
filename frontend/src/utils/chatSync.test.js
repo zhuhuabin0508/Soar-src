@@ -92,6 +92,31 @@ test('合并：服务端独有会话追加并列入 missingSids，本地已有�
   assert.equal(list[0].sid, 'local-1')
 })
 
+test('合并：服务端标题优先于本地自动标题（跨端重命名可同步）', () => {
+  const local = [localConv('s1', { title: '本地自动标题', synced: true })]
+  const server = [
+    { session_id: 's1', title: '其它端改名', created_at: '2026-10-01T10:00:00+08:00', updated_at: '2026-10-02T10:00:00+08:00' },
+  ]
+
+  const { list } = mergeServerSessions(local, server)
+
+  assert.equal(list[0].title, '其它端改名')
+})
+
+test('合并：用户手动命名的标题不被服务端自动标题覆盖', () => {
+  const local = [
+    localConv('s1', { title: '我的自定义会话', titleCustom: true, synced: true }),
+  ]
+  const server = [
+    { session_id: 's1', title: '首条消息自动标题', created_at: '2026-10-01T10:00:00+08:00', updated_at: '2026-10-02T10:00:00+08:00' },
+  ]
+
+  const { list } = mergeServerSessions(local, server)
+
+  assert.equal(list[0].title, '我的自定义会话')
+  assert.equal(list[0].titleCustom, true)
+})
+
 test('合并：时间以服务端为准，本地时钟偏差不会导致排序错乱', () => {
   const skewedNow = Date.parse('2035-01-01T00:00:00Z')
   const local = [localConv('s1', { updatedAt: skewedNow })]

@@ -126,10 +126,22 @@ export default {
           from: { opacity: "0", transform: "translateY(4px)" },
           to: { opacity: "1", transform: "translateY(0)" },
         },
+        // 会话操作菜单展开
+        "menu-in": {
+          from: { opacity: "0", transform: "translateY(-4px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
+        // 消息气泡入场（仅新增消息，不重复播放历史消息）
+        "msg-enter": {
+          from: { opacity: "0", transform: "translateY(6px) scale(0.99)" },
+          to: { opacity: "1", transform: "translateY(0) scale(1)" },
+        },
       },
       animation: {
         "skeleton-shimmer": "skeleton-shimmer 1.8s ease-in-out infinite",
         "table-row-enter": "table-row-enter 0.2s cubic-bezier(0.33, 1, 0.68, 1) both",
+        "menu-in": "menu-in 0.14s ease-out both",
+        "msg-enter": "msg-enter 0.22s cubic-bezier(0.33, 1, 0.68, 1) both",
       },
     },
   },

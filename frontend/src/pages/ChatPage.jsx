@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   MessageSquare, Sparkles, Settings, Pin, MapPin, Brain, ScrollText, Paperclip, Check,
   X, Loader2, AlertTriangle, Sheet, FileText, File, Flag, Wrench, Download,
-  ChevronDown, ChevronRight, HelpCircle, ArrowUp, Trash2,
+  ChevronDown, ChevronRight, HelpCircle, ArrowUp, Trash2, MoreHorizontal, Pencil, PinOff,
 } from 'lucide-react'
 import { agents as agentsApi, agentFiles as agentFilesApi, llmConfigs as llmConfigsApi } from '../api/client'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -26,11 +26,15 @@ import {
   countEnabledParams, isSystemPromptModified, isModelOverridden,
 } from '../hooks/useChatOverrides'
 import {
-  MAX_MESSAGES_PER_CONVERSATION,
-  clearAllConversations, createConversation, findConversation, fillConversationMessages,
-  normalizeConversations, startNewConversation, updateConversationMessages,
+  MAX_MESSAGES_PER_CONVERSATION, SESSION_TITLE_MAX,
+  clearAllConversations, createConversation, deriveConversationTitle, findConversation,
+  fillConversationMessages, normalizeConversations, renameConversation, startNewConversation,
+  sortConversationsByPinned, updateConversationMessages,
 } from '../utils/chatConversations'
-import { loadActiveSid, loadConversations, saveActiveSid, saveConversations } from '../utils/chatStorage'
+import {
+  loadActiveSid, loadConversations, loadPinnedSessions, saveActiveSid, saveConversations,
+  savePinnedSessions, togglePinnedSid,
+} from '../utils/chatStorage'
 import {
   abortChatTask, abortTasksForOtherUser, discardChatTasks, discardTaskResult,
   getChatTask, listChatTasks, startChatStream, subscribeTaskUpdates,
@@ -150,6 +154,20 @@ function formatConvTime(ts) {
     return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   }
   return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+/** 会话时间戳的完整格式（用于 title 悬浮提示，避免列表里只有“10:24”的歧义） */
+function formatConvTimeFull(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 
@@ -286,6 +304,14 @@ export default function ChatPage() {
   const [conversations, setConversations] = useState({})
   // 当前活动会话 ID（按 agentId 隔离）
   const [activeSids, setActiveSids] = useState({})
+  // 会话置顶（按 agentId 隔离）：置顶项排在列表最前，持久化到本地缓存
+  const [pinnedSessionIds, setPinnedSessionIds] = useState({})
+  // 未读会话（按 agentId 隔离）：后台会话生成完成且用户不在该会话时标记，切换过去即清除
+  const [unreadSids, setUnreadSids] = useState({})
+  // 本次新建会话请求（含时间戳，保证对同一空白会话重复点击也能再次触发标题编辑）
+  const [newSessionRequest, setNewSessionRequest] = useState(null)
+  // 页面挂载时间：避免 subscribeTaskUpdates 回放历史已完成任务时误标未读
+  const mountedAtRef = useRef(Date.now())
 
   // 当前登录用户 ID：本地缓存按「用户 + 智能体」隔离，切换账号不会串对话
   const userId = useAuthStore((s) => s.user?.id)
@@ -461,6 +487,10 @@ export default function ChatPage() {
     deletedSidsRef.current = new Set()
     setConversations({})
     setActiveSids({})
+    // 置顶/未读同样是账号级数据：不清空会残留上一账号的置顶项与未读徽标
+    // （置顶懒加载用 hasOwnProperty 判断，残留后新账号也不会重新读取）
+    setPinnedSessionIds({})
+    setUnreadSids({})
     // 旧账号的后台生成任务不再需要（token 已变化），中止避免继续消耗与串号
     abortTasksForOtherUser(userScope)
   }, [userScope])
@@ -525,6 +555,34 @@ export default function ChatPage() {
       }
       // 所有会话都被删/服务端为空时，保留一条空白会话供继续对话
       if (merged.length === 0) merged = [createConversation()]
+
+      // 本地手动命名但当时尚未落库的会话：落库后补一次标题同步，
+      // 否则其它浏览器会看到服务端按首条消息自动生成的标题
+      const serverTitleBySid = new Map(
+        serverSessions.map((s) => [
+          s && typeof s.session_id === 'string' ? s.session_id : '',
+          String((s && s.title) || '').trim(),
+        ])
+      )
+      for (const conv of merged) {
+        if (
+          conv.titleCustom === true &&
+          conv.title &&
+          serverSids.has(conv.sid) &&
+          serverTitleBySid.get(conv.sid) !== conv.title
+        ) {
+          agentsApi.renameChatSession(agentId, conv.sid, conv.title).catch(() => {})
+        }
+      }
+
+      // 未读标记按合并后的会话集合收敛：其它端已删除的会话不再残留未读徽标
+      setUnreadSids((prev) => {
+        const cur = prev[agentId] || []
+        if (cur.length === 0) return prev
+        const aliveSids = new Set(merged.map((c) => c.sid))
+        const next = cur.filter((sidItem) => aliveSids.has(sidItem))
+        return next.length === cur.length ? prev : { ...prev, [agentId]: next }
+      })
       setConversations((prev) => ({
         ...prev,
         [agentId]: applyPendingTasks(merged, userScope, agentId),
@@ -631,6 +689,76 @@ export default function ChatPage() {
     })
   }, [])
 
+  // ----- 会话置顶（与智能体置顶相互独立）-----
+  // 缓存按「用户 + 智能体」隔离，首次进入某智能体时懒加载，避免启动时全量读取。
+  useEffect(() => {
+    if (!selectedAgentId) return
+    setPinnedSessionIds((prev) => (
+      Object.prototype.hasOwnProperty.call(prev, selectedAgentId)
+        ? prev
+        : { ...prev, [selectedAgentId]: loadPinnedSessions(localStorage, userScope, selectedAgentId) }
+    ))
+  }, [selectedAgentId, userScope])
+
+  const toggleSessionPin = useCallback((sid) => {
+    if (!selectedAgentId || !sid) return
+    const agentId = selectedAgentId
+    setPinnedSessionIds((prev) => {
+      const next = togglePinnedSid(prev[agentId] || [], sid)
+      savePinnedSessions(localStorage, userScope, agentId, next)
+      return { ...prev, [agentId]: next }
+    })
+  }, [selectedAgentId, userScope])
+
+  // ----- 未读标记：后台会话生成完成且用户不在该会话时点亮，点开即清除 -----
+  const markSessionUnread = useCallback((agentId, sid) => {
+    if (!agentId || !sid) return
+    setUnreadSids((prev) => {
+      const cur = prev[agentId] || []
+      if (cur.includes(sid)) return prev
+      return { ...prev, [agentId]: [...cur, sid] }
+    })
+  }, [])
+
+  const clearSessionUnread = useCallback((agentId, sid) => {
+    if (!agentId || !sid) return
+    setUnreadSids((prev) => {
+      const cur = prev[agentId] || []
+      if (!cur.includes(sid)) return prev
+      const next = cur.filter((x) => x !== sid)
+      return next.length === cur.length ? prev : { ...prev, [agentId]: next }
+    })
+  }, [])
+
+  // ----- 会话重命名：本地立即生效，已落库会话再同步到服务端 -----
+  const renameSession = useCallback(async (sid, rawTitle) => {
+    if (!selectedAgentId || !sid) return false
+    const agentId = selectedAgentId
+    const list = conversationsRef.current[agentId] || []
+    const current = findConversation(list, sid)
+    if (!current) return false
+    // 空标题恢复为按首条消息自动推导的标题
+    const title = (rawTitle || '').trim() || deriveConversationTitle(current.messages) || ''
+    const next = renameConversation(list, sid, title)
+    if (next === list) return false
+    setConversations((prev) => ({ ...prev, [agentId]: next }))
+    schedulePersist(agentId)
+    // 尚未落库（新建后还没发消息）的会话没有服务端记录，保留本地标题即可，
+    // 首次发送消息后服务端会按首条消息生成标题；标题为空时后端 min_length=1
+    // 会拒绝，跳过 PATCH 以免弹 422 告警。
+    if (current.synced && title) {
+      try {
+        await agentsApi.renameChatSession(agentId, sid, title)
+      } catch (err) {
+        const message = String(err?.message || err || '')
+        if (!/404|不存在|尚未创建/.test(message)) {
+          toast.warning(`会话标题未同步到服务端：${message}`)
+        }
+      }
+    }
+    return true
+  }, [selectedAgentId, schedulePersist])
+
   // ----- 新建会话：只追加一条空白会话并切换上下文，绝不删除已有会话 -----
   // 注意：这里**不调用**后端 clearChatSession —— 旧会话的消息与服务端记忆都必须保留，
   // 用户仍可在左侧「对话历史」中切回查看。
@@ -639,21 +767,28 @@ export default function ChatPage() {
     const list = conversationsRef.current[selectedAgentId] || []
     const { list: nextList, sid, created } = startNewConversation(list, activeSid)
     if (!created) {
-      toast.info('当前已是空白会话，直接开始输入即可')
+      // 当前已是空白会话：不重复堆叠空会话，但同样允许直接为它命名
+      setNewSessionRequest({ sid: activeSid || sid, at: Date.now() })
+      toast.info('当前已是空白会话，可直接输入标题命名')
       return
     }
     setConversations((prev) => ({ ...prev, [selectedAgentId]: nextList }))
     schedulePersist(selectedAgentId)
     saveActiveSid(localStorage, userScope, selectedAgentId, sid)
     setActiveSids((prev) => ({ ...prev, [selectedAgentId]: sid }))
+    clearSessionUnread(selectedAgentId, sid)
+    // 新建后让侧栏自动聚焦标题输入框，支持直接自定义命名（回车保存 / Esc 使用默认标题）
+    setNewSessionRequest({ sid, at: Date.now() })
     toast.success('已新建会话，历史对话已保留')
-  }, [selectedAgentId, activeSid, userScope, schedulePersist])
+  }, [selectedAgentId, activeSid, userScope, schedulePersist, clearSessionUnread])
 
   // ----- 切换会话（仅切换上下文，不删除任何记录） -----
   // 若目标会话本地没有消息（如跨浏览器恢复后的会话），按需从服务端拉取。
   const selectConversation = useCallback(
     async (sid) => {
       if (!selectedAgentId || !sid) return
+      // 点开会话即视为已读
+      clearSessionUnread(selectedAgentId, sid)
       const conv = findConversation(conversationsRef.current[selectedAgentId] || [], sid)
       const hasMessages = !!conv && Array.isArray(conv.messages) && conv.messages.length > 0
       // 已选中且本地有消息时无需重复拉取
@@ -669,7 +804,7 @@ export default function ChatPage() {
       if (hasMessages) return
       await loadConversationMessages(selectedAgentId, sid)
     },
-    [selectedAgentId, activeSid, userScope, loadConversationMessages]
+    [selectedAgentId, activeSid, userScope, loadConversationMessages, clearSessionUnread]
   )
 
   // ----- 清空全部历史（显式操作，需用户在工具栏二次确认）-----
@@ -704,6 +839,10 @@ export default function ChatPage() {
     schedulePersist(agentId)
     saveActiveSid(localStorage, userScope, agentId, fresh[0].sid)
     setActiveSids((prev) => ({ ...prev, [agentId]: fresh[0].sid }))
+    // 置顶与未读均随历史一起清空，避免留下指向已删除会话的脏标记
+    savePinnedSessions(localStorage, userScope, agentId, [])
+    setPinnedSessionIds((prev) => ({ ...prev, [agentId]: [] }))
+    setUnreadSids((prev) => ({ ...prev, [agentId]: [] }))
     toast.success(`已清空 ${previous.length} 个历史会话`)
   }, [selectedAgentId, userScope, schedulePersist])
 
@@ -760,6 +899,21 @@ export default function ChatPage() {
     }
     setConversations((prev) => ({ ...prev, [agentId]: nextList }))
     schedulePersist(agentId)
+    // 清理已删除会话的置顶与未读标记，避免列表里留下幽灵状态
+    setPinnedSessionIds((prev) => {
+      const cur = prev[agentId]
+      if (!Array.isArray(cur)) return prev
+      const filtered = cur.filter((sid) => !deleted.has(sid))
+      if (filtered.length === cur.length) return prev
+      savePinnedSessions(localStorage, userScope, agentId, filtered)
+      return { ...prev, [agentId]: filtered }
+    })
+    setUnreadSids((prev) => {
+      const cur = prev[agentId]
+      if (!Array.isArray(cur)) return prev
+      const filtered = cur.filter((sid) => !deleted.has(sid))
+      return filtered.length === cur.length ? prev : { ...prev, [agentId]: filtered }
+    })
     if (nextActive !== latestActive) {
       saveActiveSid(localStorage, userScope, agentId, nextActive)
       setActiveSids((prev) => ({ ...prev, [agentId]: nextActive }))
@@ -861,6 +1015,15 @@ export default function ChatPage() {
       if (task.status !== 'streaming') {
         // 最终结果落盘（页面已卸载时由任务管理器自身写缓存兜底）
         schedulePersist(task.agentId)
+        // 未读提示：后台会话生成完成、但用户当前停留在别的会话时点亮；
+        // 只标记页面挂载之后完成的任务，避免 subscribeTaskUpdates 回放旧任务时误标。
+        const finishedAt = Number(task.finishedAt) || 0
+        const isActiveSession = task.sid && task.sid === (activeSidsRef.current[task.agentId] || '')
+        if (isActiveSession) {
+          clearSessionUnread(task.agentId, task.sid)
+        } else if (task.sid && finishedAt >= mountedAtRef.current) {
+          markSessionUnread(task.agentId, task.sid)
+        }
         if (
           task.agentId === String(selectedAgentIdRef.current) &&
           !completedTaskKeysRef.current.has(task.key)
@@ -874,7 +1037,7 @@ export default function ChatPage() {
       setTaskVersion((v) => v + 1)
     })
     return unsub
-  }, [userScope, schedulePersist])
+  }, [userScope, schedulePersist, markSessionUnread, clearSessionUnread])
 
   // ----- 上传文件 -----
   const handleFileUpload = useCallback(
@@ -1201,6 +1364,11 @@ export default function ChatPage() {
         userScope={userScope}
         streamingAgentIds={streamingAgentIds}
         streamingSids={streamingSids}
+        pinnedSids={pinnedSessionIds[selectedAgentId] || []}
+        unreadSids={unreadSids[selectedAgentId] || []}
+        onTogglePinSession={toggleSessionPin}
+        onRenameConversation={renameSession}
+        newSessionRequest={newSessionRequest}
       />
 
       {/* ===== 右侧主区域 ===== */}
@@ -1259,6 +1427,11 @@ function ChatSidebar({
   userScope = '',
   streamingAgentIds,
   streamingSids,
+  pinnedSids = [],
+  unreadSids = [],
+  onTogglePinSession,
+  onRenameConversation,
+  newSessionRequest = null,
 }) {
   // ----- 历史会话删除：选择模式 + 二次确认 -----
   const [selectMode, setSelectMode] = useState(false)
@@ -1266,6 +1439,91 @@ function ChatSidebar({
   // 二次确认对象：`one:<sid>` 或 `batch`；超时自动撤销，避免误触
   const [confirmKey, setConfirmKey] = useState('')
   const confirmTimerRef = useRef(null)
+  // 会话列表：滚动加载 + 操作菜单 + 内联重命名
+  const SESSION_BATCH = 20
+  const [visibleNormalCount, setVisibleNormalCount] = useState(SESSION_BATCH)
+  const [menuSid, setMenuSid] = useState('')
+  const [editingSid, setEditingSid] = useState('')
+  const [draftTitle, setDraftTitle] = useState('')
+  const titleInputRef = useRef(null)
+  // 回车/Esc 结束编辑时跳过随后的 blur 提交，避免重复保存或取消后又被保存
+  const skipBlurRef = useRef(false)
+
+  const pinnedSet = useMemo(() => new Set(pinnedSids), [pinnedSids])
+  const unreadSet = useMemo(() => new Set(unreadSids), [unreadSids])
+  const sortedConversations = useMemo(
+    () => sortConversationsByPinned(conversations, pinnedSet),
+    [conversations, pinnedSet]
+  )
+  const pinnedConversations = useMemo(
+    () => sortedConversations.filter((conv) => pinnedSet.has(conv.sid)),
+    [sortedConversations, pinnedSet]
+  )
+  const normalConversations = useMemo(
+    () => sortedConversations.filter((conv) => !pinnedSet.has(conv.sid)),
+    [sortedConversations, pinnedSet]
+  )
+  const visibleNormal = normalConversations.slice(0, visibleNormalCount)
+  const hiddenCount = normalConversations.length - visibleNormal.length
+  const unreadCount = unreadSet.size
+
+  // 切换智能体：重置滚动加载与临时交互状态
+  useEffect(() => {
+    setVisibleNormalCount(SESSION_BATCH)
+    setMenuSid('')
+    setEditingSid('')
+    setDraftTitle('')
+  }, [selectedAgentId])
+
+  // 新建会话后自动进入标题编辑态，支持直接自定义命名
+  useEffect(() => {
+    const sid = newSessionRequest?.sid
+    if (!sid) return
+    if (!conversations.some((conv) => conv?.sid === sid)) return
+    setMenuSid('')
+    setDraftTitle('')
+    setEditingSid(sid)
+    // 仅响应新的新建请求；无必要不因 conversations 变化重开编辑框
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newSessionRequest])
+
+  useEffect(() => {
+    if (!editingSid) return
+    const el = titleInputRef.current
+    if (el) {
+      // 新建会话可能落在置顶项之后：先滚到可见区域再聚焦
+      el.scrollIntoView({ block: 'nearest' })
+      el.focus()
+      el.select()
+    }
+  }, [editingSid])
+
+  const finishRename = (commit) => {
+    if (!editingSid) return
+    skipBlurRef.current = true
+    const sid = editingSid
+    const value = draftTitle
+    setEditingSid('')
+    setDraftTitle('')
+    if (commit) onRenameConversation?.(sid, value)
+  }
+
+  const handleListScroll = (event) => {
+    if (hiddenCount <= 0) return
+    const el = event.currentTarget
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 32) {
+      setVisibleNormalCount((count) => count + SESSION_BATCH)
+    }
+  }
+
+  const startRename = (conv) => {
+    setMenuSid('')
+    // 上一次 Enter/Esc 结束编辑时输入框被卸载、blur 不会触发，
+    // 该标志可能停留在 true；此处复位，避免下一次失焦保存被跳过
+    skipBlurRef.current = false
+    setDraftTitle(conv.title || '')
+    setEditingSid(conv.sid)
+  }
 
   const clearConfirm = useCallback(() => {
     if (confirmTimerRef.current) {
@@ -1347,17 +1605,214 @@ function ChatSidebar({
     onDeleteConversations?.(sids)
   }
 
+  // 单条会话渲染：置顶标记、未读点、时间戳、生成中状态、操作菜单与内联重命名
+  const renderSessionRow = (conv) => {
+    const active = conv.sid === activeSid
+    const selected = selectedSids.has(conv.sid)
+    const pinned = pinnedSet.has(conv.sid)
+    const unread = unreadSet.has(conv.sid) && !active
+    const streaming = streamingSids?.has(conv.sid)
+    const confirming = confirmKey === `one:${conv.sid}`
+    const editing = editingSid === conv.sid
+    const messageCount = Array.isArray(conv.messages) ? conv.messages.length : 0
+
+    return (
+      <div
+        key={conv.sid}
+        className={`group relative flex flex-col rounded-lg border text-xs transition-all ${
+          active
+            ? 'border-primary/30 bg-primary/10 shadow-sm'
+            : unread
+              ? 'border-primary/15 bg-primary/[0.04] hover:border-border hover:bg-muted/70'
+              : 'border-transparent hover:border-border hover:bg-muted/70'
+        }`}
+      >
+        {active && (
+          <span
+            aria-hidden
+            className="absolute bottom-1.5 left-0 top-1.5 w-[2px] rounded-full bg-primary"
+          />
+        )}
+        <div className="flex min-w-0 items-center">
+          {selectMode && (
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={selected}
+              aria-label={selected ? '取消选择该对话' : '选择该对话'}
+              onClick={() => toggleSelect(conv.sid)}
+              className={`ml-2 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${
+                selected
+                  ? 'border-red-500 bg-red-500 text-white'
+                  : 'border-border bg-card hover:border-red-400'
+              }`}
+            >
+              {selected && <Check className="h-2.5 w-2.5" />}
+            </button>
+          )}
+          <MessageSquare
+            className={`ml-2 h-3.5 w-3.5 shrink-0 ${
+              active ? 'text-primary' : unread ? 'text-primary/80' : 'text-muted-foreground'
+            }`}
+          />
+          <div className="min-w-0 flex-1 py-1.5 pl-2 pr-1">
+            {editing ? (
+              <input
+                ref={titleInputRef}
+                value={draftTitle}
+                maxLength={SESSION_TITLE_MAX}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onBlur={() => {
+                  if (skipBlurRef.current) {
+                    skipBlurRef.current = false
+                    return
+                  }
+                  finishRename(true)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    finishRename(true)
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    finishRename(false)
+                  }
+                }}
+                placeholder="输入会话标题（回车保存）"
+                aria-label="会话标题"
+                className="w-full rounded border border-primary/40 bg-card px-1.5 py-0.5 text-xs text-foreground outline-none ring-1 ring-primary/20 placeholder:text-muted-foreground"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleItemClick(conv.sid)}
+                title={formatConvTimeFull(conv.updatedAt)}
+                aria-current={active ? 'true' : undefined}
+                className="block w-full min-w-0 text-left"
+              >
+                <span className="flex min-w-0 items-center gap-1">
+                  {pinned && (
+                    <Pin
+                      className="h-2.5 w-2.5 shrink-0 text-primary"
+                      fill="currentColor"
+                      aria-label="已置顶"
+                    />
+                  )}
+                  <span
+                    className={`truncate ${
+                      active
+                        ? 'font-semibold text-primary'
+                        : unread
+                          ? 'font-semibold text-foreground'
+                          : 'text-foreground'
+                    }`}
+                  >
+                    {conv.title || '新对话'}
+                  </span>
+                  {unread && (
+                    <span
+                      className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+                      aria-label="有新的回复"
+                    />
+                  )}
+                </span>
+                <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span className="tabular-nums">{formatConvTime(conv.updatedAt)}</span>
+                  {messageCount > 0 && <span className="truncate">· {messageCount} 条</span>}
+                  {streaming && (
+                    <span className="inline-flex items-center gap-1 text-primary">
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden />
+                      生成中
+                    </span>
+                  )}
+                  {unread && !streaming && <span className="text-primary">未读</span>}
+                </span>
+              </button>
+            )}
+          </div>
+          {!selectMode && (
+            confirming ? (
+              <button
+                type="button"
+                onClick={() => requestDeleteOne(conv.sid)}
+                disabled={deleting}
+                title="再次点击确认删除"
+                className="mr-1 shrink-0 rounded-md bg-red-500/15 px-1.5 py-1 text-[10px] font-medium text-red-500 transition hover:bg-red-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                确认删除
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuSid(menuSid === conv.sid ? '' : conv.sid)
+                  clearConfirm()
+                }}
+                title="更多操作"
+                aria-label="更多操作"
+                aria-expanded={menuSid === conv.sid}
+                className={`mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground ${
+                  menuSid === conv.sid
+                    ? 'bg-background opacity-100'
+                    : 'opacity-60 focus-visible:opacity-100 group-hover:opacity-100'
+                }`}
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </button>
+            )
+          )}
+        </div>
+        {menuSid === conv.sid && !selectMode && (
+          <div className="animate-menu-in flex items-center gap-1 border-t border-border/60 px-2 py-1">
+            <button
+              type="button"
+              onClick={() => startRename(conv)}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted-foreground transition hover:bg-background hover:text-foreground"
+            >
+              <Pencil className="h-3 w-3" />
+              重命名
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSid('')
+                onTogglePinSession?.(conv.sid)
+              }}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-muted-foreground transition hover:bg-background hover:text-foreground"
+            >
+              {pinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
+              {pinned ? '取消置顶' : '置顶'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenuSid('')
+                requestDeleteOne(conv.sid)
+              }}
+              disabled={deleting}
+              className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-red-500 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Trash2 className="h-3 w-3" />
+              删除
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <aside
       className="flex shrink-0 flex-col border-r border-border bg-background"
-      style={{ width: `${width}px`, minWidth: `${minWidth}px` }}
+      style={{ width: `${width}px`, minWidth: `${minWidth}px`, maxWidth: '46vw' }}
     >
       {/* 顶部功能区 */}
       <div className="shrink-0 p-3">
         <button
           type="button"
           onClick={onNewConversation}
-          className="mb-2 w-full inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-card px-4 py-2 text-sm font-medium text-foreground shadow-sm transition hover:border-primary/40 hover:bg-accent"
+          title="新建会话（创建后可直接输入自定义标题）"
+          className="mb-2 inline-flex w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition hover:opacity-90 hover:shadow-[0_0_16px_oklch(var(--primary)/0.35)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Sparkles className="h-4 w-4" />
           新建会话
@@ -1419,17 +1874,22 @@ function ChatSidebar({
       </div>
 
       {/* 当前智能体的对话历史：每条对应一个独立会话，点击可切回查看。
-          「新建会话」只追加条目；删除支持单条删除与多选批量删除（均需二次确认），
-          与工具栏的「清空历史」是两个独立操作。 */}
+          「新建会话」支持直接自定义标题；单条操作菜单含重命名/置顶/删除，
+          删除仍保留二次确认（与工具栏的「清空历史」是两个独立操作）。 */}
       {selectedAgentId && (
-        <div className="shrink-0 border-t border-border p-2">
-          <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            <span>对话历史</span>
-            <span className="ml-auto whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 text-[10px] tabular-nums">
+        <div className="flex min-h-0 shrink-0 flex-col border-t border-border">
+          <div className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold tracking-wider text-muted-foreground">
+            <span className="uppercase">对话历史</span>
+            <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] tabular-nums">
               {conversations.length}
             </span>
+            {unreadCount > 0 && (
+              <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                {unreadCount} 未读
+              </span>
+            )}
             {conversations.length > 0 && (
-              <div className="flex items-center gap-1 normal-case tracking-normal">
+              <div className="ml-auto flex items-center gap-1 normal-case tracking-normal">
                 {selectMode ? (
                   <>
                     <button
@@ -1437,7 +1897,7 @@ function ChatSidebar({
                       onClick={requestDeleteSelected}
                       disabled={selectedSids.size === 0 || deleting}
                       title={confirmKey === 'batch' ? '再次点击确认删除' : '删除所选对话'}
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition ${
+                      className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium transition ${
                         selectedSids.size === 0 || deleting
                           ? 'cursor-not-allowed text-muted-foreground/40'
                           : confirmKey === 'batch'
@@ -1458,7 +1918,7 @@ function ChatSidebar({
                         setSelectedSids(new Set())
                         clearConfirm()
                       }}
-                      className="rounded px-1 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted"
+                      className="rounded-md px-1 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted"
                     >
                       取消
                     </button>
@@ -1469,9 +1929,10 @@ function ChatSidebar({
                     onClick={() => {
                       setSelectMode(true)
                       clearConfirm()
+                      setMenuSid('')
                     }}
                     title="选择要删除的历史对话"
-                    className="rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                    className="rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-muted hover:text-foreground"
                   >
                     选择
                   </button>
@@ -1479,80 +1940,30 @@ function ChatSidebar({
               </div>
             )}
           </div>
-          <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+          <div
+            onScroll={handleListScroll}
+            className="flex max-h-[42vh] flex-col gap-1 overflow-y-auto px-1.5 pb-2"
+          >
             {conversations.length === 0 && (
-              <div className="px-2 py-1.5 text-xs text-muted-foreground">暂无历史对话</div>
+              <div className="px-2 py-2 text-xs text-muted-foreground">暂无历史对话</div>
             )}
-            {conversations.map((conv) => {
-              const active = conv.sid === activeSid
-              const selected = selectedSids.has(conv.sid)
-              const confirming = confirmKey === `one:${conv.sid}`
-              return (
-                <div
-                  key={conv.sid}
-                  className={`group flex w-full items-center rounded-md text-xs transition ${
-                    active
-                      ? 'bg-primary/10 font-medium text-primary ring-1 ring-inset ring-primary/25'
-                      : 'text-foreground hover:bg-muted'
-                  }`}
-                >
-                  {selectMode && (
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={selected}
-                      aria-label={selected ? '取消选择该对话' : '选择该对话'}
-                      onClick={() => toggleSelect(conv.sid)}
-                      className={`ml-2 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border transition ${
-                        selected
-                          ? 'border-red-500 bg-red-500 text-white'
-                          : 'border-border bg-card hover:border-red-400'
-                      }`}
-                    >
-                      {selected && <Check className="h-2.5 w-2.5" />}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleItemClick(conv.sid)}
-                    title={conv.title || '新对话'}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
-                  >
-                    <MessageSquare
-                      className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-primary' : 'text-muted-foreground'}`}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{conv.title || '新对话'}</span>
-                    {streamingSids?.has(conv.sid) ? (
-                      // 该会话正在后台生成：切走也不会中断，回来继续看输出
-                      <Loader2
-                        className="h-3 w-3 shrink-0 animate-spin text-primary"
-                        aria-label="正在生成回复"
-                      />
-                    ) : (
-                      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                        {formatConvTime(conv.updatedAt)}
-                      </span>
-                    )}
-                  </button>
-                  {!selectMode && (
-                    <button
-                      type="button"
-                      onClick={() => requestDeleteOne(conv.sid)}
-                      disabled={deleting}
-                      title={confirming ? '再次点击确认删除' : '删除该对话'}
-                      aria-label="删除该对话"
-                      className={`mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                        confirming
-                          ? 'bg-red-500/15 text-red-500 opacity-100'
-                          : 'text-muted-foreground opacity-0 hover:bg-red-500/10 hover:text-red-500 focus-visible:opacity-100 group-hover:opacity-100'
-                      }`}
-                    >
-                      {confirming ? <Check className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
-                    </button>
-                  )}
-                </div>
-              )
-            })}
+            {pinnedConversations.map(renderSessionRow)}
+            {pinnedConversations.length > 0 && normalConversations.length > 0 && (
+              <div className="mt-1 flex items-center gap-2 px-2 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                <span>其他会话</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            )}
+            {visibleNormal.map(renderSessionRow)}
+            {hiddenCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setVisibleNormalCount((count) => count + SESSION_BATCH)}
+                className="mt-1 rounded-md py-1.5 text-[10px] text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                加载更多（剩余 {hiddenCount} 条）
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1831,10 +2242,18 @@ function ChatMain({
     // 用户不在底部附近且无新消息:不打断阅读,不滚动
   }, [messages, scrollToBottom])
 
+  // 最后一条用户消息下标：一次遍历得出，避免渲染时逐条 slice+some 形成 O(n²)
+  const lastUserIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === 'user') return i
+    }
+    return -1
+  }, [messages])
+
   // 没有选中智能体：EmptyState 风格空态 + 科技网格背景装饰（仅样式）
   if (!agent) {
     return (
-      <div className="flex min-w-[400px] flex-1 items-center justify-center bg-card bg-tech-grid">
+      <div className="flex min-w-0 flex-1 items-center justify-center bg-card bg-tech-grid">
         <EmptyState
           icon={MessageSquare}
           title="请选择一个智能体"
@@ -1874,7 +2293,7 @@ function ChatMain({
   )
 
   return (
-    <div className="flex min-w-[400px] flex-1 flex-col bg-card">
+    <div className="flex min-w-0 flex-1 flex-col bg-card">
       {/* 顶部工具栏：智能体信息 + 参数 + System Prompt + 清空 */}
       <ChatToolbar
         agent={agent}
@@ -1937,23 +2356,36 @@ function ChatMain({
           {/* 对话内容区（限宽居中，与输入卡片同宽） */}
           <div
             ref={scrollContainerRef}
-            className="min-h-0 flex-1 overflow-y-auto scroll-smooth"
+            className="min-h-0 flex-1 overflow-y-auto bg-background scroll-smooth"
           >
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-8">
-              {messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  msg={msg}
-                  onRegenerate={onRegenerate}
-                  onDelete={() => onDeleteMessage(msg.id)}
-                  onEdit={(newText) => onEditResend(msg.id, newText)}
-                  onToggleDelegate={(sid) => onToggleDelegate(msg.id, sid)}
-                  onAnswerClarify={(clarifyIndex, choice) =>
-                    onAnswerClarify(msg.id, clarifyIndex, choice)
-                  }
-                  isLast={msg.id === messages[messages.length - 1]?.id}
-                />
-              ))}
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:gap-6 sm:px-6 sm:py-8">
+              {messages.map((msg, index) => {
+                // 仅最后一条用户消息展示发送状态，历史消息无需重复提示
+                const isLastUser = msg.role === 'user' && index === lastUserIndex
+                let sendState = ''
+                if (isLastUser) {
+                  const next = messages[index + 1]
+                  if (!next) sendState = streaming ? 'sending' : 'sent'
+                  else if (next.status === 'error') sendState = 'failed'
+                  else if (next.status === 'streaming') sendState = 'sending'
+                  else sendState = 'sent'
+                }
+                return (
+                  <MessageBubble
+                    key={msg.id}
+                    msg={msg}
+                    sendState={sendState}
+                    onRegenerate={onRegenerate}
+                    onDelete={() => onDeleteMessage(msg.id)}
+                    onEdit={(newText) => onEditResend(msg.id, newText)}
+                    onToggleDelegate={(sid) => onToggleDelegate(msg.id, sid)}
+                    onAnswerClarify={(clarifyIndex, choice) =>
+                      onAnswerClarify(msg.id, clarifyIndex, choice)
+                    }
+                    isLast={msg.id === messages[messages.length - 1]?.id}
+                  />
+                )
+              })}
               <div ref={messagesEndRef} />
             </div>
           </div>
@@ -1969,7 +2401,7 @@ function ChatMain({
 // ============================================================================
 // 消息气泡
 // ============================================================================
-function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, onAnswerClarify, isLast }) {
+function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, onAnswerClarify, isLast, sendState = '' }) {
   const isUser = msg.role === 'user'
   const [copied, setCopied] = useState(false)
   const [processOpen, setProcessOpen] = useState(false)
@@ -2009,11 +2441,21 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
   }
 
   return (
-    <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      {/* 消息体（用户消息：右侧主色浅底气泡；AI 消息：左侧卡片式气泡，层次分明） */}
+    <div
+      className={`group flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'} ${
+        isLast ? 'animate-msg-enter' : ''
+      }`}
+    >
+      {/* AI 头像：与用户消息形成明确的左右视觉分区 */}
+      {!isUser && (
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary ring-1 ring-primary/20">
+          <Sparkles className="h-3.5 w-3.5" aria-hidden />
+        </div>
+      )}
+      {/* 消息体（用户消息：右侧主色气泡；AI 消息：左侧卡片式气泡，层次分明） */}
       <div
         className={`flex min-w-0 flex-col ${
-          isUser ? 'max-w-[78%] items-end' : 'w-full items-start'
+          isUser ? 'max-w-[80%] items-end' : 'min-w-0 flex-1 items-start'
         }`}
       >
           {/* 气泡（用户消息编辑态时切换为 MessageEditor） */}
@@ -2034,14 +2476,21 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
             />
           ) : (
             <div
-              className={`rounded-lg px-4 py-2.5 text-sm leading-relaxed ${
+              className={`px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
                 isUser
-                  ? 'border border-primary/15 bg-primary/10 text-foreground'
+                  ? 'rounded-2xl rounded-br-md bg-primary text-primary-foreground'
                   : msg.status === 'error'
-                  ? 'border border-destructive/40 bg-destructive/10 text-destructive'
-                  : 'w-full border border-border bg-card text-foreground'
+                    ? 'w-full rounded-2xl rounded-tl-md border border-destructive/40 bg-destructive/10 text-destructive'
+                    : 'w-full rounded-2xl rounded-tl-md border border-border bg-card text-foreground'
               }`}
             >
+              {/* 生成状态：让用户明确知道消息处于“思考/生成”阶段，而不是无响应 */}
+              {!isUser && msg.status === 'streaming' && (
+                <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" aria-hidden />
+                  {msg.content ? '正在生成回复…' : '正在思考…'}
+                </div>
+              )}
               {/* 流式光标 */}
               {msg.status === 'streaming' && !msg.content ? (
                 <span className="inline-flex gap-1">
@@ -2224,7 +2673,7 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
                   编辑
                 </button>
               )}
-              {!isUser && msg.status === 'done' && (
+              {!isUser && (msg.status === 'done' || msg.status === 'error') && (
                 <button
                   type="button"
                   onClick={() => onRegenerate(msg.id)}
@@ -2245,8 +2694,24 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
             </div>
           )}
 
-          {/* 时间戳 + Token 用量 */}
-          <div className={`mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground ${isUser ? 'justify-end' : 'justify-start'}`}>
+          {/* 时间戳 + 发送状态 + Token 用量 */}
+          <div className={`mt-1 flex items-center gap-2 text-[10px] text-muted-foreground ${isUser ? 'justify-end' : 'justify-start'}`}>
+            {isUser && sendState && (
+              <span
+                className={`inline-flex items-center gap-1 whitespace-nowrap ${
+                  sendState === 'failed'
+                    ? 'text-destructive'
+                    : sendState === 'sending'
+                      ? 'text-primary'
+                      : 'text-muted-foreground'
+                }`}
+              >
+                {sendState === 'sending' && <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden />}
+                {sendState === 'sent' && <Check className="h-2.5 w-2.5" aria-hidden />}
+                {sendState === 'failed' && <AlertTriangle className="h-2.5 w-2.5" aria-hidden />}
+                {sendState === 'sending' ? '发送中…' : sendState === 'failed' ? '发送失败' : '已发送'}
+              </span>
+            )}
             <span className="whitespace-nowrap tabular-nums">{new Date(msg.timestamp).toLocaleTimeString('zh-CN', {
               hour: '2-digit',
               minute: '2-digit',
@@ -2439,7 +2904,7 @@ function ChatInput({
   const selectedCount = selectedFileIds.size
 
   return (
-    <div className="shrink-0 px-6 pb-3 pt-1">
+    <div className="shrink-0 px-4 pb-3 pt-1 sm:px-6">
       {/* 与消息区同宽居中（max-w-3xl） */}
       <div className="mx-auto w-full max-w-3xl">
         {/* 文件列表区（可折叠） */}
@@ -2519,15 +2984,20 @@ function ChatInput({
         {/* 悬浮输入卡片：上方文本域，底部一行分左右两组
             （左：附件按钮；右：模型选择 + 发送按钮）。
             悬停/聚焦主色边框 + 光环反馈（对齐 .input-base 交互） */}
-        <div className="rounded-xl border border-border bg-card p-2.5 shadow-sm transition hover:border-primary/45 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
+        <div className="rounded-2xl border border-border bg-card p-2.5 shadow-sm transition hover:border-primary/45 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
           <textarea
             ref={textareaRef}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={`和 ${agentName || '智能体'} 对话中…`}
+            placeholder={
+              streaming
+                ? '正在生成回复，可点击右侧停止…'
+                : `和 ${agentName || '智能体'} 对话中…`
+            }
             rows={1}
-            className="w-full resize-none bg-transparent px-2 pb-2 pt-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            aria-label="消息输入框"
+            className="w-full resize-none bg-transparent px-2 pb-2 pt-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
             style={{ maxHeight: `${INPUT_MAX_HEIGHT}px`, minHeight: '44px' }}
             disabled={streaming}
           />
@@ -2588,7 +3058,9 @@ function ChatInput({
 
         {/* 快捷键提示与字数统计（卡片外右下角小字，数字等宽） */}
         <div className="mt-1.5 flex items-center justify-between px-1 text-[10px] text-muted-foreground">
-          <span className="whitespace-nowrap">Enter 发送 · Shift+Enter 换行</span>
+          <span className="whitespace-nowrap">
+            {streaming ? '正在生成，可随时停止' : 'Enter 发送 · Shift+Enter 换行'}
+          </span>
           <span className="whitespace-nowrap tabular-nums">{value.length} 字</span>
         </div>
       </div>

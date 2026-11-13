@@ -20,7 +20,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.timezone import beijing_now
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user, require_permission
 from app.database import get_db
 from app.models.asset import AssetTypeTemplate
 from app.models.user import User
@@ -246,7 +246,7 @@ def _unique_template_code(
 # 端点
 # ============================================================================
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("asset_templates", "view"))])
 def list_templates(
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -258,7 +258,7 @@ def list_templates(
     return [_template_to_dict(t) for t in templates]
 
 
-@router.get("/export")
+@router.get("/export", dependencies=[Depends(require_permission("asset_templates", "view"))])
 def export_templates(
     codes: str = Query("", description="要导出的模板 code，逗号分隔；为空则导出全部"),
     db: Session = Depends(get_db),
@@ -312,11 +312,11 @@ def export_templates(
     )
 
 
-@router.post("/import", status_code=201)
+@router.post("/import", status_code=201, dependencies=[Depends(require_permission("asset_templates", "edit"))])
 def import_templates(
     body: TemplateImportRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "analyst")),
+    user: User = Depends(get_current_user),
 ) -> dict:
     """从 JSON 导入类型模板（单模板或批量）。
 
@@ -386,7 +386,7 @@ def import_templates(
     return {"imported": len(results), "items": results}
 
 
-@router.get("/{code}")
+@router.get("/{code}", dependencies=[Depends(require_permission("asset_templates", "view"))])
 def get_template(
     code: str,
     db: Session = Depends(get_db),
@@ -398,11 +398,11 @@ def get_template(
     return _template_to_dict(tpl)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_permission("asset_templates", "edit"))])
 def create_template(
     body: TemplateCreateRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "analyst")),
+    user: User = Depends(get_current_user),
 ) -> dict:
     """创建自定义资产类型模板。
 
@@ -442,12 +442,12 @@ def create_template(
     return _template_to_dict(tpl)
 
 
-@router.put("/{code}")
+@router.put("/{code}", dependencies=[Depends(require_permission("asset_templates", "edit"))])
 def update_template(
     code: str,
     body: TemplateUpdateRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "analyst")),
+    user: User = Depends(get_current_user),
 ) -> dict:
     """更新模板。
 
@@ -525,11 +525,11 @@ def update_template(
     return _template_to_dict(tpl)
 
 
-@router.delete("/{code}")
+@router.delete("/{code}", dependencies=[Depends(require_permission("asset_templates", "delete"))])
 def delete_template(
     code: str,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "analyst")),
+    user: User = Depends(get_current_user),
 ) -> dict:
     """删除模板。
 

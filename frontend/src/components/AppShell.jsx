@@ -6,7 +6,7 @@ import {
   ScrollText, ClipboardList, Bell, Users, ShieldCheck,
   Settings, HeartPulse, DatabaseBackup, LogOut, ChevronLeft, ChevronRight,
   ChevronsRight, UserRound, PieChart, Boxes, Info, Bug, MessageSquareWarning, Inbox, PackageCheck,
-  CalendarClock, CalendarRange, CalendarX, History, Monitor, FileJson, BellRing, Activity,
+  CalendarClock, CalendarRange, CalendarX, History, Monitor, FileJson, BellRing, Activity, Globe,
   ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset, KeyRound, PauseCircle,
 } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
@@ -67,6 +67,7 @@ export const NAV_GROUPS = [
         ],
       },
       { to: '/deliverables', icon: PackageCheck, label: '材料管理', perm: ['deliverable', 'view'] },
+      { to: '/ip-library', icon: Globe, label: 'IP地址库', end: true, perm: ['ip_library', 'view'] },
     ],
   },
   {
@@ -209,6 +210,7 @@ const BREADCRUMB_MAP = {
   '/assets/discovery': ['资源管理', '资产管理', '资产发现'],
   '/assets/legacy': ['资源管理', '资产管理'],
   '/deliverables': ['资源管理', '材料管理'],
+  '/ip-library': ['资源管理', 'IP地址库'],
   '/duty/members': ['运营管理', '值班管理', '值班人员'],
   '/duty/schedule': ['运营管理', '值班管理', '值班表'],
   '/duty/schedule/graph': ['运营管理', '值班管理', '值班表（图形化）'],

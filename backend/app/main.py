@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 
 from app.api.v1 import api_router
 from app.config import settings
@@ -42,6 +43,15 @@ def _init_db() -> None:
     from app.core.security import run_lightweight_migrations
     from app.database import Base, SessionLocal, engine
     import app.models  # noqa: F401  触发 ORM 注册到 Base.metadata
+
+    # pg_trgm：IP地址库关键词搜索的 GIN trgm 索引依赖此扩展（postgres 官方镜像自带 contrib）。
+    # 必须在 create_all 之前执行，随表创建的 trgm 索引才不会失败；幂等。
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        logger.info("pg_trgm extension ensured")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pg_trgm 扩展创建失败（trgm 索引建表可能报错）: %s", exc)
 
     Base.metadata.create_all(bind=engine)
     logger.info("DB tables ensured via Base.metadata.create_all")

@@ -10,12 +10,15 @@ import assert from 'node:assert/strict'
 import {
   MAX_CONVERSATIONS,
   MAX_MESSAGES_PER_CONVERSATION,
+  SESSION_TITLE_MAX,
   clearAllConversations,
   createConversation,
   deriveConversationTitle,
   fillConversationMessages,
   findConversation,
   normalizeConversations,
+  renameConversation,
+  sortConversationsByPinned,
   startNewConversation,
   updateConversationMessages,
 } from './chatConversations.js'
@@ -229,4 +232,53 @@ test('清空全部历史为显式操作，返回单条空白会话', () => {
   assert.equal(list[0].sid, 'fresh')
   assert.deepEqual(list[0].messages, [])
   assert.equal(list[0].createdAt, 7)
+})
+
+test('重命名会话：只改目标会话标题，不改变更新时间与其它会话', () => {
+  const a = createConversation({ sid: 'a', now: 100 })
+  const b = createConversation({ sid: 'b', now: 200 })
+  const list = [b, a]
+
+  const next = renameConversation(list, 'a', '  告警排查  ')
+
+  const renamed = findConversation(next, 'a')
+  assert.equal(renamed.title, '告警排查')
+  assert.equal(renamed.titleCustom, true)
+  // 重命名不刷新活跃时间，避免旧会话被顶到最前
+  assert.equal(renamed.updatedAt, 100)
+  // 其它会话保持原样
+  assert.equal(findConversation(next, 'b').title, '')
+  // 不修改原数组
+  assert.equal(findConversation(list, 'a').title, '')
+})
+
+test('重命名会话：空标题视为清除自定义名称，超长标题按上限截断', () => {
+  const list = [createConversation({ sid: 'a' })]
+  const cleared = renameConversation(list, 'a', '   ')
+  assert.equal(findConversation(cleared, 'a').title, '')
+  assert.equal(findConversation(cleared, 'a').titleCustom, false)
+
+  const long = renameConversation(list, 'a', 'x'.repeat(SESSION_TITLE_MAX + 20))
+  assert.equal(findConversation(long, 'a').title.length, SESSION_TITLE_MAX)
+})
+
+test('重命名不存在的会话时返回原数组引用', () => {
+  const list = [createConversation({ sid: 'a' })]
+  assert.equal(renameConversation(list, 'missing', '标题'), list)
+})
+
+test('置顶排序：置顶会话在前，组内仍按最近更新倒序', () => {
+  const a = { ...createConversation({ sid: 'a', now: 100 }) }
+  const b = { ...createConversation({ sid: 'b', now: 300 }) }
+  const c = { ...createConversation({ sid: 'c', now: 200 }) }
+
+  const sorted = sortConversationsByPinned([a, b, c], ['a'])
+
+  assert.deepEqual(sorted.map((x) => x.sid), ['a', 'b', 'c'])
+  // 不修改原数组顺序
+  assert.deepEqual([a, b, c].map((x) => x.sid), ['a', 'b', 'c'])
+
+  // 多个置顶时也按时间倒序
+  const sorted2 = sortConversationsByPinned([a, b, c], new Set(['a', 'c']))
+  assert.deepEqual(sorted2.map((x) => x.sid), ['c', 'a', 'b'])
 })

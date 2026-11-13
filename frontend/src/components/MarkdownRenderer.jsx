@@ -15,8 +15,8 @@
  * 用法：<MarkdownRenderer content={msg.content} />
  *       <MarkdownRenderer content={msg.content} fileLinks={files} onDownloadFile={fn} />
  */
-import React, { useMemo } from 'react'
-import { Download } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Check, Copy, Download } from 'lucide-react'
 
 /** 转义文件名中的正则特殊字符（文件名可能含 ( ) . 等字符）。 */
 function escapeRegExp(s) {
@@ -187,6 +187,140 @@ function renderInline(text, keyPrefix = '', ctx = null) {
   return elements.length > 0 ? elements : [text]
 }
 
+const CODE_KEYWORDS = {
+  javascript:
+    'const let var function return if else for while do switch case break continue new class extends import from export default async await try catch finally throw typeof instanceof of in this super null undefined true false delete void yield static get set',
+  typescript:
+    'const let var function return if else for while do switch case break continue new class extends import from export default async await try catch finally throw typeof instanceof of in this super null undefined true false delete void yield static get set interface type enum implements public private protected readonly declare namespace abstract as any number string boolean void never unknown',
+  python:
+    'def return if elif else for while in not and or import from as class try except finally raise with lambda pass break continue global nonlocal yield async await None True False self print match case',
+  java:
+    'public private protected class interface extends implements static final void int long double float boolean char String new return if else for while do switch case break continue try catch finally throw throws import package this super null true false abstract synchronized volatile transient instanceof enum record',
+  go:
+    'package import func return if else for range switch case break continue var const type struct interface map chan go defer select nil true false string int int64 float64 bool byte rune error',
+  rust:
+    'fn let mut pub use mod struct enum impl trait for in if else match while loop return break continue move ref self Self true false Some None Ok Err async await const static type where',
+  sql:
+    'SELECT FROM WHERE JOIN LEFT RIGHT INNER OUTER ON GROUP BY ORDER HAVING LIMIT OFFSET INSERT INTO VALUES UPDATE SET DELETE CREATE TABLE ALTER DROP INDEX AND OR NOT NULL AS DISTINCT UNION ALL CASE WHEN THEN ELSE END IS IN LIKE BETWEEN COUNT SUM AVG MIN MAX DESC ASC',
+  bash:
+    'if then else elif fi for while do done case esac function return exit echo export local readonly cd ls grep sed awk cat curl set unset source',
+  yaml: 'true false null yes no',
+  default: 'true false null undefined',
+}
+
+const KEYWORD_RE_CACHE = new Map()
+
+function normalizeCodeLang(lang) {
+  const key = String(lang || '').toLowerCase()
+  if (['js', 'jsx', 'mjs', 'cjs'].includes(key)) return 'javascript'
+  if (['ts', 'tsx'].includes(key)) return 'typescript'
+  if (['py'].includes(key)) return 'python'
+  if (['sh', 'shell', 'zsh'].includes(key)) return 'bash'
+  if (['yml'].includes(key)) return 'yaml'
+  if (['c++', 'cpp', 'c'].includes(key)) return 'java'
+  return key || 'default'
+}
+
+/** 语言关键词匹配正则（简单缓存，避免每次渲染重复构造） */
+function keywordRegExp(lang) {
+  const key = normalizeCodeLang(lang)
+  if (KEYWORD_RE_CACHE.has(key)) return KEYWORD_RE_CACHE.get(key)
+  const words = (CODE_KEYWORDS[key] || CODE_KEYWORDS.default).split(/\s+/).filter(Boolean)
+  // 关键词按整词匹配并单独成组；含大写（SQL）时不加 i 标记
+  const source = `(\\b(?:${words.join('|')})\\b)`
+  const re = { source, flags: /[A-Z]/.test(words.join('')) ? '' : 'i' }
+  KEYWORD_RE_CACHE.set(key, re)
+  return re
+}
+
+/**
+ * 轻量语法高亮（无第三方依赖）：
+ * 依次识别注释、字符串、数字、关键词、函数调用，其余按普通文本输出。
+ * 颜色全部使用语义令牌，明暗主题自动适配。
+ */
+function tokenizeCode(code, lang) {
+  if (!code) return []
+  const kw = keywordRegExp(lang)
+  const pattern = new RegExp(
+    [
+      '(\\/\\/[^\\n]*|#[^\\n]*|--[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)', // 注释
+      '("""[\\s\\S]*?"""|\'\'\'[\\s\\S]*?\'\'\'|"(?:\\\\.|[^"\\\\])*"|\'(?:\\\\.|[^\'\\\\])*\'|`(?:\\\\.|[^`\\\\])*`)', // 字符串
+      '\\b(\\d+(?:\\.\\d+)?)\\b', // 数字
+      kw.source, // 关键词（捕获组 4）
+      '\\b([A-Za-z_$][\\w$]*)(?=\\s*\\()', // 函数调用
+    ].join('|'),
+    `g${kw.flags}`
+  )
+
+  const nodes = []
+  let last = 0
+  let match
+  let key = 0
+  while ((match = pattern.exec(code)) !== null) {
+    if (match.index > last) nodes.push(code.slice(last, match.index))
+    const cls = match[1]
+      ? 'text-muted-foreground/80 italic'
+      : match[2]
+        ? 'text-success'
+        : match[3]
+          ? 'text-warning'
+          : match[4]
+            ? 'text-primary font-medium'
+            : 'text-info'
+    nodes.push(
+      <span key={`tok-${key++}`} className={cls}>
+        {match[0]}
+      </span>
+    )
+    last = match.index + match[0].length
+  }
+  if (last < code.length) nodes.push(code.slice(last))
+  return nodes
+}
+
+/** 代码块：语言标签 + 一键复制 + 语法高亮（所有颜色使用语义令牌） */
+function CodeBlock({ code, lang }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef(null)
+  const tokens = useMemo(() => tokenizeCode(code, lang), [code, lang])
+
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // 剪贴板不可用（非 https / 无权限）时静默降级，不打断阅读
+    }
+  }
+
+  return (
+    <div className="my-3 overflow-hidden rounded-xl border border-border bg-background/60">
+      <div className="flex items-center justify-between gap-2 border-b border-border/70 bg-muted/40 px-3 py-1.5">
+        <span className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          {lang || 'code'}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          title="复制代码"
+          aria-label="复制代码"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-background hover:text-foreground"
+        >
+          {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-3 text-[12.5px] leading-relaxed">
+        <code className="font-mono text-foreground">{tokens}</code>
+      </pre>
+    </div>
+  )
+}
+
 /**
  * 解析整段 Markdown 内容，返回块级元素数组。
  * ctx：文件名下载上下文，透传给所有行内渲染调用。
@@ -219,12 +353,7 @@ function parseMarkdown(content, ctx = null) {
       }
       i++ // 跳过结束的 ```
       blocks.push(
-        <pre
-          key={`code-${blocks.length}`}
-          className="my-2 overflow-x-auto rounded-lg border border-border bg-card p-3 text-[13px] leading-relaxed"
-        >
-          <code className="font-mono text-muted-foreground">{codeLines.join('\n')}</code>
-        </pre>
+        <CodeBlock key={`code-${blocks.length}`} code={codeLines.join('\n')} lang={lang} />
       )
       continue
     }
@@ -272,7 +401,7 @@ function parseMarkdown(content, ctx = null) {
       blocks.push(
         <blockquote
           key={`quote-${blocks.length}`}
-          className="my-2 border-l-4 border-border bg-muted py-1.5 pl-3 pr-2 text-muted-foreground"
+          className="my-2 rounded-r-lg border-l-4 border-primary/40 bg-muted/60 py-2 pl-3 pr-3 text-muted-foreground"
         >
           {renderInline(quoteLines.join(' '), `quote-${blocks.length}`, ctx)}
         </blockquote>
@@ -348,7 +477,7 @@ function parseMarkdown(content, ctx = null) {
                   {headers.map((h, idx) => (
                     <th
                       key={`th-${blocks.length}-${idx}`}
-                      className="border border-border bg-secondary px-3 py-1.5 text-left font-semibold text-foreground"
+                      className="border border-border bg-muted/70 px-3 py-1.5 text-left font-semibold text-foreground"
                     >
                       {renderInline(h, `th-${blocks.length}-${idx}`, ctx)}
                     </th>
@@ -357,11 +486,14 @@ function parseMarkdown(content, ctx = null) {
               </thead>
               <tbody>
                 {rows.map((row, rIdx) => (
-                  <tr key={`tr-${blocks.length}-${rIdx}`}>
+                  <tr
+                    key={`tr-${blocks.length}-${rIdx}`}
+                    className="transition-colors even:bg-muted/30 hover:bg-primary/5"
+                  >
                     {row.map((cell, cIdx) => (
                       <td
                         key={`td-${blocks.length}-${rIdx}-${cIdx}`}
-                        className="border border-border px-3 py-1.5 text-muted-foreground"
+                        className="border border-border px-3 py-1.5 text-foreground/80"
                       >
                         {renderInline(cell, `td-${blocks.length}-${rIdx}-${cIdx}`, ctx)}
                       </td>
@@ -394,7 +526,7 @@ function parseMarkdown(content, ctx = null) {
     }
     if (paraLines.length > 0) {
       blocks.push(
-        <p key={`p-${blocks.length}`} className="my-1 leading-relaxed">
+        <p key={`p-${blocks.length}`} className="my-1.5 leading-relaxed">
           {renderInline(paraLines.join(' '), `p-${blocks.length}`, ctx)}
         </p>
       )

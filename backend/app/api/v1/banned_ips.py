@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.ip_validation import validate_ban_entry
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user, require_permission
 from app.models.user import User
 from app.models.banned_ip import BannedIP
 from app.schemas.common import to_dict, to_dict_list
@@ -52,12 +52,11 @@ class ManualBanRequest(BaseModel):
     device_id: int = Field(..., description="执行封禁的设备 ID（调用该设备的 block_ip 动作）")
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def list_banned_ips(
     search: str = Query("", description="搜索 IP 地址"),
     status: str = Query("", description="状态过滤：active/expired/unblocked"),
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> list[dict]:
     """列出所有已封禁 IP（自动更新过期状态）（仅管理员）。"""
     query = db.query(BannedIP)
@@ -82,10 +81,9 @@ def list_banned_ips(
     return to_dict_list(records)
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def get_banned_stats(
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> dict:
     """已封禁 IP 统计信息（仅管理员）。"""
     total = db.query(BannedIP).count()
@@ -95,11 +93,14 @@ def get_banned_stats(
     return {"total": total, "active": active, "expired": expired, "unblocked": unblocked}
 
 
-@router.post("", status_code=201)
+@router.post(
+    "",
+    status_code=201,
+    dependencies=[Depends(require_permission("ban_workflow", "edit"))],
+)
 def manual_ban_ip(
     body: ManualBanRequest,
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> dict:
     """手动新增封禁 IP（仅管理员）。
 
@@ -197,11 +198,10 @@ def manual_ban_ip(
     return to_dict(record)
 
 
-@router.get("/{ip}")
+@router.get("/{ip}", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def get_banned_ip(
     ip: str,
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> dict:
     """查询单个 IP 的封禁状态（仅管理员）。"""
     record = db.query(BannedIP).filter(BannedIP.ip == ip).first()
@@ -210,11 +210,10 @@ def get_banned_ip(
     return to_dict(record)
 
 
-@router.delete("/{ip_id}")
+@router.delete("/{ip_id}", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
 def unban_ip(
     ip_id: int,
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> dict:
     """手动解封 IP（仅管理员，逻辑删除：保留记录，状态置为 unblocked）。"""
     record = db.query(BannedIP).filter(BannedIP.id == ip_id).first()
@@ -226,11 +225,13 @@ def unban_ip(
     return {"ok": True, "ip": record.ip}
 
 
-@router.delete("/{ip_id}/hard")
+@router.delete(
+    "/{ip_id}/hard",
+    dependencies=[Depends(require_permission("ban_workflow", "delete"))],
+)
 def hard_delete_banned_ip(
     ip_id: int,
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> dict:
     """硬删除已封禁 IP 记录（仅管理员，物理删除：从数据库彻底移除）。
 
@@ -258,12 +259,11 @@ _LEVEL_LABELS = {"low": "低", "medium": "中", "high": "高", "serious": "严�
 _LEVEL_REVERSE = {v: k for k, v in _LEVEL_LABELS.items()}
 
 
-@router.get("/export/csv")
+@router.get("/export/csv", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def export_banned_ips(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     request: Request = None,
-    _: object = Depends(require_role("admin")),
 ):
     """导出所有已封禁 IP 为 CSV 文件（仅管理员）。"""
     # 审计：导出操作（GET 请求不被中间件捕获，需手动记录）
@@ -302,10 +302,11 @@ def export_banned_ips(
     )
 
 
-@router.get("/import/template")
-def download_import_template(
-    _: object = Depends(require_role("admin")),
-):
+@router.get(
+    "/import/template",
+    dependencies=[Depends(require_permission("ban_workflow", "view"))],
+)
+def download_import_template():
     """下载 CSV 导入模板（仅含表头与一行示例）（仅管理员）。
 
     表头与 ``import_banned_ips`` 解析逻辑及 ``export_banned_ips`` 导出格式保持一致。
@@ -326,12 +327,11 @@ def download_import_template(
     )
 
 
-@router.post("/import/csv")
+@router.post("/import/csv", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
 async def import_banned_ips(
     file: UploadFile = File(...),
     device_id: int = Query(..., description="执行封禁的设备 ID（调用该设备的 block_ip 动作）"),
     db: Session = Depends(get_db),
-    _: object = Depends(require_role("admin")),
 ) -> dict:
     """从 CSV 文件导入已封禁 IP（仅管理员）。
 

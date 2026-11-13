@@ -60,6 +60,13 @@ from app.models.log_receiver import (
     LogReceiver,
 )
 from app.models.qingteng_host import QingtengHostAsset
+from app.models.ip_library import (
+    IpLibraryImportBatch,
+    IpLibCloudCn,
+    IpLibGeoCn,
+    IpLibHolderCn,
+    IpLibOverseas,
+)
 from app.models.log_source_entry import LogSourceEntry
 from app.models.ticket import (
     TicketGroup,
@@ -141,6 +148,11 @@ __all__ = [
     "GovCloudNetwork",
     "GovCloudElasticIP",
     "QingtengHostAsset",
+    "IpLibraryImportBatch",
+    "IpLibCloudCn",
+    "IpLibGeoCn",
+    "IpLibHolderCn",
+    "IpLibOverseas",
     "BackupRecord",
     "Device",
     "DeviceAction",

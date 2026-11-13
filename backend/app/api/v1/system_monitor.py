@@ -134,7 +134,7 @@ def _refresh_stats_async() -> None:
         pass
 
 
-@router.get("/health")
+@router.get("/health", dependencies=[Depends(require_permission("system_monitor", "view"))])
 def check_health(db: Session = Depends(get_db)) -> dict:
     """检查各服务健康状态。
 
@@ -265,7 +265,7 @@ def check_health(db: Session = Depends(get_db)) -> dict:
     return {"services": services, "overall": overall, "checked_at": beijing_now_iso()}
 
 
-@router.get("/performance")
+@router.get("/performance", dependencies=[Depends(require_permission("system_monitor", "view"))])
 def get_performance() -> dict:
     """获取系统性能指标（CPU / 内存 / 磁盘）。
 
@@ -488,7 +488,7 @@ def _get_docker_client():
 _SOAR_CONTAINER_PREFIX = "soar-"
 
 
-@router.get("/services")
+@router.get("/services", dependencies=[Depends(require_permission("system_monitor", "view"))])
 def list_service_containers() -> dict:
     """列出 SOAR 平台的所有 Docker 容器及状态。
 

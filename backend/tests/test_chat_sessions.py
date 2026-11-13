@@ -8,12 +8,21 @@
 """
 import asyncio
 import types
+from datetime import datetime
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
 
-from app.api.v1.agents import clear_all_chat_sessions, clear_chat_session
+from app.api.v1.agents import (
+    ChatSessionRenameBody,
+    clear_all_chat_sessions,
+    clear_chat_session,
+    rename_chat_session_api,
+)
+from app.models.agent import Agent
+from app.models.chat_session import ChatSession
+from app.platform.chat_history import SESSION_TITLE_MAX, rename_chat_session
 
 
 class _FakeQuery:
@@ -176,3 +185,114 @@ class TestClearSingleChatSession:
 
         assert exc.value.status_code == 404
         assert db.executed == []
+
+
+class _RenameQuery:
+    def __init__(self, db, model):
+        self._db = db
+        self._model = model
+
+    def filter(self, *args, **kwargs):  # noqa: ARG002
+        return self
+
+    def first(self):
+        # 接口先校验智能体存在（query(Agent)），helper 再查会话（query(ChatSession)）
+        return self._db.agent if self._model is Agent else self._db.row
+
+
+class _RenameDB:
+    def __init__(self, agent=None, row=None):
+        self.agent = agent
+        self.row = row
+        self.commits = 0
+        self.refreshed = []
+        self.added = []
+
+    def query(self, model):
+        return _RenameQuery(self, model)
+
+    def commit(self):
+        self.commits += 1
+
+    def refresh(self, obj):
+        self.refreshed.append(obj)
+
+    def add(self, obj):
+        self.added.append(obj)
+
+
+class TestRenameChatSession:
+    def test_rename_updates_title_without_touching_updated_at(self):
+        moment = datetime(2026, 1, 1, 12, 0)
+        row = types.SimpleNamespace(
+            session_id="s1",
+            title="旧标题",
+            created_at=moment,
+            updated_at=moment,
+            deleted_at=None,
+        )
+        db = _RenameDB(agent=types.SimpleNamespace(id=1), row=row)
+
+        result = asyncio.run(
+            rename_chat_session_api(
+                1, "s1", ChatSessionRenameBody(title="  排查告警  "), db=db, current_user=_user()
+            )
+        )
+
+        assert row.title == "排查告警"
+        # 重命名不改变会话活跃时间，避免旧会话被顶到列表最前
+        assert row.updated_at == moment
+        # helper 提交一次标题更新，审计日志再提交一次
+        assert db.commits >= 1
+        assert result["session_id"] == "s1"
+        assert result["title"] == "排查告警"
+        assert db.added[0].action == "agent.chat_session.rename"
+
+    def test_long_title_is_truncated(self):
+        row = types.SimpleNamespace(
+            session_id="s1", title="", created_at=None, updated_at=None, deleted_at=None
+        )
+        db = _RenameDB(agent=types.SimpleNamespace(id=1), row=row)
+
+        rename_chat_session(db, 1, 7, "s1", "x" * (SESSION_TITLE_MAX + 20))
+
+        assert len(row.title) == SESSION_TITLE_MAX + 1  # 截断后补一个省略号
+        assert row.title.endswith("…")
+
+    def test_blank_title_rejected(self):
+        db = _RenameDB(agent=types.SimpleNamespace(id=1), row=None)
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                rename_chat_session_api(
+                    1, "s1", ChatSessionRenameBody(title="   "), db=db, current_user=_user()
+                )
+            )
+
+        assert exc.value.status_code == 404
+        assert db.commits == 0
+
+    def test_missing_session_returns_404(self):
+        db = _RenameDB(agent=types.SimpleNamespace(id=1), row=None)
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                rename_chat_session_api(
+                    1, "s1", ChatSessionRenameBody(title="新标题"), db=db, current_user=_user()
+                )
+            )
+
+        assert exc.value.status_code == 404
+
+    def test_missing_agent_returns_404(self):
+        db = _RenameDB(agent=None, row=types.SimpleNamespace(session_id="s1", title=""))
+
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                rename_chat_session_api(
+                    404, "s1", ChatSessionRenameBody(title="新标题"), db=db, current_user=_user()
+                )
+            )
+
+        assert exc.value.status_code == 404
+

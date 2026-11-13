@@ -28,6 +28,7 @@ from app.api.v1 import (
     feedback,
     govcloud,
     ingest,
+    ip_library,
     knowledge_base,
     llm_config,
     log_center,
@@ -117,6 +118,8 @@ api_router.include_router(feedback.router)
 api_router.include_router(deliverables.router)
 # 政务云爬取资产（Excel 全量导入与展示）
 api_router.include_router(govcloud.router)
+# IP地址信息库（4 库 IPv4 数据源：查询/导入/批次）
+api_router.include_router(ip_library.router)
 # 日志中心（统一查看操作日志/执行日志/模型调用日志 + 保留策略）
 api_router.include_router(log_center.router)
 # 设备日志接收（被动接入：syslog/kafka 配置、接收情况查看、异常通知）

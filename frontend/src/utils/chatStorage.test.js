@@ -16,9 +16,13 @@ import {
   conversationsKey,
   loadActiveSid,
   loadConversations,
+  loadPinnedSessions,
+  pinnedSessionsKey,
   purgeChatCaches,
   saveActiveSid,
   saveConversations,
+  savePinnedSessions,
+  togglePinnedSid,
 } from './chatStorage.js'
 
 /** 内存版 localStorage 替身 */
@@ -154,4 +158,49 @@ test('清空缓存在存储禁用/缺失时不抛异常', () => {
   assert.equal(purgeChatCaches(null), 0)
   assert.equal(purgeChatCaches(undefined), 0)
   assert.equal(purgeChatCaches(memoryStorage()), 0)
+})
+
+test('会话置顶列表按用户+智能体隔离，并可正常读写', () => {
+  const storage = memoryStorage()
+  assert.notEqual(pinnedSessionsKey(1, 10), pinnedSessionsKey(2, 10))
+
+  assert.deepEqual(loadPinnedSessions(storage, 1, 10), [])
+  assert.equal(savePinnedSessions(storage, 1, 10, ['s2', 's1']), true)
+
+  assert.deepEqual(loadPinnedSessions(storage, 1, 10), ['s2', 's1'])
+  // 其它账号/智能体互不影响
+  assert.deepEqual(loadPinnedSessions(storage, 2, 10), [])
+  assert.deepEqual(loadPinnedSessions(storage, 1, 11), [])
+})
+
+test('会话置顶列表：脏数据与存储异常时安全降级', () => {
+  const storage = memoryStorage({ [pinnedSessionsKey(1, 10)]: '{not-json' })
+  assert.deepEqual(loadPinnedSessions(storage, 1, 10), [])
+
+  const notArray = memoryStorage({ [pinnedSessionsKey(1, 10)]: '{"a":1}' })
+  assert.deepEqual(loadPinnedSessions(notArray, 1, 10), [])
+
+  // 保存时过滤非法值，且禁用存储不抛异常
+  assert.equal(savePinnedSessions(blockedStorage, 1, 10, ['s1']), false)
+  assert.equal(savePinnedSessions(memoryStorage(), 1, 10, ['s1', '', null, 3]), true)
+})
+
+test('切换置顶状态：不修改入参，重复切换可回到原状', () => {
+  const base = ['a']
+  const added = togglePinnedSid(base, 'b')
+  assert.deepEqual(added, ['a', 'b'])
+  assert.deepEqual(base, ['a'])
+
+  const removed = togglePinnedSid(added, 'a')
+  assert.deepEqual(removed, ['b'])
+  // 空值直接返回原数组，避免写入无意义 key
+  assert.equal(togglePinnedSid(base, ''), base)
+})
+
+test('登出清理会一并删除会话置顶缓存', () => {
+  const storage = memoryStorage()
+  savePinnedSessions(storage, 1, 10, ['s1'])
+
+  assert.equal(purgeChatCaches(storage), 1)
+  assert.deepEqual(loadPinnedSessions(storage, 1, 10), [])
 })

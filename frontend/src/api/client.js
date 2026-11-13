@@ -288,6 +288,13 @@ export const agents = {
   // 分页契约：{ sessions, has_more }；调用方需按 offset 继续拉取直到 has_more=false。
   listChatSessions: (id, { limit = 500, offset = 0 } = {}) =>
     request(`/agents/${id}/chat/sessions?limit=${limit}&offset=${offset}`),
+  // 重命名指定会话（仅更新标题，不改变会话更新时间）。
+  // 会话尚未落库（新建后还没发送过消息）时后端返回 404，前端保留本地标题即可。
+  renameChatSession: (id, sessionId, title) =>
+    request(`/agents/${id}/chat/sessions/${encodeURIComponent(sessionId || 'default')}`, {
+      method: 'PATCH',
+      body: { title },
+    }),
   // 拉取指定会话的服务端历史消息（跨浏览器恢复完整对话内容）。
   // 分页契约：{ session_id, messages, has_more, next_before_id }；
   // 需要更早消息时把 next_before_id 作为 beforeId 再次请求。

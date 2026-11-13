@@ -34,6 +34,8 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "asset_templates": ["view", "edit", "delete"],
     "asset_discovery": ["view", "edit", "delete"],
     "deliverable": ["view", "edit", "delete"],
+    # IP地址库（独立菜单项：4 库 IPv4 数据源查询/导入）
+    "ip_library": ["view", "edit"],
     # 连接配置（设备对接下含：设备列表 / 解析策略 / 告警列表 / 入库监控）
     "llm_config": ["view", "edit", "delete"],
     "device": ["view", "edit"],
@@ -90,6 +92,7 @@ MODULE_LABELS: dict[str, str] = {
     "asset_templates": "类型模板",
     "asset_discovery": "资产发现",
     "deliverable": "材料管理",
+    "ip_library": "IP地址库",
     # 连接配置（设备对接下含：设备列表 / 解析策略 / 告警列表 / 入库监控）
     "llm_config": "模型设置",
     "device": "设备对接",
@@ -130,6 +133,7 @@ ACTION_LABELS: dict[str, str] = {
     "approve": "审批",
     "export": "导出",
     "handle": "处置",
+    "pause": "暂停/恢复",
 }
 
 # 权限模块迁移映射（旧模块 → 新模块子项）
@@ -241,6 +245,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "asset_templates": ["view", "edit", "delete"],
             "asset_discovery": ["view", "edit", "delete"],
             "deliverable": ["view", "edit"],
+            "ip_library": ["view", "edit"],
             "duty_member": ["view", "edit", "delete"],
             "duty_schedule": ["view", "edit", "delete"],
             "duty_leave": ["view", "edit", "delete"],
@@ -248,7 +253,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "duty_dashboard": ["view"],
             "execution": ["view", "export"],
             "notification": ["view"],
-            "alert": ["view", "handle"],
+            "alert": ["view", "export", "handle"],
             "alert_rule": ["view", "edit"],
             "monitor": ["view"],
             "feedback": ["view"],
@@ -282,6 +287,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "asset_templates": ["view"],
             "asset_discovery": ["view"],
             "deliverable": ["view"],
+            "ip_library": ["view"],
             "duty_member": ["view"],
             "duty_schedule": ["view"],
             "duty_leave": ["view"],
@@ -289,7 +295,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "duty_dashboard": ["view"],
             "execution": ["view"],
             "notification": ["view"],
-            "alert": ["view"],
+            "alert": ["view", "export"],
             "alert_rule": ["view"],
             "monitor": ["view"],
             "feedback": ["view"],

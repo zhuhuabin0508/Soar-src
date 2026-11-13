@@ -386,7 +386,7 @@ def get_alert(alert_id: int, db: Session = Depends(get_db)) -> dict:
     return _serialize(row, full=True)
 
 
-@router.post("/export", dependencies=[Depends(require_permission("alert", "view"))])
+@router.post("/export", dependencies=[Depends(require_permission("alert", "export"))])
 def export_alerts(
     body: dict,
     db: Session = Depends(get_db),

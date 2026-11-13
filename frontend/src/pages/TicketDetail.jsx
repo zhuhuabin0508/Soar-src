@@ -1230,7 +1230,6 @@ export default function TicketDetail() {
                   {ticket.pending_device_runs} 个设备动作执行中
                 </button>
               )}
-              <span className="text-xs text-muted-foreground">按处理时间正序展示，含每个节点的处理人与处置意见</span>
             </div>
             {(ticket.records || []).length > 0 ? (
               <div className="relative space-y-4 pl-7">
