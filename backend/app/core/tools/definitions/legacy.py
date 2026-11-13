@@ -47,6 +47,11 @@ REMOVED_BUILTIN_TOOLS: set[str] = {
     # 智能体只做研判并给出建议，不主动写封禁记录；封禁一律由人工在工作台/
     # 工单流转中执行（工单同步 ban_sync 与工作台手动封禁不受影响）
     "record_ban",
+    # ---- mock 威胁情报工具（2026-11 按用户要求退役，定义已从 builtin.py /
+    #      tool_templates.py 移除）；真实情报统一走工具管理中的 HTTP 工具
+    #      （如 get_threat_互联网_知道创宇ip_analysis），工单安全上下文
+    #      （ticket_enrichment）与 SOC 智能体均不再允许绑定 mock 数据源 ----
+    "get_threat_intel",
 }
 
 LEGACY_DEPRECATED_TOOL_NAMES: set[str] = {

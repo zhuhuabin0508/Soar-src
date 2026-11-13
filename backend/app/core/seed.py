@@ -440,7 +440,11 @@ SAMPLE_WORKFLOW: dict[str, Any] = {
                     "max_iterations": 5,
                     "system_prompt": "你是一名 SOC 高级安全专家。接收到告警后，请利用工具查询源 IP 的白名单状态、资产归属、网段和威胁情报，综合判断是否需要封禁。",
                     "user_prompt": "告警数据：{{alert_data}}，请分析并给出处置建议。",
-                    "enabled_tools": ["check_whitelist", "get_asset_info", "get_threat_intel", "check_subnet"],
+                    # 注意：get_threat_互联网_知道创宇ip_analysis 为环境特有的
+                    # HTTP 工具（需外部情报源 API-TOKEN），不在预置种子中——
+                    # 新环境需先在工具管理中创建该工具，示例工作流的智能体才能
+                    # 完整具备威胁情报查询能力（缺失时仅降级，不影响其他工具）
+                    "enabled_tools": ["check_whitelist", "get_asset_info", "get_threat_互联网_知道创宇ip_analysis", "check_subnet"],
                 },
             },
             {

@@ -29,7 +29,7 @@ _OUTPUT_CONTRACT = (
     '字段：is_banned(bool)、risk_level(str)、action(str)、need_confirm(bool)、'
     "ban_plan(object)、monitoring_advice(str)、reasons(str数组)。"
     "数据要求：reasons 等字段必须引用本次工具调用实际返回的数据"
-    "（威胁标签、置信度、恶意软件等以 get_threat_intel 返回值为准），"
+    "（威胁标签、置信度、恶意软件等以威胁情报工具返回值为准），"
     "严禁照搬系统提示词示例中的数值。"
 )
 

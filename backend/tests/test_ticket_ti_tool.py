@@ -1,9 +1,12 @@
-"""工单安全上下文威胁情报统一走 get_threat_互联网 工具（回归用例）。
+"""工单安全上下文威胁情报统一走 get_threat_互联网_知道创宇ip_analysis 工具（回归用例）。
 
 背景：安全上下文原直接 import mock 的 ``context_tools.get_threat_intel``，
 数据为种子随机假情报。改造后统一经平台工具执行口径（load_tool_function →
-run_http_tool）调用已注册 HTTP 工具 ``get_threat_互联网``，响应归一化为
+run_http_tool）调用已注册 HTTP 工具 ``get_threat_互联网_知道创宇ip_analysis``
+（历史名 ``get_threat_互联网`` 兼容），响应归一化为
 原 threat 结构（前端展示/交互/渲染零改动）。
+工具匹配限定 http 类型且按 id 排序，防止候选混入 code 类 mock 工具导致
+命中不确定、情报数据时真时假。
 
 本用例不发起真实外部 HTTP 调用：工具加载仅验证注册与缓存构建，
 归一化/降级/单点失败隔离用 stub 覆盖。
@@ -111,7 +114,7 @@ def test_normalize_yunaq_real_benign_shape():
     assert r["org_info"]["org_name"] == "Ford Motor Company"
     assert r["org_info"]["netname"] == "FINET"
     assert r["attack_stats"] == {"total": 0, "hosts_cnt": 0}
-    assert r["source"] == "get_threat_互联网"
+    assert r["source"] == te.TI_TOOL_NAME
     assert "未命中威胁标签" in r["description"]
 
 
@@ -156,8 +159,10 @@ def test_ti_tool_registered_and_enabled():
     db = SessionLocal()
     try:
         tool = db.query(Tool).filter(
-            Tool.name.in_(te._TI_TOOL_CANDIDATES), Tool.enabled.is_(True)
-        ).first()
+            Tool.name.in_(te._TI_TOOL_CANDIDATES),
+            Tool.tool_type == "http",
+            Tool.enabled.is_(True),
+        ).order_by(Tool.id).first()
         if tool is None:
             tool = db.query(Tool).filter(
                 Tool.name.like("get_threat%"),
