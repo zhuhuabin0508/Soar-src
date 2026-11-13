@@ -64,6 +64,7 @@ from app.models.ip_library import (
     IpLibraryImportBatch,
     IpLibCloudCn,
     IpLibGeoCn,
+    IpLibHkMo,
     IpLibHolderCn,
     IpLibOverseas,
 )
@@ -151,6 +152,7 @@ __all__ = [
     "IpLibraryImportBatch",
     "IpLibCloudCn",
     "IpLibGeoCn",
+    "IpLibHkMo",
     "IpLibHolderCn",
     "IpLibOverseas",
     "BackupRecord",

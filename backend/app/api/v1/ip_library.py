@@ -1,12 +1,12 @@
-"""IP地址信息库 API：4 库 IPv4 数据源的查询、导入与批次管理。
+"""IP地址信息库 API：5 库 IPv4 数据源的查询、导入与批次管理。
 
 查询为主的设计（不做全量列表浏览）：
 
-- ``GET /meta``    概览统计（4 库网段数/覆盖 IP 数/最近批次），前端卡片数据源
-- ``GET /lookup``  核心点查：单 IP 跨 4 库 GiST ``@>``，毫秒级返回全部命中网段
+- ``GET /meta``    概览统计（5 库网段数/覆盖 IP 数/最近批次），前端卡片数据源
+- ``GET /lookup``  核心点查：单 IP 跨 5 库 GiST ``@>``，毫秒级返回全部命中网段
 - ``GET /lookup-batch`` 批量点查：逗号分隔多个 IP，一次返回各自命中（工单安全上下文用）
 - ``GET /records`` 条件查询结果分页：IP/CIDR（GiST）或关键词（trgm）或等值筛选，
-                   支持单库或 4 表 UNION ALL；必须至少一个查询条件
+                   支持单库或全部库 UNION ALL；必须至少一个查询条件
 - ``GET /export``  导出当前查询结果 CSV（keyset 流式分块，恒定内存）
 - ``POST /import`` CSV 上传 → 保存临时文件 → 派发 Celery 异步导入任务 → 返回 batch_id
 - ``GET /batches`` 批次历史 / 单批次进度（前端 1.5s 轮询）
@@ -21,7 +21,9 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import BigInteger, and_, cast, func, literal, null, or_, select, text, tuple_, union_all
+from sqlalchemy import (
+    BigInteger, and_, cast, exists, func, literal, null, or_, select, text, tuple_, union_all,
+)
 from sqlalchemy.orm import Session
 
 from app.core.audit import get_client_ip, log_audit
@@ -94,6 +96,15 @@ def _detect_query(q: str) -> tuple[str, dict]:
     return "keyword", {"kw": t}
 
 
+def _exclude_hk_mo_overlap(model):
+    """hk_mo 是境外库中港澳网段的独立视图：跨库查询时排除境外库的同 CIDR 行，避免重复返回。
+
+    单库查询（指定 ``library_type``）不受影响，仍返回该库完整数据。
+    """
+    hk = LIBRARY_MODELS["hk_mo"]
+    return ~exists().where(hk.cidr == model.cidr)
+
+
 def _filtered_selects(
     library_type: str,
     q_kind: str,
@@ -116,6 +127,9 @@ def _filtered_selects(
             continue
         attr_names = {a for a, _label, _spec in model.fields}
         conds = []
+        # 全库联合查询：港澳网段只在 hk_mo 中返回，避免与 overseas 重复
+        if not library_type and ltype == "overseas":
+            conds.append(_exclude_hk_mo_overlap(model))
         if country:
             if "country_geo" not in attr_names:
                 continue
@@ -241,7 +255,7 @@ def get_meta(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("ip_library", "view")),  # noqa: ARG001
 ) -> dict:
-    """4 库定义（列/标签）+ 概览统计（网段数/覆盖 IP 数/最近批次）。"""
+    """5 库定义（列/标签）+ 概览统计（网段数/覆盖 IP 数/最近批次）。"""
     libraries = []
     for ltype, meta in LIBRARY_DEFS.items():
         stats = _library_stats(db, ltype)
@@ -255,19 +269,18 @@ def get_meta(
 
 
 # ============================================================================
-# 核心点查：单 IP 跨 4 库
+# 核心点查：单 IP 跨 5 库
 # ============================================================================
 
 def _lookup_matches(db: Session, ip_int: int) -> list[dict]:
-    """单个 IPv4 整数跨 4 库点查，返回按网段起始排序的命中记录。"""
+    """单个 IPv4 整数跨 5 库点查，返回按网段起始排序的命中记录。"""
     matches = []
     for ltype, model in LIBRARY_MODELS.items():
-        rows = (
-            db.query(model)
-            .filter(model.ip_range.op("@>")(cast(ip_int, BigInteger)))
-            .order_by(model.ip_start)
-            .all()
-        )
+        query = db.query(model).filter(model.ip_range.op("@>")(cast(ip_int, BigInteger)))
+        if ltype == "overseas":
+            # 港澳网段归属 hk_mo，点查不再重复返回 overseas 的同网段记录
+            query = query.filter(_exclude_hk_mo_overlap(model))
+        rows = query.order_by(model.ip_start).all()
         for r in rows:
             matches.append({
                 "library_type": ltype,
@@ -283,7 +296,7 @@ def lookup_ip(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("ip_library", "view")),  # noqa: ARG001
 ) -> dict:
-    """IP 点查：GiST ``ip_range @> :ip``，4 库各命中若干网段，毫秒级。"""
+    """IP 点查：GiST ``ip_range @> :ip``，5 库各命中若干网段，毫秒级。"""
     try:
         addr = ipaddress.IPv4Address(ip.strip())
     except ValueError:
@@ -336,7 +349,7 @@ def query_records(
     """条件查询结果分页（不做无条件的全量浏览）。
 
     - ``q`` 为单 IP → GiST 点查命中网段；为 CIDR → GiST 重叠；否则 trgm 包含匹配
-    - ``library_type`` 为空时 4 表 UNION ALL 联合分页，按 ip_start 升序
+    - ``library_type`` 为空时全部库 UNION ALL 联合分页，按 ip_start 升序
     """
     _require_query_condition(q, country, isp, province)
     if library_type and library_type not in LIBRARY_MODELS:
@@ -470,7 +483,7 @@ def export_records(
 @router.post("/import")
 def import_csv(
     file: UploadFile = File(..., description="数据源导出的 CSV（首行中文表头）"),
-    library_type: str = Query(..., description="cloud_cn / geo_cn / holder_cn / overseas"),
+    library_type: str = Query(..., description="cloud_cn / geo_cn / holder_cn / overseas / hk_mo"),
     mode: str = Query("full", description="full 全量对齐（删除文件外旧记录）/ incremental 增量 upsert"),
     request: Request = None,
     db: Session = Depends(get_db),
