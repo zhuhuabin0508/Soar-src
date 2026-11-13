@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   FileText, Shield, ClipboardList, Clock, Brain, Monitor,
   HelpCircle, ListChecks, Send, Package, Trash2,
   Code as CodeIcon, Globe, Puzzle,
   Power, Play, Pencil, Eye, Copy, Check, Share2, Loader2,
-  Radar, Bug, Zap, Network, Plus, RefreshCw,
+  Radar, Bug, Zap, Network, Plus, RefreshCw, Download, Upload,
 } from 'lucide-react'
 import { tools as toolsApi } from '../api/client'
 import { Modal } from '../components/Dialog'
@@ -376,6 +376,53 @@ function ToolList() {
     load()
   }, [load])
 
+  // 工具导入导出：导出默认不含内置工具且密钥脱敏，导入按名称跳过/覆盖
+  const importInputRef = useRef(null)
+
+  const handleExport = async () => {
+    try {
+      const data = await toolsApi.export()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `tools-${new Date().toISOString().slice(0, 10)}.json`
+      // 部分浏览器（Firefox）要求 a 在文档中才会触发下载，且需延迟释放 Blob URL
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      toast.success(`已导出 ${data.tools?.length || 0} 个工具（密钥已脱敏）`)
+    } catch (err) {
+      const msg = err?.response?.data?.detail || err.message || String(err)
+      toast.error(`导出失败：${msg}`)
+    }
+  }
+
+  const handleImportFile = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const parsed = JSON.parse(await file.text())
+      const payload = Array.isArray(parsed) ? { tools: parsed } : parsed
+      if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
+        toast.error('文件中没有可导入的工具')
+        return
+      }
+      const res = await toolsApi.import({ tools: payload.tools, overwrite: false })
+      toast.success(`导入完成：新增 ${res.created}，覆盖 ${res.updated}，跳过 ${res.skipped}`)
+      if (res.warnings?.length) toast.warning(res.warnings[0])
+      if (res.failed?.length) {
+        toast.error(`${res.failed.length} 个工具导入失败：${res.failed[0].name} - ${res.failed[0].error}`)
+      }
+      load()
+    } catch (err) {
+      const msg = err?.response?.data?.detail || err.message || String(err)
+      toast.error(`导入失败：${msg}`)
+    }
+  }
+
   const handleDelete = async (id, name) => {
     const _ok = await confirm({ message: `确定删除工具「${name || id}」吗？`, variant: 'danger', confirmText: '确定删除' })
     if (!_ok) return
@@ -658,6 +705,31 @@ function ToolList() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <TutorialButton onClick={() => setTutorialOpen(true)} />
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={handleImportFile}
+          />
+          <button
+            type="button"
+            onClick={handleExport}
+            className="btn-secondary btn-sm"
+            title="导出工具配置为 JSON（不含内置工具，密钥自动脱敏）"
+          >
+            <Download className="mr-1 h-3.5 w-3.5" /> 导出
+          </button>
+          {canCreate && (
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              className="btn-secondary btn-sm"
+              title="从 JSON 文件导入工具（按名称跳过已存在项）"
+            >
+              <Upload className="mr-1 h-3.5 w-3.5" /> 导入
+            </button>
+          )}
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新工具列表">
             <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
           </button>
