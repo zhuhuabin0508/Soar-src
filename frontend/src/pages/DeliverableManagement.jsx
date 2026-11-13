@@ -3,7 +3,7 @@
 // 权限：deliverable.view 可见/预览；.edit 可建目录/上传/编辑/在线修改；.delete 可删除
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  CheckCircle2, ChevronDown, ChevronRight, ChevronsUp, CloudUpload, Download,
+  CheckCircle2, ChevronDown, ChevronRight, ChevronUp, ChevronsUp, CloudUpload, Download,
   Eye, FileArchive, FileSpreadsheet, FileText, Folder, FolderArchive, FolderOpen,
   FolderPlus, HardDrive, LayoutGrid, List, Loader2, MoreVertical, Move,
   Pencil, Plus, RefreshCw, Save, Search, Trash2, Upload, X, XCircle,
@@ -247,6 +247,28 @@ function Modal({ title, children, onClose, footer, wide = false }) {
   )
 }
 
+// 可排序表头：点击切换升/降序，当前排序列显示方向箭头
+function SortHeader({ label, field, sortKey, sortDir, onSort, className = '' }) {
+  const active = sortKey === field
+  return (
+    <th className={`px-4 py-2.5 font-medium ${className}`}>
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        title={`按${label}${active && sortDir === 'asc' ? '降序' : '升序'}排序`}
+        className={`inline-flex items-center gap-0.5 transition-colors hover:text-foreground ${active ? 'text-foreground' : ''}`}
+      >
+        {label}
+        {active
+          ? (sortDir === 'asc'
+            ? <ChevronUp className="h-3.5 w-3.5 text-primary" />
+            : <ChevronDown className="h-3.5 w-3.5 text-primary" />)
+          : <ChevronDown className="h-3.5 w-3.5 opacity-25" />}
+      </button>
+    </th>
+  )
+}
+
 // 输入行
 function Field({ label, children, hint }) {
   return (
@@ -282,6 +304,9 @@ export default function DeliverableManagement() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(PAGE_SIZE)
+  // 列表排序：默认按上传时间倒序，点击表头切换字段/方向（服务端排序，保证跨页一致）
+  const [sortKey, setSortKey] = useState('created_at')
+  const [sortDir, setSortDir] = useState('desc')
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   // 材料类型快速筛选（仅前端过滤当前页，点击指标条 chips 切换）
@@ -526,6 +551,8 @@ export default function DeliverableManagement() {
         search,
         page,
         size: pageSize,
+        sort: sortKey,
+        order: sortDir,
       })
       setRows(res.items || [])
       setTotal(res.total || 0)
@@ -534,7 +561,7 @@ export default function DeliverableManagement() {
     } finally {
       setLoading(false)
     }
-  }, [activeCatId, search, page, pageSize])
+  }, [activeCatId, search, page, pageSize, sortKey, sortDir])
 
   useEffect(() => {
     loadCategories(false)
@@ -549,7 +576,14 @@ export default function DeliverableManagement() {
   useEffect(() => {
     setSelectedIds(new Set())
     setSelectedCatIds(new Set())
-  }, [activeCatId, page, pageSize, search])
+  }, [activeCatId, page, pageSize, search, sortKey, sortDir])
+
+  // 点击表头排序：同列切换升/降序，换列默认升序，并回到第一页
+  const handleSort = useCallback((field) => {
+    setSortDir(sortKey === field && sortDir === 'asc' ? 'desc' : 'asc')
+    setSortKey(field)
+    setPage(1)
+  }, [sortKey, sortDir])
 
   // 切换目录时重置类型快速筛选，避免新目录被旧筛选遮挡
   useEffect(() => {
@@ -2057,12 +2091,12 @@ export default function DeliverableManagement() {
                         )}
                       </div>
                     </th>
-                    <th className="px-4 py-2.5 font-medium">材料名称</th>
-                    <th className="w-40 px-4 py-2.5 font-medium">文件</th>
-                    <th className="w-20 px-4 py-2.5 font-medium">版本</th>
-                    <th className="w-20 px-4 py-2.5 font-medium">大小</th>
+                    <SortHeader label="材料名称" field="name" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                    <SortHeader label="文件" field="filename" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-40" />
+                    <SortHeader label="版本" field="version" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-20" />
+                    <SortHeader label="大小" field="size" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-20" />
                     <th className="w-24 px-4 py-2.5 font-medium">上传人</th>
-                    <th className="w-36 px-4 py-2.5 font-medium">上传时间</th>
+                    <SortHeader label="上传时间" field="created_at" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-36" />
                     <th className="w-32 px-4 py-2.5 text-right font-medium">操作</th>
                   </tr>
                 </thead>

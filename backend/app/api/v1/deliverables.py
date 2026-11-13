@@ -1046,10 +1046,12 @@ def list_deliverables(
     search: str = "",
     page: int = 1,
     size: int = 20,
+    sort: str = "created_at",
+    order: str = "desc",
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("deliverable", "view")),
 ):
-    """材料分页列表（按类别过滤，支持名称/文件名模糊搜索）。"""
+    """材料分页列表（按类别过滤，支持名称/文件名模糊搜索，支持按列排序）。"""
     if page < 1:
         page = 1
     if size < 1 or size > 100:
@@ -1063,8 +1065,17 @@ def list_deliverables(
             | (Deliverable.version.like(kw))
         )
     total = q.count()
+    # 排序字段白名单，避免直传列名；默认保持上传时间倒序
+    sort_col = {
+        "name": Deliverable.name,
+        "filename": Deliverable.filename,
+        "version": Deliverable.version,
+        "size": Deliverable.file_size,
+        "created_at": Deliverable.created_at,
+    }.get(sort or "", Deliverable.created_at)
+    sort_order = sort_col.asc() if order == "asc" else sort_col.desc()
     rows = (
-        q.order_by(Deliverable.created_at.desc())
+        q.order_by(sort_order, Deliverable.id.asc())
         .offset((page - 1) * size)
         .limit(size)
         .all()
