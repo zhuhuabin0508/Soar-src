@@ -39,6 +39,53 @@ const HEALTH_META = {
   untested: { label: '未测试', cls: 'bg-muted text-muted-foreground', dot: 'bg-muted-foreground' },
 }
 // 来源映射
+const PROBE_TRANSPORT_LABELS = {
+  openai_raw_stream: '探测方式：与智能体对话相同（OpenAI 兼容 · 流式）',
+  langchain_astream: '探测方式：与智能体对话相同（LangChain · 流式）',
+  embeddings_http: '探测方式：Embedding HTTP',
+}
+
+function ProbeErrorPanel({ result }) {
+  if (!result || result.success) return null
+  const checklist = Array.isArray(result.error_checklist) ? result.error_checklist : []
+  return (
+    <div className="mt-2 flex flex-col gap-2 text-[11px]">
+      {result.error_label && (
+        <div className="font-medium text-destructive">类型：{result.error_label}</div>
+      )}
+      {result.error_hint && (
+        <div className="rounded-md border border-border bg-muted/40 px-2 py-1.5 text-foreground">
+          建议：{result.error_hint}
+        </div>
+      )}
+      {(result.error_detail || result.error) && (
+        <div>
+          <div className="mb-0.5 text-muted-foreground">技术详情</div>
+          <pre className="max-h-32 overflow-auto rounded bg-background p-2 font-mono text-[10px] text-destructive ring-1 ring-border">
+            {result.error_detail || result.error}
+          </pre>
+        </div>
+      )}
+      {checklist.length > 0 && (
+        <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">
+          {checklist.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+      <div className="text-muted-foreground">
+        {result.latency_ms != null && <span className="mr-2">耗时 {result.latency_ms}ms</span>}
+        {result.probe_transport && (
+          <span className="mr-2">{PROBE_TRANSPORT_LABELS[result.probe_transport] || result.probe_transport}</span>
+        )}
+        {result.probe_ref && (
+          <span>排查编号 {result.probe_ref} · 服务端 grep SOAR_LLM_PROBE_FAILED</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 const TRIGGER_LABELS = {
   agent_test: '智能体对话',
   manual_test: '手动测试',
@@ -1058,12 +1105,15 @@ function LLMConfig() {
                 {dialogTestResult.success ? `连接成功 · 延迟 ${dialogTestResult.latency_ms ?? '-'}ms` : '连接失败'}
               </span>
             </div>
+            {dialogTestResult.success && dialogTestResult.probe_transport && (
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                {PROBE_TRANSPORT_LABELS[dialogTestResult.probe_transport] || dialogTestResult.probe_transport}
+              </div>
+            )}
             {dialogTestResult.success && dialogTestResult.response && (
               <pre className="mt-2 rounded bg-background p-2 font-mono text-[11px] text-foreground ring-1 ring-border">{dialogTestResult.response}</pre>
             )}
-            {!dialogTestResult.success && dialogTestResult.error && (
-              <pre className="mt-2 rounded bg-background p-2 font-mono text-[11px] text-destructive ring-1 ring-border">{dialogTestResult.error}</pre>
-            )}
+            {!dialogTestResult.success && <ProbeErrorPanel result={dialogTestResult} />}
           </div>
         )}
       </Modal>
@@ -1076,6 +1126,11 @@ function LLMConfig() {
             <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-4 py-3">
               <Check className="h-4 w-4 text-success" /><span className="text-sm text-success">连接成功 · 延迟 {testResult.latency_ms ?? '-'}ms</span>
             </div>
+            {testResult.probe_transport && (
+              <div className="text-[11px] text-muted-foreground">
+                {PROBE_TRANSPORT_LABELS[testResult.probe_transport] || testResult.probe_transport}
+              </div>
+            )}
             <div>
               <div className="mb-1 text-xs text-muted-foreground">模型回复</div>
               <pre className="w-full overflow-auto rounded-md bg-background p-4 font-mono text-xs text-foreground ring-1 ring-border">{testResult.response || '(空)'}</pre>
@@ -1087,11 +1142,7 @@ function LLMConfig() {
             <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3">
               <X className="h-4 w-4 text-destructive" /><span className="text-sm text-destructive">连接失败</span>
             </div>
-            <div>
-              <div className="mb-1 text-xs text-muted-foreground">错误信息</div>
-              <pre className="w-full overflow-auto rounded-md bg-background p-4 font-mono text-xs text-destructive ring-1 ring-border">{testResult?.error || '未知错误'}</pre>
-            </div>
-            <div className="text-[11px] text-muted-foreground">常见原因：API Key 无效、Base URL 错误、模型名不存在、网络不通</div>
+            <ProbeErrorPanel result={testResult} />
           </div>
         )}
       </Modal>

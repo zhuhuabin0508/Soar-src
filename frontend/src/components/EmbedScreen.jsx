@@ -63,7 +63,10 @@ export default function EmbedScreen({
       const cw = el.clientWidth
       const ch = el.clientHeight
       if (!cw || !ch) return
-      const scale = Math.min(cw / DESIGN_W, ch / DESIGN_H)
+      // 全屏时按 cover 铺满整屏（边缘少量裁切、无黑边）；
+      // 窗口内按 contain 等比完整显示，保证内容不被裁掉
+      const pick = document.fullscreenElement ? Math.max : Math.min
+      const scale = pick(cw / DESIGN_W, ch / DESIGN_H)
       setFit({ scale, w: DESIGN_W * scale, h: DESIGN_H * scale })
     }
     apply()
@@ -74,7 +77,7 @@ export default function EmbedScreen({
       ro.disconnect()
       window.removeEventListener('resize', apply)
     }
-  }, [loading, error])
+  }, [loading, error, fullscreen])
 
   const toggleFull = async () => {
     const el = boxRef.current
@@ -97,12 +100,17 @@ export default function EmbedScreen({
 
   return (
     <div ref={boxRef} className="relative flex h-full min-h-0 flex-col bg-[#020d1a]">
-      <div className="pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-1.5">
+      {/* 右上角操作区：全屏时默认隐藏，鼠标滑入才显示 */}
+      <div
+        className={`absolute right-3 top-3 z-20 flex items-center gap-1.5 transition-opacity duration-200 ${
+          fullscreen ? 'opacity-0 hover:opacity-100 focus-within:opacity-100' : 'opacity-100'
+        }`}
+      >
         <button
           type="button"
           onClick={load}
           disabled={loading}
-          className="pointer-events-auto flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary disabled:opacity-50"
+          className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary disabled:opacity-50"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
           <span>{loadLabel}</span>
@@ -110,7 +118,7 @@ export default function EmbedScreen({
         <button
           type="button"
           onClick={toggleFull}
-          className="pointer-events-auto flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
+          className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
         >
           {fullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
           <span>{fullscreen ? '退出全屏' : '全屏'}</span>
@@ -120,7 +128,7 @@ export default function EmbedScreen({
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="pointer-events-auto flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
+            className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
           >
             <ExternalLink className="h-3 w-3" />
             <span>新窗口</span>

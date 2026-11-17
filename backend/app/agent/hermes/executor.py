@@ -209,6 +209,8 @@ class HermesAgentExecutor:
         self._iteration_count = 0
         # 思维链字符数累积（供监控记录读取）
         self._thinking_chars = 0
+        # 最近一次 LLM 调用失败时的重试次数（供失败日志关联）
+        self._last_llm_call_attempts = 0
 
         # 构建 system prompt
         if system_prompt is not None:
@@ -584,8 +586,17 @@ class HermesAgentExecutor:
                     yield event
                 response = self._streamed_response
             except Exception as exc:  # noqa: BLE001
-                logger.exception("LLM 调用失败: %s", exc)
-                yield make_event("error", message=f"LLM 调用失败: {exc}")
+                from app.agent.hermes.llm_failure import report_llm_failure
+
+                err_msg = report_llm_failure(
+                    exc,
+                    agent_id=getattr(self.agent, "id", None),
+                    session_id=self.session_id,
+                    model_meta=getattr(self, "_model_meta", None),
+                    attempts=self._last_llm_call_attempts,
+                    phase="react_stream",
+                )
+                yield make_event("error", message=err_msg)
                 return
 
             # 拦截响应
@@ -922,6 +933,7 @@ class HermesAgentExecutor:
                         f"LLM 上下文超长，需压缩上下文后重试: {classification.message}"
                     ) from exc
                 if not should_retry_error(classification, attempt):
+                    self._last_llm_call_attempts = attempt
                     raise
                 # 指数退避（尊重 retry-after）
                 retry_after = classification.retry_after_s or (2.0 ** attempt)
@@ -1007,6 +1019,7 @@ class HermesAgentExecutor:
 
         # 重置结束原因：避免上一轮迭代的 finish_reason 残留到本轮
         self._last_finish_reason = None
+        self._last_llm_call_attempts = 0
 
         # 检查是否可用原生 OpenAI streaming（支持 reasoning_content）
         # ★ P4 模型分层：工具绑定后的 llm_with_tools 是 RunnableBinding，
@@ -1266,8 +1279,8 @@ class HermesAgentExecutor:
                             timer.set_response(full_chunk)
                 break
             except Exception as exc:  # noqa: BLE001
+                self._last_llm_call_attempts = attempt
                 if streaming_started:
-                    logger.exception("流式 LLM 调用中途失败: %s", exc)
                     raise
                 # 连接阶段失败，尝试重试
                 status_code = (
@@ -1290,6 +1303,7 @@ class HermesAgentExecutor:
                         f"LLM 上下文超长，需压缩上下文后重试: {classification.message}"
                     ) from exc
                 if not should_retry_error(classification, attempt):
+                    self._last_llm_call_attempts = attempt
                     raise
                 retry_after = classification.retry_after_s or (2.0 ** attempt)
                 await _asyncio.sleep(min(retry_after, 30.0))
@@ -1819,8 +1833,17 @@ class HermesAgentExecutor:
             self.messages.append({"role": "assistant", "content": clean_content})
             yield make_event("done", content=clean_content, message="完成（已达迭代上限）", usage=self._token_usage)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("grace call 失败: %s", exc)
-            yield make_event("error", message=f"grace call 失败: {exc}")
+            from app.agent.hermes.llm_failure import report_llm_failure
+
+            err_msg = report_llm_failure(
+                exc,
+                agent_id=getattr(self.agent, "id", None),
+                session_id=self.session_id,
+                model_meta=getattr(self, "_model_meta", None),
+                attempts=self._last_llm_call_attempts,
+                phase="grace_stream",
+            )
+            yield make_event("error", message=err_msg)
 
     @staticmethod
     def _to_langchain_messages(messages: list[dict]):

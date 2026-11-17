@@ -171,6 +171,8 @@ def create_llm_from_config(
     base_url = cfg.base_url or ""
     model_name = cfg.model_name or ""
     provider = (cfg.provider or "openai").lower()
+    cfg_timeout = getattr(cfg, "timeout", None)
+    http_timeout = float(int(cfg_timeout)) if cfg_timeout else 60.0
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -192,7 +194,7 @@ def create_llm_from_config(
             logger.warning("Anthropic 不支持 seed，已忽略")
         if base_url:
             kwargs["anthropic_api_url"] = base_url
-        kwargs["http_client"] = _no_proxy_http_client(base_url)
+        kwargs["http_client"] = _no_proxy_http_client(base_url, http_timeout)
         if reasoning_effort:
             logger.warning("Anthropic 不支持 reasoning_effort，已忽略")
         llm = ChatAnthropic(**kwargs)
@@ -225,8 +227,11 @@ def create_llm_from_config(
     # 同步/异步客户端都要显式注入，否则 ChatOpenAI 会用默认 httpx.AsyncClient
     # (trust_env=True) 读取容器 HTTP_PROXY，导致 IP 型 base_url 的异步调用
     # （流式对话 / ainvoke）被绕到宿主机代理，代理断开即全部失败。
-    kwargs["http_client"] = _no_proxy_http_client(base_url)
-    kwargs["http_async_client"] = _no_proxy_async_client(base_url)
+    kwargs["http_client"] = _no_proxy_http_client(base_url, http_timeout)
+    try:
+        kwargs["http_async_client"] = _no_proxy_async_client(base_url, http_timeout)
+    except Exception:  # noqa: BLE001
+        pass
     llm = ChatOpenAI(**kwargs)
     logger.info("创建 LLM(openai-compat): model=%s, base_url=%s", model_name, kwargs["base_url"])
     return llm, {"provider": "openai", "model": model_name}
