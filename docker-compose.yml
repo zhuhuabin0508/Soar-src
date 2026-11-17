@@ -66,9 +66,10 @@ services:
       - backups:/app/backups
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      HTTP_PROXY: http://172.19.0.1:8999
-      HTTPS_PROXY: http://172.19.0.1:8999
-      NO_PROXY: localhost,127.0.0.1,postgres,redis
+      # 仅服务器经 Docker 网关转发 SSH 隧道时需要；本地 .env.dev 留空即可直连外网
+      HTTP_PROXY: ${BACKEND_HTTP_PROXY:-}
+      HTTPS_PROXY: ${BACKEND_HTTPS_PROXY:-}
+      NO_PROXY: ${BACKEND_NO_PROXY:-localhost,127.0.0.1,postgres,redis}
       PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soar}
       DB_USER: ${POSTGRES_USER:-postgres}
