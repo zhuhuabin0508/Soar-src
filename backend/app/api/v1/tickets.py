@@ -2720,7 +2720,7 @@ def export_tickets(
     q: str | None = Query(default=None, max_length=100),
     timeout_only: bool = Query(default=False),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("ticket", "export")),
 ) -> Response:
     """按当前筛选条件导出工单 CSV（UTF-8 BOM，Excel 可直接打开）。
 
