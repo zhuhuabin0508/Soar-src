@@ -396,11 +396,32 @@ def reveal_api_key(config_id: int, request: Request, db: Session = Depends(get_d
     return {"api_key": cfg.api_key or ""}
 
 
+def _test_failure_from_probe(db: Session, cfg: LLMConfig, config_id: int, provider: str, probe) -> dict:
+    """探测失败：结构化 API 响应 + 落库 + 健康状态。"""
+    from app.core.model_call_monitor import record_model_call
+
+    err_body = probe.to_api_error(cfg)
+    err_store = (err_body.get("error_detail") or err_body.get("error") or "")[:2000]
+    record_model_call(
+        model_config_id=cfg.id,
+        model_name=cfg.model_name,
+        provider=provider,
+        status="failed",
+        latency_ms=probe.latency_ms,
+        error_message=err_store,
+        trigger_type="manual_test",
+    )
+    _update_health(db, config_id, "unhealthy", err_store, probe.latency_ms)
+    db.commit()
+    return {"success": False, "model": cfg.model_name, **err_body}
+
+
 @router.post("/{config_id}/test", summary="测试 LLM 配置连通性", dependencies=[Depends(require_permission("llm_config", "view"))])
 def test_llm_config(config_id: int, db: Session = Depends(get_db)) -> dict:
     """发送一条简单消息测试 LLM 配置是否可用。
 
-    支持 Anthropic 原生 API 和 OpenAI 兼容接口（含国内厂商如火山引擎、Deepseek、Moonshot 等）。
+    对话模型走 ``llm_probe.probe_chat_llm_like_agent``：与 Hermes 智能体对话相同的
+    ``create_llm_from_config`` + 流式调用栈，避免「测试通过、对话失败」。
     测试结果同步记录到 ``model_call_logs``（trigger_type=manual_test），并更新配置的健康状态。
     """
     logger.info("测试 LLM 配置连通性: id=%s", config_id)
@@ -428,235 +449,74 @@ def test_llm_config(config_id: int, db: Session = Depends(get_db)) -> dict:
                     "error": "API Key 为空，请在配置中填写有效的 API Key",
                     "model": cfg.model_name}
 
-        # ===== Embedding 模型测试：走 /embeddings 端点（非 chat completions）=====
-        if (cfg.model_type or "chat").lower() == "embedding":
-            import httpx
-            import re
-            import time
-            from app.core.model_call_monitor import record_model_call
-            from app.core.llm_helper import _no_proxy_http_client
-
-            base = clean_base_url(cfg.base_url or "https://api.openai.com/v1")
-            if base.endswith("/embeddings/multimodal"):
-                regular_url = base[: -len("/multimodal")]
-            elif base.endswith("/embeddings"):
-                regular_url = base
-            elif re.search(r"/v\d+$", base):
-                regular_url = f"{base}/embeddings"
-            else:
-                regular_url = f"{base}/v1/embeddings"
-            multimodal_url = regular_url + "/multimodal"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-            model_name = cfg.model_name or "text-embedding-ada-002"
-            t0 = time.monotonic()
-            try:
-                with _no_proxy_http_client(cfg.base_url or "", timeout=30) as client:
-                    # 先尝试常规 /embeddings（支持批量）
-                    payload = {"model": model_name, "input": ["连通性测试"]}
-                    r = client.post(regular_url, json=payload, headers=headers)
-
-                    if r.status_code == 400 and "does not support this api" in r.text:
-                        # 多模态 embedding 模型 → 切换到 /embeddings/multimodal
-                        logger.info("检测到多模态 embedding 模型，切换到 /embeddings/multimodal")
-                        mm_payload = {
-                            "model": model_name,
-                            "input": [{"type": "text", "text": "连通性测试"}],
-                            "encoding_format": "float",
-                        }
-                        r = client.post(multimodal_url, json=mm_payload, headers=headers)
-
-                    latency_ms = int((time.monotonic() - t0) * 1000)
-                    if r.status_code != 200:
-                        err = f"HTTP {r.status_code}: {r.text[:400]}"
-                        record_model_call(
-                            model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
-                            status="failed", latency_ms=latency_ms,
-                            error_message=err,
-                            trigger_type="manual_test",
-                        )
-                        _update_health(db, config_id, "unhealthy", err, latency_ms)
-                        db.commit()
-                        return {"success": False,
-                                "error": err,
-                                "model": cfg.model_name,
-                                "latency_ms": latency_ms}
-                    data = r.json()
-                    # 兼容两种响应格式：
-                    # 常规：{"data": [{"embedding": [...]}], "usage": {...}}
-                    # 多模态：{"data": {"embedding": [...]}}
-                    raw_data = data.get("data", [])
-                    if isinstance(raw_data, list) and raw_data:
-                        emb = raw_data[0].get("embedding") or []
-                    elif isinstance(raw_data, dict):
-                        emb = raw_data.get("embedding") or []
-                    else:
-                        emb = []
-                    usage = data.get("usage", {}) or {}
-                    record_model_call(
-                        model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
-                        status="success", latency_ms=latency_ms,
-                        input_tokens=usage.get("prompt_tokens"),
-                        output_tokens=usage.get("completion_tokens"),
-                        trigger_type="manual_test",
-                    )
-                    _update_health(db, config_id, "healthy", "", latency_ms)
-                    db.commit()
-                    logger.info("Embedding 配置测试成功: id=%s, dim=%s", config_id, len(emb))
-                    return {"success": True,
-                            "response": f"向量维度: {len(emb)}",
-                            "model": cfg.model_name,
-                            "latency_ms": latency_ms}
-            except Exception as http_exc:  # noqa: BLE001
-                latency_ms = int((time.monotonic() - t0) * 1000)
-                err = str(http_exc)[:500]
-                record_model_call(
-                    model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
-                    status="failed", latency_ms=latency_ms,
-                    error_message=err,
-                    trigger_type="manual_test",
-                )
-                _update_health(db, config_id, "unhealthy", err, latency_ms)
-                db.commit()
-                return {"success": False, "error": err, "model": cfg.model_name, "latency_ms": latency_ms}
-
-        if provider == "anthropic":
-            # Anthropic 原生 API
-            from langchain_anthropic import ChatAnthropic
-            from langchain_core.messages import HumanMessage
-
-            llm_kwargs = {
-                "model": cfg.model_name or "claude-3-5-sonnet-20241022",
-                "api_key": api_key,
-                "max_tokens": 1024,
-            }
-            if cfg.base_url:
-                llm_kwargs["anthropic_api_url"] = cfg.base_url
-            from app.core.llm_helper import _no_proxy_http_client
-            llm_kwargs["http_client"] = _no_proxy_http_client(cfg.base_url or "")
-            llm = ChatAnthropic(**llm_kwargs)
-            from app.core.model_call_monitor import ModelCallTimer
-
-            try:
-                with ModelCallTimer(
-                    model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
-                    trigger_type="manual_test",
-                ) as timer:
-                    resp = llm.invoke([HumanMessage(content="回复OK两个字")])
-                    timer.set_response(resp)
-                latency_ms = None
-                # 从 timer 估算延迟（ModelCallTimer 内部已记录，但未暴露；此处取近似）
-                _update_health(db, config_id, "healthy", "")
-                db.commit()
-                logger.info("LLM 配置测试成功(anthropic): id=%s", config_id)
-                return {"success": True, "response": str(resp.content)[:200], "model": cfg.model_name}
-            except Exception as exc:
-                err = str(exc)[:500]
-                _update_health(db, config_id, "unhealthy", err)
-                db.commit()
-                raise
-
-        # OpenAI 兼容接口（openai / 火山引擎 / Deepseek / Moonshot / Zhipu 等）
-        import re
-        import time
-
-        from app.core.llm_helper import _no_proxy_http_client
-
-        # 构造请求 URL：兼容多种 base_url 写法
-        base = clean_base_url(cfg.base_url or "https://api.openai.com/v1")
-        if base.endswith("/chat/completions"):
-            url = base
-        elif re.search(r"/v\d+$", base):
-            url = f"{base}/chat/completions"
-        else:
-            url = f"{base}/v1/chat/completions"
-
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": cfg.model_name or "gpt-3.5-turbo",
-            "messages": [{"role": "user", "content": "回复OK两个字"}],
-            "max_tokens": 1024,
-        }
-
         from app.core.model_call_monitor import record_model_call
+        from app.core.llm_probe import (
+            probe_chat_llm_like_agent_sync,
+            probe_embedding_llm,
+        )
 
-        t0 = time.monotonic()
-        try:
-            with _no_proxy_http_client(cfg.base_url or "", timeout=30) as client:
-                r = client.post(url, json=payload, headers=headers)
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            if r.status_code != 200:
-                logger.warning("LLM 配置测试失败(openai-compat): id=%s, status=%s, body=%s",
-                               config_id, r.status_code, r.text[:300])
-                err = f"HTTP {r.status_code}: {r.text[:400]}"
-                record_model_call(
-                    model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
-                    status="failed", latency_ms=latency_ms,
-                    error_message=err,
-                    trigger_type="manual_test",
-                )
-                _update_health(db, config_id, "unhealthy", err, latency_ms)
-                db.commit()
-                return {"success": False,
-                        "error": err,
-                        "model": cfg.model_name,
-                        "latency_ms": latency_ms}
-            # 部分网关对个别模型通道强制返回 SSE（忽略 stream=false），需按流式聚合
-            ctype = (r.headers.get("content-type") or "").lower()
-            if "text/event-stream" in ctype or r.text.lstrip().startswith("data:"):
-                content, reasoning, usage = _parse_sse_chat_stream(r.text)
-                logger.info(
-                    "LLM 配置测试收到 SSE 流式响应: id=%s, content_len=%d, reasoning_len=%d",
-                    config_id, len(content), len(reasoning),
-                )
-                # 推理模型的思维链可能耗尽 token 导致正文为空，提示中带上思维链长度
-                if not content and reasoning:
-                    content = f"（模型仅返回思维链，共 {len(reasoning)} 字）"
-            else:
-                if not r.text.strip():
-                    raise ValueError("HTTP 200 但响应体为空，无法解析模型返回")
-                data = r.json()
-                content = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-                # 提取 token 用量
-                usage = data.get("usage", {}) or {}
+        # ===== Embedding：专用探测（智能体对话不使用 chat completions）=====
+        if (cfg.model_type or "chat").lower() == "embedding":
+            emb_result = probe_embedding_llm(cfg)
+            latency_ms = emb_result.latency_ms
+            if not emb_result.success:
+                return _test_failure_from_probe(db, cfg, config_id, provider, emb_result)
             record_model_call(
                 model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
                 status="success", latency_ms=latency_ms,
-                input_tokens=usage.get("prompt_tokens"),
-                output_tokens=usage.get("completion_tokens"),
                 trigger_type="manual_test",
             )
             _update_health(db, config_id, "healthy", "", latency_ms)
             db.commit()
-            logger.info("LLM 配置测试成功(openai-compat): id=%s", config_id)
-            return {"success": True, "response": content[:200], "model": cfg.model_name, "latency_ms": latency_ms}
-        except Exception as http_exc:  # noqa: BLE001
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            err = str(http_exc)[:500]
-            record_model_call(
-                model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
-                status="failed", latency_ms=latency_ms,
-                error_message=err,
-                trigger_type="manual_test",
-            )
-            _update_health(db, config_id, "unhealthy", err, latency_ms)
-            db.commit()
-            raise
+            logger.info("Embedding 配置测试成功: id=%s", config_id)
+            return {
+                "success": True,
+                "response": "embedding 连通性正常",
+                "model": cfg.model_name,
+                "latency_ms": latency_ms,
+                "probe_transport": emb_result.transport,
+            }
+
+        # ===== 对话模型：与 Hermes 智能体相同的流式调用栈 =====
+        probe = probe_chat_llm_like_agent_sync(cfg)
+        latency_ms = probe.latency_ms
+        if not probe.success:
+            return _test_failure_from_probe(db, cfg, config_id, provider, probe)
+
+        record_model_call(
+            model_config_id=cfg.id, model_name=cfg.model_name, provider=provider,
+            status="success", latency_ms=latency_ms,
+            input_tokens=probe.input_tokens,
+            output_tokens=probe.output_tokens,
+            trigger_type="manual_test",
+        )
+        _update_health(db, config_id, "healthy", "", latency_ms)
+        db.commit()
+        logger.info(
+            "LLM 配置测试成功(对话对齐探测): id=%s, transport=%s",
+            config_id, probe.transport,
+        )
+        return {
+            "success": True,
+            "response": (probe.display_text or "OK")[:200],
+            "model": cfg.model_name,
+            "latency_ms": latency_ms,
+            "probe_transport": probe.transport,
+        }
     except Exception as exc:  # noqa: BLE001
         logger.warning("LLM 配置测试失败: id=%s, error=%s", config_id, exc)
-        err = str(exc)[:500]
-        # 确保健康状态更新（若上面分支未更新）
+        from app.core.llm_probe_errors import enrich_probe_error, log_probe_failure
+
+        enriched = enrich_probe_error(exc, cfg=cfg)
+        log_probe_failure(enriched, trigger="manual_test")
+        err_body = {k: v for k, v in enriched.items() if not str(k).startswith("_")}
+        err_body.pop("config_snapshot", None)
         try:
-            _update_health(db, config_id, "unhealthy", err)
+            _update_health(db, config_id, "unhealthy", err_body.get("error_detail", str(exc)))
             db.commit()
         except Exception:
             pass
-        return {"success": False, "error": err, "model": cfg.model_name if cfg else None}
+        return {"success": False, "model": cfg.model_name if cfg else None, **err_body}
 
 
 @router.get("/{config_id}/test-history", summary="模型测试历史", dependencies=[Depends(require_permission("llm_config", "view"))])

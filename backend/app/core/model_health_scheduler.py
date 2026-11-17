@@ -72,9 +72,6 @@ def _ping_config(cfg) -> tuple[bool, str, Optional[int]]:
     Returns:
         ``(success, error_message, latency_ms)``
     """
-    import httpx
-    import re
-
     provider = (cfg.provider or "anthropic").lower()
     api_key = (cfg.api_key or "").strip()
     if not api_key:
@@ -82,76 +79,21 @@ def _ping_config(cfg) -> tuple[bool, str, Optional[int]]:
 
     # Embedding 模型走 /embeddings 端点
     if (cfg.model_type or "chat").lower() == "embedding":
-        from app.core.llm_helper import _no_proxy_http_client, clean_base_url
+        from app.core.llm_probe import probe_embedding_llm
 
-        base = clean_base_url(cfg.base_url or "https://api.openai.com/v1")
-        if base.endswith("/embeddings/multimodal"):
-            url = base[: -len("/multimodal")]
-        elif base.endswith("/embeddings"):
-            url = base
-        elif re.search(r"/v\d+$", base):
-            url = f"{base}/embeddings"
-        else:
-            url = f"{base}/v1/embeddings"
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {"model": cfg.model_name or "text-embedding-ada-002", "input": ["ping"]}
-        t0 = _time.monotonic()
-        try:
-            with _no_proxy_http_client(base, 15) as client:
-                r = client.post(url, json=payload, headers=headers)
-            latency_ms = int((_time.monotonic() - t0) * 1000)
-            if r.status_code != 200:
-                return False, f"HTTP {r.status_code}: {r.text[:200]}", latency_ms
-            return True, "", latency_ms
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)[:300], int((_time.monotonic() - t0) * 1000)
+        emb = probe_embedding_llm(cfg, input_text="ping")
+        if emb.success:
+            return True, "", emb.latency_ms
+        return False, emb.error[:300], emb.latency_ms
 
-    # Anthropic 原生 API
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        from langchain_core.messages import HumanMessage
+    from app.core.llm_probe import probe_chat_llm_like_agent_sync
 
-        llm_kwargs = {
-            "model": cfg.model_name or "claude-3-5-sonnet-20241022",
-            "api_key": api_key,
-            "max_tokens": 10,
-        }
-        if cfg.base_url:
-            llm_kwargs["anthropic_api_url"] = cfg.base_url
-        t0 = _time.monotonic()
-        try:
-            llm = ChatAnthropic(**llm_kwargs)
-            llm.invoke([HumanMessage(content="hi")])
-            return True, "", int((_time.monotonic() - t0) * 1000)
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)[:300], int((_time.monotonic() - t0) * 1000)
-
-    # OpenAI 兼容接口
-    from app.core.llm_helper import _no_proxy_http_client, clean_base_url
-
-    base = clean_base_url(cfg.base_url or "https://api.openai.com/v1")
-    if base.endswith("/chat/completions"):
-        url = base
-    elif re.search(r"/v\d+$", base):
-        url = f"{base}/chat/completions"
-    else:
-        url = f"{base}/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": cfg.model_name or "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 10,
-    }
-    t0 = _time.monotonic()
-    try:
-        with _no_proxy_http_client(base, 15) as client:
-            r = client.post(url, json=payload, headers=headers)
-        latency_ms = int((_time.monotonic() - t0) * 1000)
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}: {r.text[:200]}", latency_ms
-        return True, "", latency_ms
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc)[:300], int((_time.monotonic() - t0) * 1000)
+    probe = probe_chat_llm_like_agent_sync(
+        cfg, prompt="hi", max_tokens_override=16,
+    )
+    if probe.success:
+        return True, "", probe.latency_ms
+    return False, probe.error[:300], probe.latency_ms
 
 
 def _notify_unhealthy(cfg, error: str) -> None:
