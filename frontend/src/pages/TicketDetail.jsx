@@ -15,7 +15,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputBaseCls, inputCls, labelCls, hintCls } from '../components/property/FormControls'
-import {Button, PageContainer, CompactSelect, ComboInput, DatePicker, AutoGrowTextarea } from '../components/ui'
+import {Button, PageContainer, CompactSelect, ComboInput, DatePicker, AutoGrowTextarea, PillTabs } from '../components/ui'
 import { hasPermission, guardNavPermission, isAdmin } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS, evalParamExpr, deviceDurationLabel } from '../utils/ticketFlow'
@@ -629,7 +629,7 @@ export default function TicketDetail() {
               <span className="shrink-0 text-muted-foreground/60">/</span>
               <span className="min-w-0 truncate">{it.action_name || '动作'}</span>
             </div>
-            {chips.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1 text-[11px] text-muted-foreground">{chips}</div>}
+            {chips.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1 text-xs text-muted-foreground">{chips}</div>}
           </div>
         )
       }
@@ -1081,7 +1081,7 @@ export default function TicketDetail() {
             </button>
             <div className="flex flex-wrap items-center gap-3">
               <span className="font-mono text-sm font-semibold text-primary">{ticket.ticket_no}</span>
-              <h1 className="text-[20px] font-semibold text-foreground">{ticket.title}</h1>
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">{ticket.title}</h1>
               <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ${st.cls}`}>
                 <st.Icon className="h-3.5 w-3.5" />{st.label}
               </span>
@@ -1093,7 +1093,7 @@ export default function TicketDetail() {
                 </span>
               )}
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] text-muted-foreground">
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>流程：<Link to="/ticket-config/flows" className="text-foreground hover:text-primary">{ticket.flow_name}</Link>（快照 v{snapshot.version ?? '--'}）</span>
               <span className="flex items-center gap-1"><UserRound className="h-3.5 w-3.5" />发起人：{ticket.created_by_name || '--'}</span>
               <span className="tabular-nums">发起时间：{ticket.created_at ? new Date(ticket.created_at).toLocaleString('zh-CN', { hour12: false }) : '--'}</span>
@@ -1106,7 +1106,7 @@ export default function TicketDetail() {
             </div>
             {/* 抄送：模板固定（强制不可移除，带「模板」徽标）+ 手动追加（can_manage_cc 可增减） */}
             {(ccRows.length > 0 || ticket.can_manage_cc) && (
-              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[13px]">
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
                 <span className="flex shrink-0 items-center gap-1 text-muted-foreground">
                   <UsersRound className="h-3.5 w-3.5" />抄送：
                 </span>
@@ -1163,19 +1163,15 @@ export default function TicketDetail() {
       </div>
 
       {/* Tab 行：工单详情（流转历史）/ 安全上下文（自动研判） */}
-      <div className="mb-4 flex items-center gap-1 overflow-x-auto border-b border-border">
-        <button
-          className={`flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${activeTab === 'detail' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          onClick={() => setActiveTab('detail')}
-        >
-          <ClipboardList className="h-3.5 w-3.5" />工单详情
-        </button>
-        <button
-          className={`flex shrink-0 items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${activeTab === 'enrich' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          onClick={() => setActiveTab('enrich')}
-        >
-          <ShieldCheck className="h-3.5 w-3.5" />安全上下文
-        </button>
+      <div className="mb-4">
+        <PillTabs
+          items={[
+            { key: 'detail', label: '工单详情', icon: ClipboardList },
+            { key: 'enrich', label: '安全上下文', icon: ShieldCheck },
+          ]}
+          value={activeTab}
+          onChange={setActiveTab}
+        />
       </div>
 
       <div className="flex items-start gap-4">
@@ -1184,7 +1180,7 @@ export default function TicketDetail() {
           {activeTab === 'detail' && (
           <>
           {/* 流程步骤条 */}
-          <div className="rounded-md border border-border bg-card p-5">
+          <div className="rounded-md border border-border bg-card p-4">
             <div className="flex flex-wrap items-center gap-1">
               {stepNodes.map((n, i) => {
                 const done = handledKeys.has(n.key)
@@ -1193,19 +1189,19 @@ export default function TicketDetail() {
                 const endDone = ticket.status === 'completed'
                 return (
                   <div key={n.key} className="flex items-center">
-                    <div className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${active ? 'border-primary bg-primary/10 text-primary' : done || (isEnd && endDone) ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-500' : 'border-border text-muted-foreground'}`}>
-                      <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${active ? 'bg-primary text-white' : done || (isEnd && endDone) ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'}`}>
+                    <div className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition ${active ? 'border-primary bg-primary/10 text-primary' : done || (isEnd && endDone) ? 'border-emerald-500/40 bg-emerald-500/5 text-emerald-500' : 'border-border text-muted-foreground'}`}>
+                      <span className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${active ? 'bg-primary text-white' : done || (isEnd && endDone) ? 'bg-emerald-500 text-white' : 'bg-muted text-muted-foreground'}`}>
                         {isEnd ? '✓' : done || (isEnd && endDone) ? '✓' : i + 1}
                       </span>
                       <span>{n.name || n.key}</span>
                       {n.type === 'parallel' && (
-                        <span className={`rounded px-1 py-0.5 text-[10px] font-medium ${active ? 'bg-primary/15 text-primary' : 'bg-violet-500/15 text-violet-500'}`}>会签</span>
+                        <span className={`rounded px-1 py-0.5 text-xs font-medium ${active ? 'bg-primary/15 text-primary' : 'bg-violet-500/15 text-violet-500'}`}>会签</span>
                       )}
                       {!isEnd && n.type !== 'parallel' && ticket.group_names?.[String(n.group_id)] && (
-                        <span className="text-[11px] font-normal text-muted-foreground">（{ticket.group_names[String(n.group_id)]}）</span>
+                        <span className="text-xs font-normal text-muted-foreground">（{ticket.group_names[String(n.group_id)]}）</span>
                       )}
                       {!isEnd && n.type === 'parallel' && (
-                        <span className="text-[11px] font-normal text-muted-foreground">
+                        <span className="text-xs font-normal text-muted-foreground">
                           （{(n.sign_groups || []).map((g) => ticket.group_names?.[String(g)]).filter(Boolean).join('、') || '多分组'}会签）
                         </span>
                       )}
@@ -1218,7 +1214,7 @@ export default function TicketDetail() {
           </div>
 
           {/* 流转历史：时间轴 + 各节点处置意见 */}
-          <div className="rounded-md border border-border bg-card p-5">
+          <div className="rounded-md border border-border bg-card p-4">
             <div className="mb-4 flex flex-wrap items-center gap-2">
               <span className="font-semibold text-foreground">流转历史</span>
               <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{(ticket.records || []).length} 条</span>
@@ -1290,7 +1286,7 @@ export default function TicketDetail() {
                           if (dr.skipped) {
                             const skipLabel = dr.by === 'judge' ? '判断组建议不执行' : dr.by === 'condition' ? '条件未命中' : '未执行'
                             return (
-                              <div key={di} className="mt-1.5 flex items-center gap-1.5 rounded border border-dashed border-border/70 px-3 py-1.5 text-[11px] text-muted-foreground">
+                              <div key={di} className="mt-1.5 flex items-center gap-1.5 rounded border border-dashed border-border/70 px-3 py-1.5 text-xs text-muted-foreground">
                                 <span className="shrink-0">{skipLabel}</span>
                                 {(dr.device_name || dr.action_name) && (
                                   <>
@@ -1344,26 +1340,26 @@ export default function TicketDetail() {
                                   <span className="shrink-0 text-muted-foreground/60">/</span>
                                   <span className="min-w-0 truncate">{dr.action_name || '动作'}</span>
                                 </span>
-                                <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${meta.cls}`}>{statusLabel}</span>
+                                <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${meta.cls}`}>{statusLabel}</span>
                                 {isPending && <Loader2 className="h-3 w-3 animate-spin text-amber-500" />}
                                 {compProgress && (
-                                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${DEVICE_RUN_STATUS[compStatus].cls}`}>
+                                  <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${DEVICE_RUN_STATUS[compStatus].cls}`}>
                                     {compProgress}
                                   </span>
                                 )}
                                 {Number(dr.attempts) > 1 && (
-                                  <span className="text-[11px] text-muted-foreground" title={`共尝试 ${dr.attempts} 次`}>
+                                  <span className="text-xs text-muted-foreground" title={`共尝试 ${dr.attempts} 次`}>
                                     第 {dr.attempts} 次
                                   </span>
                                 )}
                                 {status === 'failed' && !dr.error && dr.status_code ? (
-                                  <span className="text-[11px] text-muted-foreground">HTTP {dr.status_code}</span>
+                                  <span className="text-xs text-muted-foreground">HTTP {dr.status_code}</span>
                                 ) : null}
                                 {(canRetry || canCompensate) && (
                                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
                                     {canRetry && (
                                       <button type="button" disabled={retryBusy}
-                                        className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-[11px] text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-xs text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                                         onClick={() => handleRetryDeviceRun(dr)}>
                                         {retryBusy && <Loader2 className="h-3 w-3 animate-spin" />}
                                         重试
@@ -1371,7 +1367,7 @@ export default function TicketDetail() {
                                     )}
                                     {canCompensate && (
                                       <button type="button" disabled={compBusy}
-                                        className="flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-600 transition hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                                         onClick={() => handleCompensateDeviceRun(dr, compBusyKey)}>
                                         {compBusy && <Loader2 className="h-3 w-3 animate-spin" />}
                                         {compStatus === 'failed' ? '重试撤销' : '撤销封禁'}
@@ -1391,7 +1387,7 @@ export default function TicketDetail() {
                                     }
                                     return (
                                       <span key={k}
-                                        className="inline-flex max-w-[15rem] items-baseline rounded bg-background/70 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                                        className="inline-flex max-w-[15rem] items-baseline rounded bg-background/70 px-1.5 py-0.5 text-xs text-muted-foreground"
                                         title={`${k}=${disp}`}>
                                         <span className="shrink-0 opacity-70">{k}</span>
                                         <span className="mx-0.5 shrink-0 opacity-40">=</span>
@@ -1402,7 +1398,7 @@ export default function TicketDetail() {
                                 </div>
                               )}
                               {dr.error && (
-                                <div className="mt-1.5 flex items-start gap-1.5 rounded bg-destructive/5 px-2 py-1 text-[11px] leading-relaxed text-destructive">
+                                <div className="mt-1.5 flex items-start gap-1.5 rounded bg-destructive/5 px-2 py-1 text-xs leading-relaxed text-destructive">
                                   {dr.status_code ? <span className="shrink-0 font-mono opacity-80">HTTP {dr.status_code}</span> : null}
                                   <span className="break-all">{dr.error}</span>
                                 </div>
@@ -1442,7 +1438,7 @@ export default function TicketDetail() {
                           <div className={`mt-2 rounded-r-md border-l-2 px-3 py-2 ${
                             r.action === 'rollback' ? 'border-amber-500/60 bg-amber-500/5' : 'border-primary/60 bg-primary/5'
                           }`}>
-                            <div className={`mb-0.5 text-[11px] font-medium ${r.action === 'rollback' ? 'text-amber-500' : 'text-primary'}`}>
+                            <div className={`mb-0.5 text-xs font-medium ${r.action === 'rollback' ? 'text-amber-500' : 'text-primary'}`}>
                               {ACTION_COMMENT_LABELS[r.action] || '处置意见'}
                             </div>
                             <div className="text-sm leading-relaxed text-foreground"><RichTextView text={r.comment} /></div>
@@ -1511,7 +1507,7 @@ export default function TicketDetail() {
         {/* 右侧：当前节点操作面板 */}
         <div className="w-[380px] shrink-0 space-y-4">
           {ticket.can_handle ? (
-            <div className="rounded-md border border-primary/40 bg-card p-5">
+            <div className="rounded-md border border-primary/40 bg-card p-4">
               <div className="mb-1 flex items-center gap-2 font-semibold text-foreground">
                 <Flag className="h-4 w-4 text-primary" />当前节点：{currentNode?.name || '--'}
               </div>
@@ -1624,7 +1620,7 @@ export default function TicketDetail() {
                           }}
                         />
                         {ipErrors[f.key] && (
-                          <div className="mt-1 text-[11px] text-destructive">{ipErrors[f.key]}</div>
+                          <div className="mt-1 text-xs text-destructive">{ipErrors[f.key]}</div>
                         )}
                       </>
                     )}
@@ -1711,9 +1707,9 @@ export default function TicketDetail() {
                         return (
                           <button key={r.to} type="button" disabled={locked && !isSug}
                             onClick={() => { if (!locked) setRouteTo(r.to) }}
-                            className={`rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'} ${locked && !isSug ? 'cursor-not-allowed opacity-40' : ''}`}>
+                            className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'} ${locked && !isSug ? 'cursor-not-allowed opacity-40' : ''}`}>
                             {r.label || target?.name || r.to}
-                            {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-500">{locked ? '条件命中·锁定' : '条件建议'}</span>}
+                            {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-500">{locked ? '条件命中·锁定' : '条件建议'}</span>}
                           </button>
                         )
                       })}
@@ -1854,7 +1850,7 @@ export default function TicketDetail() {
                                     {customMode && <div className="mt-1.5">{renderCustom()}</div>}
                                   </div>
                                 ) : renderCustom()}
-                                {deviceIpErrors[token] && <div className="mt-1 text-[11px] text-destructive">{deviceIpErrors[token]}</div>}
+                                {deviceIpErrors[token] && <div className="mt-1 text-xs text-destructive">{deviceIpErrors[token]}</div>}
                               </div>
                             )
                           })}
@@ -1910,7 +1906,7 @@ export default function TicketDetail() {
               </div>
             </div>
           ) : (
-            <div className="rounded-md border border-border bg-card p-5 text-sm text-muted-foreground">
+            <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
               {ticket.status === 'paused' ? (
                 <div className="space-y-3">
                   <div className="flex items-start gap-2">
@@ -1964,9 +1960,9 @@ export default function TicketDetail() {
           )}
 
           {/* 工单信息摘要 */}
-          <div className="rounded-md border border-border bg-card p-5">
+          <div className="rounded-md border border-border bg-card p-4">
             <div className="mb-3 text-sm font-semibold text-foreground">工单信息</div>
-            <div className="space-y-2 text-[13px]">
+            <div className="space-y-2 text-xs">
               {enrichStats && (
                 <button type="button" title="点击查看安全上下文详情"
                   className="flex w-full items-start justify-between gap-3 rounded text-left transition hover:text-primary"

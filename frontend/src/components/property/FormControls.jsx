@@ -17,7 +17,7 @@ export const inputBaseCls =
 export const inputCls = `${inputBaseCls} w-full`
 export const textareaCls = `${inputCls} resize-y font-mono`
 export const labelCls = 'mb-1 block text-xs font-medium text-muted-foreground'
-export const hintCls = 'mt-1 text-[11px] leading-relaxed text-muted-foreground'
+export const hintCls = 'mt-1 text-xs leading-relaxed text-muted-foreground'
 
 // 带可选 InfoTip 的 label 渲染辅助函数
 // 将原来的 label 下方小字 hint 改为 label 右侧圆圈感叹号 tooltip
@@ -124,7 +124,7 @@ export function VariableRefButton({ currentNodeId, onPick }) {
       </button>
       {open && (
         <div className="absolute right-0 top-full z-50 mt-1 max-h-[300px] w-60 overflow-y-auto rounded-md border border-border bg-secondary shadow-xl">
-          <div className="border-b border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="border-b border-border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             选择上游节点输出
           </div>
           {upstreamNodes.map((n) => {
@@ -132,7 +132,7 @@ export function VariableRefButton({ currentNodeId, onPick }) {
             const label = n.data?.label || n.data?.name || NODE_TYPE_LABELS[n.type] || n.type
             return (
               <div key={n.id} className="border-b border-border last:border-0">
-                <div className="truncate px-3 py-1.5 text-[11px] font-medium text-foreground">
+                <div className="truncate px-3 py-1.5 text-xs font-medium text-foreground">
                   {label}
                 </div>
                 {fields.map((f) => (
@@ -143,7 +143,7 @@ export function VariableRefButton({ currentNodeId, onPick }) {
                       onPick(`\${${n.id}.${f.field}}`)
                       setOpen(false)
                     }}
-                    className="block w-full truncate px-4 py-1.5 text-left text-[11px] text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
+                    className="block w-full truncate px-4 py-1.5 text-left text-xs text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
                   >
                     {f.label}
                   </button>
@@ -185,7 +185,7 @@ export function TextInput({ label, value, onChange, placeholder, hint, required,
         onChange={(e) => onChange(e.target.value)}
       />
       {maxLength && (
-        <div className={`mt-1 text-right text-[11px] ${len >= maxLength ? 'text-destructive' : 'text-muted-foreground'}`}>
+        <div className={`mt-1 text-right text-xs ${len >= maxLength ? 'text-destructive' : 'text-muted-foreground'}`}>
           {len}/{maxLength}
         </div>
       )}
@@ -252,7 +252,7 @@ export function TextArea({ label, value, onChange, rows = 4, placeholder, hint, 
         onChange={(e) => onChange(e.target.value)}
       />
       {maxLength && (
-        <div className={`mt-1 text-right text-[11px] ${len >= maxLength ? 'text-destructive' : 'text-muted-foreground'}`}>
+        <div className={`mt-1 text-right text-xs ${len >= maxLength ? 'text-destructive' : 'text-muted-foreground'}`}>
           {len}/{maxLength}
         </div>
       )}
@@ -333,7 +333,7 @@ export function KeyValueEditor({ label, value = [], onChange, keyPlaceholder = '
       {label && <label className={labelCls}>{label}</label>}
       <div className="flex flex-col gap-1.5">
         {value.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">暂无配置项</p>
+          <p className="text-xs text-muted-foreground">暂无配置项</p>
         )}
         {value.map((item, idx) => (
           <div key={idx} className="flex gap-1.5">
@@ -387,7 +387,7 @@ export function TypedParamEditor({ label, value = [], onChange }) {
       {label && <label className={labelCls}>{label}</label>}
       <div className="flex flex-col gap-1.5">
         {value.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">暂无参数</p>
+          <p className="text-xs text-muted-foreground">暂无参数</p>
         )}
         {value.map((item, idx) => (
           <div
@@ -427,7 +427,7 @@ export function TypedParamEditor({ label, value = [], onChange }) {
                 ))}
               </CompactSelect>
               <label
-                className="flex shrink-0 cursor-pointer items-center gap-1 px-1 text-[11px] text-muted-foreground"
+                className="flex shrink-0 cursor-pointer items-center gap-1 px-1 text-xs text-muted-foreground"
                 title="是否必填"
               >
                 <input
@@ -481,7 +481,7 @@ export function ConditionEditor({ value = [], onChange, logic = 'AND', onLogicCh
     <div>
       <div className="mb-1.5 flex items-center justify-between">
         <label className={labelCls + ' mb-0'}>条件列表</label>
-        <div className="flex items-center gap-1 text-[11px]">
+        <div className="flex items-center gap-1 text-xs">
           <span className="text-muted-foreground">连接符：</span>
           {['AND', 'OR'].map((l) => (
             <button
@@ -501,7 +501,7 @@ export function ConditionEditor({ value = [], onChange, logic = 'AND', onLogicCh
       </div>
       <div className="flex flex-col gap-1.5">
         {value.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">暂无条件，默认走「否」分支</p>
+          <p className="text-xs text-muted-foreground">暂无条件，默认走「否」分支</p>
         )}
         {value.map((item, idx) => (
           <div key={idx} className="flex flex-col gap-1 rounded-md border border-border bg-muted p-1.5">
@@ -636,7 +636,7 @@ export function VariableIOEditor({ value = [], onChange, direction = 'output' })
     <div>
       <div className="flex flex-col gap-1.5">
         {value.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             暂无{direction === 'input' ? '输入' : '输出'}变量
           </p>
         )}

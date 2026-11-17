@@ -501,7 +501,7 @@ function NotificationBell() {
           }`}
         />
         {unread > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold tabular-nums text-destructive-foreground shadow ring-2 ring-background">
+          <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-xs font-semibold tabular-nums text-destructive-foreground shadow ring-2 ring-background">
             {unread > 99 ? '99+' : unread}
           </span>
         )}
@@ -563,7 +563,7 @@ function NotificationBell() {
                         <span className="dot-pulse h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                       )}
                     </div>
-                    <div className="mt-0.5 whitespace-nowrap text-[11px] tabular-nums text-muted-foreground" title={fmtAbs(n.created_at)}>
+                    <div className="mt-0.5 whitespace-nowrap text-xs tabular-nums text-muted-foreground" title={fmtAbs(n.created_at)}>
                       {fmtRelative(n.created_at)}
                     </div>
                   </div>

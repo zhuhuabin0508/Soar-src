@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { TimerReset, RotateCcw, RefreshCw } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { inputCls, labelCls } from '../components/property/FormControls'
-import { Button, PageContainer, DataTable, EmptyState } from '../components/ui'
+import { Button, PageContainer, PageHeader, DataTable, EmptyState } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
 
@@ -136,29 +136,26 @@ export default function TicketSlaConfig() {
 
   return (
     <PageContainer>
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">SLA 目标配置</h1>
-          <p className="mt-2 text-[13px] text-muted-foreground">
-            按工单优先级设定响应与解决时限，超出即计为 SLA 超时并作用于监控大屏时效分析；留空表示不设目标。
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新 SLA 配置">
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
-          </button>
-          {canEdit && config && (
-            <>
-              <Button variant="secondary" size="sm" onClick={() => setConfig(structuredClone(defaults))}>
-                <RotateCcw className="mr-1 h-3.5 w-3.5" />恢复默认
-              </Button>
-              <Button variant="primary" size="sm" loading={saving} onClick={handleSave}>
-                保存配置
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
+      <PageHeader
+        title="SLA 目标配置"
+        actions={
+          <>
+            <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新 SLA 配置">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
+            </button>
+            {canEdit && config && (
+              <>
+                <Button variant="secondary" size="sm" onClick={() => setConfig(structuredClone(defaults))}>
+                  <RotateCcw className="mr-1 h-3.5 w-3.5" />恢复默认
+                </Button>
+                <Button variant="primary" size="sm" loading={saving} onClick={handleSave}>
+                  保存配置
+                </Button>
+              </>
+            )}
+          </>
+        }
+      />
 
       {!config && !loading ? (
         <EmptyState
@@ -179,7 +176,7 @@ export default function TicketSlaConfig() {
       )}
 
       {!loading && config && (
-        <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-card px-6 py-4 text-[13px] text-muted-foreground">
+        <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-card px-6 py-4 text-xs text-muted-foreground">
           <TimerReset className="mt-0.5 h-4 w-4 shrink-0" />
           <p>
             口径说明：响应 = 工单发起 → 首次节点提交；解决 = 工单创建 → 完成关闭。

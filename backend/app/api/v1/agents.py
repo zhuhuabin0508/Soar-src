@@ -183,7 +183,7 @@ class AgentBase(BaseModel):
     variables: dict | None = Field(None, description="自定义变量")
     tool_configs: dict | None = Field(None, description="工具配置（key=工具名, value={timeout, retry, require_confirm}）")
     engine: str = Field("hermes", description="执行引擎：hermes（唯一引擎，传其他值将被忽略）")
-    output_mode: str | None = Field(None, description="chat / soc_decision / ban_risk_analyze，不传则创建为 chat、更新保持原值")
+    output_mode: str | None = Field(None, description="chat / soc_decision / ban_risk_analyze / ticket_analyst，不传则创建为 chat、更新保持原值")
     publish_status: str | None = Field(None, description="draft / published，创建默认草稿，更新未传则保持原值")
 
 
@@ -212,9 +212,10 @@ def _resolve_publish_status(agent: Agent) -> str:
 
 
 def _normalize_output_mode(raw: str | None, *, default: str) -> str:
-    if raw in ("chat", "soc_decision", "ban_risk_analyze"):
+    allowed = ("chat", "soc_decision", "ban_risk_analyze", "ticket_analyst")
+    if raw in allowed:
         return raw
-    if default in ("chat", "soc_decision", "ban_risk_analyze"):
+    if default in allowed:
         return default
     return "chat"
 
@@ -470,6 +471,7 @@ class AgentTestRequest(BaseModel):
     session_id: str = Field("default", description="会话 ID（多轮对话上下文持久化键）")
     # 会话级参数覆盖：None 时走 Agent 配置（向后兼容）；非 None 时按字段独立覆盖
     override: Optional[ChatOverride] = Field(None, description="会话级参数覆盖（仅本次请求生效）")
+    skill_ids: list[int] = Field(default_factory=list, description="本次对话显式选择的技能 ID（临时注入，不改变智能体配置）")
     channel: str | None = Field(None, description="conversation 表示正式对话，草稿不可用；test 为编辑器调试")
 
 
@@ -914,6 +916,7 @@ async def test_agent_stream(
         override=sanitize_override(body.override, channel=channel),
         load_history=False,
         persist_history=False,
+        skill_ids=body.skill_ids,
     )
     return StreamingResponse(run.stream(), media_type="text/event-stream")
 
@@ -957,6 +960,7 @@ async def chat_agent(
         override=sanitize_override(body.override, channel=channel),
         load_history=True,
         persist_history=True,
+        skill_ids=body.skill_ids,
     )
     return StreamingResponse(
         run.stream(),

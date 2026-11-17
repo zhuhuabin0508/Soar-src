@@ -87,7 +87,7 @@ function ToastItem({ item }) {
           </div>
         )}
         <div
-          className={`text-[13px] leading-relaxed text-foreground/90 break-words ${
+          className={`text-xs leading-relaxed text-foreground/90 break-words ${
             item.title ? 'mt-1' : ''
           }`}
         >

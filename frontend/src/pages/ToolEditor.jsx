@@ -35,7 +35,7 @@ import {
 } from '../components/property/FormControls'
 import { Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
-import {CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { canEditResource } from '../utils/permissions'
@@ -126,7 +126,7 @@ function Card({ title, icon, children, defaultOpen = true, hint, extra }) {
           <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <span>{icon}</span>
             {title}
-            {hint && <span className="text-[11px] font-normal text-muted-foreground">{hint}</span>}
+            {hint && <span className="text-xs font-normal text-muted-foreground">{hint}</span>}
           </span>
           <span className="text-muted-foreground">{open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}</span>
         </button>
@@ -164,7 +164,7 @@ function ParamSchemaEditor({ value = [], onChange, showHttpFields = false }) {
     <div>
       <div className="flex flex-col gap-2">
         {safeValue.length === 0 && (
-          <p className="text-[11px] text-muted-foreground">暂无参数</p>
+          <p className="text-xs text-muted-foreground">暂无参数</p>
         )}
         {safeValue.map((item, idx) => (
           <div key={idx} className="rounded-md border border-border bg-card p-2.5">
@@ -199,7 +199,7 @@ function ParamSchemaEditor({ value = [], onChange, showHttpFields = false }) {
                   ))}
                 </CompactSelect>
               )}
-              <label className="flex shrink-0 cursor-pointer items-center gap-1 px-1 text-[11px] text-muted-foreground">
+              <label className="flex shrink-0 cursor-pointer items-center gap-1 px-1 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
                   className="h-3.5 w-3.5 rounded border-border bg-secondary text-primary focus:ring-primary"
@@ -267,13 +267,13 @@ function CodeEditor({ value, onChange }) {
   const lineCount = Math.max(lines.length, 1)
   return (
     <div className="flex w-full overflow-hidden rounded-md border border-border bg-card">
-      <div className="shrink-0 select-none bg-background px-2 py-2 text-right font-mono text-[12px] leading-6 text-muted-foreground">
+      <div className="shrink-0 select-none bg-background px-2 py-2 text-right font-mono text-xs leading-6 text-muted-foreground">
         {Array.from({ length: lineCount }, (_, i) => (
           <div key={i}>{i + 1}</div>
         ))}
       </div>
       <AutoGrowTextarea
-        className="flex-1 resize-y bg-card px-3 py-2 font-mono text-[12px] leading-6 text-foreground outline-none placeholder:text-muted-foreground"
+        className="flex-1 resize-y bg-card px-3 py-2 font-mono text-xs leading-6 text-foreground outline-none placeholder:text-muted-foreground"
         rows={Math.max(lineCount, 12)}
         value={value}
         spellCheck={false}
@@ -350,21 +350,15 @@ function OpenAPIImportModal({ open, onClose, onPick }) {
     >
       {!ops && (
         <div className="flex flex-col gap-3">
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setTab('json')}
-              className={`rounded px-3 py-1 text-xs ${tab === 'json' ? 'bg-primary text-foreground' : 'bg-secondary text-muted-foreground'}`}
-            >
-              粘贴 JSON
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab('url')}
-              className={`rounded px-3 py-1 text-xs ${tab === 'url' ? 'bg-primary text-foreground' : 'bg-secondary text-muted-foreground'}`}
-            >
-              从 URL 拉取
-            </button>
+          <div>
+            <PillTabs
+              items={[
+                { key: 'json', label: '粘贴 JSON' },
+                { key: 'url', label: '从 URL 拉取' },
+              ]}
+              value={tab}
+              onChange={setTab}
+            />
           </div>
           {tab === 'json' ? (
             <AutoGrowTextarea
@@ -417,7 +411,7 @@ function OpenAPIImportModal({ open, onClose, onPick }) {
                 disabled={parsing}
                 className="flex items-center gap-3 rounded-md border border-border bg-card p-3 text-left transition hover:border-primary hover:bg-card disabled:opacity-50"
               >
-                <span className={`shrink-0 rounded border px-2 py-0.5 font-mono text-[11px] font-semibold ${METHOD_COLORS[op.method] || 'bg-secondary text-muted-foreground'}`}>
+                <span className={`shrink-0 rounded border px-2 py-0.5 font-mono text-xs font-semibold ${METHOD_COLORS[op.method] || 'bg-secondary text-muted-foreground'}`}>
                   {op.method}
                 </span>
                 <div className="min-w-0 flex-1">
@@ -527,22 +521,15 @@ const DebugPanel = forwardRef(function DebugPanel({ toolId, parametersSchema, to
   return (
     <div className="rounded-lg border border-border bg-card">
       {/* Tab 切换 */}
-      <div className="flex border-b border-border">
-        {[
-          { v: 'params', label: <span className="flex items-center gap-1.5"><Wrench className="h-4 w-4" />模拟入参测试</span> },
-          { v: 'chat', label: <span className="flex items-center gap-1.5"><MessageSquare className="h-4 w-4" />模拟对话调试</span> },
-        ].map((t) => (
-          <button
-            key={t.v}
-            type="button"
-            onClick={() => setTab(t.v)}
-            className={`px-4 py-2 text-sm font-medium transition ${
-              tab === t.v ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="border-b border-border px-4 py-3">
+        <PillTabs
+          items={[
+            { key: 'params', label: '模拟入参测试', icon: Wrench },
+            { key: 'chat', label: '模拟对话调试', icon: MessageSquare },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
       </div>
 
       <div className="p-4">
@@ -562,7 +549,7 @@ const DebugPanel = forwardRef(function DebugPanel({ toolId, parametersSchema, to
                   <div key={p.name}>
                     <label className={labelCls}>
                       {p.name}
-                      <span className="ml-1 text-[10px] text-muted-foreground">({p.type}{p.location ? ` · ${p.location}` : ''})</span>
+                      <span className="ml-1 text-xs text-muted-foreground">({p.type}{p.location ? ` · ${p.location}` : ''})</span>
                       {p.required && <span className="ml-1 text-destructive">*</span>}
                     </label>
                     {p.type === 'Boolean' ? (
@@ -929,8 +916,8 @@ function ToolEditor() {
           <button type="button" onClick={() => navigate('/tools')} className="btn-secondary btn-sm">
             ← 返回列表
           </button>
-          <h1 className="text-xl font-semibold">{isEdit ? '编辑工具' : '新建工具'}</h1>
-          <span className={`inline-flex shrink-0 items-center whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium ${
+          <h1 className="text-2xl font-semibold tracking-tight">{isEdit ? '编辑工具' : '新建工具'}</h1>
+          <span className={`inline-flex shrink-0 items-center whitespace-nowrap rounded border px-2 py-0.5 text-xs font-medium ${
             isFramework
               ? 'border-purple-500/40 bg-primary/10 text-primary'
               : isHttp
@@ -939,7 +926,7 @@ function ToolEditor() {
           }`}>
             {isFramework ? '框架内置工具' : isHttp ? 'HTTP 接口工具' : 'Python 代码工具'}
           </span>
-          {dirty && <span className="text-[10px] text-warning">● 未保存</span>}
+          {dirty && <span className="text-xs text-warning">● 未保存</span>}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -985,10 +972,10 @@ function ToolEditor() {
               >
                 <Globe className={`h-6 w-6 ${isHttp ? 'text-primary' : 'text-muted-foreground'}`} />
                 <div className="text-sm font-semibold text-foreground">HTTP 接口工具</div>
-                <div className="text-[11px] leading-relaxed text-muted-foreground">
+                <div className="text-xs leading-relaxed text-muted-foreground">
                   声明式配置，无需写代码。适合调用外部 RESTful API、查询威胁情报等。
                 </div>
-                <span className="mt-1 rounded bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium text-primary">推荐</span>
+                <span className="mt-1 rounded bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">推荐</span>
               </button>
               <button
                 type="button"
@@ -999,7 +986,7 @@ function ToolEditor() {
               >
                 <Code2 className={`h-6 w-6 ${!isHttp && !isFramework ? 'text-primary' : 'text-muted-foreground'}`} />
                 <div className="text-sm font-semibold text-foreground">Python 代码工具</div>
-                <div className="text-[11px] leading-relaxed text-muted-foreground">
+                <div className="text-xs leading-relaxed text-muted-foreground">
                   在沙箱中运行 Python 代码，适合复杂逻辑、数据处理、算法实现等。
                 </div>
               </button>
@@ -1010,7 +997,7 @@ function ToolEditor() {
               >
                 <Zap className="h-6 w-6 text-primary" />
                 <div className="text-sm font-semibold text-foreground">OpenAPI 导入</div>
-                <div className="text-[11px] leading-relaxed text-muted-foreground">
+                <div className="text-xs leading-relaxed text-muted-foreground">
                   从 Swagger/OpenAPI 规范批量导入已有接口，快速生成 HTTP 工具。
                 </div>
               </button>
@@ -1027,7 +1014,7 @@ function ToolEditor() {
                 type="button"
                 onClick={handleOptimizeDesc}
                 disabled={optimizing}
-                className="rounded border border-primary/50 px-2 py-0.5 text-[11px] text-primary transition hover:bg-primary/10 disabled:opacity-50"
+                className="rounded border border-primary/50 px-2 py-0.5 text-xs text-primary transition hover:bg-primary/10 disabled:opacity-50"
               >
                 {optimizing ? '优化中…' : 'AI 优化提示词'}
               </button>
@@ -1040,7 +1027,7 @@ function ToolEditor() {
               placeholder={'决定 LLM 在什么情况下会调用此工具。\n示例：当用户询问订单的物流状态、发货情况或查询特定订单号时，调用此工具。'}
             />
             {/* 描述提示模板 */}
-            <div className="mt-1.5 flex items-start gap-1 rounded border border-border bg-secondary p-2 text-[11px] text-muted-foreground">
+            <div className="mt-1.5 flex items-start gap-1 rounded border border-border bg-secondary p-2 text-xs text-muted-foreground">
               <Lightbulb className="mt-0.5 h-3 w-3 shrink-0" />
               <span>推荐模板：<span className="font-mono">[做什么] + [适用场景] + [返回什么]</span>。如：查询 IP 是否命中内网白名单，返回布尔值。适用于判断外部 IP 是否为可信内网地址。</span>
             </div>
@@ -1081,7 +1068,7 @@ function ToolEditor() {
             <label className={labelCls}>标签 <span className="text-muted-foreground">(回车添加，多个标签便于检索)</span></label>
             <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-secondary p-1.5">
               {(form.tags || []).map((tag, idx) => (
-                <span key={idx} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+                <span key={idx} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-primary">
                   {tag}
                   <button
                     type="button"
@@ -1124,7 +1111,7 @@ function ToolEditor() {
                         setField('tags')([...(form.tags || []), t])
                       }
                     }}
-                    className={`rounded-full border px-2 py-0.5 text-[10px] transition ${
+                    className={`rounded-full border px-2 py-0.5 text-xs transition ${
                       has
                         ? 'border-primary bg-primary/10 text-primary'
                         : 'border-border text-muted-foreground hover:border-primary hover:text-primary'
@@ -1331,11 +1318,11 @@ function ToolEditor() {
         <Card title="参数定义与映射" icon={<SlidersHorizontal className="h-4 w-4" />} hint="LLM 从用户输入中提取参数的规则" defaultOpen={true}>
           {isFramework ? (
             <div className="rounded-md border border-primary/40 bg-primary/10 p-3">
-              <p className="mb-2 flex items-center gap-1.5 text-[11px] text-primary">
+              <p className="mb-2 flex items-center gap-1.5 text-xs text-primary">
                 <Lock className="h-3.5 w-3.5" />
                 框架内置工具使用 OpenAI 参数格式（JSON 对象），不支持可视化编辑。
               </p>
-              <pre className="max-h-60 overflow-auto rounded border border-border bg-card p-2 text-[11px] leading-relaxed text-muted-foreground">
+              <pre className="max-h-60 overflow-auto rounded border border-border bg-card p-2 text-xs leading-relaxed text-muted-foreground">
                 {JSON.stringify(form.parameters_schema, null, 2)}
               </pre>
             </div>
@@ -1371,7 +1358,7 @@ function ToolEditor() {
                       toast.error(`提取失败：${err.message || err}`)
                     }
                   }}
-                  className="flex shrink-0 items-center gap-1 rounded border border-primary/50 px-2 py-1 text-[10px] text-primary transition hover:bg-primary/10"
+                  className="flex shrink-0 items-center gap-1 rounded border border-primary/50 px-2 py-1 text-xs text-primary transition hover:bg-primary/10"
                 >
                   <Wand2 className="h-3 w-3" /> 从描述提取参数
                 </button>
@@ -1384,8 +1371,8 @@ function ToolEditor() {
               {/* kwargs 提示同步：展示代码中可用的参数名 */}
               {!isHttp && !isFramework && form.parameters_schema.length > 0 && (
                 <div className="mt-2 rounded-md border border-border bg-muted p-2">
-                  <div className="mb-0.5 text-[10px] font-semibold text-muted-foreground">代码中可通过 kwargs 获取：</div>
-                  <code className="text-[11px] text-primary">
+                  <div className="mb-0.5 text-xs font-semibold text-muted-foreground">代码中可通过 kwargs 获取：</div>
+                  <code className="text-xs text-primary">
                     {form.parameters_schema.map((p) => p.name).filter(Boolean).map((n) => `kwargs.get('${n}')`).join(',  ')}
                   </code>
                 </div>
@@ -1421,7 +1408,7 @@ function ToolEditor() {
             {/* 代码模板库 + 全屏按钮 */}
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-muted-foreground">模板：</span>
+                <span className="text-xs text-muted-foreground">模板：</span>
                 {CODE_TEMPLATES.map((tpl) => (
                   <button
                     key={tpl.label}
@@ -1430,7 +1417,7 @@ function ToolEditor() {
                       setField('code')(tpl.code)
                       toast.success(`已应用「${tpl.label}」模板`)
                     }}
-                    className="rounded border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground transition hover:border-primary hover:text-primary"
+                    className="rounded border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
                     title={tpl.desc}
                   >
                     {tpl.label}
@@ -1440,7 +1427,7 @@ function ToolEditor() {
               <button
                 type="button"
                 onClick={() => setCodeFullscreen(true)}
-                className="flex items-center gap-1 rounded border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground transition hover:border-primary hover:text-primary"
+                className="flex items-center gap-1 rounded border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
                 title="全屏编辑"
               >
                 <Maximize2 className="h-3 w-3" /> 全屏
@@ -1492,7 +1479,7 @@ function ToolEditor() {
                   key={tpl.label}
                   type="button"
                   onClick={() => setField('code')(tpl.code)}
-                  className="rounded border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground transition hover:border-primary hover:text-primary"
+                  className="rounded border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
                 >
                   {tpl.label}
                 </button>

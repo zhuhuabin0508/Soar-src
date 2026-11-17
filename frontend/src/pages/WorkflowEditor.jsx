@@ -9,6 +9,7 @@ import PropertyPanel from '../components/PropertyPanel'
 import WorkflowInspection from '../components/WorkflowInspection'
 import WorkflowVersionHistory from '../components/WorkflowVersionHistory'
 import RunLogDrawer from '../components/RunLogDrawer'
+import { PillTabs } from '../components/ui'
 import { useWorkflowStore } from '../store/workflowStore'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { useAutoSave } from '../hooks/useAutoSave'
@@ -167,31 +168,15 @@ function WorkflowEditor() {
       {/* 主体三栏：左节点库/变量面板 / 中画布 / 右属性面板 */}
       <div className="workflow-editor-main flex min-h-0 flex-1">
         <aside className="flex w-[220px] shrink-0 flex-col border-r border-border bg-card">
-          <div className="flex shrink-0 gap-1 p-2">
-            <button
-              type="button"
-              onClick={() => setLeftTab('library')}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
-                leftTab === 'library'
-                  ? 'bg-secondary text-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-              }`}
-            >
-              <Puzzle className="h-3.5 w-3.5" />
-              节点库
-            </button>
-            <button
-              type="button"
-              onClick={() => setLeftTab('variables')}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
-                leftTab === 'variables'
-                  ? 'bg-secondary text-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-              }`}
-            >
-              <Braces className="h-3.5 w-3.5" />
-              变量
-            </button>
+          <div className="shrink-0 p-2">
+            <PillTabs
+              items={[
+                { key: 'library', label: '节点库', icon: Puzzle },
+                { key: 'variables', label: '变量', icon: Braces },
+              ]}
+              value={leftTab}
+              onChange={setLeftTab}
+            />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
             {leftTab === 'library' ? <NodeLibrary /> : <VariablePanel />}
@@ -218,43 +203,16 @@ function WorkflowEditor() {
           <FlowCanvas isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
         </main>
         <aside className="flex w-[300px] shrink-0 flex-col border-l border-border bg-card">
-          <div className="flex shrink-0 gap-1 p-2">
-            <button
-              type="button"
-              onClick={() => setRightTab('property')}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
-                rightTab === 'property'
-                  ? 'bg-secondary text-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-              }`}
-            >
-              <Settings className="h-3.5 w-3.5" />
-              属性
-            </button>
-            <button
-              type="button"
-              onClick={() => setRightTab('monitor')}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
-                rightTab === 'monitor'
-                  ? 'bg-secondary text-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-              }`}
-            >
-              <TrendingUp className="h-3.5 w-3.5" />
-              监测
-            </button>
-            <button
-              type="button"
-              onClick={() => setRightTab('versions')}
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
-                rightTab === 'versions'
-                  ? 'bg-secondary text-foreground'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-              }`}
-            >
-              <Package className="h-3.5 w-3.5" />
-              版本
-            </button>
+          <div className="shrink-0 p-2">
+            <PillTabs
+              items={[
+                { key: 'property', label: '属性', icon: Settings },
+                { key: 'monitor', label: '监测', icon: TrendingUp },
+                { key: 'versions', label: '版本', icon: Package },
+              ]}
+              value={rightTab}
+              onChange={setRightTab}
+            />
           </div>
           {/* Tab 内容 */}
           <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">

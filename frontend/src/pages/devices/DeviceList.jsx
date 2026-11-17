@@ -137,14 +137,14 @@ export function DeviceCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-semibold text-foreground">{device.name}</span>
-            <span className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            <span className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
               #{device.id}
             </span>
-            <span className="whitespace-nowrap rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+            <span className="whitespace-nowrap rounded bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">
               {DEVICE_TYPE_LABELS[device.type] || device.type}
             </span>
             {device.vendor && (
-              <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+              <span className="whitespace-nowrap text-xs text-muted-foreground">
                 {device.vendor}
               </span>
             )}
@@ -152,13 +152,13 @@ export function DeviceCard({
             {tags.map((t) => (
               <span
                 key={t}
-                className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
               >
                 {t}
               </span>
             ))}
           </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             {device.ip_address && (
               <>
                 <span className="truncate font-mono" title={`IP: ${device.ip_address}`}>
@@ -180,11 +180,11 @@ export function DeviceCard({
             </span>
             <span className="text-muted-foreground">·</span>
             <span title="动作总数">
-              动作 <NumCell value={device.action_count} className="!text-[11px]" title="未统计动作数" />
+              动作 <NumCell value={device.action_count} className="!text-xs" title="未统计动作数" />
             </span>
             <span className="text-muted-foreground">·</span>
             <span title="今日 API 调用次数">
-              今日 <NumCell value={device.today_call_count} className="!text-[11px]" title="今日暂无调用" /> 次
+              今日 <NumCell value={device.today_call_count} className="!text-xs" title="今日暂无调用" /> 次
             </span>
             {device.last_heartbeat && (
               <>
@@ -280,7 +280,7 @@ export function ActionTable({
     return (
       <div className="rounded-lg border border-dashed border-border bg-card py-8 text-center">
         <div className="text-xs text-muted-foreground">该设备暂无动作</div>
-        <div className="mt-1 text-[11px] text-muted-foreground">点击右上角「新建动作」添加自动化操作</div>
+        <div className="mt-1 text-xs text-muted-foreground">点击右上角「新建动作」添加自动化操作</div>
       </div>
     )
   }
@@ -325,23 +325,23 @@ export function ActionTable({
                 <td className="truncate px-3 py-2.5 font-mono text-muted-foreground" title={a.api_path}>
                   {a.api_path || '-'}
                 </td>
-                <td className="px-3 py-2.5 font-mono text-[11px] tabular-nums text-muted-foreground">
+                <td className="px-3 py-2.5 font-mono text-xs tabular-nums text-muted-foreground">
                   v{a.version || 1}
                 </td>
-                <td className="px-3 py-2.5 text-[11px] text-muted-foreground" title={fmtTime(a.last_call_at)}>
+                <td className="px-3 py-2.5 text-xs text-muted-foreground" title={fmtTime(a.last_call_at)}>
                   {fmtRelative(a.last_call_at)}
                 </td>
                 <td className="px-3 py-2.5 text-right">
-                  <NumCell value={a.call_count_24h} className="!text-[11px]" title="24h 内暂无调用" />
+                  <NumCell value={a.call_count_24h} className="!text-xs" title="24h 内暂无调用" />
                 </td>
                 <td className="px-3 py-2.5 text-right">
                   {rate == null ? (
-                    <span className="text-[11px] text-muted-foreground" title="24h 内暂无调用，未统计成功率">
+                    <span className="text-xs text-muted-foreground" title="24h 内暂无调用，未统计成功率">
                       --
                     </span>
                   ) : (
                     <span
-                      className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums ${
+                      className={`inline-block rounded px-1.5 py-0.5 font-mono text-xs font-medium tabular-nums ${
                         rate >= 0.9
                           ? 'bg-success/20 text-success'
                           : rate >= 0.5
@@ -353,7 +353,7 @@ export function ActionTable({
                     </span>
                   )}
                 </td>
-                <td className="px-3 py-2.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums text-muted-foreground">
                   {a.avg_latency_ms != null ? (
                     <span className={a.avg_latency_ms === 0 ? 'text-muted-foreground' : ''}>
                       {a.avg_latency_ms}ms
@@ -457,7 +457,7 @@ export function DeviceRow({
           </span>
           <StatusBadge status={device.status || (device.enabled ? 'unconfigured' : 'disabled')} />
         </div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground">
+        <div className="truncate font-mono text-xs text-muted-foreground">
           {device.api_url ? truncate(device.api_url, 30) : '未配置'}
         </div>
       </div>

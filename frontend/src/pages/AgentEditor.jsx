@@ -31,7 +31,7 @@ import { inputCls, textareaCls } from '../components/property/FormControls'
 import MiddlewareConfig from '../components/MiddlewareConfig'
 import ToolSearchStatus from '../components/ToolSearchStatus'
 import InfoTip from '../components/InfoTip'
-import {CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 import { CATEGORY_META, UNCATEGORIZED, groupToolsByCategory } from '../constants/toolCategories'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { toast } from '../store/toastStore'
@@ -1038,7 +1038,7 @@ function AgentEditor() {
           <button type="button" onClick={() => navigate('/studio')} className="btn-secondary btn-sm">
             ← 返回工作室
           </button>
-          <h1 className="text-xl font-semibold">{isEdit ? '编辑智能体' : '新建智能体'}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{isEdit ? '编辑智能体' : '新建智能体'}</h1>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-md border border-border bg-secondary p-0.5 text-xs">
@@ -1225,14 +1225,14 @@ function AgentEditor() {
               <button
                 type="button"
                 onClick={() => setAllCards(true)}
-                className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground"
               >
                 展开全部
               </button>
               <button
                 type="button"
                 onClick={() => setAllCards(false)}
-                className="shrink-0 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground"
               >
                 收起全部
               </button>
@@ -1317,7 +1317,7 @@ function AgentEditor() {
                 <button
                   type="button"
                   onClick={() => setVarRows([...varRows, { key: '', value: '' }])}
-                  className="text-[11px] text-primary hover:text-primary"
+                  className="text-xs text-primary hover:text-primary"
                 >
                   + 添加变量
                 </button>
@@ -1396,7 +1396,7 @@ function AgentEditor() {
                       const t = toolOptions.find((x) => x.value === tv)
                       const isSensitive = /send|email|delete|block|ban|exec|shutdown|reboot/i.test(tv)
                       return (
-                        <span key={`t-${tv}`} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${isSensitive ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'border-primary/30 bg-primary/10 text-primary'}`}>
+                        <span key={`t-${tv}`} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${isSensitive ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'border-primary/30 bg-primary/10 text-primary'}`}>
                           <Wrench className="h-2.5 w-2.5" />
                           {t?.label || tv}
                           <button type="button" onClick={() => setField('enabled_tools')(form.enabled_tools.filter((x) => x !== tv))} className="ml-0.5 hover:text-foreground">
@@ -1408,7 +1408,7 @@ function AgentEditor() {
                     {form.enabled_kbs.map((kv) => {
                       const k = kbOptions.find((x) => x.value === kv)
                       return (
-                        <span key={`k-${kv}`} className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+                        <span key={`k-${kv}`} className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
                           <Database className="h-2.5 w-2.5" />
                           {k?.label || `KB#${kv}`}
                           <button type="button" onClick={() => setField('enabled_kbs')(form.enabled_kbs.filter((x) => x !== kv))} className="ml-0.5 hover:text-foreground">
@@ -1420,7 +1420,7 @@ function AgentEditor() {
                     {form.enabled_skills.map((sv) => {
                       const s = skillOptions.find((x) => x.value === sv)
                       return (
-                        <span key={`s-${sv}`} className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-400">
+                        <span key={`s-${sv}`} className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">
                           <Zap className="h-2.5 w-2.5" />
                           {s?.label || `技能#${sv}`}
                           <button type="button" onClick={() => setField('enabled_skills')(form.enabled_skills.filter((x) => x !== sv))} className="ml-0.5 hover:text-foreground">
@@ -1432,7 +1432,7 @@ function AgentEditor() {
                     {form.enabled_workflows.map((wv) => {
                       const w = workflowOptions.find((x) => x.value === wv)
                       return (
-                        <span key={`w-${wv}`} className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-700 dark:text-cyan-400">
+                        <span key={`w-${wv}`} className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs text-cyan-700 dark:text-cyan-400">
                           <FolderKanban className="h-2.5 w-2.5" />
                           {w?.label || `工作流#${wv}`}
                           <button type="button" onClick={() => setField('enabled_workflows')(form.enabled_workflows.filter((x) => x !== wv))} className="ml-0.5 hover:text-foreground">
@@ -1465,30 +1465,30 @@ function AgentEditor() {
               {abilitySearchResults ? (
                 <div className="flex flex-col gap-3">
                   {abilitySearchResults.tools.length === 0 && abilitySearchResults.kbs.length === 0 && abilitySearchResults.skills.length === 0 && abilitySearchResults.workflows.length === 0 ? (
-                    <p className="py-4 text-center text-[11px] text-muted-foreground">未找到匹配项</p>
+                    <p className="py-4 text-center text-xs text-muted-foreground">未找到匹配项</p>
                   ) : (
                     <>
                       {abilitySearchResults.kbs.length > 0 && (
                         <div>
-                          <div className="mb-1.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">知识库 ({abilitySearchResults.kbs.length})</div>
+                          <div className="mb-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">知识库 ({abilitySearchResults.kbs.length})</div>
                           <CheckboxGroup value={form.enabled_kbs} onChange={setField('enabled_kbs')} options={abilitySearchResults.kbs} columns={2} />
                         </div>
                       )}
                       {abilitySearchResults.tools.length > 0 && (
                         <div>
-                          <div className="mb-1.5 text-[11px] font-semibold text-primary">工具 ({abilitySearchResults.tools.length})</div>
+                          <div className="mb-1.5 text-xs font-semibold text-primary">工具 ({abilitySearchResults.tools.length})</div>
                           <CheckboxGroup value={form.enabled_tools} onChange={setField('enabled_tools')} options={abilitySearchResults.tools} columns={2} />
                         </div>
                       )}
                       {abilitySearchResults.skills.length > 0 && (
                         <div>
-                          <div className="mb-1.5 text-[11px] font-semibold text-amber-600 dark:text-amber-400">技能 ({abilitySearchResults.skills.length})</div>
+                          <div className="mb-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">技能 ({abilitySearchResults.skills.length})</div>
                           <CheckboxGroup value={form.enabled_skills} onChange={setField('enabled_skills')} options={abilitySearchResults.skills} columns={2} />
                         </div>
                       )}
                       {abilitySearchResults.workflows.length > 0 && (
                         <div>
-                          <div className="mb-1.5 text-[11px] font-semibold text-cyan-600 dark:text-cyan-400">工作流 ({abilitySearchResults.workflows.length})</div>
+                          <div className="mb-1.5 text-xs font-semibold text-cyan-600 dark:text-cyan-400">工作流 ({abilitySearchResults.workflows.length})</div>
                           <CheckboxGroup value={form.enabled_workflows} onChange={setField('enabled_workflows')} options={abilitySearchResults.workflows} columns={2} />
                         </div>
                       )}
@@ -1498,33 +1498,17 @@ function AgentEditor() {
               ) : (
                 <>
                   {/* Tab 切换：知识库 / 工具 / 技能 */}
-                  <div className="mb-3 flex items-center gap-1 border-b border-border pb-2">
-                    {[
-                      { v: 'tools', label: '工具', icon: Wrench, count: form.enabled_tools.length, total: toolOptions.length },
-                      { v: 'workflows', label: '工作流', icon: FolderKanban, count: form.enabled_workflows.length, total: workflowOptions.length },
-                      { v: 'skills', label: '技能', icon: Zap, count: form.enabled_skills.length, total: skillOptions.length },
-                      { v: 'knowledge', label: '知识库', icon: Database, count: form.enabled_kbs.length, total: kbOptions.length },
-                    ].map((t) => {
-                      const Icon = t.icon
-                      return (
-                        <button
-                          key={t.v}
-                          type="button"
-                          onClick={() => setAbilityTab(t.v)}
-                          className={`flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition ${
-                            abilityTab === t.v
-                              ? 'border-primary text-primary'
-                              : 'border-transparent text-muted-foreground hover:text-foreground'
-                          }`}
-                        >
-                          <Icon className="h-3.5 w-3.5" />
-                          {t.label}
-                          <span className={`rounded px-1 text-[10px] ${t.count > 0 ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'}`}>
-                            {t.count}
-                          </span>
-                        </button>
-                      )
-                    })}
+                  <div className="mb-3">
+                    <PillTabs
+                      items={[
+                        { key: 'tools', label: '工具', icon: Wrench, count: form.enabled_tools.length },
+                        { key: 'workflows', label: '工作流', icon: FolderKanban, count: form.enabled_workflows.length },
+                        { key: 'skills', label: '技能', icon: Zap, count: form.enabled_skills.length },
+                        { key: 'knowledge', label: '知识库', icon: Database, count: form.enabled_kbs.length },
+                      ]}
+                      value={abilityTab}
+                      onChange={setAbilityTab}
+                    />
                   </div>
 
                   {/* ===== 工具 Tab ===== */}
@@ -1562,7 +1546,7 @@ function AgentEditor() {
                                     <div>
                                       <div className="text-sm font-medium">{tool.label}</div>
                                       {(templateToolHints[tool.value] || tool.description) && (
-                                        <div className="text-[11px] text-muted-foreground">
+                                        <div className="text-xs text-muted-foreground">
                                           {templateToolHints[tool.value] || (tool.description || '').slice(0, 100)}
                                         </div>
                                       )}
@@ -1575,7 +1559,7 @@ function AgentEditor() {
                           <button
                             type="button"
                             onClick={() => setBrowseAllTools(true)}
-                            className="mt-3 text-[11px] text-primary underline"
+                            className="mt-3 text-xs text-primary underline"
                           >
                             需要其他工具？浏览全部（{toolOptions.length} 个）
                           </button>
@@ -1626,9 +1610,9 @@ function AgentEditor() {
                       </div>
 
                       {toolOptions.length === 0 ? (
-                        <p className="py-4 text-center text-[11px] text-muted-foreground">暂无可用工具</p>
+                        <p className="py-4 text-center text-xs text-muted-foreground">暂无可用工具</p>
                       ) : filteredGroupedTools.length === 0 ? (
-                        <p className="py-4 text-center text-[11px] text-muted-foreground">
+                        <p className="py-4 text-center text-xs text-muted-foreground">
                           {onlySelectedTools ? '未选中任何工具' : '未匹配到工具'}
                         </p>
                       ) : !devMode ? (
@@ -1647,7 +1631,7 @@ function AgentEditor() {
                                 >
                                   {grpCollapsed ? <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
                                   <GrpIcon className="h-3.5 w-3.5 text-primary" />
-                                  <span className="text-[11px] font-semibold text-muted-foreground">{grp.meta.label}</span>
+                                  <span className="text-xs font-semibold text-muted-foreground">{grp.meta.label}</span>
                                   <span className={`rounded px-1 text-[10px] ${selectedInGrp > 0 ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'}`}>
                                     {selectedInGrp}/{grp.tools.length}
                                   </span>
@@ -1720,7 +1704,7 @@ function AgentEditor() {
                                 >
                                   {grpCollapsed ? <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
                                   <GrpIcon className="h-3.5 w-3.5 text-primary" />
-                                  <span className="text-[11px] font-semibold text-muted-foreground">{grp.meta.label}</span>
+                                  <span className="text-xs font-semibold text-muted-foreground">{grp.meta.label}</span>
                                   <span className={`rounded px-1 text-[10px] ${selectedInGrp > 0 ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'}`}>
                                     {selectedInGrp}/{grp.tools.length}
                                   </span>
@@ -1837,7 +1821,7 @@ function AgentEditor() {
                   {abilityTab === 'workflows' && (
                     <div>
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           勾选后，该工作流会作为独立工具挂到智能体上，模型按需调用
                         </span>
                         <span className="text-[10px] text-muted-foreground">
@@ -1845,7 +1829,7 @@ function AgentEditor() {
                         </span>
                       </div>
                       {workflowOptions.length === 0 ? (
-                        <p className="py-4 text-center text-[11px] text-muted-foreground">暂无可用工作流，请先到「工作流」页面创建并启用</p>
+                        <p className="py-4 text-center text-xs text-muted-foreground">暂无可用工作流，请先到「工作流」页面创建并启用</p>
                       ) : (
                         <div className="grid grid-cols-1 gap-1.5">
                           {workflowOptions.map((wf) => {
@@ -1877,9 +1861,9 @@ function AgentEditor() {
                                     )}
                                   </div>
                                   {wf.description ? (
-                                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{wf.description}</p>
+                                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{wf.description}</p>
                                   ) : (
-                                    <p className="mt-0.5 text-[11px] text-muted-foreground">运行此工作流并返回结果</p>
+                                    <p className="mt-0.5 text-xs text-muted-foreground">运行此工作流并返回结果</p>
                                   )}
                                 </div>
                               </label>
@@ -1894,7 +1878,7 @@ function AgentEditor() {
                   {abilityTab === 'knowledge' && (
                     <div>
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           勾选后，智能体可检索该知识库中的文档分段
                         </span>
                         <span className="text-[10px] text-muted-foreground">
@@ -1904,13 +1888,13 @@ function AgentEditor() {
                       {kbOptions.length === 0 ? (
                         <div className="rounded-md border border-dashed border-emerald-500/30 bg-emerald-500/5 p-4 text-center">
                           <p className="text-xs font-medium text-foreground">还没有知识库</p>
-                          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                             ① 上传文档 → ② 自动分段/向量化 → ③ 在此勾选启用
                           </p>
                           <button
                             type="button"
                             onClick={() => { if (!guardNavPermission('knowledge_base', 'view', '知识库')) return; navigate('/knowledge-base') }}
-                            className="mt-3 text-[11px] text-primary hover:underline"
+                            className="mt-3 text-xs text-primary hover:underline"
                           >
                             前往知识库页面创建 →
                           </button>
@@ -1918,7 +1902,7 @@ function AgentEditor() {
                       ) : (
                         <>
                           {form.enabled_kbs.length === 0 && (
-                            <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[11px] text-muted-foreground">
+                            <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs text-muted-foreground">
                               未勾选知识库时，智能体无法检索文档。
                               <button type="button" onClick={() => { if (!guardNavPermission('knowledge_base', 'view', '知识库')) return; navigate('/knowledge-base') }} className="ml-1 text-primary hover:underline">
                                 管理知识库
@@ -1977,7 +1961,7 @@ function AgentEditor() {
                   {abilityTab === 'skills' && (
                     <div>
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-xs text-muted-foreground">
                           选中的技能正文会拼接到 system prompt 末尾。Skill 只收说明文字，脚本请到工具库添加。
                           <InfoTip text={<>技能正文支持 <code className="rounded bg-secondary px-1 text-primary">{'{{key}}'}</code> 引用变量</>} />
                         </span>
@@ -1987,8 +1971,8 @@ function AgentEditor() {
                       </div>
                       <div className="mb-3 rounded-md border border-border bg-card p-2.5">
                         <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-[11px] font-medium text-foreground">导入文本新建技能</span>
-                          <div className="flex items-center gap-2 text-[11px]">
+                          <span className="text-xs font-medium text-foreground">导入文本新建技能</span>
+                          <div className="flex items-center gap-2 text-xs">
                             <button type="button" className="text-primary hover:underline" onClick={() => navigate('/skills')}>
                               技能库
                             </button>
@@ -2031,7 +2015,7 @@ function AgentEditor() {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            className="text-[11px] text-primary hover:underline"
+                            className="text-xs text-primary hover:underline"
                             onClick={() => skillDraftFileRef.current?.click()}
                           >
                             从文件导入正文
@@ -2079,7 +2063,7 @@ function AgentEditor() {
                         </div>
                       </div>
                       {skillOptions.length === 0 ? (
-                        <p className="py-4 text-center text-[11px] text-muted-foreground">暂无可用技能，可在上方导入文本，或到「技能」页面创建</p>
+                        <p className="py-4 text-center text-xs text-muted-foreground">暂无可用技能，可在上方导入文本，或到「技能」页面创建</p>
                       ) : (
                         <div className="grid grid-cols-1 gap-1.5">
                           {skillOptions.map((sk) => {
@@ -2137,7 +2121,7 @@ function AgentEditor() {
                 />
                 <span className="text-sm text-foreground">自动记住对话关键信息</span>
               </label>
-              <p className="mt-0.5 pl-6 text-[11px] text-muted-foreground">
+              <p className="mt-0.5 pl-6 text-xs text-muted-foreground">
                 开启后，智能体会自动提取并记住对话中的关键信息（如用户偏好、历史结论），便于多轮上下文理解
               </p>
               <SelectInput
@@ -2179,7 +2163,7 @@ function AgentEditor() {
               open={sectionOpen('高级选项')}
               onToggle={toggleCard('高级选项')}
             >
-              <p className="mb-3 text-[11px] text-muted-foreground">
+              <p className="mb-3 text-xs text-muted-foreground">
                 默认配置已覆盖大多数场景。仅在需要自定义工具行为、写操作验证或 tool_search 策略时再修改。
               </p>
               <MiddlewareConfig
@@ -2223,7 +2207,7 @@ function AgentEditor() {
                 />
               </div>
               <div className="mt-4 border-t border-border pt-4">
-                <div className="mb-2 text-[11px] font-medium text-muted-foreground">工具搜索（tool_search）</div>
+                <div className="mb-2 text-xs font-medium text-muted-foreground">工具搜索（tool_search）</div>
                 <ToolSearchStatus
                   agentId={form.id}
                   value={form.tool_configs}
@@ -2255,7 +2239,7 @@ function AgentEditor() {
             <button
               type="button"
               onClick={() => setShowHistory((s) => !s)}
-              className={`flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] transition hover:bg-secondary hover:text-foreground ${showHistory ? 'text-primary' : 'text-muted-foreground'}`}
+              className={`flex items-center gap-1 rounded border border-border px-2 py-0.5 text-xs transition hover:bg-secondary hover:text-foreground ${showHistory ? 'text-primary' : 'text-muted-foreground'}`}
             >
               <History className="h-3 w-3" />
               运行历史{runHistory.length > 0 && ` (${runHistory.length})`}
@@ -2265,7 +2249,7 @@ function AgentEditor() {
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
             {/* 快捷测试用例 */}
             <div className="shrink-0">
-              <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">快捷测试用例</div>
+              <div className="mb-1.5 text-xs font-medium text-muted-foreground">快捷测试用例</div>
               <div className="flex flex-wrap gap-1.5">
                 {QUICK_TEST_CASES.map((tc) => (
                   <button
@@ -2273,7 +2257,7 @@ function AgentEditor() {
                     type="button"
                     title={tc.desc}
                     onClick={() => setTestInput(tc.value)}
-                    className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                    className={`rounded-full border px-2.5 py-1 text-xs transition ${
                       testInput === tc.value
                         ? 'border-primary bg-primary/15 text-primary'
                         : 'border-border bg-secondary text-muted-foreground hover:border-primary/50 hover:text-foreground'
@@ -2292,12 +2276,12 @@ function AgentEditor() {
                   测试输入（JSON 或纯文本）
                 </label>
                 {jsonError ? (
-                  <span className="flex items-center gap-1 text-[11px] text-destructive">
+                  <span className="flex items-center gap-1 text-xs text-destructive">
                     <AlertCircle className="h-3 w-3" /> JSON 语法错误
                   </span>
                 ) : (
                   (testInput.trim().startsWith('{') || testInput.trim().startsWith('[')) && (
-                    <span className="flex items-center gap-1 text-[11px] text-emerald-500">
+                    <span className="flex items-center gap-1 text-xs text-emerald-500">
                       <Code className="h-3 w-3" /> JSON 格式正确
                     </span>
                   )
@@ -2313,12 +2297,12 @@ function AgentEditor() {
                 }`}
               />
               {jsonError && (
-                <div className="mt-1 rounded bg-destructive/10 px-2 py-1 text-[11px] text-destructive">
+                <div className="mt-1 rounded bg-destructive/10 px-2 py-1 text-xs text-destructive">
                   {jsonError}
                 </div>
               )}
               <div className="mt-2 flex items-center justify-between">
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-xs text-muted-foreground">
                   {!isEdit && '新建模式：调试时将自动保存'}
                   {isEdit && dirty && '有未保存的修改，调试时将自动保存'}
                   {isEdit && !dirty && '可直接调试'}
@@ -2353,7 +2337,7 @@ function AgentEditor() {
                   )}
                 </div>
                 {runHistory.length === 0 ? (
-                  <div className="px-3 py-3 text-center text-[11px] text-muted-foreground">暂无运行记录</div>
+                  <div className="px-3 py-3 text-center text-xs text-muted-foreground">暂无运行记录</div>
                 ) : (
                   <div className="max-h-[200px] overflow-y-auto border-t border-border">
                     {runHistory.map((h) => (
@@ -2367,7 +2351,7 @@ function AgentEditor() {
                         className="block w-full border-b border-border px-3 py-2 text-left transition hover:bg-muted last:border-0"
                       >
                         <div className="flex items-center justify-between">
-                          <span className="truncate font-mono text-[11px] text-foreground">{h.input.slice(0, 60)}</span>
+                          <span className="truncate font-mono text-xs text-foreground">{h.input.slice(0, 60)}</span>
                           <span className="ml-2 shrink-0 text-[10px] text-muted-foreground">{h.timestamp}</span>
                         </div>
                         {h.reply && (
@@ -2408,30 +2392,17 @@ function AgentEditor() {
             {testResult && (
               <div className="flex min-h-0 flex-1 flex-col">
                 {/* Tab 栏 */}
-                <div className="flex shrink-0 items-center gap-1 border-b border-border">
-                  {[
-                    { id: 'output', label: '输出结果', icon: <MessageSquare className="h-3.5 w-3.5" /> },
-                    { id: 'logs', label: '执行日志', icon: <ClipboardList className="h-3.5 w-3.5" />, badge: (testResult.toolCalls?.length || 0) + (testResult.logs?.length || 0) + (testResult.messages?.length || 0) },
-                    { id: 'token', label: 'Token', icon: <Zap className="h-3.5 w-3.5" />, show: !!(testResult.tokenUsage || tokenUsage) },
-                    { id: 'time', label: '耗时', icon: <Timer className="h-3.5 w-3.5" />, show: !!(testDuration != null || testResult.duration != null) },
-                  ].filter((t) => t.show !== false).map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium transition ${
-                        activeTab === tab.id
-                          ? 'border-primary text-primary'
-                          : 'border-transparent text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      {tab.icon}
-                      {tab.label}
-                      {tab.badge > 0 && (
-                        <span className="ml-0.5 rounded-full bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground">{tab.badge}</span>
-                      )}
-                    </button>
-                  ))}
+                <div className="flex shrink-0 items-center gap-2 pb-2">
+                  <PillTabs
+                    items={[
+                      { key: 'output', label: '输出结果', icon: MessageSquare },
+                      { key: 'logs', label: '执行日志', icon: ClipboardList, count: (testResult.toolCalls?.length || 0) + (testResult.logs?.length || 0) + (testResult.messages?.length || 0) || undefined },
+                      { key: 'token', label: 'Token', icon: Zap, hidden: !(testResult.tokenUsage || tokenUsage) },
+                      { key: 'time', label: '耗时', icon: Timer, hidden: !(testDuration != null || testResult.duration != null) },
+                    ].filter((t) => !t.hidden)}
+                    value={activeTab}
+                    onChange={setActiveTab}
+                  />
                   {/* 复制 / 导出按钮 */}
                   <div className="ml-auto flex items-center gap-1">
                     <button
@@ -2472,7 +2443,7 @@ function AgentEditor() {
                                 : 'AI 回答'}
                             </span>
                             {testResult.streaming && (
-                              <span className="flex items-center gap-1 text-[11px] text-primary">
+                              <span className="flex items-center gap-1 text-xs text-primary">
                                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
                                 生成中
                               </span>
@@ -2495,7 +2466,7 @@ function AgentEditor() {
                             <Brain className="h-4 w-4" />
                             思考过程
                           </summary>
-                          <div className="max-h-[300px] overflow-y-auto border-t border-border p-3 text-[12px] leading-relaxed text-muted-foreground">
+                          <div className="max-h-[300px] overflow-y-auto border-t border-border p-3 text-xs leading-relaxed text-muted-foreground">
                             {testResult.streaming ? (
                               <div ref={streamThinkingRef} className="whitespace-pre-wrap break-words" />
                             ) : (
@@ -2615,7 +2586,7 @@ function AgentEditor() {
                             <span className="text-muted-foreground">{showLogs ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}</span>
                           </button>
                           {showLogs && (
-                            <div className="max-h-[200px] overflow-y-auto border-t border-border p-2 font-mono text-[11px]">
+                            <div className="max-h-[200px] overflow-y-auto border-t border-border p-2 font-mono text-xs">
                               {testResult.logs.map((log, idx) => (
                                 <div key={idx} className="border-b border-border py-1 last:border-0">
                                   <span className="text-muted-foreground">[{log.level || log.type || 'INFO'}]</span>{' '}
@@ -2629,7 +2600,7 @@ function AgentEditor() {
                         (!testResult.toolCalls || testResult.toolCalls.length === 0) &&
                         (!testResult.delegateGroups || testResult.delegateGroups.length === 0) &&
                         (!testResult.messages || testResult.messages.length === 0) && (
-                          <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                          <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                             暂无执行日志
                           </div>
                         )
@@ -2644,7 +2615,7 @@ function AgentEditor() {
                         const usage = testResult.tokenUsage || tokenUsage
                         if (!usage) {
                           return (
-                            <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                            <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                               暂无 Token 消耗数据
                             </div>
                           )
@@ -2672,7 +2643,7 @@ function AgentEditor() {
                               </div>
                             </div>
                             <div className="rounded-lg border border-border bg-card p-3">
-                              <div className="mb-1.5 flex items-center justify-between text-[11px]">
+                              <div className="mb-1.5 flex items-center justify-between text-xs">
                                 <span className="text-info">输入 {inputPct}%</span>
                                 <span className="text-success">输出 {outputPct}%</span>
                               </div>
@@ -2694,7 +2665,7 @@ function AgentEditor() {
                         const dur = testDuration ?? testResult.duration
                         if (dur == null) {
                           return (
-                            <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+                            <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
                               暂无耗时数据
                             </div>
                           )
@@ -2706,7 +2677,7 @@ function AgentEditor() {
                               <div className="mt-1 text-3xl font-bold text-primary">
                                 {(dur / 1000).toFixed(2)}<span className="text-lg">s</span>
                               </div>
-                              <div className="mt-1 text-[11px] text-muted-foreground">{dur} ms</div>
+                              <div className="mt-1 text-xs text-muted-foreground">{dur} ms</div>
                             </div>
                             {testResult.toolCalls && (
                               <div className="grid grid-cols-2 gap-2">
@@ -2743,7 +2714,7 @@ function AgentEditor() {
                       key={tc.label}
                       type="button"
                       onClick={() => setTestInput(tc.value)}
-                      className="rounded-full border border-border bg-secondary px-2.5 py-1 text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
+                      className="rounded-full border border-border bg-secondary px-2.5 py-1 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-foreground"
                     >
                       {tc.label}
                     </button>
@@ -2874,7 +2845,7 @@ function SuggestedQuestionsEditor({ value, onChange }) {
         </div>
       )}
       {questions.length === 0 && (
-        <p className="text-[11px] text-muted-foreground">输入问题后回车添加，拖拽 chip 可调整顺序，点击文字可编辑</p>
+        <p className="text-xs text-muted-foreground">输入问题后回车添加，拖拽 chip 可调整顺序，点击文字可编辑</p>
       )}
     </div>
   )
@@ -2908,7 +2879,7 @@ function MessageItem({ msg, idx }) {
           </button>
         )}
       </div>
-      <div className="px-2 pb-2 text-[11px] leading-relaxed text-muted-foreground">
+      <div className="px-2 pb-2 text-xs leading-relaxed text-muted-foreground">
         {isLong && !expanded ? content.slice(0, 200) + '…' : content}
       </div>
     </div>
@@ -3061,7 +3032,7 @@ function DelegateEventItem({ evt, idx }) {
   // token 事件合并展示（避免过多 token 行）
   if (evt.type === 'token') {
     return (
-      <div className="flex items-start gap-1.5 py-0.5 text-[11px]">
+      <div className="flex items-start gap-1.5 py-0.5 text-xs">
         <span className="text-muted-foreground">{icon}</span>
         <span className="text-muted-foreground">{evt.content}</span>
       </div>
@@ -3078,7 +3049,7 @@ function DelegateEventItem({ evt, idx }) {
       : ''
     const isLong = resultText.length > 200
     return (
-      <div className="flex items-start gap-1.5 py-0.5 text-[11px]">
+      <div className="flex items-start gap-1.5 py-0.5 text-xs">
         <span className="text-muted-foreground">{icon}</span>
         <div className="min-w-0 flex-1">
           <span className="font-mono text-primary">{evt.tool_name || 'tool'}</span>
@@ -3121,7 +3092,7 @@ function DelegateEventItem({ evt, idx }) {
     status: 'text-muted-foreground',
   }
   return (
-    <div className="flex items-start gap-1.5 py-0.5 text-[11px]">
+    <div className="flex items-start gap-1.5 py-0.5 text-xs">
       <span className="text-muted-foreground">{icon}</span>
       <span className={colorMap[evt.type] || 'text-muted-foreground'}>
         {text || evt.type}
@@ -3149,7 +3120,7 @@ function DelegateGroupCard({ group, onToggle }) {
         <span className="text-[10px] text-muted-foreground">
           {group.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
         </span>
-        <span className="font-mono text-[11px] font-semibold text-primary">
+        <span className="font-mono text-xs font-semibold text-primary">
           {group.subagent_id}
         </span>
         <span className="text-[10px] text-muted-foreground">
@@ -3172,7 +3143,7 @@ function DelegateGroupCard({ group, onToggle }) {
 
       {/* 分组目标 */}
       {group.goal && (
-        <div className="border-t border-primary/30 px-3 py-1 text-[11px] text-muted-foreground">
+        <div className="border-t border-primary/30 px-3 py-1 text-xs text-muted-foreground">
           <span className="text-muted-foreground">目标：</span>
           {group.goal}
         </div>
@@ -3191,7 +3162,7 @@ function DelegateGroupCard({ group, onToggle }) {
 
       {/* 空状态 */}
       {group.expanded && eventCount === 0 && (
-        <div className="border-t border-primary/30 px-3 py-3 text-center text-[11px] text-muted-foreground">
+        <div className="border-t border-primary/30 px-3 py-3 text-center text-xs text-muted-foreground">
           暂无事件
         </div>
       )}
@@ -3209,7 +3180,7 @@ function DelegateEventTree({ groups, onToggle, onToggleAll }) {
   return (
     <div className="flex flex-col gap-2">
       {/* 统计栏 + 全部展开/折叠 */}
-      <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-3 text-xs text-muted-foreground">
         <span>共 {groups.length} 个子代理</span>
         {running > 0 && <span className="text-primary">运行中 {running}</span>}
         {completed > 0 && <span className="text-emerald-300">完成 {completed}</span>}

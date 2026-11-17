@@ -114,7 +114,7 @@ function OutputVarList({ vars, hint }) {
       {items.map((v, idx) => (
         <div
           key={idx}
-          className="rounded-md border border-border bg-muted px-2.5 py-1.5 font-mono text-[11px]"
+          className="rounded-md border border-border bg-muted px-2.5 py-1.5 font-mono text-xs"
         >
           <span className="text-primary">{v.name}</span>
           {v.desc && (
@@ -125,7 +125,7 @@ function OutputVarList({ vars, hint }) {
           )}
         </div>
       ))}
-      {hint && <div className="text-[11px] text-muted-foreground">{hint}</div>}
+      {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
     </div>
   )
 }
@@ -145,7 +145,7 @@ function CollapsibleSection({ title, children, defaultOpen = false, hint }) {
           className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}
         />
         <span>{title}</span>
-        {hint && <span className="ml-auto text-[10px] font-normal normal-case text-muted-foreground">{hint}</span>}
+        {hint && <span className="ml-auto text-xs font-normal normal-case text-muted-foreground">{hint}</span>}
       </button>
       {open && <div className="flex flex-col gap-2.5 border-t border-border p-3">{children}</div>}
     </div>
@@ -261,7 +261,7 @@ function NodeOutputPicker({ currentNodeId, onPick }) {
       </button>
       {open && (
         <div className="absolute right-0 top-full z-dropdown mt-1 max-h-[300px] w-64 overflow-y-auto rounded-md border border-border bg-secondary shadow-xl">
-          <div className="border-b border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="border-b border-border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             选择上游节点输出
           </div>
           {upstreamNodes.map((n) => {
@@ -269,7 +269,7 @@ function NodeOutputPicker({ currentNodeId, onPick }) {
             const label = n.data.label || n.data.name || NODE_TYPE_LABELS[n.type] || n.type
             return (
               <div key={n.id} className="border-b border-border last:border-0">
-                <div className="truncate px-3 py-1.5 text-[11px] font-medium text-muted-foreground">
+                <div className="truncate px-3 py-1.5 text-xs font-medium text-muted-foreground">
                   {label} <span className="text-muted-foreground">({n.id})</span>
                 </div>
                 {fields.map((f) => (
@@ -280,7 +280,7 @@ function NodeOutputPicker({ currentNodeId, onPick }) {
                       onPick(`\${${n.id}.${f.field}}`)
                       setOpen(false)
                     }}
-                    className="block w-full truncate px-4 py-1.5 text-left text-[11px] text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
+                    className="block w-full truncate px-4 py-1.5 text-left text-xs text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
                   >
                     {f.label}
                   </button>
@@ -346,7 +346,7 @@ function WebhookTriggerForm({ node, update, workflowId }) {
     <>
       <Section title="触发地址" hint="将此 URL 配置到外部系统，事件推送至此即可触发本工作流。">
         <div className="flex items-center gap-1.5">
-          <span className="rounded bg-primary/20 px-2 py-1 text-[11px] font-semibold text-primary">
+          <span className="rounded bg-primary/20 px-2 py-1 text-xs font-semibold text-primary">
             {node.data.method || 'POST'}
           </span>
           <input
@@ -473,7 +473,7 @@ function WebhookTriggerForm({ node, update, workflowId }) {
           {testing ? '测试中…' : '测试 Webhook'}
         </button>
         {testResult && (
-          <div className="rounded-md border border-border bg-muted p-2 text-[11px]">
+          <div className="rounded-md border border-border bg-muted p-2 text-xs">
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground">状态：</span>
               {testResult.error ? (
@@ -599,13 +599,13 @@ function ConditionBranchForm({ node, update }) {
       <Section title="条件配置">
         {/* AND / OR 切换 */}
         <div className="mb-2 flex items-center gap-1.5">
-          <span className="text-[11px] text-muted-foreground">连接符：</span>
+          <span className="text-xs text-muted-foreground">连接符：</span>
           {['AND', 'OR'].map((l) => (
             <button
               key={l}
               type="button"
               onClick={() => setField('logic')(l)}
-              className={`rounded px-2 py-0.5 text-[11px] font-semibold transition ${
+              className={`rounded px-2 py-0.5 text-xs font-semibold transition ${
                 (node.data.logic || 'AND') === l
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-secondary text-muted-foreground hover:text-foreground'
@@ -619,7 +619,7 @@ function ConditionBranchForm({ node, update }) {
         {/* 条件规则积木列表 */}
         <div className="flex flex-col gap-1.5">
           {conditions.length === 0 && (
-            <p className="text-[11px] text-muted-foreground">暂无条件，默认走「否」分支</p>
+            <p className="text-xs text-muted-foreground">暂无条件，默认走「否」分支</p>
           )}
           {conditions.map((item, idx) => (
             <div
@@ -694,7 +694,7 @@ function ConditionBranchForm({ node, update }) {
 
       {/* 条件预览 */}
       <Section title="条件预览" hint="组装后的表达式（只读）">
-        <pre className="overflow-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] text-foreground">
+        <pre className="overflow-auto rounded-md border border-border bg-background p-2 font-mono text-xs text-foreground">
           {expressionPreview}
         </pre>
       </Section>
@@ -705,7 +705,7 @@ function ConditionBranchForm({ node, update }) {
           <TextInput label="真分支标签" value={node.data.true_label} onChange={setField('true_label')} />
           <TextInput label="假分支标签" value={node.data.false_label} onChange={setField('false_label')} />
         </div>
-        <div className="rounded-md border border-border bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="rounded-md border border-border bg-muted p-2 text-xs leading-relaxed text-muted-foreground">
           满足条件时走「{node.data.true_label || '是'}」分支，否则走「{node.data.false_label || '否'}」分支。
         </div>
       </Section>
@@ -800,7 +800,7 @@ function CodeExecuteForm({ node, update }) {
           <div className="flex">
             {/* 行号列 */}
             <div
-              className="select-none overflow-hidden border-r border-border bg-muted px-2 py-2 text-right font-mono text-[11px] leading-[1.5] text-muted-foreground"
+              className="select-none overflow-hidden border-r border-border bg-muted px-2 py-2 text-right font-mono text-xs leading-[1.5] text-muted-foreground"
               style={{ minWidth: '2.5rem' }}
             >
               {lines.map((n) => (
@@ -811,7 +811,7 @@ function CodeExecuteForm({ node, update }) {
             <div className="relative min-w-0 flex-1">
               <pre
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 overflow-auto whitespace-pre px-2.5 py-2 font-mono text-[11px] leading-[1.5]"
+                className="pointer-events-none absolute inset-0 overflow-auto whitespace-pre px-2.5 py-2 font-mono text-xs leading-[1.5]"
                 style={{ transform: `translate(${-codeScroll.left}px, ${-codeScroll.top}px)` }}
               >
                 {tokens.map((t, idx) => (
@@ -824,7 +824,7 @@ function CodeExecuteForm({ node, update }) {
               <AutoGrowTextarea
                 ref={codeRef}
                 onScroll={handleScroll}
-                className="relative w-full resize-y bg-transparent px-2.5 py-2 font-mono text-[11px] leading-[1.5] text-transparent caret-foreground outline-none"
+                className="relative w-full resize-y bg-transparent px-2.5 py-2 font-mono text-xs leading-[1.5] text-transparent caret-foreground outline-none"
                 style={{ caretColor: 'var(--foreground)', minHeight: '200px' }}
                 rows={12}
                 value={node.data.code}
@@ -842,7 +842,7 @@ function CodeExecuteForm({ node, update }) {
       </Section>
 
       <Section title="可用模块" hint="已内置以下模块，可直接 import 使用。">
-        <div className="rounded-md border border-border bg-muted p-2 font-mono text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-border bg-muted p-2 font-mono text-xs text-muted-foreground">
           {node.data.language === 'javascript'
             ? 'JSON · Math · Date · Object · Array · String · Number · Boolean'
             : 'json · re · math · datetime · hashlib · base64'}
@@ -1014,7 +1014,7 @@ function renderForm(node, update, toolOptions, toolsList, llmOptions, agentOptio
             {selectedAgentOpt && (
               <div className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
                 已选：{selectedAgentOpt.label}
-                <div className="mt-1 text-[11px] text-muted-foreground">
+                <div className="mt-1 text-xs text-muted-foreground">
                   该智能体的模型 / 提示词 / 工具 / 知识库配置将被原样复用。
                 </div>
               </div>
@@ -1412,7 +1412,7 @@ function renderForm(node, update, toolOptions, toolsList, llmOptions, agentOptio
           </Section>
 
           <Section title="行为说明">
-            <div className="rounded-md border border-border bg-muted p-3 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="rounded-md border border-border bg-muted p-3 text-xs leading-relaxed text-muted-foreground">
               <div className="mb-1 text-muted-foreground">运行时行为：</div>
               <div>· 线上 Celery 执行时走到此节点会生成工单并阻塞等待</div>
               <div>· 工作人员在「工作台」选择「同意」或「忽略」</div>
@@ -1566,7 +1566,7 @@ function renderForm(node, update, toolOptions, toolsList, llmOptions, agentOptio
           </Section>
 
           <Section title="行为说明">
-            <div className="rounded-md border border-border bg-muted p-3 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="rounded-md border border-border bg-muted p-3 text-xs leading-relaxed text-muted-foreground">
               <div className="mb-1 text-muted-foreground">运行时行为：</div>
               <div>· 结束节点无出口，工作流走到此节点即终止</div>
               <div>· 用于显式标识流程终点，便于可视化与执行追溯</div>
@@ -1650,19 +1650,19 @@ function ToolNodeForm({ node, update, toolOptions, toolsList }) {
           ]}
         />
         {toolName && toolId == null && (
-          <p className="text-[11px] text-warning">
+          <p className="text-xs text-warning">
             未在工具列表中找到该工具的 id，无法推断参数 schema。
           </p>
         )}
       </Section>
 
       {loading && (
-        <div className="rounded-md border border-border bg-card p-3 text-center text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-border bg-card p-3 text-center text-xs text-muted-foreground">
           正在拉取工具参数…
         </div>
       )}
       {err && (
-        <div className="rounded-md border border-danger-700/40 bg-danger-900/20 p-3 text-[11px] text-destructive">
+        <div className="rounded-md border border-danger-700/40 bg-danger-900/20 p-3 text-xs text-destructive">
           {err}
         </div>
       )}
@@ -1764,7 +1764,7 @@ function ToolNodeForm({ node, update, toolOptions, toolsList }) {
             )
           })}
           {inputs.some((i) => i.description) && (
-            <div className="rounded-md border border-border bg-muted p-2 text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
               {inputs
                 .filter((i) => i.description)
                 .map((i) => (
@@ -1780,7 +1780,7 @@ function ToolNodeForm({ node, update, toolOptions, toolsList }) {
       {/* 输出（只读） */}
       {!loading && !err && outputs.length > 0 && (
         <Section title="输出（只读）" hint="工具执行后下游节点可通过这些字段引用结果。">
-          <div className="rounded-md border border-border bg-muted p-2 font-mono text-[11px] text-muted-foreground">
+          <div className="rounded-md border border-border bg-muted p-2 font-mono text-xs text-muted-foreground">
             {outputs.map((o, idx) => (
               <div key={idx}>
                 <span className="text-primary">{o.name}</span>
@@ -1792,7 +1792,7 @@ function ToolNodeForm({ node, update, toolOptions, toolsList }) {
       )}
 
       {!loading && !err && toolId != null && inputs.length === 0 && outputs.length === 0 && (
-        <div className="rounded-md border border-border bg-card p-3 text-center text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-border bg-card p-3 text-center text-xs text-muted-foreground">
           该工具未提供参数 schema。
         </div>
       )}
@@ -1887,11 +1887,11 @@ function DeviceActionForm({ node, update }) {
         hint="从「设备对接」页面已配置的设备中选择。仅展示已启用的设备。"
       >
         {loadingDevices ? (
-          <div className="rounded-md border border-border bg-card p-3 text-center text-[11px] text-muted-foreground">
+          <div className="rounded-md border border-border bg-card p-3 text-center text-xs text-muted-foreground">
             加载设备列表…
           </div>
         ) : devicesList.length === 0 ? (
-          <div className="rounded-md border border-warning-700/40 bg-warning-900/10 p-3 text-[11px] text-warning">
+          <div className="rounded-md border border-warning-700/40 bg-warning-900/10 p-3 text-xs text-warning">
             暂无可用设备，请先到「设备对接」页面添加设备并配置动作。
           </div>
         ) : (
@@ -1921,15 +1921,15 @@ function DeviceActionForm({ node, update }) {
           hint="选择设备已配置的动作。动作类型对应 SOAR 处置动作（封禁/解封/隔离/IOC 等）。"
         >
           {loadingActions ? (
-            <div className="rounded-md border border-border bg-card p-3 text-center text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-border bg-card p-3 text-center text-xs text-muted-foreground">
               加载动作列表…
             </div>
           ) : actionsErr ? (
-            <div className="rounded-md border border-danger-700/40 bg-danger-900/20 p-3 text-[11px] text-destructive">
+            <div className="rounded-md border border-danger-700/40 bg-danger-900/20 p-3 text-xs text-destructive">
               {actionsErr}
             </div>
           ) : actionsList.length === 0 ? (
-            <div className="rounded-md border border-warning-700/40 bg-warning-900/10 p-3 text-[11px] text-warning">
+            <div className="rounded-md border border-warning-700/40 bg-warning-900/10 p-3 text-xs text-warning">
               该设备暂无动作配置，请到「设备对接」页面为该设备添加动作。
             </div>
           ) : (
@@ -1952,7 +1952,7 @@ function DeviceActionForm({ node, update }) {
             />
           )}
           {selectedAction && (
-            <div className="rounded-md border border-border bg-muted p-2 text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
               <div>
                 <span className="text-muted-foreground">HTTP 方法：</span>
                 <span className="font-mono text-primary">
@@ -2086,7 +2086,7 @@ function DeviceActionForm({ node, update }) {
             )
           })}
           {paramSchema.some((i) => i.description) && (
-            <div className="rounded-md border border-border bg-muted p-2 text-[11px] text-muted-foreground">
+            <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
               {paramSchema
                 .filter((i) => i.description)
                 .map((i) => (
@@ -2390,7 +2390,7 @@ function PropertyPanel() {
                     {selectedNode.data?.label ||
                       getNodeDefinition(selectedNode.type)?.label}
                   </div>
-                  <div className="truncate text-[11px] text-muted-foreground">
+                  <div className="truncate text-xs text-muted-foreground">
                     ID: {selectedNode.id} · {selectedNode.type}
                   </div>
                 </div>
@@ -2456,7 +2456,7 @@ function PropertyPanel() {
                   />
                   <span>试运行结果</span>
                   <span
-                    className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                    className={`ml-auto rounded px-1.5 py-0.5 text-xs font-semibold ${
                       inlineResult.status === 'success'
                         ? 'bg-success/15 text-success'
                         : 'bg-destructive/15 text-destructive'
@@ -2464,7 +2464,7 @@ function PropertyPanel() {
                   >
                     {inlineResult.status === 'success' ? '成功' : '失败'}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     {inlineResult.duration_ms}ms
                   </span>
                 </button>
@@ -2472,20 +2472,20 @@ function PropertyPanel() {
                   <div className="flex flex-col gap-2 border-t border-border p-3">
                     {/* 输入 */}
                     <div>
-                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">输入</div>
-                      <pre className="max-h-32 w-full overflow-auto rounded-md bg-background p-2 font-mono text-[11px] text-foreground ring-1 ring-border">
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">输入</div>
+                      <pre className="max-h-32 w-full overflow-auto rounded-md bg-background p-2 font-mono text-xs text-foreground ring-1 ring-border">
                         {JSON.stringify(inlineResult.input, null, 2)}
                       </pre>
                     </div>
                     {/* 输出 */}
                     <div>
-                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">输出</div>
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">输出</div>
                       {inlineResult.error ? (
-                        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive">
+                        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
                           {inlineResult.error}
                         </div>
                       ) : (
-                        <pre className="max-h-48 w-full overflow-auto rounded-md bg-background p-2 font-mono text-[11px] text-foreground ring-1 ring-border">
+                        <pre className="max-h-48 w-full overflow-auto rounded-md bg-background p-2 font-mono text-xs text-foreground ring-1 ring-border">
                           {inlineResult.output == null
                             ? '(空)'
                             : typeof inlineResult.output === 'string'
@@ -2497,12 +2497,12 @@ function PropertyPanel() {
                     {/* 日志 */}
                     {inlineResult.logs && inlineResult.logs.length > 0 && (
                       <div>
-                        <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                        <div className="mb-1 text-xs font-medium text-muted-foreground">
                           日志（{inlineResult.logs.length} 条）
                         </div>
                         <div className="max-h-32 w-full overflow-auto rounded-md bg-background p-2 ring-1 ring-border">
                           {inlineResult.logs.map((log, idx) => (
-                            <div key={idx} className="font-mono text-[11px]">
+                            <div key={idx} className="font-mono text-xs">
                               <span className={`mr-2 ${logLevelColor(log.level)}`}>
                                 [{(log.level || 'info').toUpperCase()}]
                               </span>

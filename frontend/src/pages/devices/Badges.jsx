@@ -19,7 +19,7 @@ export function DeviceTypeIcon({ type, className = 'h-5 w-5' }) {
 export function StatusBadge({ status }) {
   const meta = STATUS_META[status] || STATUS_META.unconfigured
   return (
-    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-0.5 text-[11px] font-medium ${meta.cls}`}>
+    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
       {meta.label}
     </span>
@@ -30,7 +30,7 @@ export function StatusBadge({ status }) {
 export function CategoryBadge({ category }) {
   const meta = ACTION_CATEGORIES[category] || ACTION_CATEGORIES.other
   return (
-    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.cls}`}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${meta.cls}`}>
       {meta.label}
     </span>
   )
@@ -40,7 +40,7 @@ export function CategoryBadge({ category }) {
 export function RiskBadge({ level }) {
   const meta = RISK_META[level] || RISK_META.readonly
   return (
-    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.cls}`}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${meta.cls}`}>
       {meta.label}
     </span>
   )
@@ -50,7 +50,7 @@ export function RiskBadge({ level }) {
 export function MethodBadge({ method }) {
   const cls = HTTP_METHOD_CLS[method] || 'bg-secondary text-muted-foreground'
   return (
-    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${cls}`}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-xs font-semibold ${cls}`}>
       {method}
     </span>
   )
@@ -96,7 +96,7 @@ export function Section({ title, hint, children, defaultOpen = true }) {
           {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{title}</span>
         </div>
-        {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
+        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
       </button>
       {open && <div className="border-t border-border p-3">{children}</div>}
     </div>

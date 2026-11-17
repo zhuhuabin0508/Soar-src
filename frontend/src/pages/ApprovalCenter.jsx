@@ -40,7 +40,7 @@ import BanWorkflowInstances from './ban/BanWorkflowInstances'
 import { inputBaseCls } from '../components/property/FormControls'
 import { hasPermission } from '../utils/permissions'
 import { confirm } from '../components/ConfirmDialog'
-import { CompactSelect } from '../components/ui'
+import { CompactSelect, SearchInput, PillTabs } from '../components/ui'
 
 // ============ 工具函数 ============
 function fmtTime(t) {
@@ -142,13 +142,13 @@ function ContextPanel({ ctx }) {
       {expanded && (
         <div className="mt-2 w-full overflow-hidden rounded-md border border-border bg-background">
           <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-1.5">
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">JSON</span>
+            <span className="text-xs uppercase tracking-wider text-muted-foreground">JSON</span>
             <div className="flex items-center gap-1">
-              <button type="button" onClick={handleCopy} className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+              <button type="button" onClick={handleCopy} className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
                 {copied ? <CheckCircle2 className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
                 {copied ? '已复制' : '复制'}
               </button>
-              <button type="button" onClick={handleDownload} className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+              <button type="button" onClick={handleDownload} className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
                 <Download className="h-3 w-3" /> 下载
               </button>
             </div>
@@ -190,7 +190,7 @@ function MessagesPanel({ messages }) {
                 >
                   <div className="mb-1 flex items-center gap-2">
                     <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
                         m.role === 'assistant'
                           ? 'bg-primary/20 text-primary'
                           : m.role === 'tool'
@@ -260,7 +260,7 @@ function MiniTimeline({ item }) {
     <div className="flex items-center gap-1 overflow-x-auto py-2">
       {nodes.map((n, idx) => (
         <div key={idx} className="flex items-center gap-1">
-          <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${
+          <div className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
             n.done ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border bg-secondary text-muted-foreground'
           }`}>
             {n.icon}
@@ -295,7 +295,7 @@ function ApprovalCard({ item, onApprove, onReject, onDelete, busy }) {
   ].filter((s) => s.value != null && s.value !== '')
 
   return (
-    <div className={`card-hover w-full rounded-lg border bg-card p-5 transition-colors ${
+    <div className={`card-hover w-full rounded-lg border bg-card p-4 transition-colors ${
       isRejected
         ? 'border-border opacity-75 hover:border-border'
         : 'border-border hover:border-primary/40'
@@ -346,7 +346,7 @@ function ApprovalCard({ item, onApprove, onReject, onDelete, busy }) {
         <div className="mt-2 grid w-full grid-cols-2 gap-2 rounded-md border border-border bg-background p-2 sm:grid-cols-4">
           {summaryItems.map((s) => (
             <div key={s.label} className="min-w-0">
-              <div className="text-[10px] text-muted-foreground">{s.label}</div>
+              <div className="text-xs text-muted-foreground">{s.label}</div>
               <div className="truncate font-mono text-xs text-foreground" title={toText(s.value)}>{toText(s.value)}</div>
             </div>
           ))}
@@ -678,7 +678,7 @@ function ApprovalCenter() {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           {lastUpdated && (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               最后更新：{lastUpdated.toLocaleTimeString('zh-CN', { hour12: false })}
             </span>
           )}
@@ -696,84 +696,33 @@ function ApprovalCenter() {
       </header>
 
       <div className="flex-1 min-w-0 overflow-y-auto p-6">
-        {/* Tab 导航栏：下划线式 + tabular-nums 计数徽标 */}
-        <div className="mb-4 flex w-full items-center border-b border-border">
-          <button
-            type="button"
-            onClick={() => switchTab('approval')}
-            className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-              tab === 'approval'
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <ClipboardList className="h-4 w-4" />
-            审批中心
-            {pendingTotal > 0 && (
-              <span className="rounded-full bg-warning/20 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-warning">
-                {pendingTotal.toLocaleString()}
-              </span>
-            )}
-          </button>
-          {canViewBan && (
-            <button
-              type="button"
-              onClick={() => switchTab('banned')}
-              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-                tab === 'banned'
-                  ? 'border-primary text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <Ban className="h-4 w-4" />
-              已封禁 IP
-              {banStats.activeBans > 0 && (
-                <span className="rounded-full bg-destructive/20 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-destructive">
-                  {banStats.activeBans.toLocaleString()}
-                </span>
-              )}
-            </button>
-          )}
-          {canViewBan && (
-            <button
-              type="button"
-              onClick={() => switchTab('blacklist')}
-              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-                tab === 'blacklist'
-                  ? 'border-primary text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <ShieldBan className="h-4 w-4" />
-              安博通黑名单
-            </button>
-          )}
-          {canViewBan && (
-            <button
-              type="button"
-              onClick={() => switchTab('whitelist')}
-              className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-                tab === 'whitelist'
-                  ? 'border-primary text-foreground'
-                  : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <ShieldCheck className="h-4 w-4" />
-              安博通白名单
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => switchTab('all')}
-            className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-              tab === 'all'
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <ScrollText className="h-4 w-4" />
-            全部历史
-          </button>
+        {/* Tab 导航栏：胶囊式 + tabular-nums 计数徽标 */}
+        <div className="mb-4">
+          <PillTabs
+            items={[
+              {
+                key: 'approval',
+                label: '审批中心',
+                icon: ClipboardList,
+                count: pendingTotal > 0 ? pendingTotal.toLocaleString() : undefined,
+              },
+              ...(canViewBan
+                ? [
+                    {
+                      key: 'banned',
+                      label: '已封禁 IP',
+                      icon: Ban,
+                      count: banStats.activeBans > 0 ? banStats.activeBans.toLocaleString() : undefined,
+                    },
+                    { key: 'blacklist', label: '安博通黑名单', icon: ShieldBan },
+                    { key: 'whitelist', label: '安博通白名单', icon: ShieldCheck },
+                  ]
+                : []),
+              { key: 'all', label: '全部历史', icon: ScrollText },
+            ]}
+            value={tab}
+            onChange={switchTab}
+          />
         </div>
 
         {/* ====== 审批中心 Tab：统一审批（封禁工单 + 工作流人工审批） ====== */}
@@ -791,33 +740,15 @@ function ApprovalCenter() {
         ) : (
           <>
             {/* ====== 全部历史 Tab：统一历史（封禁实例 + 审批历史） ====== */}
-            <div className="mb-4 flex w-full items-center border-b border-border">
-              {canViewBan && (
-                <button
-                  type="button"
-                  onClick={() => setHistoryTab('instances')}
-                  className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-                    historyTab === 'instances'
-                      ? 'border-primary text-foreground'
-                      : 'border-transparent text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  <Activity className="h-4 w-4" />
-                  封禁实例
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setHistoryTab('approvals')}
-                className={`-mb-px flex items-center gap-1.5 border-b-2 px-4 py-3 text-sm font-medium transition ${
-                  historyTab === 'approvals'
-                    ? 'border-primary text-foreground'
-                    : 'border-transparent text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                <ScrollText className="h-4 w-4" />
-                审批历史
-              </button>
+            <div className="mb-4">
+              <PillTabs
+                items={[
+                  ...(canViewBan ? [{ key: 'instances', label: '封禁实例', icon: Activity }] : []),
+                  { key: 'approvals', label: '审批历史', icon: ScrollText },
+                ]}
+                value={historyTab}
+                onChange={setHistoryTab}
+              />
             </div>
 
             {historyTab === 'instances' ? (
@@ -841,15 +772,13 @@ function ApprovalCenter() {
                 ))}
               </CompactSelect>
 
-              <div className="relative min-w-0 flex-1">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
-                  placeholder="搜索告警类型 / IP / 工作流名..."
-                  className={`${inputBaseCls} w-full pl-8`}
-                />
-              </div>
+              <SearchInput
+                className="min-w-0 flex-1"
+                placeholder="搜索告警类型 / IP / 工作流名..."
+                value={keyword}
+                onChange={setKeyword}
+                onClear={() => setKeyword('')}
+              />
             </div>
 
             {/* 状态指标条：快捷筛选 chips（前端派生计数，点击筛选/再点取消）+ 右侧汇总 */}
@@ -919,7 +848,7 @@ function ApprovalCenter() {
               /* 骨架屏：模拟工单卡片真实结构 */
               <div className="flex flex-col gap-4">
                 {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="rounded-lg border border-border bg-card p-5">
+                  <div key={i} className="rounded-lg border border-border bg-card p-4">
                     <div className="flex items-center justify-between gap-2 border-b border-border pb-3">
                       <div className="flex items-center gap-2">
                         <div className="h-5 w-24 rounded skeleton-shimmer" />

@@ -24,6 +24,7 @@ from sqlalchemy import text
 from app.api.v1 import api_router
 from app.config import settings
 from app.core.validation_errors import translate_validation_errors
+from app.report.errors import ReportError
 
 # 统一日志格式（便于调试）
 logging.basicConfig(
@@ -292,6 +293,18 @@ async def lifespan(app: FastAPI):
             _db.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("恢复工单研判后台任务失败（忽略）: %s", exc)
+    # 工单安全分析研判智能体幂等初始化（缺失自动创建、规则版本变化刷新提示词）
+    try:
+        from app.core.ticket_analyst.ensure import ensure_ticket_analyst_agent
+        from app.database import SessionLocal
+
+        _db = SessionLocal()
+        try:
+            ensure_ticket_analyst_agent(_db)
+        finally:
+            _db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("工单安全分析研判智能体初始化失败（忽略，首次调用时惰性重试）: %s", exc)
     # 推送系统更新通知（版本变化时广播到通知中心）
     try:
         from app.core.changelog import notify_system_update
@@ -412,6 +425,30 @@ app = FastAPI(title="SOAR Platform API", version=CURRENT_VERSION, lifespan=lifes
 async def _validation_exception_handler(request, exc: RequestValidationError):  # noqa: ARG001
     detail = translate_validation_errors(exc.errors())
     return JSONResponse(status_code=422, content={"detail": detail, "code": "validation_error"})
+
+
+# 报告中心统一错误码 → HTTP 状态码，前端按 code 做精确提示
+_REPORT_ERROR_STATUS = {
+    "TPL_NOT_FOUND": 404,
+    "CFG_NOT_FOUND": 404,
+    "RUN_NOT_FOUND": 404,
+    "ARTIFACT_NOT_FOUND": 404,
+    "PDF_UNAVAILABLE": 503,
+    "CONFLICT": 409,
+    "INVALID_STATE": 409,
+    "FORBIDDEN": 403,
+    "AI_NOT_CONFIGURED": 400,
+    "AI_FAILED": 502,
+    "AI_BAD_OUTPUT": 502,
+}
+
+
+@app.exception_handler(ReportError)
+async def _report_exception_handler(request, exc: ReportError):  # noqa: ARG001
+    return JSONResponse(
+        status_code=_REPORT_ERROR_STATUS.get(exc.code, 400),
+        content={"detail": exc.message, "code": exc.code, "extra": exc.detail},
+    )
 
 
 # ============ 限流器（slowapi）============

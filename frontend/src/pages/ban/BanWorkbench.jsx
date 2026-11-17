@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect, AutoGrowTextarea } from '../../components/ui'
+import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect, AutoGrowTextarea, SearchInput } from '../../components/ui'
 import { Modal, Drawer } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission, guardNavPermission } from '../../utils/permissions'
@@ -155,7 +155,7 @@ function DetailSection({ title, data, maxH = 'max-h-52' }) {
   return (
     <div className="min-w-0">
       <div className="mb-1.5 text-xs font-medium text-muted-foreground">{title}</div>
-      <pre className={`${maxH} overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground`}>
+      <pre className={`${maxH} overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border bg-muted p-3 font-mono text-xs leading-relaxed text-foreground`}>
         {typeof data === 'string' ? data : JSON.stringify(data, null, 2)}
       </pre>
     </div>
@@ -707,7 +707,7 @@ export default function BanWorkbench({ embedded = false }) {
       key: 'ip', header: 'IP', width: '150px',
       sticky: 'left', stickyOffset: canEdit || canDelete ? 44 : 0,
       render: (r) => (
-        <button className="font-mono text-[13px] font-medium text-foreground transition hover:text-primary" onClick={(e) => { e.stopPropagation(); openDetail(r.id) }}>
+        <button className="font-mono text-xs font-medium text-foreground transition hover:text-primary" onClick={(e) => { e.stopPropagation(); openDetail(r.id) }}>
           {r.ip}
         </button>
       ),
@@ -726,7 +726,7 @@ export default function BanWorkbench({ embedded = false }) {
     {
       key: 'ban_duration', header: '封禁时长', width: '100px', numeric: true,
       render: (r) => (
-        <span className="font-mono text-[13px] text-muted-foreground">
+        <span className="font-mono text-xs text-muted-foreground">
           {fmtDuration(r.ban_duration, r.is_permanent)}
         </span>
       ),
@@ -736,13 +736,13 @@ export default function BanWorkbench({ embedded = false }) {
       render: (r) => <span className="block max-w-[200px] truncate text-muted-foreground" title={r.reason}>{r.reason || '--'}</span>,
     },
     // 时间戳 / 数值列统一右对齐 + 等宽数字，便于垂直扫读比较
-    { key: 'created_at', header: '开始封禁时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
-    { key: 'expire_time', header: '解封时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
+    { key: 'created_at', header: '开始封禁时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-xs text-muted-foreground">{fmtTime(r.created_at)}</span> },
+    { key: 'expire_time', header: '解封时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
     {
       key: 'remaining', header: '剩余时长', width: '100px', numeric: true,
       render: (r) => (
         r.status === 'active'
-          ? <span className={`font-mono text-[13px] ${r.remaining_ms != null && r.remaining_ms < 3600000 ? 'text-warning' : ''}`}>{r.is_permanent ? '永久' : fmtRemaining(r.remaining_ms)}</span>
+          ? <span className={`font-mono text-xs ${r.remaining_ms != null && r.remaining_ms < 3600000 ? 'text-warning' : ''}`}>{r.is_permanent ? '永久' : fmtRemaining(r.remaining_ms)}</span>
           : <span className="text-muted-foreground">--</span>
       ),
     },
@@ -790,31 +790,19 @@ export default function BanWorkbench({ embedded = false }) {
       {/* 筛选区 */}
       <Card className="mb-4">
         <div className="flex flex-wrap items-center gap-2.5">
-          <CompactSelect size="lg" className="w-[130px]" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
+          <CompactSelect size="sm" className="w-[130px]" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
             <option value="">全部状态</option>
             {STATUS_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
           </CompactSelect>
           {/* IP 搜索框：输入即实时过滤（后端模糊匹配 IP/标识/原因），Enter/清空均可 */}
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              className={`${inputBaseCls} h-[34px] w-[220px] pl-8 ${ip ? 'pr-8' : ''}`}
-              placeholder="搜索 IP / 标识 / 原因"
-              value={ip}
-              onChange={(e) => { setIp(e.target.value); setPage(1) }}
-              onKeyDown={(e) => { if (e.key === 'Enter') load() }}
-            />
-            {ip && (
-              <button
-                type="button"
-                title="清空搜索"
-                onClick={() => { setIp(''); setPage(1) }}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-              >
-                <XCircle className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
+          <SearchInput
+            className="w-[220px]"
+            placeholder="搜索 IP / 标识 / 原因"
+            value={ip}
+            onChange={(v) => { setIp(v); setPage(1) }}
+            onClear={() => { setIp(''); setPage(1) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') load() }}
+          />
           {canEdit && (
             <Button size="sm" variant="primary" onClick={openManualBan}>
               <Plus className="h-3.5 w-3.5" /> 手动封禁
@@ -831,7 +819,7 @@ export default function BanWorkbench({ embedded = false }) {
             </Button>
           )}
           {embedded && (
-            <Button size="sm" variant="ghost" onClick={load}>
+            <Button size="sm" variant="secondary" onClick={load}>
               <RotateCw className="h-3.5 w-3.5" /> 刷新
             </Button>
           )}
@@ -911,7 +899,7 @@ export default function BanWorkbench({ embedded = false }) {
         {detailLoading || !t ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…</div>
         ) : (
-          <div className="space-y-5">
+          <div className="space-y-4">
             {/* 基本信息：Label 弱化 / Value 强化，3 列自适应栅格 */}
             <section>
               <div className="mb-2 text-xs font-semibold text-muted-foreground">基本信息</div>
@@ -1066,11 +1054,11 @@ export default function BanWorkbench({ embedded = false }) {
               onBlur={() => setManualIpTouched(true)}
             />
             {manualIpTouched && manualIpError && (
-              <div className="mt-1 text-[11px] text-destructive">{manualIpError}</div>
+              <div className="mt-1 text-xs text-destructive">{manualIpError}</div>
             )}
             {/* IP 预检弱提示：查询中 / 命中但面板被收起（点击展开，同相似工单）/ 均未命中（不滑出面板） */}
             {manualOpen && dupCheck.loading && (
-              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" /> 正在查询设备黑名单…
               </div>
             )}
@@ -1078,27 +1066,27 @@ export default function BanWorkbench({ embedded = false }) {
               <button
                 type="button"
                 onClick={() => setDupHidden(false)}
-                className="mt-1 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition hover:border-amber-500/50"
+                className="mt-1 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-amber-500/50"
                 title="展开右侧 IP 封禁状态预检面板">
                 <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
                 IP 预检 · {dupFound.length} 个 IP 已在黑名单中（点击展开）
               </button>
             )}
             {manualOpen && !dupCheck.loading && dupFound.length > 0 && !dupHidden && (
-              <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-600">
+              <div className="mt-1 flex items-center gap-1 text-xs text-amber-600">
                 <AlertTriangle className="h-3 w-3 shrink-0" />
                 {dupFound.length} 个 IP 已在设备黑名单中，详情见右侧
               </div>
             )}
             {manualOpen && !dupCheck.loading && dupCheck.results.length > 0 && dupFound.length === 0 && dupQueryErrors.length === 0 && (
-              <div className="mt-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 已查询 {dupCheck.results.length} 个 IP，均不在设备黑名单中
               </div>
             )}
             {/* 资产匹配弱提示：查询中 / 命中但面板被收起（点击展开）/ 命中详情见右侧 /
                 空结果（两数据源均未找到）/ 查询失败（不阻断封禁流程） */}
             {manualOpen && assetCheck.loading && (
-              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" /> 正在匹配资产（资产发现 + 资产清单）…
               </div>
             )}
@@ -1106,32 +1094,32 @@ export default function BanWorkbench({ embedded = false }) {
               <button
                 type="button"
                 onClick={() => setAssetHidden(false)}
-                className="mt-1 flex items-center gap-1.5 rounded-md border border-info/30 bg-info/5 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition hover:border-info/50"
+                className="mt-1 flex items-center gap-1.5 rounded-md border border-info/30 bg-info/5 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-info/50"
                 title="展开右侧资产匹配面板">
                 <Database className="h-3.5 w-3.5 text-info" />
                 资产匹配 · {assetMatched.length} 个 IP 命中资产（点击展开）
               </button>
             )}
             {manualOpen && !assetCheck.loading && assetMatched.length > 0 && !assetHidden && (
-              <div className="mt-1 flex items-center gap-1 text-[11px] text-info">
+              <div className="mt-1 flex items-center gap-1 text-xs text-info">
                 <Database className="h-3 w-3 shrink-0" />
                 {assetMatched.length} 个 IP 匹配到资产，详情见右侧
               </div>
             )}
             {manualOpen && !assetCheck.loading && assetCheck.items.length > 0 && assetMatched.length === 0 && (
-              <div className="mt-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 已匹配 {assetCheck.items.length} 个 IP，资产发现与资产清单中均未找到相关资产
               </div>
             )}
             {manualOpen && !assetCheck.loading && assetCheck.error && (
-              <div className="mt-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 资产匹配暂不可用：{assetCheck.error}（不影响封禁提交）
               </div>
             )}
             {/* 安博通白名单弱提示：查询中 / 命中但面板被收起（点击展开）/ 命中详情见右侧 /
                 空结果 / 查询失败（不阻断封禁流程） */}
             {manualOpen && whitelistCheck.loading && (
-              <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" /> 正在匹配安博通白名单…
               </div>
             )}
@@ -1139,25 +1127,25 @@ export default function BanWorkbench({ embedded = false }) {
               <button
                 type="button"
                 onClick={() => setWhitelistHidden(false)}
-                className="mt-1 flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5 text-[11px] font-medium text-foreground transition hover:border-emerald-500/50"
+                className="mt-1 flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:border-emerald-500/50"
                 title="展开右侧安博通白名单匹配面板">
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
                 白名单匹配 · {whitelistMatched.length} 个目标命中安博通白名单（点击展开）
               </button>
             )}
             {manualOpen && !whitelistCheck.loading && whitelistMatched.length > 0 && !whitelistHidden && (
-              <div className="mt-1 flex items-center gap-1 text-[11px] text-emerald-600">
+              <div className="mt-1 flex items-center gap-1 text-xs text-emerald-600">
                 <ShieldCheck className="h-3 w-3 shrink-0" />
                 {whitelistMatched.length} 个目标命中安博通白名单，详情见右侧
               </div>
             )}
             {manualOpen && !whitelistCheck.loading && whitelistCheck.items.length > 0 && whitelistMatched.length === 0 && !whitelistCheck.error && (
-              <div className="mt-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 已匹配 {whitelistCheck.items.length} 个目标，均未命中安博通白名单
               </div>
             )}
             {manualOpen && !whitelistCheck.loading && whitelistCheck.error && (
-              <div className="mt-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 白名单匹配暂不可用：{whitelistCheck.error}（不影响封禁提交）
               </div>
             )}
@@ -1200,7 +1188,7 @@ export default function BanWorkbench({ embedded = false }) {
                       type="button"
                       disabled={manualForm.is_permanent}
                       onClick={() => setManualForm((f) => ({ ...f, ban_duration_days: String(d) }))}
-                      className={`rounded-md border px-2 py-1 text-[11px] transition disabled:opacity-50 ${
+                      className={`rounded-md border px-2 py-1 text-xs transition disabled:opacity-50 ${
                         Number(manualForm.ban_duration_days) === d
                           ? 'border-primary/60 bg-primary/10 font-medium text-primary'
                           : 'border-border text-muted-foreground hover:bg-accent'
@@ -1211,7 +1199,7 @@ export default function BanWorkbench({ embedded = false }) {
                   ))}
                 </div>
                 {!manualForm.is_permanent && (
-                  <div className="mt-1 text-[11px] text-muted-foreground">支持小数：0.5 天 = 12 小时；最长 30 天，更长请选永久</div>
+                  <div className="mt-1 text-xs text-muted-foreground">支持小数：0.5 天 = 12 小时；最长 30 天，更长请选永久</div>
                 )}
               </div>
             </div>
@@ -1246,7 +1234,7 @@ export default function BanWorkbench({ embedded = false }) {
               onBlur={() => setManualReasonTouched(true)}
             />
             {manualReasonTouched && manualReasonError && (
-              <div className="mt-1 text-[11px] text-destructive">{manualReasonError}</div>
+              <div className="mt-1 text-xs text-destructive">{manualReasonError}</div>
             )}
           </div>
           <div>
@@ -1268,8 +1256,8 @@ export default function BanWorkbench({ embedded = false }) {
           <aside className="panel-enter-soft sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
             <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-              <span className="text-[13px] font-medium text-foreground">IP 封禁状态预检</span>
-              <span className="text-[11px] tabular-nums text-muted-foreground">命中 {dupFound.length}/{dupCheck.results.length}</span>
+              <span className="text-xs font-medium text-foreground">IP 封禁状态预检</span>
+              <span className="text-xs tabular-nums text-muted-foreground">命中 {dupFound.length}/{dupCheck.results.length}</span>
               <button type="button" onClick={() => setDupHidden(true)}
                 className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                 title="收起 IP 封禁状态预检面板（IP 变化后有新命中会重新滑出）">
@@ -1281,7 +1269,7 @@ export default function BanWorkbench({ embedded = false }) {
               {dupFound.map((r) => (
                 <div key={r.ip} className="rounded-md border border-border bg-card p-2.5">
                   <div className="mb-1.5 flex items-center gap-1.5">
-                    <span className="font-mono text-[13px] font-semibold text-foreground">{r.ip}</span>
+                    <span className="font-mono text-xs font-semibold text-foreground">{r.ip}</span>
                     <span className="ml-auto"><Badge variant="danger">已在封禁中</Badge></span>
                   </div>
                   <dl className="space-y-1">
@@ -1296,29 +1284,29 @@ export default function BanWorkbench({ embedded = false }) {
                       ['命中次数', r.entry?.hit_num],
                     ].map(([label, value]) => (
                       <div key={label} className="flex items-center justify-between gap-2">
-                        <dt className="shrink-0 text-[11px] text-muted-foreground">{label}</dt>
-                        <dd className="min-w-0 truncate font-mono text-[12px] text-foreground" title={String(value ?? '')}>
+                        <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+                        <dd className="min-w-0 truncate font-mono text-xs text-foreground" title={String(value ?? '')}>
                           {value == null || value === '' ? '--' : String(value)}
                         </dd>
                       </div>
                     ))}
                   </dl>
                   {r.device?.name && (
-                    <div className="mt-1.5 border-t border-border pt-1.5 text-[11px] text-muted-foreground">封堵设备：{r.device.name}</div>
+                    <div className="mt-1.5 border-t border-border pt-1.5 text-xs text-muted-foreground">封堵设备：{r.device.name}</div>
                   )}
                 </div>
               ))}
               {/* 查询失败 / 未命中列表：确认知晓「哪些可以封」 */}
               {dupQueryErrors.length > 0 && (
-                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
                   {dupQueryErrors.map((r) => `${r.ip}：${r.error}`).join('；')}
                 </div>
               )}
               {dupMissed.length > 0 && (
-                <div className="px-0.5 text-[11px] text-muted-foreground">未在黑名单中：{dupMissed.join('、')}</div>
+                <div className="px-0.5 text-xs text-muted-foreground">未在黑名单中：{dupMissed.join('、')}</div>
               )}
             </div>
-            <div className="border-t border-amber-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+            <div className="border-t border-amber-500/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               预检仅对单 IP / 域名精确查询设备黑名单，CIDR / 范围不做预检{dupCheck.fetchedAt && `；更新于 ${fmtTime(dupCheck.fetchedAt)}`}
             </div>
           </aside>
@@ -1329,8 +1317,8 @@ export default function BanWorkbench({ embedded = false }) {
           <aside className="panel-enter-soft sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-info/30 bg-info/[0.04]">
             <div className="flex items-center gap-1.5 border-b border-info/20 px-3 py-2">
               <Database className="h-3.5 w-3.5 shrink-0 text-info" />
-              <span className="text-[13px] font-medium text-foreground">资产匹配（双数据源）</span>
-              <span className="text-[11px] tabular-nums text-muted-foreground">命中 {assetMatched.length}/{assetCheck.items.length}</span>
+              <span className="text-xs font-medium text-foreground">资产匹配（双数据源）</span>
+              <span className="text-xs tabular-nums text-muted-foreground">命中 {assetMatched.length}/{assetCheck.items.length}</span>
               <button type="button" onClick={() => setAssetHidden(true)}
                 className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                 title="收起资产匹配面板（IP 变化后有新命中会重新滑出）">
@@ -1342,7 +1330,7 @@ export default function BanWorkbench({ embedded = false }) {
               {assetMatched.map((it) => (
                 <div key={it.ip} className="rounded-md border border-border bg-card p-2.5">
                   <div className="mb-1.5 flex items-center gap-1.5">
-                    <span className="font-mono text-[13px] font-semibold text-foreground">{it.ip}</span>
+                    <span className="font-mono text-xs font-semibold text-foreground">{it.ip}</span>
                     <span className="ml-auto"><Badge variant="info">已匹配资产</Badge></span>
                   </div>
                   <div className="space-y-1.5">
@@ -1350,12 +1338,12 @@ export default function BanWorkbench({ embedded = false }) {
                       <div key={i} className="rounded border border-border/60 bg-background/60 p-2">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="info">{a.source_label || (a.source === 'asset_discovery' ? '资产发现' : '资产清单')}</Badge>
-                          <span className="min-w-0 break-all text-[12px] font-medium text-foreground">{a.asset_name || '--'}</span>
+                          <span className="min-w-0 break-all text-xs font-medium text-foreground">{a.asset_name || '--'}</span>
                         </div>
                         {Object.keys(a.details || {}).length > 0 && (
                           <div className="mt-1 space-y-0.5">
                             {Object.entries(a.details).slice(0, 6).map(([k, v]) => (
-                              <div key={k} className="flex min-w-0 items-start gap-1 text-[11px]">
+                              <div key={k} className="flex min-w-0 items-start gap-1 text-xs">
                                 <span className="shrink-0 text-muted-foreground">{ASSET_DETAIL_LABELS[k] || k}</span>
                                 <span className="min-w-0 break-all text-foreground">{v}</span>
                               </div>
@@ -1369,15 +1357,15 @@ export default function BanWorkbench({ embedded = false }) {
               ))}
               {/* 单 IP 匹配异常 / 未命中列表：确认知晓「哪些 IP 没有资产信息」 */}
               {assetQueryErrors.length > 0 && (
-                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
                   {assetQueryErrors.map((it) => `${it.ip}：${it.error}`).join('；')}
                 </div>
               )}
               {assetMissedIps.length > 0 && (
-                <div className="px-0.5 text-[11px] text-muted-foreground">未匹配到资产：{assetMissedIps.join('、')}</div>
+                <div className="px-0.5 text-xs text-muted-foreground">未匹配到资产：{assetMissedIps.join('、')}</div>
               )}
             </div>
-            <div className="border-t border-info/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+            <div className="border-t border-info/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               同时查询资产发现与资产清单（发现优先）；CIDR / 范围 / 域名不做资产匹配{assetCheck.fetchedAt && `；更新于 ${fmtTime(assetCheck.fetchedAt)}`}
             </div>
           </aside>
@@ -1388,8 +1376,8 @@ export default function BanWorkbench({ embedded = false }) {
           <aside className="panel-enter-soft sticky top-0 h-fit w-80 shrink-0 self-start overflow-hidden rounded-md border border-emerald-500/30 bg-emerald-500/[0.04]">
             <div className="flex items-center gap-1.5 border-b border-emerald-500/20 px-3 py-2">
               <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-              <span className="text-[13px] font-medium text-foreground">安博通白名单匹配</span>
-              <span className="text-[11px] tabular-nums text-muted-foreground">命中 {whitelistMatched.length}/{whitelistCheck.items.length}</span>
+              <span className="text-xs font-medium text-foreground">安博通白名单匹配</span>
+              <span className="text-xs tabular-nums text-muted-foreground">命中 {whitelistMatched.length}/{whitelistCheck.items.length}</span>
               <button type="button" onClick={() => setWhitelistHidden(true)}
                 className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                 title="收起白名单匹配面板（目标变化后有新命中会重新滑出）">
@@ -1401,7 +1389,7 @@ export default function BanWorkbench({ embedded = false }) {
               {whitelistMatched.map((it) => (
                 <div key={it.target} className="rounded-md border border-border bg-card p-2.5">
                   <div className="mb-1.5 flex items-center gap-1.5">
-                    <span className="min-w-0 truncate font-mono text-[13px] font-semibold text-foreground" title={it.target}>{it.target}</span>
+                    <span className="min-w-0 truncate font-mono text-xs font-semibold text-foreground" title={it.target}>{it.target}</span>
                     <span className="ml-auto shrink-0">
                       <Badge variant="success">{it.match_type === 'contained' ? '网段包含' : '精确命中'}</Badge>
                     </span>
@@ -1410,7 +1398,7 @@ export default function BanWorkbench({ embedded = false }) {
                     {(it.entries || []).map((entry, idx) => (
                       <div key={`${entry.wlist}-${idx}`} className="rounded border border-emerald-500/20 bg-emerald-500/[0.03] p-2">
                         <div className="mb-1 flex items-center gap-1.5">
-                          <span className="min-w-0 truncate font-mono text-[12px] font-medium text-foreground" title={entry.wlist}>{entry.wlist}</span>
+                          <span className="min-w-0 truncate font-mono text-xs font-medium text-foreground" title={entry.wlist}>{entry.wlist}</span>
                           <span className="ml-auto shrink-0">
                             <Badge variant={(entry.enable === 1 || entry.enable === '1') ? 'success' : 'neutral'}>
                               {(entry.enable === 1 || entry.enable === '1') ? '启用' : '停用'}
@@ -1429,8 +1417,8 @@ export default function BanWorkbench({ embedded = false }) {
                             ['节点 ID', entry.node_id],
                           ].map(([label, value]) => (
                             <div key={label} className="flex items-center justify-between gap-2">
-                              <dt className="shrink-0 text-[11px] text-muted-foreground">{label}</dt>
-                              <dd className="min-w-0 truncate font-mono text-[12px] text-foreground" title={String(value ?? '')}>
+                              <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+                              <dd className="min-w-0 truncate font-mono text-xs text-foreground" title={String(value ?? '')}>
                                 {value == null || value === '' ? '--' : String(value)}
                               </dd>
                             </div>
@@ -1439,7 +1427,7 @@ export default function BanWorkbench({ embedded = false }) {
                       </div>
                     ))}
                     {it.truncated && (
-                      <div className="px-1 pt-0.5 text-[11px] text-muted-foreground">
+                      <div className="px-1 pt-0.5 text-xs text-muted-foreground">
                         共 {it.entry_total} 条命中，仅展示前 {it.entries.length} 条
                       </div>
                     )}
@@ -1448,13 +1436,13 @@ export default function BanWorkbench({ embedded = false }) {
               ))}
               {/* 未命中目标列表：确认知晓「哪些目标不受白名单保护」 */}
               {whitelistMissedTargets.length > 0 && (
-                <div className="px-0.5 text-[11px] text-muted-foreground">未命中白名单：{whitelistMissedTargets.join('、')}</div>
+                <div className="px-0.5 text-xs text-muted-foreground">未命中白名单：{whitelistMissedTargets.join('、')}</div>
               )}
             </div>
-            <div className="border-t border-emerald-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+            <div className="border-t border-emerald-500/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               基于本地每 5 秒自动同步的设备全局白名单{whitelistCheck.tookMs != null && `；匹配耗时 ${whitelistCheck.tookMs}ms`}{whitelistCheck.syncedAt && `；同步于 ${fmtTime(whitelistCheck.syncedAt)}`}
             </div>
-            <div className="border-t border-emerald-500/20 bg-emerald-500/[0.04] px-3 py-1.5 text-[10px] leading-relaxed text-emerald-700">
+            <div className="border-t border-emerald-500/20 bg-emerald-500/[0.04] px-3 py-1.5 text-xs leading-relaxed text-emerald-700">
               命中条目为安博通全局白名单，设备侧白名单通常优先于黑名单；请确认是否仍需对该目标下发封禁。
             </div>
           </aside>
@@ -1549,7 +1537,7 @@ export default function BanWorkbench({ embedded = false }) {
                 ].map((s) => (
                   <div key={s.label} className="rounded-lg border border-border bg-muted px-2 py-1.5 text-center">
                     <div className={`text-base font-semibold ${s.tone}`}>{s.value}</div>
-                    <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                    <div className="text-xs text-muted-foreground">{s.label}</div>
                   </div>
                 ))}
               </div>
@@ -1668,7 +1656,7 @@ export default function BanWorkbench({ embedded = false }) {
               ].map((s) => (
                 <div key={s.label} className="rounded-lg border border-border bg-muted px-2 py-1.5 text-center">
                   <div className={`text-base font-semibold ${s.tone}`}>{s.value}</div>
-                  <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                  <div className="text-xs text-muted-foreground">{s.label}</div>
                 </div>
               ))}
             </div>
@@ -1685,7 +1673,7 @@ export default function BanWorkbench({ embedded = false }) {
                   className={`rounded-lg border px-3 py-2.5 ${it.syncable ? 'border-border bg-card' : 'border-warning/40 bg-warning/5'}`}
                 >
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-[13px] font-medium text-foreground">{it.ip || `#${it.id}`}</span>
+                    <span className="font-mono text-xs font-medium text-foreground">{it.ip || `#${it.id}`}</span>
                     {it.status_label && (
                       <Badge variant={STATUS_VARIANT[it.status] || 'neutral'}>{it.status_label}</Badge>
                     )}
@@ -1714,7 +1702,7 @@ export default function BanWorkbench({ embedded = false }) {
                               <span className="font-mono text-muted-foreground">{a.asset_ip}</span>
                             </div>
                             {Object.keys(a.details || {}).length > 0 && (
-                              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                                 {Object.entries(a.details).slice(0, 10).map(([k, v]) => (
                                   <span key={k} className="break-all">{ASSET_DETAIL_LABELS[k] || k}：{v}</span>
                                 ))}
@@ -1727,11 +1715,11 @@ export default function BanWorkbench({ embedded = false }) {
                       <span className="text-xs text-warning">未匹配到资产（仍可继续封禁）</span>
                     )}
                     {it.asset_match?.error && (
-                      <div className="mt-1 text-[11px] text-destructive">{it.asset_match.error}</div>
+                      <div className="mt-1 text-xs text-destructive">{it.asset_match.error}</div>
                     )}
                   </div>
                   {it.message && (
-                    <div className="mt-1 flex items-start gap-1 text-[11px] text-warning">
+                    <div className="mt-1 flex items-start gap-1 text-xs text-warning">
                       <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" /> <span>{it.message}</span>
                     </div>
                   )}
@@ -1760,7 +1748,7 @@ export default function BanWorkbench({ embedded = false }) {
               ].map((s) => (
                 <div key={s.label} className="rounded-lg border border-border bg-muted px-2 py-1.5 text-center">
                   <div className={`text-base font-semibold ${s.tone}`}>{s.value}</div>
-                  <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                  <div className="text-xs text-muted-foreground">{s.label}</div>
                 </div>
               ))}
             </div>
@@ -1815,7 +1803,7 @@ export default function BanWorkbench({ embedded = false }) {
               ].map((s) => (
                 <div key={s.label} className="rounded-lg border border-border bg-muted px-2 py-1.5 text-center">
                   <div className={`text-base font-semibold ${s.tone}`}>{s.value}</div>
-                  <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                  <div className="text-xs text-muted-foreground">{s.label}</div>
                 </div>
               ))}
             </div>
@@ -1911,7 +1899,7 @@ export default function BanWorkbench({ embedded = false }) {
           <div>
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground">导出字段（不选则导出全部字段）</span>
-              <div className="flex gap-2 text-[11px]">
+              <div className="flex gap-2 text-xs">
                 <button
                   type="button"
                   className="text-primary hover:underline"
@@ -1943,7 +1931,7 @@ export default function BanWorkbench({ embedded = false }) {
                 </label>
               ))}
             </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
+            <div className="mt-1 text-xs text-muted-foreground">
               导出为 CSV（UTF-8 BOM），可直接用 Excel 打开；封禁时长按天。
             </div>
           </div>
@@ -1956,8 +1944,7 @@ export default function BanWorkbench({ embedded = false }) {
   return (
     <PageContainer>
       <PageHeader
-        title="封禁工作台"
-        description="自动封禁与审批封禁的 IP 记录：到期自动解封（每分钟扫描），手动解封需填写原因并记录操作人"
+        title="封禁工作台"
         actions={(
           <Button size="sm" variant="ghost" onClick={load}>
             <RotateCw className="h-3.5 w-3.5" /> 刷新

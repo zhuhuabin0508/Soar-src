@@ -11,6 +11,7 @@ import { confirm } from '../../components/ConfirmDialog'
 import { toast } from '../../store/toastStore'
 import { TutorialButton, TutorialDrawer } from '../../components/TutorialDrawer'
 import { DEVICE_TUTORIAL } from '../../components/tutorialContent'
+import { PillTabs } from '../../components/ui'
 import { usePersistedFilters } from '../../hooks/usePersistedFilters'
 import FilterBar from '../../components/FilterBar'
 import {
@@ -852,29 +853,15 @@ function DeviceManagement() {
       </header>
 
       {/* Tab 切换 */}
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6">
-        <button
-          type="button"
-          onClick={() => setActiveTab('devices')}
-          className={`-mb-px border-b-2 px-4 py-3 text-sm transition ${
-            activeTab === 'devices'
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          设备管理
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('logs')}
-          className={`-mb-px border-b-2 px-4 py-3 text-sm transition ${
-            activeTab === 'logs'
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          调用日志
-        </button>
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs
+          items={[
+            { key: 'devices', label: '设备管理' },
+            { key: 'logs', label: '调用日志' },
+          ]}
+          value={activeTab}
+          onChange={setActiveTab}
+        />
       </div>
 
       <div className="flex-1 overflow-hidden">
@@ -1318,7 +1305,7 @@ function DeviceManagement() {
                               <NumCell value={dev.today_call_count} title="今日暂无调用" />
                             </td>
                             <td
-                              className="px-4 py-3 text-[11px] text-muted-foreground"
+                              className="px-4 py-3 text-xs text-muted-foreground"
                               title={fmtTime(dev.last_heartbeat)}
                             >
                               {fmtRelative(dev.last_heartbeat)}

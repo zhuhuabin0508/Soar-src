@@ -12,7 +12,7 @@ import { X, Copy, Download, FileJson, Info, ArrowLeftRight, Server, FileText, Br
 import { toast } from '../store/toastStore'
 import { alertApi } from '../api/alert'
 import { inputBaseCls } from '../components/property/FormControls'
-import {CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import usersApi from '../api/users'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
@@ -63,8 +63,8 @@ function KV({ label, value, mono, full }) {
   const display = value === undefined || value === null || value === '' ? '--' : value
   return (
     <div className={full ? 'col-span-2' : ''}>
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className={`mt-0.5 truncate text-sm text-foreground ${mono ? 'font-mono text-[13px]' : ''}`} title={String(display)}>{display}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className={`mt-0.5 truncate text-sm text-foreground ${mono ? 'font-mono text-xs' : ''}`} title={String(display)}>{display}</div>
     </div>
   )
 }
@@ -77,7 +77,7 @@ function CodeBlock({ text, max = 520 }) {
   return (
     <div className="group relative rounded-lg border border-border bg-muted">
       <button
-        className="absolute right-2 top-2 z-base flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-[11px] text-muted-foreground opacity-0 transition hover:text-primary group-hover:opacity-100"
+        className="absolute right-2 top-2 z-base flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground opacity-0 transition hover:text-primary group-hover:opacity-100"
         onClick={copy}
       >
         <Copy className="h-3 w-3" /> 复制
@@ -192,18 +192,8 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
         </div>
 
         {/* Tab 栏 */}
-        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-4">
-          {TABS.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm transition ${
-                tab === key ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
-              onClick={() => setTab(key)}
-            >
-              <Icon className="h-3.5 w-3.5" /> {label}
-            </button>
-          ))}
+        <div className="shrink-0 px-4 py-3">
+          <PillTabs items={TABS} value={tab} onChange={setTab} />
         </div>
 
         {/* 内容区 */}
@@ -215,7 +205,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
           ) : (
             <>
               {tab === 'basic' && (
-                <div className="grid grid-cols-2 gap-x-8 gap-y-5">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   <KV label="告警名称" value={detail.alert_name} full />
                   <KV label="风险等级" value={detail.risk_level_name || '未知'} />
                   <KV label="严重度" value={detail.severity >= 0 ? `${detail.severity} / 100` : '--'} mono />
@@ -226,7 +216,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                   <KV label="解析状态" value={detail.parse_status} />
                   {/* 设备类型未识别时显示灰字 + 去配置链接（引导完成设备接入绑定） */}
                   <div>
-                    <div className="text-[11px] text-muted-foreground">设备类型</div>
+                    <div className="text-xs text-muted-foreground">设备类型</div>
                     {detail.device_type ? (
                       <div className="mt-0.5 truncate text-sm text-foreground" title={detail.device_type}>{detail.device_type}</div>
                     ) : (
@@ -251,7 +241,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                   <KV label="处置建议" value={detail.recommendation} full />
                   {/* ATT&CK 技术 */}
                   <div className="col-span-2">
-                    <div className="text-[11px] text-muted-foreground">ATT&CK 技术</div>
+                    <div className="text-xs text-muted-foreground">ATT&CK 技术</div>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {(Array.isArray(detail.attck_technique) ? detail.attck_technique : []).length === 0 ? (
                         <span className="text-sm text-muted-foreground">--</span>
@@ -264,7 +254,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                   </div>
                   {/* 风险标签 */}
                   <div className="col-span-2">
-                    <div className="text-[11px] text-muted-foreground">风险标签</div>
+                    <div className="text-xs text-muted-foreground">风险标签</div>
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       {(Array.isArray(detail.risk_tag) ? detail.risk_tag : []).length === 0 ? (
                         <span className="text-sm text-muted-foreground">--</span>
@@ -279,7 +269,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
               )}
 
               {tab === 'endpoint' && (
-                <div className="grid grid-cols-2 gap-x-8 gap-y-5">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   <KV label="源 IP" value={fmtIpList(detail.src_ip)} mono full />
                   <KV label="源端口" value={detail.src_port} mono />
                   <KV label="源 IP 标签" value={detail.src_ip_tag_name} />
@@ -297,11 +287,11 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
               )}
 
               {tab === 'asset' && (
-                <div className="grid grid-cols-2 gap-x-8 gap-y-5">
+                <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                   <KV label="资产类型" value={detail.relate_asset_type_name || (isContainer ? '容器' : '主机')} />
                   {detail.relate_asset_id ? (
                     <div>
-                      <div className="text-[11px] text-muted-foreground">关联资产（资产库匹配）</div>
+                      <div className="text-xs text-muted-foreground">关联资产（资产库匹配）</div>
                       <button
                         className="mt-0.5 flex max-w-full items-baseline gap-1 text-left text-sm text-primary underline-offset-2 hover:underline"
                         title={`点击查看资产：${detail.relate_asset_ip || detail.relate_asset_name}`}
@@ -309,7 +299,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                       >
                         <span className="truncate">{detail.relate_asset_name || `资产 #${detail.relate_asset_id}`}</span>
                         {detail.relate_asset_ip && (
-                          <span className="shrink-0 font-mono text-[12px] text-muted-foreground">（{detail.relate_asset_ip}）</span>
+                          <span className="shrink-0 font-mono text-xs text-muted-foreground">（{detail.relate_asset_ip}）</span>
                         )}
                       </button>
                     </div>
@@ -328,7 +318,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                   {isContainer && (
                     <div className="col-span-2 rounded-lg border border-border bg-muted p-4">
                       <div className="mb-3 text-xs font-medium text-muted-foreground">容器信息</div>
-                      <div className="grid grid-cols-2 gap-x-8 gap-y-5">
+                      <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                         <KV label="容器名称" value={detail.extensions?.container_name || detail.extensions?.containerName || '--'} />
                         <KV label="镜像" value={detail.extensions?.image_name || detail.extensions?.imageName || '--'} />
                         <KV label="Pod" value={detail.extensions?.pod_name || detail.extensions?.podName || '--'} />
@@ -340,7 +330,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
               )}
 
               {tab === 'proof' && (
-                <div className="space-y-5">
+                <div className="space-y-4">
                   <div>
                     <div className="mb-2 text-xs font-medium text-muted-foreground">举证类型</div>
                     <div className="text-sm text-foreground">{detail.proof_type || '--'}</div>
@@ -374,7 +364,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-muted-foreground">设备推送的原始日志全文（已格式化）</span>
-                      <button className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:text-primary" onClick={downloadRaw}>
+                      <button className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-primary" onClick={downloadRaw}>
                         <Download className="h-3 w-3" /> 下载 JSON
                       </button>
                     </div>
@@ -386,22 +376,22 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
               )}
 
               {tab === 'handle' && (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   {/* 当前状态摘要 */}
                   <div className="grid grid-cols-3 gap-4 rounded-lg border border-border bg-muted p-4">
                     <div>
-                      <div className="text-[11px] text-muted-foreground">当前处置状态</div>
+                      <div className="text-xs text-muted-foreground">当前处置状态</div>
                       <div className="mt-1 text-sm font-medium text-foreground">
                         {STATUS_LABELS[detail.deal_status] || detail.deal_status_name || '--'}
                       </div>
                     </div>
                     <div>
-                      <div className="text-[11px] text-muted-foreground">指派处理人</div>
+                      <div className="text-xs text-muted-foreground">指派处理人</div>
                       <div className="mt-1 text-sm text-foreground">{detail.assignee_name || '未指派'}</div>
                     </div>
                     <div>
-                      <div className="text-[11px] text-muted-foreground">最近处置时间</div>
-                      <div className="mt-1 font-mono text-[13px] text-foreground">{fmtTime(detail.handled_at)}</div>
+                      <div className="text-xs text-muted-foreground">最近处置时间</div>
+                      <div className="mt-1 font-mono text-xs text-foreground">{fmtTime(detail.handled_at)}</div>
                     </div>
                   </div>
 
@@ -423,7 +413,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                               .map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
                           </CompactSelect>
                           {allowedTargets.length === 0 && (
-                            <span className="text-[11px] text-muted-foreground">当前状态无可用流转</span>
+                            <span className="text-xs text-muted-foreground">当前状态无可用流转</span>
                           )}
                         </div>
                         <div>
@@ -496,7 +486,7 @@ export default function AlertDetailDrawer({ open, alertId, onClose, onHandled })
                               {log.comment && (
                                 <div className="mt-1 text-sm text-foreground">{log.comment}</div>
                               )}
-                              <div className="mt-1 text-[11px] text-muted-foreground">
+                              <div className="mt-1 text-xs text-muted-foreground">
                                 {log.operator_name} · {fmtTime(log.created_at)}
                               </div>
                             </div>

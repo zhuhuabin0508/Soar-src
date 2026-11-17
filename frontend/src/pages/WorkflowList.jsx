@@ -77,7 +77,7 @@ function TriggerBadge({ type }) {
   const m = TRIGGER_META[(type || '').toLowerCase()] || { color: '#6b7280', label: type || '-' }
   return (
     <span
-      className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium"
+      className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium"
       style={{ color: m.color, backgroundColor: m.color + '1a' }}
     >
       {m.label}
@@ -629,7 +629,7 @@ function WorkflowList() {
         <div className="flex max-w-[210px] flex-col">
           <span className="truncate text-foreground" title={r.name}>{r.name || '-'}</span>
           {r.description ? (
-            <span className="truncate text-[11px] text-muted-foreground" title={r.description}>{r.description}</span>
+            <span className="truncate text-xs text-muted-foreground" title={r.description}>{r.description}</span>
           ) : null}
         </div>
       ),
@@ -648,7 +648,7 @@ function WorkflowList() {
           : v === 'success' ? 'bg-success/15 text-success'
           : v === 'primary' ? 'bg-primary/15 text-primary'
           : 'bg-muted text-muted-foreground'
-        return <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${cls}`}>{r.category}</span>
+        return <span className={`inline-flex rounded px-1.5 py-0.5 text-xs ${cls}`}>{r.category}</span>
       },
     },
     {
@@ -672,9 +672,9 @@ function WorkflowList() {
             title="点击编辑标签"
           >
             {shown.map((t, i) => (
-              <span key={i} className="truncate rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{t}</span>
+              <span key={i} className="truncate rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{t}</span>
             ))}
-            {rest > 0 && <span className="text-[10px] text-muted-foreground">+{rest}</span>}
+            {rest > 0 && <span className="text-xs text-muted-foreground">+{rest}</span>}
           </button>
         )
       },
@@ -686,7 +686,7 @@ function WorkflowList() {
         const cls = m.variant === 'success' ? 'bg-success/15 text-success'
           : m.variant === 'danger' ? 'bg-destructive/15 text-destructive'
           : 'bg-muted text-muted-foreground'
-        return <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${cls}`}>{m.label}</span>
+        return <span className={`inline-flex rounded px-1.5 py-0.5 text-xs ${cls}`}>{m.label}</span>
       },
     },
     {
@@ -778,7 +778,7 @@ function WorkflowList() {
       {/* 顶部标题栏 */}
       <header className="flex items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-xl font-semibold text-foreground">工作流管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">工作流管理</h1>
           <span className="text-xs text-muted-foreground">共 {filteredRows.length} 个</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -911,11 +911,11 @@ function WorkflowList() {
                           <span className="text-foreground">
                             {tr.node_label || tr.node_type || `节点 ${tr.node_id}`}
                           </span>
-                          <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+                          <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
                             {tr.status || '-'}
                           </span>
                         </div>
-                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
+                        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
                           {typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output, null, 2)}
                         </pre>
                       </div>
@@ -983,7 +983,7 @@ function WorkflowList() {
         <div className="flex flex-col gap-4">
           <div className="rounded-md border border-border bg-background p-4">
             <div className="mb-1 text-xs text-muted-foreground">调用 webhook 时需在请求头携带：</div>
-            <div className="font-mono text-[11px] text-primary">
+            <div className="font-mono text-xs text-primary">
               X-Webhook-Secret: &lt;下方密钥&gt;
             </div>
           </div>
@@ -999,7 +999,7 @@ function WorkflowList() {
               </div>
             )}
           </div>
-          <div className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] text-warning/80">
+          <div className="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning/80">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>密钥仅在工作流启用且请求头匹配时允许触发。重置后旧密钥立即失效，需同步更新调用方配置。</span>
           </div>
@@ -1045,7 +1045,7 @@ function WorkflowList() {
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
             />
-            <p className="mt-1 text-[11px] text-muted-foreground">输入标签后按逗号分隔，保存时自动去除空项。</p>
+            <p className="mt-1 text-xs text-muted-foreground">输入标签后按逗号分隔，保存时自动去除空项。</p>
           </div>
         </div>
       </Modal>
@@ -1071,7 +1071,7 @@ function WorkflowList() {
               <Upload className="h-3.5 w-3.5" />选择 JSON 文件
               <input type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
             </label>
-            <span className="text-[11px] text-muted-foreground">选择文件后会自动填入下方文本框，可手动编辑。</span>
+            <span className="text-xs text-muted-foreground">选择文件后会自动填入下方文本框，可手动编辑。</span>
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-muted-foreground">graph_config（JSON）</label>
@@ -1186,7 +1186,7 @@ function WorkflowList() {
           >
             {generatingDraft ? '生成中…' : '生成草稿并打开画布'}
           </button>
-          <p className="mt-1 text-[10px] text-muted-foreground">草稿保存到服务端（status=draft）；当前为规则化骨架生成，后续可接入 LLM。</p>
+          <p className="mt-1 text-xs text-muted-foreground">草稿保存到服务端（status=draft）；当前为规则化骨架生成，后续可接入 LLM。</p>
         </div>
 
         <p className="mb-3 text-sm text-muted-foreground">或从内置模板开始：</p>
@@ -1206,7 +1206,7 @@ function WorkflowList() {
               {tpl.tags?.length > 0 && (
                 <div className="flex flex-wrap gap-1">
                   {tpl.tags.map((tag) => (
-                    <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
+                    <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>
                   ))}
                 </div>
               )}

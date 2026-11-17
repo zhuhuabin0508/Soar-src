@@ -18,7 +18,7 @@ import ShareDialog from '../components/ShareDialog'
 import BatchShareDialog from '../components/BatchShareDialog'
 import { useSelection } from '../hooks/useSelection'
 import BatchActions from '../components/BatchActions'
-import {CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
+import {CompactSelect, DatePicker, AutoGrowTextarea, SearchInput, PillTabs } from '../components/ui'
 
 // 格式化时间
 function fmtTime(t) {
@@ -258,11 +258,11 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
               className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-foreground hover:file:bg-primary"
               onChange={(e) => setCreateFiles(Array.from(e.target.files || []))}
             />
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               支持同时选择多个 PDF / Word / Excel / TXT / Markdown / CSV。创建后仍可继续追加。
             </div>
             {createFiles.length > 0 && (
-              <ul className="max-h-28 overflow-y-auto text-[11px] text-muted-foreground">
+              <ul className="max-h-28 overflow-y-auto text-xs text-muted-foreground">
                 {createFiles.map((f) => (
                   <li key={`${f.name}-${f.size}-${f.lastModified}`} className="truncate">
                     {f.name}（{(f.size / 1024).toFixed(1)} KB）
@@ -291,7 +291,7 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
                   key={sc.mode}
                   type="button"
                   onClick={() => set('chunk_mode')(sc.mode)}
-                  className={`rounded-full border px-2.5 py-1 text-[11px] transition ${
+                  className={`rounded-full border px-2.5 py-1 text-xs transition ${
                     form.chunk_mode === sc.mode
                       ? 'border-primary bg-primary/15 text-primary'
                       : 'border-border bg-secondary text-muted-foreground hover:border-primary/50 hover:text-foreground'
@@ -319,13 +319,13 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
                   }`}
                 >
                   <div className="text-xs font-semibold text-foreground">{m.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{m.hint}</div>
+                  <div className="text-xs text-muted-foreground">{m.hint}</div>
                 </button>
               ))}
             </div>
           </div>
           {selectedChunkMode && (
-            <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+            <p className="flex items-start gap-1 text-xs text-muted-foreground">
               <Lightbulb className="h-3.5 w-3.5 shrink-0 mt-0.5" />
               <span>{selectedChunkMode.hint}</span>
             </p>
@@ -396,7 +396,7 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
                   }`}
                 >
                   <div className="text-xs font-semibold text-foreground">{m.label}</div>
-                  <div className="mt-0.5 text-[10px] text-muted-foreground">{m.hint}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{m.hint}</div>
                 </button>
               ))}
             </div>
@@ -426,20 +426,20 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
                 </CompactSelect>
               </label>
               {embeddingConfigs.length === 0 && !loadingConfigs && (
-                <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+                <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-warning/10 px-3 py-2 text-xs text-warning">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>未找到已配置的嵌入模型。请先到「模型设置」页面添加 model_type=<span className="font-mono">embedding</span> 的 LLM 配置（如火山引擎 Doubao Embedding、OpenAI text-embedding-3-small 等），并测试通过后再回到此处选择。</span>
                 </div>
               )}
               {selectedEmbCfg && (
                 <div className="flex items-center gap-3 rounded-md border border-border bg-muted px-3 py-2">
-                  <span className="rounded bg-primary/20 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                  <span className="rounded bg-primary/20 px-2 py-0.5 text-xs font-semibold text-primary">
                     {selectedEmbCfg.provider}
                   </span>
-                  <span className="truncate text-[11px] text-muted-foreground">
+                  <span className="truncate text-xs text-muted-foreground">
                     模型名：<span className="font-mono text-muted-foreground">{selectedEmbCfg.model_name || '-'}</span>
                   </span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">
+                  <span className="ml-auto text-xs text-muted-foreground">
                     Base URL: {selectedEmbCfg.base_url || '默认'}
                   </span>
                 </div>
@@ -451,7 +451,7 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
                 <div className="flex items-center gap-2">
                   <input type="number" className={inputCls} value={form.embedding_dimension} onChange={(e) => set('embedding_dimension')(Number(e.target.value))} min={256} max={8192} />
                   {selectedEmbCfg && form.embedding_dimension < (EMBEDDING_DIM_BY_MODEL[selectedEmbCfg.model_name] || 1024) && (
-                    <span className="shrink-0 rounded bg-warning/20 px-2 py-0.5 text-[10px] text-warning">
+                    <span className="shrink-0 rounded bg-warning/20 px-2 py-0.5 text-xs text-warning">
                       已降维 {EMBEDDING_DIM_BY_MODEL[selectedEmbCfg.model_name] || 1024} → {form.embedding_dimension}
                     </span>
                   )}
@@ -460,7 +460,7 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
             </>
           )}
           {!needEmbedding && (
-            <p className="text-[11px] text-muted-foreground">关键词检索模式无需 Embedding 模型，使用 PostgreSQL 全文匹配。</p>
+            <p className="text-xs text-muted-foreground">关键词检索模式无需 Embedding 模型，使用 PostgreSQL 全文匹配。</p>
           )}
 
           {/* 混合检索权重（hybrid 模式显示） */}
@@ -468,7 +468,7 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
             <div className="rounded-md border border-border bg-muted p-3">
               <div className="mb-2 text-xs font-medium text-muted-foreground">融合权重（RRF）</div>
               <div className="flex items-center gap-3">
-                <span className="shrink-0 text-[11px] text-info">向量 {form.hybrid_vector_weight}%</span>
+                <span className="shrink-0 text-xs text-info">向量 {form.hybrid_vector_weight}%</span>
                 <input
                   type="range"
                   min={0}
@@ -477,9 +477,9 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
                   onChange={(e) => onVectorWeightChange(Number(e.target.value))}
                   className="flex-1 accent-primary"
                 />
-                <span className="shrink-0 text-[11px] text-warning">关键词 {form.hybrid_keyword_weight}%</span>
+                <span className="shrink-0 text-xs text-warning">关键词 {form.hybrid_keyword_weight}%</span>
               </div>
-              <p className="mt-1 flex items-start gap-1 text-[10px] text-muted-foreground">
+              <p className="mt-1 flex items-start gap-1 text-xs text-muted-foreground">
                 <Lightbulb className="h-3 w-3 shrink-0 mt-0.5" />
                 <span>向量擅长语义匹配，关键词擅长专有名词/编号。推荐 向量 70% | 关键词 30%</span>
               </p>
@@ -494,12 +494,12 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
             <label>
               <div className="mb-1 text-xs font-medium text-muted-foreground">召回 Top-K 数量 <span className="text-muted-foreground">建议 3-5</span></div>
               <input type="number" className={inputCls} value={form.retrieval_top_k} onChange={(e) => set('retrieval_top_k')(Number(e.target.value))} min={1} max={50} />
-              <p className="mt-0.5 text-[10px] text-muted-foreground">过多易导致 LLM 抓错重点</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">过多易导致 LLM 抓错重点</p>
             </label>
             <label>
               <div className="mb-1 text-xs font-medium text-muted-foreground">相似度阈值 <span className="text-muted-foreground">0-100</span></div>
               <input type="number" className={inputCls} value={form.score_threshold} onChange={(e) => set('score_threshold')(Number(e.target.value))} min={0} max={100} />
-              <p className="mt-0.5 text-[10px] text-muted-foreground">低于此分数的内容将被丢弃，防止幻觉</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">低于此分数的内容将被丢弃，防止幻觉</p>
             </label>
           </div>
 
@@ -508,9 +508,9 @@ function KBFormModal({ open, initial, onClose, onSubmit, saving }) {
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={form.rerank_enabled} onChange={(e) => set('rerank_enabled')(e.target.checked)} className="h-4 w-4 accent-primary" />
               <span className="text-sm font-medium text-muted-foreground">Rerank 重排序模型</span>
-              <span className="rounded bg-success/20 px-1.5 py-0.5 text-[10px] text-success">强烈推荐</span>
+              <span className="rounded bg-success/20 px-1.5 py-0.5 text-xs text-success">强烈推荐</span>
             </label>
-            <p className="mt-1 ml-6 flex items-start gap-1 text-[10px] text-muted-foreground">
+            <p className="mt-1 ml-6 flex items-start gap-1 text-xs text-muted-foreground">
               <Lightbulb className="h-3 w-3 shrink-0 mt-0.5" />
               <span>向量检索充当"粗排"快速捞出 Top-K，Rerank 模型充当"精排"逐字交叉注意力打分，回答准确率通常提升 15%+</span>
             </p>
@@ -723,9 +723,9 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
   }
 
   const sourceTabs = [
-    { value: 'upload', label: '本地文件', icon: <Paperclip className="h-4 w-4" /> },
-    { value: 'text', label: '文本粘贴', icon: <FileText className="h-4 w-4" /> },
-    { value: 'web', label: '网页抓取', icon: <Globe className="h-4 w-4" /> },
+    { key: 'upload', label: '本地文件', icon: Paperclip },
+    { key: 'text', label: '文本粘贴', icon: FileText },
+    { key: 'web', label: '网页抓取', icon: Globe },
   ]
 
   return (
@@ -756,22 +756,12 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             一、文档来源
           </h3>
-          <div className="flex gap-1 rounded-lg border border-border bg-card p-1">
-            {sourceTabs.map((tab) => (
-              <button
-                key={tab.value}
-                type="button"
-                onClick={() => setSourceTab(tab.value)}
-                className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
-                  sourceTab === tab.value
-                    ? 'bg-primary text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {tab.icon}
-                {tab.label}
-              </button>
-            ))}
+          <div>
+            <PillTabs
+              items={sourceTabs}
+              value={sourceTab}
+              onChange={setSourceTab}
+            />
           </div>
 
           {sourceTab === 'text' && (
@@ -795,11 +785,11 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                   if (list[0] && !title) setTitle(list[0].name.replace(/\.[^.]+$/, ''))
                 }}
               />
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 可多选，支持 PDF / Word / Excel / TXT / Markdown / CSV，单文件 ≤ 50MB
               </div>
               {uploadFiles.length > 0 && (
-                <ul className="max-h-28 overflow-y-auto text-[11px] text-muted-foreground">
+                <ul className="max-h-28 overflow-y-auto text-xs text-muted-foreground">
                   {uploadFiles.map((f) => (
                     <li key={`${f.name}-${f.size}-${f.lastModified}`} className="truncate">
                       {f.name}（{(f.size / 1024).toFixed(1)} KB）
@@ -859,7 +849,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
             <div className="flex flex-col gap-4 border-t border-border p-3">
               {/* 维度二：解析与切片 */}
               <div className="flex flex-col gap-2">
-                <div className="text-[11px] font-semibold text-muted-foreground">解析与切片</div>
+                <div className="text-xs font-semibold text-muted-foreground">解析与切片</div>
                 <label className="flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -872,7 +862,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                 {!autoChunk && (
                   <div className="grid grid-cols-2 gap-3">
                     <label>
-                      <div className="mb-1 text-[11px] text-muted-foreground">分块大小（字符）</div>
+                      <div className="mb-1 text-xs text-muted-foreground">分块大小（字符）</div>
                       <input
                         type="number"
                         className={inputCls}
@@ -883,7 +873,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                       />
                     </label>
                     <label>
-                      <div className="mb-1 text-[11px] text-muted-foreground">分块重叠（字符）</div>
+                      <div className="mb-1 text-xs text-muted-foreground">分块重叠（字符）</div>
                       <input
                         type="number"
                         className={inputCls}
@@ -899,9 +889,9 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
 
               {/* 维度三：元数据与分类 */}
               <div className="flex flex-col gap-2">
-                <div className="text-[11px] font-semibold text-muted-foreground">元数据与分类标签</div>
+                <div className="text-xs font-semibold text-muted-foreground">元数据与分类标签</div>
                 <label>
-                  <div className="mb-1 text-[11px] text-muted-foreground">所属分类</div>
+                  <div className="mb-1 text-xs text-muted-foreground">所属分类</div>
                   <input
                     className={inputCls}
                     value={category}
@@ -910,7 +900,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                   />
                 </label>
                 <div>
-                  <div className="mb-1 text-[11px] text-muted-foreground">自定义标签</div>
+                  <div className="mb-1 text-xs text-muted-foreground">自定义标签</div>
                   {tags.map((tag, idx) => (
                     <div key={idx} className="mb-1 flex items-center gap-1.5">
                       <input
@@ -947,14 +937,14 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                   <button
                     type="button"
                     onClick={() => setTags([...tags, { key: '', value: '' }])}
-                    className="text-[11px] text-primary hover:text-primary"
+                    className="text-xs text-primary hover:text-primary"
                   >
                     + 添加标签
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <label>
-                    <div className="mb-1 text-[11px] text-muted-foreground">生效时间</div>
+                    <div className="mb-1 text-xs text-muted-foreground">生效时间</div>
                     <DatePicker
                       type="datetime"
                       block
@@ -965,7 +955,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                     />
                   </label>
                   <label>
-                    <div className="mb-1 text-[11px] text-muted-foreground">失效时间</div>
+                    <div className="mb-1 text-xs text-muted-foreground">失效时间</div>
                     <DatePicker
                       type="datetime"
                       block
@@ -980,9 +970,9 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
 
               {/* 维度四：检索策略 */}
               <div className="flex flex-col gap-2">
-                <div className="text-[11px] font-semibold text-muted-foreground">检索策略</div>
+                <div className="text-xs font-semibold text-muted-foreground">检索策略</div>
                 <label>
-                  <div className="mb-1 text-[11px] text-muted-foreground">检索权重（1-10，越高越优先）</div>
+                  <div className="mb-1 text-xs text-muted-foreground">检索权重（1-10，越高越优先）</div>
                   <input
                     type="range"
                     min={1}
@@ -991,7 +981,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
                     onChange={(e) => setRetrievalWeight(Number(e.target.value))}
                     className="w-full accent-primary"
                   />
-                  <div className="text-center text-[11px] text-muted-foreground">{retrievalWeight}</div>
+                  <div className="text-center text-xs text-muted-foreground">{retrievalWeight}</div>
                 </label>
               </div>
             </div>
@@ -1002,7 +992,7 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
         {sourceTab === 'text' && content && !autoChunk && previewChunks.length > 0 && (
           <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
             <div className="mb-2 flex items-center justify-between">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-primary">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary">
                 <ClipboardList className="h-4 w-4" />
                 切片预览（共 {totalChunks} 块，展示前 {previewChunks.length} 块）
               </span>
@@ -1011,9 +1001,9 @@ function DocAddModal({ open, kbConfig, onClose, onSubmit, saving }) {
               {previewChunks.map((chunk, idx) => (
                 <div
                   key={idx}
-                  className="rounded border border-border bg-card p-2 font-mono text-[11px] text-muted-foreground"
+                  className="rounded border border-border bg-card p-2 font-mono text-xs text-muted-foreground"
                 >
-                  <div className="mb-1 text-[10px] font-semibold text-muted-foreground">
+                  <div className="mb-1 text-xs font-semibold text-muted-foreground">
                     块 {idx + 1}（{chunk.length} 字符）
                   </div>
                   <div className="max-h-20 overflow-y-auto whitespace-pre-wrap break-words">
@@ -1076,9 +1066,9 @@ function SegmentsModal({ open, data, loading, onClose, onReparse, reparsing }) {
       }
     >
       {loading ? (
-        <div className="p-8 text-center text-sm text-muted-foreground">加载分段中…</div>
+        <div className="p-6 text-center text-sm text-muted-foreground">加载分段中…</div>
       ) : !data ? (
-        <div className="p-8 text-center text-sm text-muted-foreground">暂无数据</div>
+        <div className="p-6 text-center text-sm text-muted-foreground">暂无数据</div>
       ) : (
         <div className="flex max-h-[75vh] flex-col gap-4 overflow-y-auto">
           {/* 解析过程概览 */}
@@ -1089,58 +1079,58 @@ function SegmentsModal({ open, data, loading, onClose, onReparse, reparsing }) {
             {/* 流程步骤 */}
             <div className="mb-3 flex items-center gap-1">
               <div className="flex flex-1 items-center gap-1.5">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-success/20 text-[11px] font-semibold text-success">1</span>
-                <span className="text-[11px] text-muted-foreground">文件解析</span>
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-success/20 text-xs font-semibold text-success">1</span>
+                <span className="text-xs text-muted-foreground">文件解析</span>
               </div>
               <span className="text-muted-foreground">→</span>
               <div className="flex flex-1 items-center gap-1.5">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-success/20 text-[11px] font-semibold text-success">2</span>
-                <span className="text-[11px] text-muted-foreground">文本分段</span>
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-success/20 text-xs font-semibold text-success">2</span>
+                <span className="text-xs text-muted-foreground">文本分段</span>
               </div>
               <span className="text-muted-foreground">→</span>
               <div className="flex flex-1 items-center gap-1.5">
-                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${data.has_embedding ? 'bg-success/20 text-success' : 'bg-secondary text-muted-foreground'}`}>3</span>
-                <span className="text-[11px] text-muted-foreground">向量生成</span>
+                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${data.has_embedding ? 'bg-success/20 text-success' : 'bg-secondary text-muted-foreground'}`}>3</span>
+                <span className="text-xs text-muted-foreground">向量生成</span>
               </div>
               <span className="text-muted-foreground">→</span>
               <div className="flex flex-1 items-center gap-1.5">
-                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold ${data.status === 'available' ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}`}>4</span>
-                <span className="text-[11px] text-muted-foreground">可检索</span>
+                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${data.status === 'available' ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}`}>4</span>
+                <span className="text-xs text-muted-foreground">可检索</span>
               </div>
             </div>
             {/* 统计指标 */}
             <div className="grid grid-cols-4 gap-2">
               <div className="rounded border border-border bg-muted p-2 text-center">
-                <div className="text-[10px] text-muted-foreground">原文长度</div>
+                <div className="text-xs text-muted-foreground">原文长度</div>
                 <div className="text-sm font-semibold text-foreground">{(data.content_len || 0).toLocaleString()}</div>
-                <div className="text-[9px] text-muted-foreground">字符</div>
+                <div className="text-xs text-muted-foreground">字符</div>
               </div>
               <div className="rounded border border-border bg-muted p-2 text-center">
-                <div className="text-[10px] text-muted-foreground">分段数</div>
+                <div className="text-xs text-muted-foreground">分段数</div>
                 <div className="text-sm font-semibold text-primary">{data.segment_count || 0}</div>
-                <div className="text-[9px] text-muted-foreground">chunks</div>
+                <div className="text-xs text-muted-foreground">chunks</div>
               </div>
               <div className="rounded border border-border bg-muted p-2 text-center">
-                <div className="text-[10px] text-muted-foreground">Token 总数</div>
+                <div className="text-xs text-muted-foreground">Token 总数</div>
                 <div className="text-sm font-semibold text-foreground">{(data.token_total || 0).toLocaleString()}</div>
-                <div className="text-[9px] text-muted-foreground">分词后</div>
+                <div className="text-xs text-muted-foreground">分词后</div>
               </div>
               <div className="rounded border border-border bg-muted p-2 text-center">
-                <div className="text-[10px] text-muted-foreground">向量数</div>
+                <div className="text-xs text-muted-foreground">向量数</div>
                 <div className={`text-sm font-semibold ${data.has_embedding ? 'text-info' : 'text-muted-foreground'}`}>
                   {data.embedding_count || 0}/{data.segment_count || 0}
                 </div>
-                <div className="text-[9px] text-muted-foreground">{data.has_embedding ? '已向量化' : '纯关键词'}</div>
+                <div className="text-xs text-muted-foreground">{data.has_embedding ? '已向量化' : '纯关键词'}</div>
               </div>
             </div>
             {/* 配置信息 */}
             <div className="mt-2 flex flex-wrap gap-1.5">
-              <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">分段：{chunkModeLabel}</span>
-              <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">块大小：{cfg.chunk_size}</span>
-              <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">重叠：{cfg.chunk_overlap}</span>
-              <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">索引：{indexModeLabel}</span>
+              <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">分段：{chunkModeLabel}</span>
+              <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">块大小：{cfg.chunk_size}</span>
+              <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">重叠：{cfg.chunk_overlap}</span>
+              <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">索引：{indexModeLabel}</span>
               {cfg.embedding_model && (
-                <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">模型：{cfg.embedding_model}</span>
+                <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">模型：{cfg.embedding_model}</span>
               )}
             </div>
           </div>
@@ -1151,7 +1141,7 @@ function SegmentsModal({ open, data, loading, onClose, onReparse, reparsing }) {
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 分段列表（{segments.length}）
               </h3>
-              <span className="text-[10px] text-muted-foreground">点击展开查看完整内容</span>
+              <span className="text-xs text-muted-foreground">点击展开查看完整内容</span>
             </div>
             {segments.length === 0 ? (
               <div className="rounded-md border border-border bg-card p-6 text-center text-xs text-muted-foreground">
@@ -1181,20 +1171,20 @@ function SegmentItem({ seg }) {
         onClick={() => setExpanded((e) => !e)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-muted"
       >
-        <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+        <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-xs font-semibold text-primary">
           #{seg.seq + 1}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
           {seg.preview}
         </span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">{seg.char_count} 字符</span>
-        <span className="shrink-0 text-[10px] text-muted-foreground">{seg.token_count} tokens</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{seg.char_count} 字符</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{seg.token_count} tokens</span>
         {seg.has_embedding ? (
-          <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-info/15 px-1 py-0.5 text-[9px] text-info" title="已生成向量">
+          <span className="shrink-0 inline-flex items-center gap-0.5 rounded bg-info/15 px-1 py-0.5 text-xs text-info" title="已生成向量">
             <Check className="inline h-2.5 w-2.5" /> 向量
           </span>
         ) : (
-          <span className="shrink-0 rounded bg-secondary px-1 py-0.5 text-[9px] text-muted-foreground" title="无向量">
+          <span className="shrink-0 rounded bg-secondary px-1 py-0.5 text-xs text-muted-foreground" title="无向量">
             无向量
           </span>
         )}
@@ -1202,7 +1192,7 @@ function SegmentItem({ seg }) {
       </button>
       {expanded && (
         <div className="border-t border-border p-3">
-          <pre className="max-h-60 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[11px] text-muted-foreground">
+          <pre className="max-h-60 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-xs text-muted-foreground">
             {seg.content}
           </pre>
         </div>
@@ -1222,7 +1212,7 @@ function FileQueryResultView({ data }) {
       <div className="flex flex-col gap-2">
         {data.results.map((r, i) => (
           <div key={i} className="rounded border border-border bg-background p-2">
-            <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">
               {r.title} <span className="text-muted-foreground">({r.matched}/{r.total} 行)</span>
             </div>
             <ResultTable columns={r.columns || []} rows={r.rows || []} />
@@ -1235,13 +1225,13 @@ function FileQueryResultView({ data }) {
   return (
     <div className="rounded border border-border bg-background p-3">
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-[11px] font-medium text-muted-foreground">
+        <div className="text-xs font-medium text-muted-foreground">
           {data.title}
           <span className="ml-2 text-muted-foreground">
             共 {data.total} 行，命中 {data.matched} 行{data.truncated ? `（已截断，仅显示前 ${rows.length} 行）` : ''}
           </span>
         </div>
-        <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground">
+        <span className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
           {data.source}
         </span>
       </div>
@@ -1253,22 +1243,22 @@ function FileQueryResultView({ data }) {
 // 表格渲染
 function ResultTable({ columns, rows }) {
   if (!rows || rows.length === 0) {
-    return <div className="py-2 text-center text-[11px] text-muted-foreground">无匹配行</div>
+    return <div className="py-2 text-center text-xs text-muted-foreground">无匹配行</div>
   }
   // 收集所有列（不同行可能有不同 key）
   const allCols = columns.length > 0 ? columns : [...new Set(rows.flatMap((r) => Object.keys(r)))]
   return (
     <div className="max-h-80 w-full overflow-auto">
-      <table className="w-full border-collapse text-[11px]">
+      <table className="w-full border-collapse text-xs">
         <thead>
           <tr className="border-b border-border">
-            <th className="sticky top-0 bg-card px-2 py-1 text-left text-[10px] font-semibold text-muted-foreground">
+            <th className="sticky top-0 bg-card px-2 py-1 text-left text-xs font-semibold text-muted-foreground">
               #
             </th>
             {allCols.map((col) => (
               <th
                 key={col}
-                className="sticky top-0 bg-card px-2 py-1 text-left text-[10px] font-semibold text-muted-foreground whitespace-nowrap"
+                className="sticky top-0 bg-card px-2 py-1 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap"
               >
                 {col}
               </th>
@@ -1852,18 +1842,16 @@ function KnowledgeBase() {
               <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 知识库列表
               </h2>
-              <span className="text-[10px] text-muted-foreground">{filteredKbList.length}/{kbList.length}</span>
+              <span className="text-xs text-muted-foreground">{filteredKbList.length}/{kbList.length}</span>
             </div>
             {/* 搜索框 */}
-            <div className="relative mb-2">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <input
-                value={kbSearch}
-                onChange={(e) => setKbSearch(e.target.value)}
-                placeholder="搜索知识库名称..."
-                className={`${inputBaseCls} w-full pl-8 text-xs`}
-              />
-            </div>
+            <SearchInput
+              className="mb-2 w-full"
+              value={kbSearch}
+              onChange={setKbSearch}
+              placeholder="搜索知识库名称..."
+              onClear={() => setKbSearch('')}
+            />
             {/* 排序 */}
             <div className="flex items-center gap-1">
               <ArrowUpDown className="h-3 w-3 text-muted-foreground" />
@@ -1876,7 +1864,7 @@ function KnowledgeBase() {
                   key={s.v}
                   type="button"
                   onClick={() => setKbSort(s.v)}
-                  className={`rounded px-1.5 py-0.5 text-[10px] transition ${
+                  className={`rounded px-1.5 py-0.5 text-xs transition ${
                     kbSort === s.v ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -1914,12 +1902,12 @@ function KnowledgeBase() {
             ) : kbList.length === 0 ? (
               <div className="rounded-md border border-dashed border-primary/30 bg-primary/5 p-4 text-left">
                 <p className="text-xs font-medium text-foreground">开始创建第一个知识库</p>
-                <ol className="mt-2 list-decimal space-y-1 pl-4 text-[11px] leading-relaxed text-muted-foreground">
+                <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
                   <li>点击右上角「新建知识库」或上传文档</li>
                   <li>等待自动分段与向量化完成</li>
                   <li>在智能体编辑页「能力配置 → 知识库」中勾选启用</li>
                 </ol>
-                <p className="mt-2 text-[10px] text-muted-foreground">
+                <p className="mt-2 text-xs text-muted-foreground">
                   系统已预置「安全响应规范」「常用研判口径」等内置库，重启后端后会自动出现。
                 </p>
               </div>
@@ -1963,13 +1951,13 @@ function KnowledgeBase() {
                               {kb.name || `#${kb.id}`}
                             </div>
                           </div>
-                          <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                          <div className="mt-0.5 truncate text-xs text-muted-foreground">
                             <span className="tabular-nums">{kb.doc_count ?? 0}</span> 篇文档
                             <span title={kb.updated_at ? fmtTime(kb.updated_at) : ''}>{kb.updated_at ? ` · ${relTime(kb.updated_at)}` : ''}</span>
                           </div>
                           {/* 精简配置标签：只显示检索模式 */}
                           <div className="mt-1 flex flex-wrap gap-1">
-                            <span className="rounded bg-secondary px-1 py-0.5 text-[9px] text-muted-foreground">
+                            <span className="rounded bg-secondary px-1 py-0.5 text-xs text-muted-foreground">
                               {INDEX_MODES.find((m) => m.value === kb.index_mode)?.label || kb.index_mode}
                             </span>
                           </div>
@@ -1983,7 +1971,7 @@ function KnowledgeBase() {
                                 setKbEditing(kb)
                                 setKbFormOpen(true)
                               }}
-                              className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                              className="rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                             >
                               编辑
                             </button>
@@ -1996,7 +1984,7 @@ function KnowledgeBase() {
                                 setShareResource(kb)
                                 setShareOpen(true)
                               }}
-                              className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                              className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                               title="共享给其他用户"
                             >
                               <Share2 className="h-3 w-3" />共享
@@ -2009,7 +1997,7 @@ function KnowledgeBase() {
                                 e.stopPropagation()
                                 handleDeleteKb(kb)
                               }}
-                              className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:border-danger-700 hover:text-destructive"
+                              className="rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-danger-700 hover:text-destructive"
                             >
                               删除
                             </button>
@@ -2028,7 +2016,7 @@ function KnowledgeBase() {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {!selectedId ? (
             /* 欢迎引导页：首次进入或无选中时展示 */
-            <div className="flex h-full items-center justify-center p-8">
+            <div className="flex h-full items-center justify-center p-6">
               <div className="max-w-md text-center">
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10 text-primary">
                   <Database className="h-8 w-8" />
@@ -2040,21 +2028,21 @@ function KnowledgeBase() {
                     <FileText className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <div>
                       <div className="text-sm font-medium text-foreground">支持多种文件类型</div>
-                      <div className="text-[11px] text-muted-foreground">PDF、Word、Excel、CSV、Markdown、TXT、JSON</div>
+                      <div className="text-xs text-muted-foreground">PDF、Word、Excel、CSV、Markdown、TXT、JSON</div>
                     </div>
                   </div>
                   <div className="flex items-start gap-2 rounded-lg border border-border bg-card p-3 transition hover:border-primary/40">
                     <Zap className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <div>
                       <div className="text-sm font-medium text-foreground">3 步创建知识库</div>
-                      <div className="text-[11px] text-muted-foreground">1. 新建知识库 → 2. 配置分段与检索 → 3. 上传文档</div>
+                      <div className="text-xs text-muted-foreground">1. 新建知识库 → 2. 配置分段与检索 → 3. 上传文档</div>
                     </div>
                   </div>
                   <div className="flex items-start gap-2 rounded-lg border border-border bg-card p-3 transition hover:border-primary/40">
                     <Search className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <div>
                       <div className="text-sm font-medium text-foreground">语义搜索 + 表格精确查询</div>
-                      <div className="text-[11px] text-muted-foreground">自然语言提问或按 IP/列名精确过滤</div>
+                      <div className="text-xs text-muted-foreground">自然语言提问或按 IP/列名精确过滤</div>
                     </div>
                   </div>
                 </div>
@@ -2069,7 +2057,7 @@ function KnowledgeBase() {
                     </button>
                   )
                 ) : (
-                  <div className="mt-4 text-[11px] text-muted-foreground">在左侧选择一个知识库开始管理</div>
+                  <div className="mt-4 text-xs text-muted-foreground">在左侧选择一个知识库开始管理</div>
                 )}
               </div>
             </div>
@@ -2089,12 +2077,12 @@ function KnowledgeBase() {
                           setKbEditing(selectedKb)
                           setKbFormOpen(true)
                         }}
-                        className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                        className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                       >
                         编辑配置
                       </button>
                     </div>
-                    <div className="truncate text-[11px] text-muted-foreground">
+                    <div className="truncate text-xs text-muted-foreground">
                       {selectedKb?.description || '暂无描述'}
                     </div>
                   </div>
@@ -2105,7 +2093,7 @@ function KnowledgeBase() {
                       onClick={handleReparseAll}
                       disabled={reparseAllLoading || docs.length === 0}
                       title="按最新知识库配置重新分段与向量化所有文档"
-                      className="inline-flex items-center gap-1.5 rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-50"
                     >
                       {reparseAllLoading ? (
                         '解析中…'
@@ -2120,7 +2108,7 @@ function KnowledgeBase() {
                 </div>
                 {/* 配置参数分组展示 */}
                 {selectedKb && (
-                  <div className="mt-2 flex flex-wrap gap-3 text-[10px]">
+                  <div className="mt-2 flex flex-wrap gap-3 text-xs">
                     <div className="flex items-center gap-1 rounded bg-secondary px-2 py-0.5">
                       <span className="text-muted-foreground">检索方式</span>
                       <span className="font-medium text-foreground">
@@ -2180,7 +2168,7 @@ function KnowledgeBase() {
                     <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       文档列表
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       <span className="tabular-nums">{docs.filter((d) => d.enabled !== false).length}</span>/<span className="tabular-nums">{docs.length}</span> 参与检索
                     </span>
                   </div>
@@ -2194,7 +2182,7 @@ function KnowledgeBase() {
                       />
                       {canEditKb && selectedDocIds.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1">
-                          <span className="text-[11px] text-muted-foreground">已选 <span className="tabular-nums">{selectedDocIds.length}</span></span>
+                          <span className="text-xs text-muted-foreground">已选 <span className="tabular-nums">{selectedDocIds.length}</span></span>
                           <button type="button" className="btn-secondary btn-sm" onClick={() => handleBatchDocs('enable')}>启用检索</button>
                           <button type="button" className="btn-secondary btn-sm" onClick={() => handleBatchDocs('disable')}>停用检索</button>
                           <button type="button" className="btn-secondary btn-sm" onClick={() => handleBatchDocs('reparse')}>重建索引</button>
@@ -2235,7 +2223,7 @@ function KnowledgeBase() {
                           </button>
                         )
                       })}
-                      <span className="ml-auto text-[11px] text-muted-foreground">
+                      <span className="ml-auto text-xs text-muted-foreground">
                         总计 <span className={`font-semibold tabular-nums ${docStats.totalChars > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
                           {docStats.totalChars > 0 ? docStats.totalChars.toLocaleString() : '--'}
                         </span> 字符
@@ -2302,7 +2290,7 @@ function KnowledgeBase() {
                                   )}
                                   {badge && (
                                     <span
-                                      className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                                      className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary"
                                       title={`文件类型：${badge.label}`}
                                     >
                                       {badge.icon} {badge.label}
@@ -2312,19 +2300,19 @@ function KnowledgeBase() {
                                     {doc.title || `文档 #${doc.id}`}
                                   </div>
                                   <span
-                                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusInfo.color}`}
+                                    className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${statusInfo.color}`}
                                     title={`状态：${doc.status}`}
                                   >
                                     {statusInfo.icon} {statusInfo.label}
                                   </span>
                                 </div>
                                 {doc.file_name && (
-                                  <div className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted-foreground">
+                                  <div className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
                                     <Paperclip className="h-3.5 w-3.5 shrink-0" />
                                     <span className="truncate">{doc.file_name}</span>
                                   </div>
                                 )}
-                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
                                   <span>{fmtTime(doc.created_at)}</span>
                                   {doc.updated_at && doc.updated_at !== doc.created_at && (
                                     <span title={fmtTime(doc.updated_at)}>· 更新 {relTime(doc.updated_at)}</span>
@@ -2341,7 +2329,7 @@ function KnowledgeBase() {
                                   )}
                                 </div>
                                 {doc.status === 'failed' && doc.error_message && (
-                                  <div className="mt-1 flex items-start gap-1 rounded bg-destructive/10 px-2 py-1 text-[10px] text-destructive">
+                                  <div className="mt-1 flex items-start gap-1 rounded bg-destructive/10 px-2 py-1 text-xs text-destructive">
                                     <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
                                     <span>{doc.error_message}</span>
                                   </div>
@@ -2354,7 +2342,7 @@ function KnowledgeBase() {
                                         style={{ width: `${doc.progress || 0}%` }}
                                       />
                                     </div>
-                                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                                    <span className="shrink-0 text-xs text-muted-foreground">
                                       {doc.status === 'parsing' ? '解析分段' : '向量化'} {doc.progress || 0}%
                                     </span>
                                   </div>
@@ -2366,7 +2354,7 @@ function KnowledgeBase() {
                                     type="button"
                                     onClick={() => handleToggleDocEnabled(doc)}
                                     title={isEnabled ? '停用后不参与智能体检索（Dify 文档开关）' : '启用检索'}
-                                    className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                                    className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                                   >
                                     {isEnabled ? '停用' : '启用'}
                                   </button>
@@ -2376,7 +2364,7 @@ function KnowledgeBase() {
                                     type="button"
                                     onClick={() => handleReplacePick(doc.id)}
                                     title="用新文件覆盖这份文档并重新解析"
-                                    className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                                    className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                                   >
                                     替换文件
                                   </button>
@@ -2392,7 +2380,7 @@ function KnowledgeBase() {
                                       }
                                     }}
                                     title="下载当时上传的原始文件"
-                                    className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                                    className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                                   >
                                     <Download className="h-3 w-3" />
                                     原文件
@@ -2402,7 +2390,7 @@ function KnowledgeBase() {
                                   type="button"
                                   onClick={() => handleViewSegments(doc)}
                                   title="查看解析、分段与向量化详情"
-                                  className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-blue-600 hover:text-info"
+                                  className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-blue-600 hover:text-info"
                                 >
                                   查看分段
                                 </button>
@@ -2417,21 +2405,21 @@ function KnowledgeBase() {
                                       toast.error(err.message || '加载文档失败')
                                     }
                                   }}
-                                  className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary"
+                                  className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary"
                                 >
                                   编辑
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => handleDeleteDoc(doc.id)}
-                                  className="rounded border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-danger-700 hover:text-destructive"
+                                  className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-danger-700 hover:text-destructive"
                                 >
                                   删除
                                 </button>
                               </div>
                             </div>
                             {doc.content_preview && (
-                              <pre className="mt-2 max-h-20 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-[11px] text-muted-foreground ring-1 ring-border">
+                              <pre className="mt-2 max-h-20 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 font-mono text-xs text-muted-foreground ring-1 ring-border">
                                 {doc.content_preview}
                               </pre>
                             )}
@@ -2444,34 +2432,20 @@ function KnowledgeBase() {
 
                 {/* 统一搜索区：Tab 切换语义检索 / 表格查询 */}
                 <div className="rounded-md border border-border bg-card p-4">
-                  <div className="mb-3 flex items-center gap-1 border-b border-border pb-2">
-                    <button
-                      type="button"
-                      onClick={() => setSearchTab('semantic')}
-                      className={`flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition ${
-                        searchTab === 'semantic'
-                          ? 'border-primary text-primary'
-                          : 'border-transparent text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      <Search className="h-3.5 w-3.5" /> 命中测试
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSearchTab('file')}
-                      className={`flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs font-medium transition ${
-                        searchTab === 'file'
-                          ? 'border-primary text-primary'
-                          : 'border-transparent text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      <Sheet className="h-3.5 w-3.5" /> 表格精确查询
-                    </button>
+                  <div className="mb-3">
+                    <PillTabs
+                      items={[
+                        { key: 'semantic', label: '命中测试', icon: Search },
+                        { key: 'file', label: '表格精确查询', icon: Sheet },
+                      ]}
+                      value={searchTab}
+                      onChange={setSearchTab}
+                    />
                   </div>
 
                   {searchTab === 'semantic' ? (
                     <>
-                      <div className="mb-1.5 flex items-start gap-1 text-[10px] text-muted-foreground">
+                      <div className="mb-1.5 flex items-start gap-1 text-xs text-muted-foreground">
                         <Lightbulb className="mt-0.5 h-3 w-3 shrink-0" />
                         <span>用真实问法做命中测试（Dify Hit Testing）：看会召回哪一段、分数如何构成。</span>
                       </div>
@@ -2496,7 +2470,7 @@ function KnowledgeBase() {
                       </div>
                       {searchResults.length > 0 && (
                         <div className="mt-3 flex flex-col gap-2">
-                          <div className="flex items-start gap-1 text-[10px] text-muted-foreground">
+                          <div className="flex items-start gap-1 text-xs text-muted-foreground">
                             <Target className="h-3 w-3 shrink-0 mt-0.5" />
                             <span>命中 {searchResults.length} 段；已排除停用/过期文档，分数含检索权重</span>
                           </div>
@@ -2507,22 +2481,22 @@ function KnowledgeBase() {
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <div className="flex min-w-0 items-center gap-2">
-                                  <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                                  <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-xs font-semibold text-primary">
                                     #{idx + 1}
                                   </span>
-                                  <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                  <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                                     段 #{(r.seq ?? 0) + 1}
                                   </span>
                                   <div className="min-w-0 truncate text-sm font-medium text-foreground">
                                     {r.title || `文档 #${r.doc_id}`}
                                   </div>
                                   {r.file_name && (
-                                    <span className="hidden max-w-[140px] truncate text-[10px] text-muted-foreground sm:inline">
+                                    <span className="hidden max-w-[140px] truncate text-xs text-muted-foreground sm:inline">
                                       {r.file_name}
                                     </span>
                                   )}
                                 </div>
-                                <span className="shrink-0 rounded bg-success/20 px-2 py-0.5 text-[10px] font-medium text-success">
+                                <span className="shrink-0 rounded bg-success/20 px-2 py-0.5 text-xs font-medium text-success">
                                   {(r.score ?? 0).toFixed(4)}
                                 </span>
                               </div>
@@ -2534,20 +2508,20 @@ function KnowledgeBase() {
                                 />
                               </div>
                               <div className="mt-1.5 flex flex-wrap gap-1.5">
-                                <span className="rounded bg-warning/15 px-1.5 py-0.5 text-[9px] text-warning" title="BM25 关键词匹配分数（归一化）">
+                                <span className="rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning" title="BM25 关键词匹配分数（归一化）">
                                   BM25: {(r.bm25_score ?? 0).toFixed(4)}
                                 </span>
-                                <span className="rounded bg-info/15 px-1.5 py-0.5 text-[9px] text-info" title="向量语义余弦相似度（归一化）">
+                                <span className="rounded bg-info/15 px-1.5 py-0.5 text-xs text-info" title="向量语义余弦相似度（归一化）">
                                   向量: {(r.vector_score ?? 0).toFixed(4)}
                                 </span>
                                 {r.retrieval_weight != null && (
-                                  <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                  <span className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                                     权重 {r.retrieval_weight}
                                   </span>
                                 )}
                               </div>
                               {r.content && (
-                                <pre className="mt-1.5 max-h-28 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-card p-2 font-mono text-[11px] text-muted-foreground ring-1 ring-border">
+                                <pre className="mt-1.5 max-h-28 w-full overflow-auto whitespace-pre-wrap break-words rounded bg-card p-2 font-mono text-xs text-muted-foreground ring-1 ring-border">
                                   {r.content}
                                 </pre>
                               )}
@@ -2558,7 +2532,7 @@ function KnowledgeBase() {
                     </>
                   ) : (
                     <>
-                      <div className="mb-1.5 flex items-start gap-1 text-[10px] text-muted-foreground">
+                      <div className="mb-1.5 flex items-start gap-1 text-xs text-muted-foreground">
                         <Lightbulb className="mt-0.5 h-3 w-3 shrink-0" />
                         <span>按 IP 或「列名=值」精确过滤。适合 IP 列表、资产台账等结构化数据。</span>
                       </div>

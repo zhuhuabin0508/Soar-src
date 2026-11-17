@@ -198,7 +198,7 @@ function EnumMultiSelect({ options, values, onChange }) {
         className={`${inputBaseCls} flex h-8 w-full items-center justify-between gap-1 text-left ${values.length ? 'border-primary/60' : ''}`}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={`truncate text-[13px] ${values.length ? '' : 'text-muted-foreground'}`}>{label}</span>
+        <span className={`truncate text-xs ${values.length ? '' : 'text-muted-foreground'}`}>{label}</span>
         <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -206,7 +206,7 @@ function EnumMultiSelect({ options, values, onChange }) {
           {options.map((o) => (
             <button
               key={String(o.value)} type="button"
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-foreground transition hover:bg-accent"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground transition hover:bg-accent"
               onClick={() => toggle(o.value)}
             >
               <span className={`flex h-4 w-4 items-center justify-center rounded border ${values.includes(o.value) ? 'border-primary bg-primary text-white' : 'border-border'}`}>
@@ -273,7 +273,7 @@ function ValueInput({ cond, onChange }) {
         onBlur={() => setTouched(true)}
         placeholder={placeholder}
       />
-      {touched && ipError && <div className="mt-1 text-[11px] text-destructive">{ipError}</div>}
+      {touched && ipError && <div className="mt-1 text-xs text-destructive">{ipError}</div>}
     </div>
   )
 }
@@ -346,7 +346,7 @@ function CondGroup({ group, depth, onChange, onRemove }) {
           {['all', 'any'].map((l) => (
             <button
               key={l} type="button"
-              className={`rounded px-2.5 py-1 text-[12px] transition ${group.logic === l ? 'bg-primary text-white' : 'text-muted-foreground hover:bg-accent'}`}
+              className={`rounded px-2.5 py-1 text-xs transition ${group.logic === l ? 'bg-primary text-white' : 'text-muted-foreground hover:bg-accent'}`}
               onClick={() => onChange({ ...group, logic: l })}
             >
               {l === 'all' ? '全部满足' : '任一满足'}
@@ -354,7 +354,7 @@ function CondGroup({ group, depth, onChange, onRemove }) {
           ))}
         </div>
         {onRemove && (
-          <button type="button" className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-accent hover:text-destructive"
+          <button type="button" className="flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-destructive"
             title="删除整个条件组" onClick={onRemove}>
             <Trash2 className="h-3.5 w-3.5" />删除组
           </button>
@@ -379,12 +379,12 @@ function CondGroup({ group, depth, onChange, onRemove }) {
         ))}
       </div>
       <div className="mt-2 flex items-center gap-2">
-        <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-[12px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+        <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
           onClick={addLeaf}>
           <Plus className="h-3.5 w-3.5" />新增条件
         </button>
         {canNest && (
-          <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-[12px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+          <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
             onClick={addSub}>
             <Layers className="h-3.5 w-3.5" />新增条件组
           </button>
@@ -406,7 +406,7 @@ function FieldMapRow({ field, label, modes, cfg, onChange }) {
         <div className="flex flex-wrap items-center gap-1.5">
           {RISK_LEVELS.map((l) => (
             <button key={l.value} type="button"
-              className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[12px] transition ${String(value) === String(l.value) ? 'border-primary/60 bg-primary/5 font-medium text-foreground' : 'border-border text-muted-foreground hover:border-primary/40'}`}
+              className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition ${String(value) === String(l.value) ? 'border-primary/60 bg-primary/5 font-medium text-foreground' : 'border-border text-muted-foreground hover:border-primary/40'}`}
               onClick={() => onChange({ mode, value: String(l.value) })}>
               <span className={`h-2 w-2 rounded-full ${['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-blue-500', 'bg-gray-400'][l.value]}`} />
               {l.label}
@@ -433,7 +433,7 @@ function FieldMapRow({ field, label, modes, cfg, onChange }) {
   if (!mode) {
     return (
       <div className="flex items-center gap-2.5 py-1.5">
-        <span className="w-[104px] shrink-0 truncate text-[13px] text-foreground" title={label}>{label}</span>
+        <span className="w-[104px] shrink-0 truncate text-xs text-foreground" title={label}>{label}</span>
         <CompactSelect size="md" block className="flex-1" title="选择取值方式" value=""
           onChange={(e) => setMode(e.target.value)}>
           <option value="">请选择取值方式（静态值 / 字段映射 / 保留解析结果）</option>
@@ -444,7 +444,7 @@ function FieldMapRow({ field, label, modes, cfg, onChange }) {
   }
   return (
     <div className="flex items-center gap-2.5 py-1.5">
-      <span className="w-[104px] shrink-0 truncate text-[13px] text-foreground" title={label}>{label}</span>
+      <span className="w-[104px] shrink-0 truncate text-xs text-foreground" title={label}>{label}</span>
       <CompactSelect size="md" className="w-[120px] shrink-0" value={mode} onChange={(e) => setMode(e.target.value)}>
         {modes.map((m) => <option key={m} value={m}>{MODE_LABELS[m]}</option>)}
       </CompactSelect>
@@ -462,12 +462,12 @@ function SectionCard({ no, title, desc, children, id }) {
   return (
     <section id={id} className="card p-6">
       <div className="mb-4 flex items-start gap-2.5">
-        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[12px] font-semibold text-primary">
+        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
           {no}
         </span>
         <div>
-          <h3 className="text-[14px] font-semibold text-foreground">{title}</h3>
-          {desc && <p className="mt-0.5 text-[12px] text-muted-foreground">{desc}</p>}
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          {desc && <p className="mt-0.5 text-xs text-muted-foreground">{desc}</p>}
         </div>
       </div>
       {children}
@@ -480,10 +480,10 @@ function FormItem({ label, required, hint, children, className }) {
   return (
     <label className={`block space-y-1.5 ${className || ''}`}>
       <span className="flex flex-wrap items-baseline gap-x-1.5">
-        <span className="text-[13px] text-foreground">
+        <span className="text-xs text-foreground">
           {label} {required && <span className="text-destructive">*</span>}
         </span>
-        {hint && <span className="text-[12px] leading-snug text-muted-foreground">{hint}</span>}
+        {hint && <span className="text-xs leading-snug text-muted-foreground">{hint}</span>}
       </span>
       {children}
     </label>
@@ -816,7 +816,7 @@ export default function AlertRuleEditPage() {
   if (loading) {
     return (
       <PageContainer>
-        <div className="py-20 text-center text-[13px] text-muted-foreground">加载中…</div>
+        <div className="py-20 text-center text-xs text-muted-foreground">加载中…</div>
       </PageContainer>
     )
   }
@@ -848,15 +848,15 @@ export default function AlertRuleEditPage() {
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold">
+            <h2 className="text-sm font-semibold">
               {editingId == null ? '新建告警规则' : `编辑告警规则 #${editingId}`}
               {editingId != null && isDraftRule && <Badge variant="warning" className="ml-2">草稿</Badge>}
             </h2>
-            {dirty && <span className="text-[11.5px] text-warning">有未保存的修改</span>}
+            {dirty && <span className="text-xs text-warning">有未保存的修改</span>}
           </div>
           <div className="ml-auto flex items-center gap-2">
             {lastTestOk && (
-              <span className="flex items-center gap-1 text-[12px] text-success">
+              <span className="flex items-center gap-1 text-xs text-success">
                 <Check className="h-3.5 w-3.5" />测试已通过
               </span>
             )}
@@ -874,7 +874,7 @@ export default function AlertRuleEditPage() {
         </div>
       </div>
 
-      <div className="flex flex-col gap-5 xl:flex-row">
+      <div className="flex flex-col gap-4 xl:flex-row">
         {/* ===== 左栏：①-⑤ 分区（max-w 760）===== */}
         <div className="w-full max-w-[760px] space-y-4">
           {/* ① 基本信息 */}
@@ -903,14 +903,14 @@ export default function AlertRuleEditPage() {
                   >
                     <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${form.enabled ? 'translate-x-[22px]' : 'translate-x-0.5'}`} />
                   </button>
-                  <span className="text-[13px] text-muted-foreground">{form.enabled ? '已启用，参与线上匹配' : '已停用，不参与线上匹配'}</span>
+                  <span className="text-xs text-muted-foreground">{form.enabled ? '已启用，参与线上匹配' : '已停用，不参与线上匹配'}</span>
                 </div>
               </FormItem>
             </div>
             <FormItem label="描述" className="mt-4">
               <AutoGrowTextarea className={`${inputBaseCls} h-20 resize-none`} value={form.description} maxLength={255}
                 onChange={(e) => setF({ description: e.target.value })} placeholder="选填，说明规则用途与排查思路" />
-              <div className="text-right text-[11px] text-muted-foreground">{form.description.length}/255</div>
+              <div className="text-right text-xs text-muted-foreground">{form.description.length}/255</div>
             </FormItem>
           </SectionCard>
 
@@ -933,10 +933,10 @@ export default function AlertRuleEditPage() {
                   >
                     <div className="flex items-center gap-2">
                       <Icon className="h-4 w-4 text-primary" />
-                      <span className="text-[13.5px] font-medium">{v === 'match' ? '匹配' : v === 'stats' ? '统计' : '关联'}</span>
+                      <span className="text-xs font-medium">{v === 'match' ? '匹配' : v === 'stats' ? '统计' : '关联'}</span>
                       {active && <Check className="ml-auto h-4 w-4 text-primary" />}
                     </div>
-                    <div className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
+                    <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
                       {v === 'match' ? '单条日志命中条件即触发' : v === 'stats' ? '时间窗口内计数达阈值触发' : '多条件按时间先后关联触发（规划中）'}
                     </div>
                   </button>
@@ -956,7 +956,7 @@ export default function AlertRuleEditPage() {
                     { value: 'device_type', label: '指定' },
                   ].map(({ value: v, label }) => (
                     <button key={v} type="button"
-                      className={`h-8 flex-1 rounded-md border text-[13px] transition ${form.scope === v ? 'border-primary/60 bg-primary/5 font-medium text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
+                      className={`h-8 flex-1 rounded-md border text-xs transition ${form.scope === v ? 'border-primary/60 bg-primary/5 font-medium text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
                       onClick={() => setF({ scope: v })}>
                       {label}
                     </button>
@@ -973,13 +973,13 @@ export default function AlertRuleEditPage() {
 
             {/* 匹配条件构建器 */}
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-[13px] text-foreground">
-                匹配条件 <span className="ml-1 text-[12px] text-muted-foreground">（{treeLeafCount(tree)} 条）</span>
+              <span className="text-xs text-foreground">
+                匹配条件 <span className="ml-1 text-xs text-muted-foreground">（{treeLeafCount(tree)} 条）</span>
               </span>
               <div className="flex items-center gap-1 rounded-md border border-border bg-background p-0.5">
                 {['all', 'any'].map((l) => (
                   <button key={l} type="button"
-                    className={`rounded px-2.5 py-1 text-[12px] transition ${tree.logic === l ? 'bg-primary text-white' : 'text-muted-foreground hover:bg-accent'}`}
+                    className={`rounded px-2.5 py-1 text-xs transition ${tree.logic === l ? 'bg-primary text-white' : 'text-muted-foreground hover:bg-accent'}`}
                     onClick={() => setTopLogic(l)}>
                     {l === 'all' ? '全部满足 (AND)' : '任一满足 (OR)'}
                   </button>
@@ -996,11 +996,11 @@ export default function AlertRuleEditPage() {
               ))}
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-[12px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+              <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
                 onClick={addTopLeaf}>
                 <Plus className="h-3.5 w-3.5" />新增条件
               </button>
-              <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-[12px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+              <button type="button" className="flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
                 onClick={addTopGroup}>
                 <Layers className="h-3.5 w-3.5" />新增条件组
               </button>
@@ -1009,7 +1009,7 @@ export default function AlertRuleEditPage() {
             {/* 统计配置（type=stats） */}
             {form.type === 'stats' && (
               <div className="mt-4 rounded-lg border border-border bg-muted p-4">
-                <div className="mb-3 text-[13px] font-medium text-foreground">统计配置</div>
+                <div className="mb-3 text-xs font-medium text-foreground">统计配置</div>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <FormItem label="统计时间窗口">
                     <div className="flex gap-2">
@@ -1023,7 +1023,7 @@ export default function AlertRuleEditPage() {
                     <div className="flex flex-wrap gap-1.5 pt-1.5">
                       {QUICK_WINDOWS.map((q) => (
                         <button key={q.label} type="button"
-                          className={`rounded-full border px-2.5 py-0.5 text-[11.5px] transition ${Number(form.stats.window.value) === q.value && form.stats.window.unit === q.unit ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
+                          className={`rounded-full border px-2.5 py-0.5 text-xs transition ${Number(form.stats.window.value) === q.value && form.stats.window.unit === q.unit ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
                           onClick={() => setF({ stats: { ...form.stats, window: { value: q.value, unit: q.unit } } })}>
                           {q.label}
                         </button>
@@ -1049,7 +1049,7 @@ export default function AlertRuleEditPage() {
                         const on = form.stats.group_by.includes(f)
                         return (
                           <button key={f} type="button"
-                            className={`rounded-full border px-2.5 py-0.5 text-[11.5px] transition ${on ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
+                            className={`rounded-full border px-2.5 py-0.5 text-xs transition ${on ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
                             onClick={() => setF({
                               stats: { ...form.stats, group_by: on ? form.stats.group_by.filter((x) => x !== f) : [...form.stats.group_by, f] },
                             })}>
@@ -1065,7 +1065,7 @@ export default function AlertRuleEditPage() {
                   </FormItem>
                 </div>
                 {/* 实时人类可读预览 */}
-                <div className="mt-3 rounded-md bg-background px-3 py-2 text-[12px] text-muted-foreground">
+                <div className="mt-3 rounded-md bg-background px-3 py-2 text-xs text-muted-foreground">
                   {statsPreviewText(form.stats)}
                 </div>
               </div>
@@ -1075,7 +1075,7 @@ export default function AlertRuleEditPage() {
           {/* ④ 输出与字段配置 */}
           <SectionCard no="④" title="输出与字段配置" desc="取值方式：静态值（固定文本/等级）/ 字段映射（取解析字段）/ 保留解析结果">
             {form.type === 'stats' && (
-              <div className="mb-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-[12px] text-muted-foreground">
+              <div className="mb-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
                 统计类规则固定「生成告警」，在计数达到阈值时按以下字段配置产生告警。
               </div>
             )}
@@ -1099,15 +1099,15 @@ export default function AlertRuleEditPage() {
                   <input className={inputBaseCls} value={form.suppressReason} maxLength={512}
                     onChange={(e) => setF({ suppressReason: e.target.value })} placeholder="如：健康检查误报，无需告警" />
                 </FormItem>
-                <p className="mt-2 text-[12px] text-muted-foreground">抑制规则命中后不产生告警，仅保留接收明细与命中记录。</p>
+                <p className="mt-2 text-xs text-muted-foreground">抑制规则命中后不产生告警，仅保留接收明细与命中记录。</p>
               </div>
             ) : form.action === 'adjust_level' && form.type !== 'stats' ? (
               <div className="rounded-lg border border-border bg-muted p-4">
-                <div className="text-[13px] text-foreground">等级映射（原等级 → 新等级，未映射的等级保留原值）</div>
+                <div className="text-xs text-foreground">等级映射（原等级 → 新等级，未映射的等级保留原值）</div>
                 <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
                   {RISK_LEVELS.map((l) => (
                     <div key={l.value} className="flex items-center gap-2">
-                      <span className="w-[86px] shrink-0 text-[12.5px]">{l.label}（{l.value}）</span>
+                      <span className="w-[86px] shrink-0 text-xs">{l.label}（{l.value}）</span>
                       <span className="text-muted-foreground">→</span>
                       <CompactSelect size="md" className="flex-1" value={form.levelMap[l.value] ?? ''}
                         onChange={(e) => {
@@ -1144,10 +1144,10 @@ export default function AlertRuleEditPage() {
                 {form.fieldMapping.alert_name?.mode === 'static' && (
                   <div className="mt-2 space-y-1.5 rounded-md border border-border bg-muted p-3">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11.5px] text-muted-foreground">插入变量：</span>
+                      <span className="text-xs text-muted-foreground">插入变量：</span>
                       {TEMPLATE_VARS.map((v) => (
                         <button key={v} type="button"
-                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
                           onClick={() => setF({
                             fieldMapping: {
                               ...form.fieldMapping,
@@ -1158,16 +1158,16 @@ export default function AlertRuleEditPage() {
                         </button>
                       ))}
                     </div>
-                    <div className="text-[12px]">
+                    <div className="text-xs">
                       <span className="text-muted-foreground">名称预览：</span>
                       <span className="font-medium">{namePreview || '（空）'}</span>
-                      {!firstSample && <span className="ml-1.5 text-[11px] text-muted-foreground">（在右侧测试面板填入样例后按样例字段渲染）</span>}
+                      {!firstSample && <span className="ml-1.5 text-xs text-muted-foreground">（在右侧测试面板填入样例后按样例字段渲染）</span>}
                     </div>
                   </div>
                 )}
                 {/* 可选字段折叠区 */}
                 <button type="button"
-                  className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-2 text-[12.5px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+                  className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-2 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
                   onClick={() => setOptionalOpen((v) => !v)}>
                   <Plus className="h-3.5 w-3.5" />
                   添加可选字段（已配置 {mainConfigured + optionalConfigured}/{FIELDMAP_MAIN.length + FIELDMAP_OPTIONAL.length} 条）
@@ -1203,16 +1203,16 @@ export default function AlertRuleEditPage() {
           <SectionCard no="⑤" title="告警聚合" desc="告警生成侧去重：同键同窗的告警合并为一条，聚合计数累加（与统计触发不同）">
             {!aggEnabled ? (
               <button type="button"
-                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-2.5 text-[12.5px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-2.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
                 onClick={() => { setAggEnabled(true); setF({ aggregation: form.aggregation || { window: { value: 30, unit: 'minute' }, keys: [] } }) }}>
                 <Plus className="h-3.5 w-3.5" />启用告警聚合
               </button>
             ) : (
               <div className="space-y-4 rounded-lg border border-border bg-muted p-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-[13px] text-foreground">满足以下条件的多条告警将聚合为一条，聚合计数在告警详情中展示</span>
+                  <span className="text-xs text-foreground">满足以下条件的多条告警将聚合为一条，聚合计数在告警详情中展示</span>
                   <button type="button"
-                    className="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground transition hover:bg-accent hover:text-destructive"
+                    className="flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition hover:bg-accent hover:text-destructive"
                     onClick={() => confirm({
                       title: '停用告警聚合',
                       message: '停用后，同键同窗的告警将各自产生独立记录。确认停用？',
@@ -1235,7 +1235,7 @@ export default function AlertRuleEditPage() {
                     <div className="flex flex-wrap gap-1.5 pt-1.5">
                       {QUICK_AGGS.map((q) => (
                         <button key={q.label} type="button"
-                          className={`rounded-full border px-2.5 py-0.5 text-[11.5px] transition ${Number(form.aggregation.window.value) === q.value && form.aggregation.window.unit === q.unit ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
+                          className={`rounded-full border px-2.5 py-0.5 text-xs transition ${Number(form.aggregation.window.value) === q.value && form.aggregation.window.unit === q.unit ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
                           onClick={() => setF({ aggregation: { ...form.aggregation, window: { value: q.value, unit: q.unit } } })}>
                           {q.label}
                         </button>
@@ -1248,7 +1248,7 @@ export default function AlertRuleEditPage() {
                         const on = form.aggregation.keys.includes(f)
                         return (
                           <button key={f} type="button"
-                            className={`rounded-full border px-2.5 py-0.5 text-[11.5px] transition ${on ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
+                            className={`rounded-full border px-2.5 py-0.5 text-xs transition ${on ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40'}`}
                             onClick={() => setF({
                               aggregation: { ...form.aggregation, keys: on ? form.aggregation.keys.filter((x) => x !== f) : [...form.aggregation.keys, f] },
                             })}>
@@ -1264,12 +1264,12 @@ export default function AlertRuleEditPage() {
                             setF({ aggregation: { ...form.aggregation, keys: [...form.aggregation.keys, v] } })
                           }
                         }} />
-                      <div className="text-[11px] text-muted-foreground">从全部标准字段中追加（已选 {form.aggregation.keys.length} 个）</div>
+                      <div className="text-xs text-muted-foreground">从全部标准字段中追加（已选 {form.aggregation.keys.length} 个）</div>
                     </div>
                   </FormItem>
                 </div>
                 {/* 实时人类可读预览 */}
-                <div className="rounded-md bg-background px-3 py-2 text-[12px] text-muted-foreground">
+                <div className="rounded-md bg-background px-3 py-2 text-xs text-muted-foreground">
                   {form.aggregation.keys.length
                     ? <>发生时间相差不超过 <span className="text-foreground">{form.aggregation.window.value} {unitName(form.aggregation.window.unit)}</span> 且 <span className="text-foreground">{form.aggregation.keys.map(fieldLabel).join('、')}</span> 均相同的告警，将会被聚合为一条</>
                     : <span className="text-warning">尚未选择聚合键字段</span>}
@@ -1283,10 +1283,10 @@ export default function AlertRuleEditPage() {
         <div className="w-full min-w-0 space-y-4 xl:flex-1">
           <div className="space-y-4 xl:sticky xl:top-[72px]">
             {/* 规则摘要 */}
-            <div className="card border-primary/20 bg-primary/[0.04] p-5">
-              <div className="mb-2 text-[13px] font-semibold text-foreground">规则摘要</div>
-              <p className="text-[13px] leading-relaxed text-foreground">{humanSummary}</p>
-              <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border pt-3 text-[12px]">
+            <div className="card border-primary/20 bg-primary/[0.04] p-4">
+              <div className="mb-2 text-xs font-semibold text-foreground">规则摘要</div>
+              <p className="text-xs leading-relaxed text-foreground">{humanSummary}</p>
+              <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border pt-3 text-xs">
                 <SummaryRow k="类型" v={form.type === 'stats' ? (form.stats.method === 'count_distinct' ? '统计(去重)' : '统计(不去重)') : '匹配'} />
                 <SummaryRow k="优先级" v={`${form.priority}（第 ${priorityPos.pos} 位）`} />
                 <SummaryRow k="分组" v={form.group || '--'} />
@@ -1297,9 +1297,9 @@ export default function AlertRuleEditPage() {
             </div>
 
             {/* 测试面板 */}
-            <div className="card p-5">
+            <div className="card p-4">
               <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-[13px] font-semibold text-foreground">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
                   <FlaskConical className="h-4 w-4 text-primary" />保存前测试
                 </div>
                 <div className="flex items-center gap-2">
@@ -1311,19 +1311,19 @@ export default function AlertRuleEditPage() {
                   </Button>
                 </div>
               </div>
-              <p className="mb-2 text-[11.5px] leading-relaxed text-muted-foreground">
+              <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
                 只读预览：不落库、不产生真实告警与通知。当前编辑中的规则作为草稿按优先级参与匹配；
                 {form.type === 'stats' && ' 统计规则多条样例默认视为同窗口事件（可用 occur_timestamp 标记时间）。'}
               </p>
               <AutoGrowTextarea
-                className={`${inputBaseCls} h-36 resize-none font-mono text-[12px] leading-relaxed`}
+                className={`${inputBaseCls} h-36 resize-none font-mono text-xs leading-relaxed`}
                 value={testText} onChange={(e) => { setTestText(e.target.value); setTestResult(null) }} spellCheck={false}
               />
               {/* 最近日志挑选 */}
               {logsOpen && (
                 <div className="mt-3 rounded-lg border border-border bg-muted p-2.5">
                   <div className="mb-2 flex items-center justify-between">
-                    <span className="text-[11.5px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       最近解析成功的日志（勾选后导入其解析字段）{logsLoading && <span className="ml-1 text-primary">加载中…</span>}
                     </span>
                     <div className="flex gap-1.5">
@@ -1343,13 +1343,13 @@ export default function AlertRuleEditPage() {
                           <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${checked ? 'border-primary bg-primary text-white' : 'border-border'}`}>
                             {checked && <Check className="h-3 w-3" />}
                           </span>
-                          <span className="w-[110px] shrink-0 truncate font-mono text-[10.5px] text-muted-foreground">{l.source_ip || '--'}</span>
-                          <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={l.raw_data}>{l.raw_data}</span>
+                          <span className="w-[110px] shrink-0 truncate font-mono text-xs text-muted-foreground">{l.source_ip || '--'}</span>
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs" title={l.raw_data}>{l.raw_data}</span>
                         </button>
                       )
                     })}
                     {!logsLoading && !recentLogs.length && (
-                      <div className="py-4 text-center text-[12px] text-muted-foreground">暂无解析成功的日志</div>
+                      <div className="py-4 text-center text-xs text-muted-foreground">暂无解析成功的日志</div>
                     )}
                   </div>
                 </div>
@@ -1357,7 +1357,7 @@ export default function AlertRuleEditPage() {
               {/* 测试结果 */}
               <div className="mt-3 max-h-[520px] space-y-2.5 overflow-y-auto">
                 {!testResult ? (
-                  <div className="rounded-lg border border-dashed border-border py-6 text-center text-[12px] text-muted-foreground">
+                  <div className="rounded-lg border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
                     填写样例后点击「运行测试」
                   </div>
                 ) : (
@@ -1395,13 +1395,13 @@ function TestResultCard({ idx, r }) {
   return (
     <div className="rounded-lg border border-border bg-background p-3">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[12px] font-medium">样例 #{idx + 1}</span>
-        <span className={`rounded border px-2 py-0.5 text-[11px] ${outcomeMeta.cls}`}>
+        <span className="text-xs font-medium">样例 #{idx + 1}</span>
+        <span className={`rounded border px-2 py-0.5 text-xs ${outcomeMeta.cls}`}>
           {outcomeMeta.label}{isDraft && final.outcome !== 'no_rule' ? '（当前规则）' : ''}
         </span>
       </div>
       {/* 最终动作 */}
-      <div className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">
+      <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
         {final.note}
         {final.alert_name != null && final.outcome === 'alert' && <> · 名称：<span className="font-medium text-foreground">{final.alert_name || '（空）'}</span></>}
         {final.risk_level != null && final.outcome === 'alert' && <> · 等级：<span className="font-medium text-foreground">{riskLevelName(final.risk_level)}</span></>}
@@ -1411,7 +1411,7 @@ function TestResultCard({ idx, r }) {
       {(r.chain || []).length > 0 && (
         <div className="mt-2 space-y-1 border-t border-border pt-1.5">
           {r.chain.map((c, ci) => (
-            <div key={ci} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+            <div key={ci} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
               <span className={c.matched ? 'text-success' : 'text-muted-foreground'}>
                 {c.matched ? '✓ 命中' : '✗ 未命中'}
               </span>
@@ -1431,7 +1431,7 @@ function TestResultCard({ idx, r }) {
       {(r.stats_info || []).length > 0 && (
         <div className="mt-2 space-y-1 border-t border-border pt-1.5">
           {r.stats_info.map((s, si) => (
-            <div key={si} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+            <div key={si} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
               <span className={s.triggered ? 'text-success' : s.matched ? 'text-warning' : 'text-muted-foreground'}>
                 {s.triggered ? '✓ 达阈值触发' : s.matched ? '⏳ 窗口累计' : '— 未计入'}
               </span>

@@ -106,7 +106,7 @@ _RESOURCE_MAP = {
     # 日志采集相关：接收器 / 解析模板（ingest 前缀下主要是 strategies 写操作）
     "log-receivers": "log_receiver",
     "ingest": "strategy",
-    # API 开放平台管理操作（应用/密钥/授权）
+    # API 开放管理操作（应用/密钥/授权）
     "open-admin": "open_api_app",
 }
 

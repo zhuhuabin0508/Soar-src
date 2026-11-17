@@ -143,6 +143,7 @@ def assemble_system_prompt(
     agent,
     fallback_prompt: str | None = None,
     allow_none: bool = False,
+    extra_skill_ids: list[int] | None = None,
 ) -> str | None:
     """组装最终 system prompt：基础提示词 + 启用技能正文。
 
@@ -175,8 +176,8 @@ def assemble_system_prompt(
     # 1. 取 base prompt
     base = agent.system_prompt or ""
 
-    # 2. 加载启用的技能
-    skill_ids = list(agent.enabled_skills or [])
+    # 2. 加载启用的技能（智能体常驻技能 + 本次对话显式选择的技能，去重保序）
+    skill_ids = list(dict.fromkeys([*(agent.enabled_skills or []), *(extra_skill_ids or [])]))
     skills = _load_enabled_skills(db, skill_ids)
 
     # 3. 处理 base 为空的情况
@@ -222,7 +223,23 @@ def assemble_system_prompt(
         # 所有技能内容都为空，退化为仅 base
         return _append_time_block(base)
 
-    skill_section = "=== 启用技能 ===\n" + "\n\n".join(skill_blocks) + "\n=== 启用技能结束 ==="
+    selected_note = ""
+    if extra_skill_ids:
+        selected_note = (
+            "【本次对话已选技能】用户已显式选择以下技能，"
+            "回复与工具调用必须严格遵循对应技能的要求，不得忽略。\n"
+        )
+        if any(getattr(s, "name", "") == "党政机关公文格式" for s in skills):
+            selected_note += (
+                "涉及生成 Word 文档时，必须调用 generate_document，"
+                '并在 options 中传入 style="gb9704"。\n'
+            )
+    skill_section = (
+        "=== 启用技能 ===\n"
+        + selected_note
+        + "\n\n".join(skill_blocks)
+        + "\n=== 启用技能结束 ==="
+    )
 
     # 7. 拼接 base + 技能段
     if base.strip():

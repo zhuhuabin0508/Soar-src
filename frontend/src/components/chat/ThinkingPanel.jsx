@@ -105,7 +105,7 @@ export default function ThinkingPanel({ thinking, streaming = false }) {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="flex items-center gap-1 text-[11px] text-muted-foreground transition hover:text-muted-foreground"
+          className="flex items-center gap-1 text-xs text-muted-foreground transition hover:text-muted-foreground"
         >
           <ChevronRight className={`inline-block h-3 w-3 transition-transform ${open ? 'rotate-90' : ''}`} />
           <Brain className="h-3.5 w-3.5" />
@@ -119,7 +119,7 @@ export default function ThinkingPanel({ thinking, streaming = false }) {
           <button
             type="button"
             onClick={handleCopy}
-            className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground transition hover:text-muted-foreground"
+            className="ml-auto flex items-center gap-1 text-xs text-muted-foreground transition hover:text-muted-foreground"
             title="复制思考过程"
           >
             {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
@@ -130,7 +130,7 @@ export default function ThinkingPanel({ thinking, streaming = false }) {
 
       {/* 展开内容：结构化渲染 */}
       {open && (
-        <div className="mt-1 max-h-80 overflow-y-auto rounded-lg bg-muted p-2.5 text-[12px] leading-relaxed text-muted-foreground">
+        <div className="mt-1 max-h-80 overflow-y-auto rounded-lg bg-muted p-2.5 text-xs leading-relaxed text-muted-foreground">
           {highlighted.map(({ lineIdx, segments }) => (
             <div key={lineIdx} className="py-0.5">
               {segments.map((seg, i) => {

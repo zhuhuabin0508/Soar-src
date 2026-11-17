@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { Modal } from '../components/Dialog'
-import {Button, Card, DataTable, Badge, Pagination, Sparkline, CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
+import {Button, Card, DataTable, Badge, Pagination, Sparkline, CompactSelect, DatePicker, AutoGrowTextarea, SearchInput } from '../components/ui'
 import { inputBaseCls } from '../components/property/FormControls'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import { alertApi } from '../api/alert'
@@ -135,7 +135,7 @@ function StatCard({ icon: Icon, label, value, delta, onClick, clickable, valueCl
           <div className="mt-0.5 flex items-baseline gap-1.5">
             <span className={`text-xl font-semibold tabular-nums ${valueClass || 'text-foreground'}`}>{value}</span>
             {delta != null && delta !== 0 && (
-              <span className={`text-[11px] tabular-nums ${delta > 0 ? 'text-destructive' : 'text-success'}`}>
+              <span className={`text-xs tabular-nums ${delta > 0 ? 'text-destructive' : 'text-success'}`}>
                 {delta > 0 ? '↑' : '↓'} {Math.abs(delta)}
               </span>
             )}
@@ -159,7 +159,7 @@ function IpCell({ raw }) {
   } else if (raw) list = [raw]
   if (list.length === 0) return <span className="text-muted-foreground">--</span>
   return (
-    <span className="font-mono text-[13px]" title={list.join(', ')}>
+    <span className="font-mono text-xs" title={list.join(', ')}>
       {list[0]}{list.length > 1 && <span className="ml-0.5 text-primary">+{list.length - 1}</span>}
     </span>
   )
@@ -170,7 +170,7 @@ function TextCell({ v, mono, muted }) {
   if (v == null || v === '') return <span className="text-muted-foreground">--</span>
   const text = String(v)
   return (
-    <span className={`${mono ? 'font-mono text-[13px]' : ''} ${muted ? 'text-muted-foreground' : ''}`} title={text}>
+    <span className={`${mono ? 'font-mono text-xs' : ''} ${muted ? 'text-muted-foreground' : ''}`} title={text}>
       {text}
     </span>
   )
@@ -183,7 +183,7 @@ function NumCell({ v }) {
 }
 function TimeCell({ v }) {
   if (!v) return <span className="text-muted-foreground">--</span>
-  return <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(v)}</span>
+  return <span className="font-mono text-xs text-muted-foreground">{fmtTime(v)}</span>
 }
 function JsonCell({ v }) {
   // 后端已反序列化的数组/对象 → 紧凑单行展示，悬停看全部
@@ -192,7 +192,7 @@ function JsonCell({ v }) {
   else if (v != null && typeof v === 'object') text = JSON.stringify(v)
   else if (v != null && v !== '') text = String(v)
   if (!text) return <span className="text-muted-foreground">--</span>
-  return <span className="font-mono text-[12px] text-muted-foreground" title={text}>{text}</span>
+  return <span className="font-mono text-xs text-muted-foreground" title={text}>{text}</span>
 }
 
 // 关联本地资产库单元格：命中资产名称可点击，跳转资产列表并按命中 IP 搜索
@@ -201,7 +201,7 @@ function AssetLinkCell({ id, name, ip }) {
   if (!id) return <span className="text-muted-foreground">--</span>
   return (
     <button
-      className="block max-w-full truncate text-left text-[13px] font-medium text-primary underline-offset-2 hover:underline"
+      className="block max-w-full truncate text-left text-xs font-medium text-primary underline-offset-2 hover:underline"
       title={ip ? `${name || `资产 #${id}`}（${ip}）` : name || `资产 #${id}`}
       onClick={(e) => { e.stopPropagation(); if (!guardNavPermission('asset_list', 'view', '资产清单')) return; navigate(`/assets/list?keyword=${encodeURIComponent(ip || name || '')}`) }}
     >
@@ -244,7 +244,7 @@ const COL_DEFS = [
   { key: 'src_port', header: '源端口', width: '90px', cat: '源与目的', numeric: true, render: (r) => <TextCell v={r.src_port} mono /> },
   { key: 'dst_port', header: '目的端口', width: '90px', cat: '源与目的', numeric: true, render: (r) => <TextCell v={r.dst_port} mono /> },
   { key: 'direction', header: '方向', width: '80px', cat: '源与目的', def: true, render: (r) => <TextCell v={r.direction_name} muted /> },
-  { key: 'protocol', header: '协议', width: '80px', cat: '源与目的', def: true, render: (r) => <span className="font-mono text-[13px] uppercase">{r.protocol || '--'}</span> },
+  { key: 'protocol', header: '协议', width: '80px', cat: '源与目的', def: true, render: (r) => <span className="font-mono text-xs uppercase">{r.protocol || '--'}</span> },
   { key: 'stage', header: '告警阶段', width: '100px', cat: '威胁分类', def: true, render: (r) => <TextCell v={r.stage_name} /> },
   { key: 'attck_technique', header: 'ATT&CK技术', width: '150px', cat: '威胁分类', render: (r) => <JsonCell v={r.attck_technique} /> },
   { key: 'risk_tag', header: '风险标签', width: '140px', cat: '威胁分类', render: (r) => <JsonCell v={r.risk_tag} /> },
@@ -289,7 +289,7 @@ const COL_DEFS = [
             {label}
           </Badge>
           {r.assignee_name && (
-            <span className="truncate text-[11px] text-muted-foreground" title={`指派: ${r.assignee_name}`}>
+            <span className="truncate text-xs text-muted-foreground" title={`指派: ${r.assignee_name}`}>
               {r.assignee_name}
             </span>
           )}
@@ -639,7 +639,7 @@ export default function AlertList() {
         </button>
         {r.aggregation_count > 1 && (
           <span
-            className="inline-flex shrink-0 items-center rounded border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-[10.5px] font-medium text-primary"
+            className="inline-flex shrink-0 items-center rounded border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-xs font-medium text-primary"
             title={`同类告警聚合：${r.aggregation_count} 条合并展示`}
           >
             ×{r.aggregation_count.toLocaleString('zh-CN')}
@@ -834,11 +834,12 @@ export default function AlertList() {
             onChange={(e) => { setQuickRange(''); setF({ end_time: e.target.value }) }}
             title="结束时间"
           />
-          <input
-            className={`${inputBaseCls} h-[34px] min-w-[180px] flex-1`}
+          <SearchInput
+            className="min-w-[180px] flex-1"
             placeholder="搜索：源IP / 目的IP / 告警名称"
             value={filters.keyword}
-            onChange={(e) => setF({ keyword: e.target.value })}
+            onChange={(v) => setF({ keyword: v })}
+            onClear={() => setF({ keyword: '' })}
             onKeyDown={(e) => { if (e.key === 'Enter') load() }}
           />
 
@@ -851,7 +852,7 @@ export default function AlertList() {
           >
             <SlidersHorizontal className="h-3.5 w-3.5" /> 更多筛选
             {advancedActiveCount > 0 && (
-              <span className={`ml-0.5 rounded-full px-1.5 text-[10px] font-semibold tabular-nums ${showMoreFilters ? 'bg-white/25' : 'bg-primary/15 text-primary'}`}>
+              <span className={`ml-0.5 rounded-full px-1.5 text-xs font-semibold tabular-nums ${showMoreFilters ? 'bg-white/25' : 'bg-primary/15 text-primary'}`}>
                 {advancedActiveCount}
               </span>
             )}
@@ -1006,7 +1007,7 @@ export default function AlertList() {
           <div className="relative" ref={colRef}>
             <Button size="sm" variant="ghost" onClick={() => setColOpen((v) => !v)} title="自定义列表显示的列（标准模型全部字段可选）">
               <Columns3 className="h-3.5 w-3.5" /> 显示列
-              <span className="ml-0.5 rounded-full bg-primary/15 px-1.5 text-[10px] font-semibold tabular-nums text-primary">
+              <span className="ml-0.5 rounded-full bg-primary/15 px-1.5 text-xs font-semibold tabular-nums text-primary">
                 {visibleCols.length}/{COL_DEFS.length}
               </span>
             </Button>
@@ -1022,7 +1023,7 @@ export default function AlertList() {
                 <div className="max-h-[360px] overflow-y-auto">
                   {colGroups.map(([cat, cols]) => (
                     <div key={cat} className="mb-1">
-                      <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">{cat}</div>
+                      <div className="px-2 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">{cat}</div>
                       {cols.map((c) => {
                         const shown = visibleCols.includes(c.key)
                         return (
@@ -1045,7 +1046,7 @@ export default function AlertList() {
                   )}
                 </div>
                 <div className="mt-1 flex items-center justify-between border-t border-border px-2 pt-2">
-                  <span className="text-[11px] text-muted-foreground">已显示 {visibleCols.length} / {COL_DEFS.length} 列</span>
+                  <span className="text-xs text-muted-foreground">已显示 {visibleCols.length} / {COL_DEFS.length} 列</span>
                   <button
                     className="text-xs text-primary transition hover:underline"
                     onClick={() => setVisibleCols(DEFAULT_VISIBLE_KEYS)}
@@ -1197,7 +1198,7 @@ export default function AlertList() {
                 />
               </div>
             </div>
-            <div className="mt-5 flex justify-end gap-2">
+            <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setBatchOpen(false)}>取消</Button>
               <Button variant="primary" loading={batchSubmitting} onClick={submitBatchHandle}>
                 确认处置

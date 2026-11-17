@@ -31,7 +31,7 @@ import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { toast } from '../store/toastStore'
 import { canEditResource } from '../utils/permissions'
 import MarkdownRenderer from '../components/MarkdownRenderer'
-import {CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 
 const NAV_ITEMS = [
   { id: 'config', label: '配置', icon: Settings },
@@ -144,7 +144,7 @@ function AddPicker({ title, options, value, onChange, onClose, kind, onCreateSki
         </div>
         {isSkill && (
           <>
-            <div className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="border-b border-border px-4 py-2 text-xs leading-relaxed text-muted-foreground">
               Skill 只保存说明文字，不会执行脚本。脚本请到工具库添加。
               <button type="button" className="ml-1 text-primary hover:underline" onClick={() => { onClose(); navigate('/skills') }}>
                 技能库
@@ -154,21 +154,15 @@ function AddPicker({ title, options, value, onChange, onClose, kind, onCreateSki
                 前往工具
               </button>
             </div>
-            <div className="flex gap-1 border-b border-border px-4 pt-2">
-              <button
-                type="button"
-                onClick={() => setTab('library')}
-                className={`border-b-2 px-3 py-1.5 text-xs ${tab === 'library' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground'}`}
-              >
-                选用技能
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('text')}
-                className={`border-b-2 px-3 py-1.5 text-xs ${tab === 'text' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground'}`}
-              >
-                导入文本
-              </button>
+            <div className="px-4 pt-3 pb-2">
+              <PillTabs
+                items={[
+                  { key: 'library', label: '选用技能' },
+                  { key: 'text', label: '导入文本' },
+                ]}
+                value={tab}
+                onChange={setTab}
+              />
             </div>
           </>
         )}
@@ -208,14 +202,14 @@ function AddPicker({ title, options, value, onChange, onClose, kind, onCreateSki
                         <span className="min-w-0">
                           <span className="block truncate font-medium">{o.label}</span>
                           {o.description ? (
-                            <span className="mt-0.5 block line-clamp-2 text-[11px] text-muted-foreground">{o.description}</span>
+                            <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">{o.description}</span>
                           ) : null}
                         </span>
                       </label>
                       {isSkill ? (
                         <button
                           type="button"
-                          className="mt-0.5 shrink-0 text-[11px] text-primary hover:underline"
+                          className="mt-0.5 shrink-0 text-xs text-primary hover:underline"
                           onClick={() => {
                             onClose()
                             navigate(`/skills?edit=${o.value}`)
@@ -259,7 +253,7 @@ function AddPicker({ title, options, value, onChange, onClose, kind, onCreateSki
             <button
               type="button"
               onClick={() => textFileRef.current?.click()}
-              className="self-start text-[11px] text-primary hover:underline"
+              className="self-start text-xs text-primary hover:underline"
             >
               从 md / txt / json 导入正文
             </button>
@@ -288,7 +282,7 @@ function ChipList({ items, onRemove }) {
       {items.map((it) => (
         <span
           key={it.value}
-          className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px]"
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary px-2 py-0.5 text-xs"
         >
           {it.label}
           <button type="button" onClick={() => onRemove(it.value)} className="text-muted-foreground hover:text-foreground">
@@ -348,27 +342,27 @@ function DebugTrace({ tools, statuses, logs, files, thinking, live }) {
       <div className="text-[10px] font-semibold uppercase tracking-wide text-primary/80">调试明细</div>
       {(thinking || live) && (
         <details className="rounded border border-border bg-card">
-          <summary className="cursor-pointer px-2 py-1 text-[11px] text-muted-foreground">思考过程</summary>
+          <summary className="cursor-pointer px-2 py-1 text-xs text-muted-foreground">思考过程</summary>
           {live ? (
-            <div ref={live.thinkingEl} className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-border px-2 py-1.5 font-mono text-[11px] leading-relaxed text-muted-foreground" />
+            <div ref={live.thinkingEl} className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-border px-2 py-1.5 font-mono text-xs leading-relaxed text-muted-foreground" />
           ) : (
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-border px-2 py-1.5 font-mono text-[11px] leading-relaxed text-muted-foreground">{thinking}</pre>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-border px-2 py-1.5 font-mono text-xs leading-relaxed text-muted-foreground">{thinking}</pre>
           )}
         </details>
       )}
       {statuses?.length > 0 && (
-        <div className="rounded border border-border bg-card px-2 py-1 font-mono text-[11px] text-muted-foreground">
+        <div className="rounded border border-border bg-card px-2 py-1 font-mono text-xs text-muted-foreground">
           {statuses.map((s, i) => <div key={i}>[状态] {s}</div>)}
         </div>
       )}
       {logs?.length > 0 && (
-        <div className="max-h-32 overflow-auto rounded border border-border bg-card px-2 py-1 font-mono text-[11px] text-muted-foreground">
+        <div className="max-h-32 overflow-auto rounded border border-border bg-card px-2 py-1 font-mono text-xs text-muted-foreground">
           {logs.map((s, i) => <div key={i}>{s}</div>)}
         </div>
       )}
       {tools?.map((t, i) => (
         <details key={t.call_id || i} className="rounded border border-border bg-card">
-          <summary className="flex cursor-pointer items-center gap-1.5 px-2 py-1 text-[11px]">
+          <summary className="flex cursor-pointer items-center gap-1.5 px-2 py-1 text-xs">
             <Wrench className="h-3 w-3 text-primary" />
             <span className="font-mono text-primary">{t.name}</span>
             <span className={t.status === 'running' ? 'text-warning' : t.error ? 'text-destructive' : 'text-emerald-500'}>
@@ -376,24 +370,24 @@ function DebugTrace({ tools, statuses, logs, files, thinking, live }) {
             </span>
           </summary>
           <div className="space-y-1 border-t border-border px-2 py-1.5">
-            {t.message && <div className="text-[11px] text-muted-foreground">{t.message}</div>}
+            {t.message && <div className="text-xs text-muted-foreground">{t.message}</div>}
             {t.argsText && (
               <div>
                 <div className="text-[10px] uppercase text-muted-foreground">参数</div>
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground">{t.argsText}</pre>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-foreground">{t.argsText}</pre>
               </div>
             )}
             {t.resultText && (
               <div>
                 <div className="text-[10px] uppercase text-muted-foreground">返回</div>
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground">{t.resultText}</pre>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-foreground">{t.resultText}</pre>
               </div>
             )}
           </div>
         </details>
       ))}
       {files?.length > 0 && (
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           {files.map((f, i) => <div key={i}>文件 {f.file_name || f.file_id}</div>)}
         </div>
       )}
@@ -603,7 +597,7 @@ function AgentPreviewPane({ agentId, engine, ensureSaved }) {
         <button
           type="button"
           onClick={clearMemory}
-          className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+          className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
         >
           <Eraser className="h-3 w-3" />
           清空记忆
@@ -1031,7 +1025,7 @@ export default function AgentWorkspace() {
           })}
         </nav>
         <div className="mt-auto border-t border-border p-3">
-          <div className="mb-2 text-center text-[11px] text-muted-foreground">
+          <div className="mb-2 text-center text-xs text-muted-foreground">
             {published ? '已发布，可在对话中使用' : '草稿，发布后才会出现在对话里'}
           </div>
           <button
@@ -1069,7 +1063,7 @@ export default function AgentWorkspace() {
             <button
               type="button"
               onClick={() => navigate(`/agents/${agentId}/advanced`)}
-              className="mt-2 w-full text-center text-[11px] text-muted-foreground hover:text-foreground"
+              className="mt-2 w-full text-center text-xs text-muted-foreground hover:text-foreground"
             >
               高级选项
             </button>
@@ -1081,7 +1075,7 @@ export default function AgentWorkspace() {
         {nav === 'config' && (
           <>
             <section className="min-w-0 flex-1 overflow-auto border-r border-border px-8 py-6">
-              <h2 className="mb-5 text-base font-semibold">配置</h2>
+              <h2 className="mb-4 text-base font-semibold">配置</h2>
               <div className="mb-6">
                 <div className="mb-1.5 text-xs font-medium text-muted-foreground">模型</div>
                 <CompactSelect
@@ -1114,7 +1108,7 @@ export default function AgentWorkspace() {
                   <option value="soc_decision">研判决策</option>
                   <option value="ban_risk_analyze">封禁研判</option>
                 </CompactSelect>
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-xs text-muted-foreground">
                   工作流和同步测试按这里取值。对话页始终返回对话流。
                 </p>
               </div>
@@ -1132,7 +1126,7 @@ export default function AgentWorkspace() {
                 <div className="mb-1 flex items-center justify-between">
                   <div>
                     <div className="text-xs font-medium">SKILL</div>
-                    <div className="text-[11px] text-muted-foreground">说明文字会注入提示词。脚本请到工具里添加。</div>
+                    <div className="text-xs text-muted-foreground">说明文字会注入提示词。脚本请到工具里添加。</div>
                   </div>
                   {canEdit && (
                     <button type="button" onClick={() => setPicker('skill')} className="inline-flex items-center gap-1 text-xs text-primary">
@@ -1158,7 +1152,7 @@ export default function AgentWorkspace() {
                 <div className="mb-1 flex items-center justify-between">
                   <div>
                     <div className="text-xs font-medium">文件</div>
-                    <div className="text-[11px] text-muted-foreground">上传智能体可读取的文档、规范或指南</div>
+                    <div className="text-xs text-muted-foreground">上传智能体可读取的文档、规范或指南</div>
                   </div>
                   {canEdit && (
                     <button type="button" onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-1 text-xs text-primary">
@@ -1188,7 +1182,7 @@ export default function AgentWorkspace() {
                 <div className="mb-1 flex items-center justify-between">
                   <div>
                     <div className="text-xs font-medium">工具</div>
-                    <div className="text-[11px] text-muted-foreground">HTTP / 代码 / 框架工具，供模型按需调用</div>
+                    <div className="text-xs text-muted-foreground">HTTP / 代码 / 框架工具，供模型按需调用</div>
                   </div>
                   {canEdit && (
                     <button type="button" onClick={() => setPicker('tool')} className="inline-flex items-center gap-1 text-xs text-primary">
@@ -1209,7 +1203,7 @@ export default function AgentWorkspace() {
                 <div className="mb-1 flex items-center justify-between">
                   <div>
                     <div className="text-xs font-medium">工作流</div>
-                    <div className="text-[11px] text-muted-foreground">已发布流程会作为独立工具挂到智能体上</div>
+                    <div className="text-xs text-muted-foreground">已发布流程会作为独立工具挂到智能体上</div>
                   </div>
                   {canEdit && (
                     <button type="button" onClick={() => setPicker('workflow')} className="inline-flex items-center gap-1 text-xs text-primary">
@@ -1230,7 +1224,7 @@ export default function AgentWorkspace() {
                 <div className="mb-1 flex items-center justify-between">
                   <div>
                     <div className="text-xs font-medium">知识库</div>
-                    <div className="text-[11px] text-muted-foreground">检索文档分段，补充领域知识</div>
+                    <div className="text-xs text-muted-foreground">检索文档分段，补充领域知识</div>
                   </div>
                   {canEdit && (
                     <button type="button" onClick={() => setPicker('kb')} className="inline-flex items-center gap-1 text-xs text-primary">
@@ -1250,24 +1244,15 @@ export default function AgentWorkspace() {
             </section>
 
             <aside className="flex w-[420px] shrink-0 flex-col bg-card">
-              <div className="flex items-center gap-4 border-b border-border px-5">
-                {[
-                  { id: 'build', label: '构建', icon: Sparkles },
-                  { id: 'preview', label: '预览', icon: MessageSquare },
-                ].map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => setRightTab(t.id)}
-                    className={`relative flex items-center gap-1.5 py-3 text-sm ${
-                      rightTab === t.id ? 'font-medium text-foreground' : 'text-muted-foreground'
-                    }`}
-                  >
-                    <t.icon className="h-3.5 w-3.5" />
-                    {t.label}
-                    {rightTab === t.id && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
-                  </button>
-                ))}
+              <div className="border-b border-border px-5 py-3">
+                <PillTabs
+                  items={[
+                    { key: 'build', label: '构建', icon: Sparkles },
+                    { key: 'preview', label: '预览', icon: MessageSquare },
+                  ]}
+                  value={rightTab}
+                  onChange={setRightTab}
+                />
               </div>
               {rightTab === 'build' ? (
                 <div className="flex min-h-0 flex-1 flex-col">
@@ -1311,7 +1296,7 @@ export default function AgentWorkspace() {
                         开始构建
                       </button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">运行时为 Hermes 引擎，不会使用外部沙箱。</p>
+                    <p className="mt-2 text-xs text-muted-foreground">运行时为 Hermes 引擎，不会使用外部沙箱。</p>
                   </div>
                 </div>
               ) : (
@@ -1382,15 +1367,15 @@ export default function AgentWorkspace() {
               <div>
                 <div className="mb-4 grid grid-cols-3 gap-3">
                   <div className="rounded-lg border border-border p-3">
-                    <div className="text-[11px] text-muted-foreground">总执行</div>
+                    <div className="text-xs text-muted-foreground">总执行</div>
                     <div className="mt-1 text-lg font-semibold">{monitor?.stats?.total ?? 0}</div>
                   </div>
                   <div className="rounded-lg border border-border p-3">
-                    <div className="text-[11px] text-muted-foreground">成功</div>
+                    <div className="text-xs text-muted-foreground">成功</div>
                     <div className="mt-1 text-lg font-semibold">{monitor?.stats?.success ?? 0}</div>
                   </div>
                   <div className="rounded-lg border border-border p-3">
-                    <div className="text-[11px] text-muted-foreground">失败</div>
+                    <div className="text-xs text-muted-foreground">失败</div>
                     <div className="mt-1 text-lg font-semibold">{monitor?.stats?.failed ?? 0}</div>
                   </div>
                 </div>

@@ -5,7 +5,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls } from '../components/property/FormControls'
-import { Button, PageContainer, DataTable, Pagination, Badge, CompactSelect, DatePicker } from '../components/ui'
+import { Button, PageContainer, PageHeader, DataTable, Pagination, Badge, CompactSelect, DatePicker, SearchInput } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
 
@@ -236,43 +236,40 @@ export default function DutyMemberManagement() {
 
   return (
     <PageContainer>
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">值班人员管理</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">管理值班人员信息；人员不再区分白班/晚班，所有启用人员均可排到任意班次</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={openStats}>
-            <BarChart3 className="mr-1 h-3.5 w-3.5" /> 轮班统计
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleDownloadTemplate}>
-            <Download className="mr-1 h-3.5 w-3.5" /> 下载模板
-          </Button>
-          {canEdit && (
-            <Button variant="secondary" size="sm" onClick={() => setImportOpen(true)}>
-              <Upload className="mr-1 h-3.5 w-3.5" /> 批量导入
+      <PageHeader
+        title="值班人员管理"
+        actions={
+          <>
+            <Button variant="ghost" size="sm" onClick={openStats}>
+              <BarChart3 className="mr-1 h-3.5 w-3.5" /> 轮班统计
             </Button>
-          )}
-          {canEdit && (
-            <Button variant="primary" size="sm" onClick={openCreate}>
-              <UserPlus className="mr-1 h-3.5 w-3.5" /> 新增人员
+            <Button variant="ghost" size="sm" onClick={handleDownloadTemplate}>
+              <Download className="mr-1 h-3.5 w-3.5" /> 下载模板
             </Button>
-          )}
-        </div>
-      </div>
+            {canEdit && (
+              <Button variant="secondary" size="sm" onClick={() => setImportOpen(true)}>
+                <Upload className="mr-1 h-3.5 w-3.5" /> 批量导入
+              </Button>
+            )}
+            {canEdit && (
+              <Button variant="primary" size="sm" onClick={openCreate}>
+                <UserPlus className="mr-1 h-3.5 w-3.5" /> 新增人员
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* 筛选栏：单行横向排列，使用 inputBaseCls 避免 w-full 覆盖显式宽度 */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card px-4 py-2.5">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className={`${inputBaseCls} h-9 w-60 pl-8`}
-            placeholder="姓名搜索"
-            value={filters.keyword}
-            onChange={(e) => setFilters((f) => ({ ...f, keyword: e.target.value }))}
-            onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); load() } }}
-          />
-        </div>
+        <SearchInput
+          className="w-60"
+          placeholder="姓名搜索"
+          value={filters.keyword}
+          onChange={(v) => setFilters((f) => ({ ...f, keyword: v }))}
+          onClear={() => setFilters((f) => ({ ...f, keyword: '' }))}
+          onKeyDown={(e) => { if (e.key === 'Enter') { setPage(1); load() } }}
+        />
         <input
           className={`${inputBaseCls} h-9 w-40`}
           placeholder="组别"
@@ -391,7 +388,7 @@ export default function DutyMemberManagement() {
               <option value="inactive">停用</option>
             </CompactSelect>
           </div>
-          <p className="col-span-2 text-[11px] leading-relaxed text-muted-foreground">
+          <p className="col-span-2 text-xs leading-relaxed text-muted-foreground">
             值班人员不再区分白班/晚班类别，所有启用人员都可以被排到任意班次；一个班次可选择一名或多名人员。
           </p>
         </div>
@@ -503,7 +500,7 @@ export default function DutyMemberManagement() {
                   </tbody>
                 </table>
               </div>
-              <p className="text-[11px] text-muted-foreground">统计区间：{statsData.start_date} ~ {statsData.end_date}。差距为全部人员中最多与最少班次之差，差距越大排班越不均衡。</p>
+              <p className="text-xs text-muted-foreground">统计区间：{statsData.start_date} ~ {statsData.end_date}。差距为全部人员中最多与最少班次之差，差距越大排班越不均衡。</p>
             </>
           ) : (
             <div className="py-8 text-center text-sm text-muted-foreground">暂无数据</div>

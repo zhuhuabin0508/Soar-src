@@ -76,6 +76,11 @@ celery_app.conf.beat_schedule = {
         "task": "rollup_daily_stats",
         "schedule": crontab(minute="*/15"),
     },
+    # 报告中心：每分钟检查已发布配置的 cron 是否到点
+    "scan-report-schedules": {
+        "task": "scan_report_schedules",
+        "schedule": crontab(minute="*"),
+    },
 }
 
 # 自动发现 app 包下的 tasks 模块（即 app.tasks）

@@ -11,7 +11,7 @@ import { logsApi } from '../api/logs'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import HalfDrawer from '../components/HalfDrawer'
-import { Pagination, DataTable, StatusBadge, CompactSelect } from '../components/ui'
+import { Pagination, DataTable, StatusBadge, CompactSelect, SearchInput, PillTabs } from '../components/ui'
 
 // ===== 工具函数 =====
 function fmtTime(t) {
@@ -135,7 +135,7 @@ function MiniTrendChart({ data }) {
   if (!data || data.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-3">
-        <div className="mb-3 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <div className="mb-3 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <TrendingUp className="h-3 w-3" />7天趋势
         </div>
         <div className="flex h-24 items-center justify-center text-[10px] text-muted-foreground">暂无数据</div>
@@ -148,7 +148,7 @@ function MiniTrendChart({ data }) {
   return (
     <div className="rounded-lg border border-border bg-card p-3">
       {/* 标题 + 标题下边距 16px */}
-      <div className="mb-4 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+      <div className="mb-4 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <TrendingUp className="h-3 w-3" />7天日志趋势
       </div>
       <div className="flex" style={{ height: '140px' }}>
@@ -210,7 +210,7 @@ function TopErrorsPanel({ errors, onFilter }) {
   if (!errors || errors.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-2.5">
-        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <AlertCircle className="h-3 w-3" />错误类型 TOP5
         </div>
         <div className="flex h-10 items-center justify-center text-[10px] text-muted-foreground">暂无错误</div>
@@ -223,7 +223,7 @@ function TopErrorsPanel({ errors, onFilter }) {
   return (
     <div className="rounded-lg border border-border bg-card p-2.5">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <AlertCircle className="h-3 w-3" />错误类型 TOP5
         </span>
         <span className="text-[10px] text-muted-foreground">点击筛选</span>
@@ -255,7 +255,7 @@ function StorageBar({ used, max, onCleanup, cleaning }) {
   return (
     <div className="rounded-lg border border-border bg-card p-2.5">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <Database className="h-3 w-3" />存储用量
         </span>
         <button
@@ -487,8 +487,8 @@ function LogCenter() {
 
   // 输入控件：统一 input-base 风格（悬停边框反馈 + 聚焦主色环），控件统一 h-9
   const inputCls = 'input-base h-9'
-  const filterSelectCls = 'input-base !w-auto h-9'
-  const filterInputCls = 'input-base !w-auto h-9 min-w-[160px] flex-1'
+  const filterSelectCls = 'input-base !w-auto h-8'
+  const filterInputCls = 'input-base !w-auto h-8 min-w-[160px] flex-1'
   const labelCls = 'mb-1 block text-xs font-medium text-muted-foreground'
 
   // ===== 表格列定义（各 Tab 差异化） =====
@@ -576,7 +576,7 @@ function LogCenter() {
       {/* 顶部标题栏 */}
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="min-w-0">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">日志中心</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">日志中心</h1>
         </div>
         <div className="flex items-center gap-2">
           {/* 实时 tail 模式 */}
@@ -643,7 +643,7 @@ function LogCenter() {
         }
       >
         {retentionEditing && (
-          <div className="space-y-5">
+          <div className="space-y-4">
             {/* 推荐配置 */}
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] text-muted-foreground">推荐配置：</span>
@@ -708,7 +708,7 @@ function LogCenter() {
 
             {/* 危险操作区：清理按钮单独放底部，灰色次要样式 */}
             <div className="flex items-center justify-between rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2">
-              <span className="text-[11px] text-muted-foreground">删除超过保留天数的过期日志，不可撤销</span>
+              <span className="text-xs text-muted-foreground">删除超过保留天数的过期日志，不可撤销</span>
               <button type="button" onClick={handleCleanup} disabled={cleaning} className="rounded border border-border bg-secondary px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:border-destructive/40 hover:text-destructive disabled:opacity-50">
                 <Trash2 className="mr-1 inline h-2.5 w-2.5" />{cleaning ? '清理中...' : '立即清理'}
               </button>
@@ -718,18 +718,27 @@ function LogCenter() {
       </HalfDrawer>
 
       {/* Tab 切换 */}
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6 py-2">
-        {TABS.map((t) => (
-          <button key={t.key} type="button" onClick={() => switchTab(t.key)}
-            className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${tab === t.key ? 'bg-primary/10 text-primary ring-1 ring-primary/25' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>
-            <t.icon className="h-3.5 w-3.5" />{t.label}
-            {stats?.counts && (
-              <span className={`rounded px-1 text-[10px] tabular-nums ${tab === t.key ? 'bg-primary/15 text-primary' : 'bg-secondary text-muted-foreground'}`}>
-                {t.key === 'audit' ? fmtNum(stats.counts.audit) : t.key === 'executions' ? fmtNum(stats.counts.executions) : t.key === 'execution-logs' ? fmtNum(stats.counts.execution_logs) : fmtNum(stats.counts.model_calls)}
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs
+          items={TABS.map((t) => ({
+            key: t.key,
+            label: t.label,
+            icon: t.icon,
+            count: stats?.counts
+              ? fmtNum(
+                  t.key === 'audit'
+                    ? stats.counts.audit
+                    : t.key === 'executions'
+                      ? stats.counts.executions
+                      : t.key === 'execution-logs'
+                        ? stats.counts.execution_logs
+                        : stats.counts.model_calls
+                )
+              : undefined,
+          }))}
+          value={tab}
+          onChange={switchTab}
+        />
       </div>
 
       {/* 筛选栏：卡片条样式，控件统一 input-base 风格（h-9） */}
@@ -738,25 +747,25 @@ function LogCenter() {
           {/* 时间范围快捷选择 */}
           <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
             <Clock className="h-3 w-3" />
-            <CompactSelect size="lg" value={timeRange} onChange={(e) => { setTimeRange(e.target.value); setPage(1) }}>
+            <CompactSelect size="sm" value={timeRange} onChange={(e) => { setTimeRange(e.target.value); setPage(1) }}>
               {TIME_RANGES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </CompactSelect>
           </label>
           {/* 各 Tab 特有筛选 */}
           {tab === 'audit' && (
             <>
-              <CompactSelect size="lg" value={auditFilter.action} onChange={(e) => { setAuditFilter((f) => ({ ...f, action: e.target.value })); setPage(1) }}>
+              <CompactSelect size="sm" value={auditFilter.action} onChange={(e) => { setAuditFilter((f) => ({ ...f, action: e.target.value })); setPage(1) }}>
                 {AUDIT_ACTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </CompactSelect>
-              <CompactSelect size="lg" value={auditFilter.result} onChange={(e) => { setAuditFilter((f) => ({ ...f, result: e.target.value })); setPage(1) }}>
+              <CompactSelect size="sm" value={auditFilter.result} onChange={(e) => { setAuditFilter((f) => ({ ...f, result: e.target.value })); setPage(1) }}>
                 {RESULT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </CompactSelect>
-              <input type="text" className={filterInputCls} placeholder="搜索用户名..." value={auditFilter.username} onChange={(e) => { setAuditFilter((f) => ({ ...f, username: e.target.value })); setPage(1) }} />
+              <SearchInput className="min-w-[160px] flex-1" placeholder="搜索用户名..." value={auditFilter.username} onChange={(v) => { setAuditFilter((f) => ({ ...f, username: v })); setPage(1) }} onClear={() => { setAuditFilter((f) => ({ ...f, username: '' })); setPage(1) }} />
             </>
           )}
           {tab === 'executions' && (
             <>
-              <CompactSelect size="lg" value={execFilter.status} onChange={(e) => { setExecFilter((f) => ({ ...f, status: e.target.value })); setPage(1) }}>
+              <CompactSelect size="sm" value={execFilter.status} onChange={(e) => { setExecFilter((f) => ({ ...f, status: e.target.value })); setPage(1) }}>
                 {EXEC_STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </CompactSelect>
               <input type="text" inputMode="numeric" className={filterInputCls} placeholder="工作流 ID（数字）..." value={execFilter.workflow_id} onChange={(e) => { setExecFilter((f) => ({ ...f, workflow_id: e.target.value })); setPage(1) }} />
@@ -764,25 +773,25 @@ function LogCenter() {
           )}
           {tab === 'execution-logs' && (
             <>
-              <CompactSelect size="lg" value={execLogFilter.level} onChange={(e) => { setExecLogFilter((f) => ({ ...f, level: e.target.value })); setPage(1) }}>
+              <CompactSelect size="sm" value={execLogFilter.level} onChange={(e) => { setExecLogFilter((f) => ({ ...f, level: e.target.value })); setPage(1) }}>
                 {LOG_LEVEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </CompactSelect>
-              <input type="text" inputMode="numeric" className="input-base !w-32 h-9" placeholder="执行 ID" value={execLogFilter.execution_id} onChange={(e) => { setExecLogFilter((f) => ({ ...f, execution_id: e.target.value })); setPage(1) }} />
-              <input type="text" className={filterInputCls} placeholder="搜索日志消息..." value={execLogFilter.keyword} onChange={(e) => { setExecLogFilter((f) => ({ ...f, keyword: e.target.value })); setPage(1) }} />
+              <input type="text" inputMode="numeric" className="input-base !w-32 h-8" placeholder="执行 ID" value={execLogFilter.execution_id} onChange={(e) => { setExecLogFilter((f) => ({ ...f, execution_id: e.target.value })); setPage(1) }} />
+              <SearchInput className="min-w-[160px] flex-1" placeholder="搜索日志消息..." value={execLogFilter.keyword} onChange={(v) => { setExecLogFilter((f) => ({ ...f, keyword: v })); setPage(1) }} onClear={() => { setExecLogFilter((f) => ({ ...f, keyword: '' })); setPage(1) }} />
             </>
           )}
           {tab === 'model-calls' && (
             <>
-              <CompactSelect size="lg" value={modelFilter.status} onChange={(e) => { setModelFilter((f) => ({ ...f, status: e.target.value, error_category: e.target.value === 'failed' ? f.error_category : '' })); setPage(1) }}>
+              <CompactSelect size="sm" value={modelFilter.status} onChange={(e) => { setModelFilter((f) => ({ ...f, status: e.target.value, error_category: e.target.value === 'failed' ? f.error_category : '' })); setPage(1) }}>
                 {RESULT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </CompactSelect>
               {modelFilter.status === 'failed' && (
-                <CompactSelect size="lg" value={modelFilter.error_category} onChange={(e) => { setModelFilter((f) => ({ ...f, error_category: e.target.value })); setPage(1) }}>
+                <CompactSelect size="sm" value={modelFilter.error_category} onChange={(e) => { setModelFilter((f) => ({ ...f, error_category: e.target.value })); setPage(1) }}>
                   <option value="">全部错误类型</option>
                   {Object.entries(ERROR_CAT_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
                 </CompactSelect>
               )}
-              <input type="text" className={filterInputCls} placeholder="搜索模型名..." value={modelFilter.model_name} onChange={(e) => { setModelFilter((f) => ({ ...f, model_name: e.target.value })); setPage(1) }} />
+              <SearchInput className="min-w-[160px] flex-1" placeholder="搜索模型名..." value={modelFilter.model_name} onChange={(v) => { setModelFilter((f) => ({ ...f, model_name: v })); setPage(1) }} onClear={() => { setModelFilter((f) => ({ ...f, model_name: '' })); setPage(1) }} />
             </>
           )}
           {/* 批量导出 */}
@@ -800,7 +809,7 @@ function LogCenter() {
       )}
 
       {/* 表格 */}
-      <div className="flex-1 overflow-y-auto px-6 py-3">
+      <div className="flex-1 overflow-y-auto p-6">
         {/* 加载中显示骨架屏，空数据走 DataTable 内置空态 */}
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <DataTable

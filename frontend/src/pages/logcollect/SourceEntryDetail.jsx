@@ -11,7 +11,7 @@ import { inputCls } from '../../components/property/FormControls'
 import { devices as devicesApi } from '../../api/client'
 import { strategyApi } from '../../api/strategy'
 import { Section, Switch } from '../devices/Badges'
-import {Button, EmptyState, CompactSelect, AutoGrowTextarea } from '../../components/ui'
+import {Button, EmptyState, CompactSelect, AutoGrowTextarea, PillTabs } from '../../components/ui'
 import {
   SOURCE_TYPE_META, PROTOCOL_TAG_CLS, ENTRY_STATUS_META, DEVICE_TYPE_LABELS,
   PARSE_STATUS_META, parseAdapterConfig,
@@ -49,20 +49,6 @@ function ruleValueFromString(op, text) {
   if (t === '') return ''
   const n = Number(t)
   return !Number.isNaN(n) && /^-?\d+(\.\d+)?$/.test(t) ? n : t
-}
-
-// Tab 按钮样式
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button" onClick={onClick}
-      className={`-mb-px border-b-2 px-4 py-3 text-sm transition ${
-        active ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      {children}
-    </button>
-  )
 }
 
 export default function SourceEntryDetail() {
@@ -119,14 +105,14 @@ export default function SourceEntryDetail() {
           </button>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-xl font-semibold">{entry.name !== entry.source_ip ? entry.name : entry.source_ip}</h1>
-              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${st.cls}`} title={st.desc}>{st.label}</span>
+              <h1 className="truncate text-2xl font-semibold tracking-tight">{entry.name !== entry.source_ip ? entry.name : entry.source_ip}</h1>
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${st.cls}`} title={st.desc}>{st.label}</span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span className="font-mono">{entry.source_ip}</span>
               <span>·</span>
               <span>所属接收器</span>
-              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${PROTOCOL_TAG_CLS[entry.receiver_protocol] || 'bg-secondary text-muted-foreground'}`}>
+              <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${PROTOCOL_TAG_CLS[entry.receiver_protocol] || 'bg-secondary text-muted-foreground'}`}>
                 {SOURCE_TYPE_META[entry.receiver_protocol]?.label || entry.receiver_protocol}
               </span>
               <span className="font-medium text-foreground">{entry.receiver_name}</span>
@@ -140,10 +126,16 @@ export default function SourceEntryDetail() {
       </div>
 
       {/* Tab 切换 */}
-      <div className="flex items-center gap-1 border-b border-border">
-        <TabButton active={tab === 'basic'} onClick={() => setTab('basic')}><span className="inline-flex items-center gap-1.5"><Info className="h-3.5 w-3.5" />基本信息</span></TabButton>
-        <TabButton active={tab === 'strategy'} onClick={() => setTab('strategy')}><span className="inline-flex items-center gap-1.5"><FlaskConical className="h-3.5 w-3.5" />解析模板</span></TabButton>
-        <TabButton active={tab === 'preview'} onClick={() => setTab('preview')}><span className="inline-flex items-center gap-1.5"><FileJson className="h-3.5 w-3.5" />日志预览</span></TabButton>
+      <div className="mb-4">
+        <PillTabs
+          items={[
+            { key: 'basic', label: '基本信息', icon: Info },
+            { key: 'strategy', label: '解析模板', icon: FlaskConical },
+            { key: 'preview', label: '日志预览', icon: FileJson },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
       </div>
 
       {tab === 'basic' && <BasicInfoTab entry={entry} devices={devices} onSaved={load} onDeleted={() => navigate('/source-entries')} />}
@@ -251,7 +243,7 @@ function BasicInfoTab({ entry, devices, onSaved, onDeleted }) {
       <div className="card">
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <span className="text-sm font-medium">基础配置</span>
-          <span className="text-[11px] text-muted-foreground">条目配置仅覆盖该来源 IP，优先级高于接收器默认</span>
+          <span className="text-xs text-muted-foreground">条目配置仅覆盖该来源 IP，优先级高于接收器默认</span>
         </div>
         <div className="flex flex-col gap-3 px-5 py-4">
           <label>
@@ -264,13 +256,13 @@ function BasicInfoTab({ entry, devices, onSaved, onDeleted }) {
               <option value="">不绑定（走条目/接收器自身归属）</option>
               {devices.map((d) => (<option key={d.id} value={d.id}>{d.name}</option>))}
             </CompactSelect>
-            <div className="mt-1 text-[10px] text-muted-foreground">告警与接收日志计入该设备；未绑定时走接收器默认归属</div>
+            <div className="mt-1 text-xs text-muted-foreground">告警与接收日志计入该设备；未绑定时走接收器默认归属</div>
           </label>
           <label className="flex items-center gap-2">
             <Switch checked={enabled} onChange={setEnabled} />
             <span className="text-sm text-muted-foreground">
               启用该来源
-              <span className="ml-1 text-[10px] text-muted-foreground">停用后该来源日志将被丢弃（不解析、不入库）</span>
+              <span className="ml-1 text-xs text-muted-foreground">停用后该来源日志将被丢弃（不解析、不入库）</span>
             </span>
           </label>
           <div className="mt-1 flex items-center justify-between">
@@ -407,7 +399,7 @@ function StrategyTab({ entry, strategies, onSaved }) {
     <div className="flex flex-col gap-3">
       <div className="card px-5 py-4">
         <div className="mb-1 text-sm font-medium">解析模板</div>
-        <div className="mb-3 text-[11px] text-muted-foreground">
+        <div className="mb-3 text-xs text-muted-foreground">
           优先级链：条目固定模板 → 接收器默认模板（{entry.receiver_strategy_id ? '已固定' : '自动匹配'}）→ 系统自动匹配
         </div>
         <CompactSelect value={strategyId} onChange={(e) => setStrategyId(e.target.value)} size="lg" block className="max-w-md">
@@ -467,7 +459,7 @@ function StrategyTab({ entry, strategies, onSaved }) {
             onChange={(e) => toggleEnricher('asset', e.target.checked)}
           />
           <span className="text-sm">资产关联富化</span>
-          <span className="text-[10px] text-muted-foreground">按 src_ip / host_ip 匹配设备表，补 asset_id 与设备名</span>
+          <span className="text-xs text-muted-foreground">按 src_ip / host_ip 匹配设备表，补 asset_id 与设备名</span>
         </label>
       </Section>
 
@@ -574,8 +566,8 @@ function PreviewTab({ entry }) {
                     }`}
                   >
                     <div className="flex w-full items-center justify-between gap-2">
-                      <span className="font-mono text-[11px] text-muted-foreground">{fmtTime(l.received_at)}</span>
-                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${pm.cls}`}>{pm.label}</span>
+                      <span className="font-mono text-xs text-muted-foreground">{fmtTime(l.received_at)}</span>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${pm.cls}`}>{pm.label}</span>
                     </div>
                     <div className="w-full truncate font-mono text-xs text-foreground" title={l.raw_data}>
                       {l.raw_data || '（空）'}
@@ -607,7 +599,7 @@ function PreviewTab({ entry }) {
                 <div>
                   <div className="text-muted-foreground">解析状态</div>
                   <div className="mt-0.5">
-                    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${(PARSE_STATUS_META[selected.parse_status] || {}).cls || 'bg-secondary text-muted-foreground'}`}>
+                    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${(PARSE_STATUS_META[selected.parse_status] || {}).cls || 'bg-secondary text-muted-foreground'}`}>
                       {(PARSE_STATUS_META[selected.parse_status] || {}).label || selected.parse_status}
                     </span>
                   </div>
@@ -650,7 +642,7 @@ function PreviewTab({ entry }) {
               {selected.parsed_fields && (
                 <div>
                   <div className="mb-1 text-xs font-medium text-muted-foreground">解析后内容（标准模型字段）</div>
-                  <pre className="max-h-[280px] overflow-auto rounded-md border border-primary/20 bg-primary/5 p-3 font-mono text-[11px] leading-relaxed text-foreground">
+                  <pre className="max-h-[280px] overflow-auto rounded-md border border-primary/20 bg-primary/5 p-3 font-mono text-xs leading-relaxed text-foreground">
                     {prettyRaw(selected.parsed_fields) || '（空）'}
                   </pre>
                 </div>
@@ -659,7 +651,7 @@ function PreviewTab({ entry }) {
               {selected.parse_error && (
                 <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">
                   <div className="mb-1 text-xs font-medium text-destructive">解析错误</div>
-                  <div className="break-all font-mono text-[11px] leading-relaxed text-destructive/90">{selected.parse_error}</div>
+                  <div className="break-all font-mono text-xs leading-relaxed text-destructive/90">{selected.parse_error}</div>
                 </div>
               )}
 
@@ -671,7 +663,7 @@ function PreviewTab({ entry }) {
 
               <div>
                 <div className="mb-1 text-xs font-medium text-muted-foreground">原始内容（格式化）</div>
-                <pre className="max-h-[280px] overflow-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">
+                <pre className="max-h-[280px] overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed text-foreground">
                   {prettyRaw(selected.raw_data) || '（空）'}
                 </pre>
               </div>

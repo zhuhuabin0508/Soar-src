@@ -529,11 +529,24 @@ def save_json_as_agent_file(
 
 
 # ============ 文档生成（generate_document 工具宿主能力） ============
-# 支持 Word(.docx) / Excel(.xlsx) / Markdown(.md) 三种格式：
-# 工具代码传入 Markdown 正文，宿主解析块结构（标题/列表/表格/代码块）后
-# 转换为目标格式，落盘并注册 AgentFile（与上传文件同库，自动获得下载能力）。
+# 支持 Word(.docx) / Excel(.xlsx) / Markdown(.md) / PPT(.pptx) / PDF(.pdf) /
+# HTML(.html) 六种格式：工具代码传入 Markdown 正文，宿主解析块结构
+# （标题/列表/表格/代码块）后转换为目标格式，落盘并注册 AgentFile
+# （与上传文件同库，自动获得下载能力）。
 
-_GENERATE_DOC_FORMATS = ("docx", "xlsx", "md")
+_GENERATE_DOC_FORMATS = ("docx", "xlsx", "md", "pptx", "pdf", "html")
+
+# 模型常用别名归一（word/excel/ppt 等），统一映射到规范格式名
+_DOC_FORMAT_ALIASES = {
+    "word": "docx",
+    "excel": "xlsx",
+    "xls": "xlsx",
+    "markdown": "md",
+    "ppt": "pptx",
+    "powerpoint": "pptx",
+    "htm": "html",
+    "html5": "html",
+}
 
 # 文档内容长度上限（字符）：超出直接拒绝，防止模型超长输出拖垮内存与落盘
 _GENERATE_DOC_MAX_CHARS = 400_000
@@ -698,6 +711,7 @@ def _build_docx(content: str, options: dict | None):
 
     格式配置（options，均可选）：
     - ``title``：文档大标题（写入首行 Title 样式）；
+    - ``style``：传 ``gb9704`` 时按党政机关公文格式渲染，其余选项忽略；
     - ``body_font``：正文字体，默认微软雅黑（同时设置 eastAsia，保证中文生效）；
     - ``font_size``：正文字号，默认 11。
     """
@@ -706,6 +720,11 @@ def _build_docx(content: str, options: dict | None):
     from docx.shared import Pt
 
     opts = options or {}
+    if str(opts.get("style") or "").strip().lower() in ("gb9704", "gb/t 9704", "公文", "国标"):
+        from app.core.govdoc import build_gb9704_document
+
+        return build_gb9704_document(content, opts)
+
     body_font = str(opts.get("body_font") or "微软雅黑")
     try:
         font_size = float(opts.get("font_size") or 11)
@@ -849,6 +868,451 @@ def _build_workbook(content: str, options: dict | None):
     return wb
 
 
+# PPT 每页表格最大数据行数（超出自动拆页续排，避免表格溢出画布）
+_PPT_TABLE_ROWS_PER_SLIDE = 10
+
+
+def _ppt_text_frame(tf, lines: list[str], font_size: int, bold: bool = False) -> None:
+    """把文本行写入 pptx 文本框：首行复用默认段落，其余逐段追加。"""
+    from pptx.util import Pt
+
+    tf.word_wrap = True
+    for idx, line in enumerate(lines or [""]):
+        para = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+        run = para.add_run()
+        run.text = line
+        run.font.size = Pt(font_size)
+        run.font.bold = bold
+
+
+def _build_presentation(content: str, options: dict | None):
+    """Markdown 块序列 -> python-pptx 演示文稿（16:9）。
+
+    版式规则：
+    - ``options.title`` 或首个一级标题作为封面标题；
+    - 一级/二级标题各开启一页（同级标题即分页）；
+    - 段落与列表转为要点，表格转为 PPT 表格（超过 10 行自动拆页续排），
+      代码块转为等宽文本；
+    - 正文自动缩字号（行数多则更小）避免溢出。
+
+    格式配置（options，均可选）：
+    - ``title``：封面标题，默认取首个一级标题。
+    """
+    from pptx import Presentation
+    from pptx.dml.color import RGBColor
+    from pptx.util import Inches, Pt
+
+    opts = options or {}
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    blank = prs.slide_layouts[6]
+
+    blocks = _parse_markdown_blocks(content)
+
+    # 按一/二级标题切分章节；首个一级标题消费为封面标题
+    cover_title = str(opts.get("title") or "").strip()
+    sections: list[dict] = []
+    current: dict | None = None
+    for block in blocks:
+        if block["kind"] == "heading" and block["level"] <= 2:
+            if not cover_title and block["level"] == 1:
+                cover_title = block["text"]
+                current = None
+                continue
+            current = {"title": block["text"], "blocks": []}
+            sections.append(current)
+        else:
+            if current is None:
+                current = {"title": "", "blocks": []}
+                sections.append(current)
+            current["blocks"].append(block)
+
+    # 封面页
+    if cover_title:
+        slide = prs.slides.add_slide(blank)
+        box = slide.shapes.add_textbox(Inches(0.9), Inches(2.6), Inches(11.5), Inches(1.6))
+        _ppt_text_frame(box.text_frame, [cover_title], 40, bold=True)
+        for para in box.text_frame.paragraphs:
+            for run in para.runs:
+                run.font.color.rgb = RGBColor(0x1F, 0x29, 0x37)
+
+    for section in sections:
+        title = section["title"]
+        tables = [b for b in section["blocks"] if b["kind"] == "table"]
+        texts: list[str] = []
+        codes: list[str] = []
+        for block in section["blocks"]:
+            if block["kind"] in ("paragraph", "list"):
+                if block["kind"] == "list":
+                    texts.extend(
+                        (f"{i}. {it}" if block["ordered"] else f"• {it}")
+                        for i, it in enumerate(block["items"], start=1)
+                    )
+                else:
+                    texts.append(_strip_inline_markdown(block["text"]))
+            elif block["kind"] == "heading":
+                texts.append(f"### {_strip_inline_markdown(block['text'])}")
+            elif block["kind"] == "code":
+                codes.append(block["text"])
+
+        # 纯文本页
+        if texts:
+            slide = prs.slides.add_slide(blank)
+            if title:
+                head = slide.shapes.add_textbox(Inches(0.7), Inches(0.35), Inches(11.9), Inches(0.9))
+                _ppt_text_frame(head.text_frame, [title], 28, bold=True)
+            size = 20 if len(texts) <= 6 else (16 if len(texts) <= 12 else 13)
+            body = slide.shapes.add_textbox(Inches(0.8), Inches(1.35), Inches(11.7), Inches(5.7))
+            _ppt_text_frame(body.text_frame, texts, size)
+
+        # 表格页：超行数自动拆页
+        for t_idx, block in enumerate(tables):
+            rows = block["rows"]
+            header, data = rows[0], rows[1:]
+            chunks = [
+                data[i:i + _PPT_TABLE_ROWS_PER_SLIDE]
+                for i in range(0, max(len(data), 1), _PPT_TABLE_ROWS_PER_SLIDE)
+            ] or [[]]
+            for c_idx, chunk in enumerate(chunks):
+                slide = prs.slides.add_slide(blank)
+                suffix = "（续）" if c_idx else ""
+                slide_title = f"{title}{suffix}" if title else f"表格{t_idx + 1}{suffix}"
+                head = slide.shapes.add_textbox(Inches(0.7), Inches(0.35), Inches(11.9), Inches(0.9))
+                _ppt_text_frame(head.text_frame, [slide_title], 28, bold=True)
+                cols = max(len(r) for r in rows)
+                shape = slide.shapes.add_table(
+                    len(chunk) + 1, cols, Inches(0.7), Inches(1.35), Inches(11.9), Inches(0.4) * (len(chunk) + 1)
+                )
+                table = shape.table
+                for c in range(cols):
+                    cell = table.cell(0, c)
+                    cell.text = _strip_inline_markdown(header[c]) if c < len(header) else ""
+                    for para in cell.text_frame.paragraphs:
+                        for run in para.runs:
+                            run.font.size = Pt(12)
+                            run.font.bold = True
+                for r, row in enumerate(chunk, start=1):
+                    for c in range(cols):
+                        cell = table.cell(r, c)
+                        cell.text = _strip_inline_markdown(row[c]) if c < len(row) else ""
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                run.font.size = Pt(11)
+
+        # 代码页
+        for code in codes:
+            slide = prs.slides.add_slide(blank)
+            head = slide.shapes.add_textbox(Inches(0.7), Inches(0.35), Inches(11.9), Inches(0.9))
+            _ppt_text_frame(head.text_frame, [f"{title}（代码）" if title else "代码"], 28, bold=True)
+            body = slide.shapes.add_textbox(Inches(0.8), Inches(1.35), Inches(11.7), Inches(5.7))
+            _ppt_text_frame(body.text_frame, code.splitlines(), 12)
+
+    # 空文稿：至少给一页封面，避免生成 0 页文件
+    if not prs.slides:
+        slide = prs.slides.add_slide(blank)
+        box = slide.shapes.add_textbox(Inches(0.9), Inches(2.6), Inches(11.5), Inches(1.6))
+        _ppt_text_frame(box.text_frame, [cover_title or "文档"], 40, bold=True)
+
+    import io
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _html_escape(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _html_inline(text: str) -> str:
+    """行内 Markdown（粗体/行内代码/链接）-> HTML，其余内容转义。"""
+    escaped = _html_escape(text)
+    escaped = _BOLD_RE.sub(r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+
+    def _link(match) -> str:
+        label, url = match.group(1), match.group(2)
+        # scheme 白名单：拦截 javascript:/data: 等可执行链接
+        probe = re.sub(r"[\x00-\x20\x7f]+", "", url)
+        scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", probe)
+        if scheme and scheme.group(1).lower() not in ("http", "https", "mailto"):
+            url = "#"
+        # 属性边界防护：引号/控制字符不能进入 href，防止逃逸出属性
+        url = re.sub(r"[\x00-\x1f\x7f]", "", url)
+        url = url.replace('"', "%22").replace("'", "%27")
+        return f'<a href="{url}">{label}</a>'
+
+    escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _link, escaped)
+    return escaped
+
+
+def _build_html(content: str, options: dict | None):
+    """Markdown 块序列 -> 单文件 HTML 报告（内联样式，可直接浏览器打开/打印）。
+
+    版式规则：标题层级生成目录，表格带斑马纹与横向滚动，代码块等宽，
+    A4 打印样式；不引用任何外部资源（无字体/脚本/图片外链）。
+
+    格式配置（options，均可选）：
+    - ``title``：报告标题，默认取首个一级标题；
+    - ``subtitle``：标题下方副标题/说明。
+    """
+    opts = options or {}
+    blocks = _parse_markdown_blocks(content)
+    title = str(opts.get("title") or "").strip()
+    if not title:
+        title = next(
+            (b["text"] for b in blocks if b["kind"] == "heading" and b["level"] == 1),
+            "分析报告",
+        )
+    subtitle = str(opts.get("subtitle") or "").strip()
+
+    toc: list[tuple[int, str, str]] = []
+    body: list[str] = []
+    for idx, block in enumerate(blocks):
+        kind = block["kind"]
+        if kind == "heading":
+            level = min(block["level"], 4)
+            anchor = f"sec-{idx}"
+            text = _strip_inline_markdown(block["text"])
+            if level <= 3 and text != title:
+                toc.append((level, text, anchor))
+            body.append(f'<h{level} id="{anchor}">{_html_inline(block["text"])}</h{level}>')
+        elif kind == "paragraph":
+            body.append(f"<p>{_html_inline(block['text']).replace(chr(10), '<br>')}</p>")
+        elif kind == "list":
+            tag = "ol" if block["ordered"] else "ul"
+            items = "".join(f"<li>{_html_inline(it)}</li>" for it in block["items"])
+            body.append(f"<{tag}>{items}</{tag}>")
+        elif kind == "table":
+            rows = block["rows"]
+            head = "".join(f"<th>{_html_inline(c)}</th>" for c in rows[0])
+            trs = "".join(
+                "<tr>" + "".join(f"<td>{_html_inline(c)}</td>" for c in row) + "</tr>"
+                for row in rows[1:]
+            )
+            body.append(
+                '<div class="table-wrap"><table><thead><tr>'
+                f"{head}</tr></thead><tbody>{trs}</tbody></table></div>"
+            )
+        elif kind == "code":
+            body.append(f"<pre><code>{_html_escape(block['text'])}</code></pre>")
+
+    toc_html = ""
+    if len(toc) >= 3:
+        links = "".join(
+            f'<li class="lv{level}"><a href="#{anchor}">{_html_escape(text)}</a></li>'
+            for level, text, anchor in toc
+        )
+        toc_html = f'<nav class="toc"><div class="toc-title">目录</div><ol>{links}</ol></nav>'
+
+    subtitle_html = f'<p class="subtitle">{_html_escape(subtitle)}</p>' if subtitle else ""
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_html_escape(title)}</title>
+<style>
+  :root {{ --fg:#1f2937; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --bg:#f8fafc; }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin:0; padding:40px 24px 64px; background:var(--bg); color:var(--fg);
+         font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",Arial,sans-serif;
+         font-size:15px; line-height:1.75; }}
+  main {{ max-width:1080px; margin:0 auto; background:#fff; border:1px solid var(--line);
+          border-radius:14px; padding:44px 52px; box-shadow:0 8px 28px rgba(15,23,42,.07); }}
+  h1 {{ font-size:30px; margin:0 0 8px; letter-spacing:.5px; }}
+  h2 {{ font-size:22px; margin:34px 0 12px; padding-bottom:8px; border-bottom:2px solid var(--line); }}
+  h3 {{ font-size:18px; margin:26px 0 10px; }}
+  h4 {{ font-size:16px; margin:20px 0 8px; }}
+  .subtitle {{ margin:0 0 6px; color:var(--muted); font-size:14px; }}
+  p {{ margin:10px 0; }}
+  ul, ol {{ margin:10px 0; padding-left:24px; }}
+  li {{ margin:4px 0; }}
+  .table-wrap {{ width:100%; overflow-x:auto; margin:14px 0; }}
+  table {{ width:100%; border-collapse:collapse; font-size:14px; }}
+  th, td {{ border:1px solid var(--line); padding:9px 12px; text-align:left; white-space:nowrap; }}
+  th {{ background:#f1f5f9; font-weight:600; }}
+  tbody tr:nth-child(even) {{ background:#fafbfc; }}
+  pre {{ background:#0f172a; color:#e2e8f0; padding:16px 18px; border-radius:10px;
+         overflow-x:auto; font-size:13px; line-height:1.6; }}
+  code {{ font-family:Consolas,"Courier New",monospace; background:#eef2f7;
+          padding:1px 5px; border-radius:4px; font-size:.92em; }}
+  pre code {{ background:transparent; padding:0; color:inherit; }}
+  a {{ color:var(--accent); text-decoration:none; }}
+  a:hover {{ text-decoration:underline; }}
+  .toc {{ background:#f8fafc; border:1px solid var(--line); border-radius:10px;
+          padding:16px 22px; margin:22px 0 6px; }}
+  .toc-title {{ font-weight:600; margin-bottom:6px; }}
+  .toc ol {{ list-style:none; padding-left:0; margin:0; }}
+  .toc li {{ margin:3px 0; }}
+  .toc .lv2 {{ padding-left:16px; }}
+  .toc .lv3 {{ padding-left:32px; color:var(--muted); }}
+  @media print {{
+    body {{ background:#fff; padding:0; }}
+    main {{ border:none; box-shadow:none; padding:0; max-width:none; }}
+    .toc {{ break-inside:avoid; }}
+    h2 {{ break-after:avoid; }}
+    .table-wrap {{ overflow:visible; }}
+  }}
+  @page {{ size:A4; margin:16mm; }}
+</style>
+</head>
+<body>
+<main>
+<h1>{_html_escape(title)}</h1>
+{subtitle_html}
+{toc_html}
+{"".join(body)}
+</main>
+</body>
+</html>
+"""
+    import io
+
+    return io.BytesIO(html.encode("utf-8"))
+
+
+def _build_pdf(content: str, options: dict | None):
+    """Markdown 块序列 -> PDF（reportlab Platypus，A4）。
+
+    中文使用 reportlab 内置 CID 字体 STSong-Light（无需外部字体文件），
+    并在正文样式开启 CJK 换行规则；表格自动重复表头。
+
+    格式配置（options，均可选）：
+    - ``title``：文档大标题；
+    - ``font_size``：正文字号，默认 10.5。
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    opts = options or {}
+    font = "STSong-Light"
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont(font))
+    except Exception:  # noqa: BLE001  重复注册等异常不阻断生成
+        pass
+    try:
+        base_size = float(opts.get("font_size") or 10.5)
+    except (TypeError, ValueError):
+        base_size = 10.5
+
+    body_style = ParagraphStyle(
+        "Body", fontName=font, fontSize=base_size, leading=base_size * 1.7,
+        wordWrap="CJK", alignment=TA_LEFT, spaceAfter=4,
+    )
+    heading_sizes = {1: 20, 2: 16, 3: 13.5, 4: 12}
+    heading_styles = {
+        lv: ParagraphStyle(
+            f"H{lv}", parent=body_style, fontSize=size, leading=size * 1.5,
+            spaceBefore=12 if lv <= 2 else 9, spaceAfter=6,
+        )
+        for lv, size in heading_sizes.items()
+    }
+    code_style = ParagraphStyle(
+        "Code", fontName=font, fontSize=base_size - 1, leading=(base_size - 1) * 1.55,
+        backColor=colors.HexColor("#f1f5f9"), borderPadding=6,
+        leftIndent=6, rightIndent=6, spaceBefore=4, spaceAfter=8, wordWrap="CJK",
+    )
+
+    story: list = []
+    title = str(opts.get("title") or "").strip()
+    blocks = _parse_markdown_blocks(content)
+    if title:
+        story.append(Paragraph(_html_escape(title), heading_styles[1]))
+        story.append(Spacer(1, 4 * mm))
+
+    for block in blocks:
+        kind = block["kind"]
+        if kind == "heading":
+            style = heading_styles[min(block["level"], 4)]
+            story.append(Paragraph(_html_escape(block["text"]), style))
+        elif kind == "paragraph":
+            text = _html_escape(block["text"]).replace("\n", "<br/>")
+            story.append(Paragraph(_BOLD_RE.sub(r"<b>\1</b>", text), body_style))
+        elif kind == "list":
+            items = "".join(
+                f"<br/>{i}. {_html_escape(it)}" if block["ordered"] else f"<br/>• {_html_escape(it)}"
+                for i, it in enumerate(block["items"], start=1)
+            )
+            story.append(Paragraph(items.lstrip("<br/>"), body_style))
+        elif kind == "table":
+            rows = block["rows"]
+            cols = max(len(r) for r in rows)
+            data = [
+                [Paragraph(_html_escape(row[c] if c < len(row) else ""), body_style) for c in range(cols)]
+                for row in rows
+            ]
+            table = Table(data, repeatRows=1, hAlign="LEFT")
+            table.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 3 * mm))
+        elif kind == "code":
+            story.append(Paragraph(_html_escape(block["text"]).replace("\n", "<br/>"), code_style))
+
+    import io
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm,
+        title=title or "文档",
+    )
+    doc.build(story or [Paragraph("（空文档）", body_style)])
+    buf.seek(0)
+    return buf
+
+
+def _render_document(fmt: str, content: str, options: dict | None) -> tuple[bytes, str]:
+    """按格式渲染文档，返回 ``(文件字节, 源 Markdown 文稿)``。
+
+    Markdown 渲染时把 options.title 注入为一级标题，源文稿同步保存，
+    供 append_document 追加后整体重渲染。
+    """
+    if fmt == "md":
+        title = str((options or {}).get("title") or "").strip()
+        # 幂等：append 重渲染时正文已含标题行，不重复注入
+        if title and not content.lstrip().startswith(f"# {title}"):
+            payload = f"# {title}\n\n{content}"
+        else:
+            payload = content
+        return payload.encode("utf-8"), payload
+    builders = {
+        "docx": _build_docx,
+        "xlsx": _build_workbook,
+        "pptx": _build_presentation,
+        "pdf": _build_pdf,
+        "html": _build_html,
+    }
+    built = builders[fmt](content, options)
+    if fmt in ("docx", "xlsx"):
+        # python-docx / openpyxl 返回文档对象，需 save 到内存缓冲
+        import io
+
+        buf = io.BytesIO()
+        built.save(buf)
+        return buf.getvalue(), content
+    return built.getvalue(), content
+
+
 def save_document_as_agent_file(
     content: str,
     suggested_name: str,
@@ -857,7 +1321,7 @@ def save_document_as_agent_file(
     agent_id: int | None = None,
     user_id: int | None = None,
 ) -> dict:
-    """生成文档（docx/xlsx/md）并保存到上传文件库，返回文件元数据与下载路径。
+    """生成文档（docx/xlsx/md/pptx/pdf/html）并保存到上传文件库，返回文件元数据与下载路径。
 
     供 ``generate_document`` 内置工具调用：Agent 运行时把上下文数据组织成
     Markdown 正文传入，本函数负责格式转换、落盘与 AgentFile 注册
@@ -866,8 +1330,8 @@ def save_document_as_agent_file(
     Args:
         content: Markdown 语法的文档正文（运行时上下文/用户数据由调用方填充）。
         suggested_name: 建议文件名（自动清洗非法字符并规范扩展名）。
-        fmt: 目标格式 ``docx`` / ``xlsx`` / ``md``（默认 docx，markdown 别名 md）。
-        options: 可选格式配置，见 ``_build_docx`` / ``_build_workbook`` 文档。
+        fmt: 目标格式 ``docx`` / ``xlsx`` / ``md`` / ``pptx`` / ``pdf`` / ``html``。
+        options: 可选格式配置，见各 ``_build_*`` 文档。
         agent_id: 归属智能体 id（沙箱注入）。
         user_id: 归属上传用户 id（沙箱注入）。
 
@@ -875,7 +1339,6 @@ def save_document_as_agent_file(
         成功 ``{"ok": True, "file_id", "file_name", "file_type", "file_size", "download_url"}``；
         失败 ``{"error": "明确的原因"}``（不抛异常，保证对话流不中断）。
     """
-    import io
     import uuid
 
     from app.database import SessionLocal
@@ -885,12 +1348,17 @@ def save_document_as_agent_file(
     if not isinstance(content, str) or not content.strip():
         return {"error": "文档内容不能为空：请通过 content 参数提供 Markdown 格式的正文"}
     fmt = (fmt or "docx").strip().lower()
-    if fmt == "markdown":
-        fmt = "md"
-    if fmt == "word":
-        fmt = "docx"
+    fmt = _DOC_FORMAT_ALIASES.get(fmt, fmt)
+    # 文件名扩展名优先：模型偶尔省略/写错 format，但文件名带了 .pptx/.pdf/.html，
+    # 以显式扩展名为准，避免「主机清单.xlsx」被写成 .docx 的同类问题
+    _ext = os.path.splitext(str(suggested_name or "").strip())[1].lower().lstrip(".")
+    _ext = _DOC_FORMAT_ALIASES.get(_ext, _ext)
+    if _ext in _GENERATE_DOC_FORMATS:
+        fmt = _ext
     if fmt not in _GENERATE_DOC_FORMATS:
-        return {"error": f"不支持的文档格式: {fmt}，仅支持 docx / xlsx / md"}
+        return {
+            "error": f"不支持的文档格式: {fmt}，仅支持 docx / xlsx / md / pptx / pdf / html",
+        }
     if len(content) > _GENERATE_DOC_MAX_CHARS:
         return {"error": f"文档内容过长（{len(content)} 字符，上限 {_GENERATE_DOC_MAX_CHARS}），请精简后重试"}
     if options is not None and not isinstance(options, dict):
@@ -899,21 +1367,8 @@ def save_document_as_agent_file(
     original = _sanitize_doc_name(suggested_name, fmt)
 
     # ---- 生成文件体（内存中完成转换） ----
-    src_markdown = content  # 传给渲染器的 Markdown 源文稿（md 含标题行），供后续追加
     try:
-        if fmt == "md":
-            title = str((options or {}).get("title") or "").strip()
-            payload = (f"# {title}\n\n{content}") if title else content
-            data = payload.encode("utf-8")
-            src_markdown = payload
-        elif fmt == "docx":
-            buf = io.BytesIO()
-            _build_docx(content, options).save(buf)
-            data = buf.getvalue()
-        else:  # xlsx
-            buf = io.BytesIO()
-            _build_workbook(content, options).save(buf)
-            data = buf.getvalue()
+        data, src_markdown = _render_document(fmt, content, options)
     except Exception as exc:  # noqa: BLE001
         logger.exception("生成 %s 文档失败: %s", fmt, original)
         return {"error": f"生成文档失败: {exc}"}
@@ -996,7 +1451,6 @@ def append_document_as_agent_file(
         成功 ``{"ok": True, "file_id", "file_name", "file_type", "file_size",
         "appended_chars", "total_chars", "download_url"}``；失败 ``{"error": ...}``。
     """
-    import io
     import json as _json
 
     from app.database import SessionLocal
@@ -1063,16 +1517,7 @@ def append_document_as_agent_file(
             }
 
         try:
-            if fmt == "md":
-                data = merged.encode("utf-8")
-            elif fmt == "docx":
-                buf = io.BytesIO()
-                _build_docx(merged, options).save(buf)
-                data = buf.getvalue()
-            else:  # xlsx
-                buf = io.BytesIO()
-                _build_workbook(merged, options).save(buf)
-                data = buf.getvalue()
+            data, _ = _render_document(fmt, merged, options)
         except Exception as exc:  # noqa: BLE001
             logger.exception("追加后重渲染 %s 文档失败: file_id=%s", fmt, file_id)
             return {"error": f"重新渲染文档失败: {exc}"}

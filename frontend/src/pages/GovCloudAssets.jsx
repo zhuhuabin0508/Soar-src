@@ -8,7 +8,7 @@ import {
 import { govCloudApi } from '../api/govcloud'
 import { toast } from '../store/toastStore'
 import {
-  PageContainer, PageHeader, Button, Badge, EmptyState, Pagination, LoadingState,
+  PageContainer, PageHeader, Button, Badge, EmptyState, Pagination, LoadingState, SearchInput,
 } from '../components/ui'
 import { Modal, Drawer } from '../components/Dialog'
 import { inputCls } from '../components/property/FormControls'
@@ -180,7 +180,7 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
           onDragOver={(e) => { e.preventDefault(); if (!importing) setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
-          className={`flex w-full flex-col items-center gap-1.5 rounded-lg border border-dashed p-5 text-center transition-colors ${
+          className={`flex w-full flex-col items-center gap-1.5 rounded-lg border border-dashed p-4 text-center transition-colors ${
             importing ? 'cursor-not-allowed opacity-60'
               : dragOver ? 'border-primary bg-primary/10'
               : 'border-border hover:border-primary/40 hover:bg-muted/50'
@@ -531,7 +531,7 @@ export default function GovCloudAssets() {
 
       <div className="flex min-h-0 flex-1 gap-4 overflow-hidden p-6">
         <aside className="w-[240px] shrink-0 overflow-y-auto">
-          <div className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="mb-2 px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             发现来源
           </div>
           <div className="space-y-1">
@@ -565,7 +565,7 @@ export default function GovCloudAssets() {
                     <span className={`block text-sm font-medium leading-snug ${on ? 'text-primary' : 'text-foreground'}`}>
                       {sourceTitle(g)}
                     </span>
-                    <span className="mt-0.5 block text-[11px] tabular-nums text-muted-foreground">
+                    <span className="mt-0.5 block text-xs tabular-nums text-muted-foreground">
                       {g.enabled ? `${count.toLocaleString()} 条` : '即将接入'}
                     </span>
                   </span>
@@ -685,25 +685,13 @@ export default function GovCloudAssets() {
 
               {/* 单行内联筛选栏（轻量筛选形态）：关键词 + 对齐状态筛选 chips + 汇总统计 */}
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <div className="relative min-w-[220px] max-w-md flex-1">
-                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    className={`${inputCls} pl-8 pr-8`}
-                    placeholder={`搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`}
-                    value={keyword}
-                    onChange={(e) => { setKeyword(e.target.value); setPage(1) }}
-                  />
-                  {keyword && (
-                    <button
-                      type="button"
-                      onClick={() => { setKeyword(''); setPage(1) }}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
-                      aria-label="清除关键词"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
+                <SearchInput
+                  className="min-w-[220px] max-w-md flex-1"
+                  placeholder={`搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`}
+                  value={keyword}
+                  onChange={(v) => { setKeyword(v); setPage(1) }}
+                  onClear={() => { setKeyword(''); setPage(1) }}
+                />
                 {tables.length > 0 && [
                   { key: 'ok', label: '已对齐', dot: 'bg-success', active: 'bg-success/15 text-success ring-success/40' },
                   { key: 'bad', label: '未对齐', dot: 'bg-warning', active: 'bg-warning/15 text-warning ring-warning/40' },

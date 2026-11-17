@@ -450,20 +450,20 @@ function BannedIPsPanel() {
           <span className="text-xs font-medium text-primary">已选 {selectedIds.size} 项</span>
           <div className="flex items-center gap-2">
             {canUnban && (
-              <button type="button" onClick={handleBatchUnban} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] text-warning transition hover:bg-warning/20">
+              <button type="button" onClick={handleBatchUnban} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning transition hover:bg-warning/20">
                 <Unlock className="h-3 w-3" /> 批量解封
               </button>
             )}
             {canUnban && (
-              <button type="button" onClick={handleBatchDelete} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive transition hover:bg-destructive/20">
+              <button type="button" onClick={handleBatchDelete} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive transition hover:bg-destructive/20">
                 <Trash2 className="h-3 w-3" /> 批量删除
               </button>
             )}
-            <button type="button" onClick={handleBatchExport} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary">
+            <button type="button" onClick={handleBatchExport} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground transition hover:bg-secondary">
               <Download className="h-3 w-3" /> 导出选中
             </button>
           </div>
-          <button type="button" onClick={() => setSelectedIds(new Set())} className="ml-auto text-[11px] text-muted-foreground hover:text-foreground">
+          <button type="button" onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs text-muted-foreground hover:text-foreground">
             取消选择
           </button>
         </div>
@@ -484,10 +484,10 @@ function BannedIPsPanel() {
             <div className="text-sm font-medium">{search || statusFilter ? '没有匹配的封禁记录' : '暂无已封禁 IP 记录'}</div>
             {!search && !statusFilter && canUnban && (
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => { setCreateIpTouched(false); setCreateOpen(true) }} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+                <button type="button" onClick={() => { setCreateIpTouched(false); setCreateOpen(true) }} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
                   + 手动新增封禁
                 </button>
-                <button type="button" onClick={handleImportClick} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+                <button type="button" onClick={handleImportClick} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
                   导入 CSV
                 </button>
               </div>
@@ -561,13 +561,13 @@ function BannedIPsPanel() {
                           </button>
                         </div>
                       </td>
-                      <td className="px-4 py-3"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${levelMeta.cls}`}>{levelMeta.label}</span></td>
-                      <td className="px-4 py-3"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${statusMeta.cls} ${isUnblocked ? 'opacity-70' : ''}`}>{statusMeta.label}</span></td>
-                      <td className="px-4 py-3"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${(SOURCE_META[r.source] || { cls: 'bg-secondary text-muted-foreground' }).cls}`}>{(SOURCE_META[r.source] || { label: r.source || '-' }).label}</span></td>
+                      <td className="px-4 py-3"><span className={`rounded px-1.5 py-0.5 text-xs font-medium ${levelMeta.cls}`}>{levelMeta.label}</span></td>
+                      <td className="px-4 py-3"><span className={`rounded px-1.5 py-0.5 text-xs font-medium ${statusMeta.cls} ${isUnblocked ? 'opacity-70' : ''}`}>{statusMeta.label}</span></td>
+                      <td className="px-4 py-3"><span className={`rounded px-1.5 py-0.5 text-xs font-medium ${(SOURCE_META[r.source] || { cls: 'bg-secondary text-muted-foreground' }).cls}`}>{(SOURCE_META[r.source] || { label: r.source || '-' }).label}</span></td>
                       <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
                         <div>{humanizeDuration(r.ban_duration)}</div>
                         {r.ban_duration > 0 && (
-                          <div className="text-[10px] text-muted-foreground">{fmtExpiry(r.expired_at)}</div>
+                          <div className="text-xs text-muted-foreground">{fmtExpiry(r.expired_at)}</div>
                         )}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{r.violation_count ?? 0}</td>
@@ -580,7 +580,7 @@ function BannedIPsPanel() {
                               type="button"
                               onClick={() => handleUnban(r)}
                               disabled={deleting}
-                              className="flex items-center gap-1 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] text-warning transition hover:bg-warning/20"
+                              className="flex items-center gap-1 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-xs text-warning transition hover:bg-warning/20"
                               title="解除封禁"
                             >
                               <Unlock className="h-3 w-3" /> 解封
@@ -591,7 +591,7 @@ function BannedIPsPanel() {
                               type="button"
                               onClick={() => handleHardDelete(r)}
                               disabled={unbanning}
-                              className="flex items-center gap-1 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive transition hover:bg-destructive/20"
+                              className="flex items-center gap-1 rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive transition hover:bg-destructive/20"
                               title="硬删除：彻底从数据库删除记录（不可恢复）"
                             >
                               <Trash2 className="h-3 w-3" /> 删除
@@ -677,7 +677,7 @@ function BannedIPsPanel() {
                 onBlur={() => setCreateIpTouched(true)}
               />
               {createIpTouched && createIpError && (
-                <div className="mt-1 text-[11px] text-destructive">{createIpError}</div>
+                <div className="mt-1 text-xs text-destructive">{createIpError}</div>
               )}
             </div>
             <div>
@@ -747,7 +747,7 @@ function BannedIPsPanel() {
                 <option key={d.id} value={String(d.id)}>{d.name}</option>
               ))}
             </CompactSelect>
-            <p className="mt-1 text-[11px] text-muted-foreground">导入的每条 IP 都会调用该设备的 block_ip 动作实际封禁</p>
+            <p className="mt-1 text-xs text-muted-foreground">导入的每条 IP 都会调用该设备的 block_ip 动作实际封禁</p>
           </div>
           <div className="flex items-start gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-4 py-3 text-xs text-primary">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />

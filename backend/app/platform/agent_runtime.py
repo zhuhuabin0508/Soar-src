@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_MODE_CHAT = "chat"
 OUTPUT_MODE_SOC_DECISION = "soc_decision"
 OUTPUT_MODE_BAN_RISK_ANALYZE = "ban_risk_analyze"
+OUTPUT_MODE_TICKET_ANALYST = "ticket_analyst"
 
 
 @dataclass
@@ -56,7 +57,12 @@ def resolve_runtime_user(db: Session):
 
 def resolve_output_mode(agent: Agent) -> str:
     raw = (getattr(agent, "output_mode", None) or OUTPUT_MODE_CHAT).strip()
-    if raw in (OUTPUT_MODE_CHAT, OUTPUT_MODE_SOC_DECISION, OUTPUT_MODE_BAN_RISK_ANALYZE):
+    if raw in (
+        OUTPUT_MODE_CHAT,
+        OUTPUT_MODE_SOC_DECISION,
+        OUTPUT_MODE_BAN_RISK_ANALYZE,
+        OUTPUT_MODE_TICKET_ANALYST,
+    ):
         return raw
     return OUTPUT_MODE_CHAT
 
@@ -188,6 +194,82 @@ def adapt_ban_risk_analyze(content: str) -> dict:
     return data
 
 
+def _validate_reason_modules(reasons: list[str]) -> None:
+    """校验 reasons 的 5 要素模块前缀齐全且顺序正确（前端卡片按名取字段）。
+
+    任一模块缺失或顺序错乱都会导致卡片字段错位/内容缺失，此时抛出
+    AgentCallError 交由调用方重试，而不是把错误结构落库。
+    """
+    from app.core.ticket_analyst.prompt import REASON_ELEMENTS
+    from app.workflow.agent_client import AgentCallError
+
+    text = "\n".join(reasons)
+    cursor = 0
+    missing: list[str] = []
+    for prefix, _desc in REASON_ELEMENTS:
+        idx = text.find(prefix, cursor)
+        if idx < 0:
+            missing.append(prefix)
+            continue
+        cursor = idx + len(prefix)
+    if missing:
+        raise AgentCallError(
+            "reasons 缺少 5 要素模块（须按顺序输出 "
+            + "→".join(p for p, _ in REASON_ELEMENTS)
+            + "）: "
+            + "".join(missing)
+        )
+
+
+def adapt_ticket_analyst(content: str) -> dict:
+    """工单研判契约适配器：严格 3 字段（risk_level/action/reasons）。
+
+    - risk_level 须在前端展示词汇表内（严重/高危/高/中危/中/低危/低）
+    - action 须为 ban/monitor/ignore
+    - reasons 须为非空字符串数组
+    - 多余字段剥离（保证落库形态，不浪费重试）
+    缺字段/词汇非法抛 AgentCallError，由调用方重试。
+    """
+    from app.agent.output_adapt import _extract_json_object
+    from app.core.ticket_analyst.rules import ACTIONS, RISK_LEVELS
+    from app.workflow.agent_client import AgentCallError
+
+    candidate = _extract_json_object(content)
+    if candidate is None:
+        candidate = (content or "").strip()
+    if not candidate:
+        raise AgentCallError("响应为空，无法解析 ticket_analyst JSON")
+    try:
+        data = json.loads(candidate)
+    except (json.JSONDecodeError, TypeError) as exc:
+        snippet = candidate if len(candidate) <= 120 else f"{candidate[:120]}…"
+        raise AgentCallError(
+            f"响应 JSON 解析失败: {exc}（输出前120字符: {snippet!r}）"
+        ) from exc
+    if not isinstance(data, dict):
+        raise AgentCallError("响应不是 JSON 对象")
+    missing = [f for f in ("risk_level", "action", "reasons") if f not in data]
+    if missing:
+        raise AgentCallError(f"响应缺少必填字段: {', '.join(missing)}")
+    risk_level = str(data["risk_level"]).strip()
+    if risk_level not in RISK_LEVELS:
+        raise AgentCallError(f"risk_level 非法: {risk_level!r}（须为 {'/'.join(RISK_LEVELS)}）")
+    action = str(data["action"]).strip()
+    if action not in ACTIONS:
+        raise AgentCallError(f"action 非法: {action!r}（须为 {'/'.join(ACTIONS)}）")
+    reasons = data["reasons"]
+    if not isinstance(reasons, list) or not reasons:
+        raise AgentCallError("reasons 须为非空字符串数组")
+    reasons = [str(r) for r in reasons if str(r).strip()]
+    if not reasons:
+        raise AgentCallError("reasons 须为非空字符串数组")
+    _validate_reason_modules(reasons)
+    extra = [k for k in data if k not in ("risk_level", "action", "reasons")]
+    if extra:
+        logger.warning("ticket_analyst 输出含多余字段，已剥离: %s", extra)
+    return {"risk_level": risk_level, "action": action, "reasons": reasons}
+
+
 def _log_invoke(ctx: RunContext) -> None:
     logger.info(
         "invoke_agent agent_id=%s engine=%s channel=%s output_mode=%s stream=%s user_id=%s",
@@ -236,6 +318,7 @@ def _resolve_system_prompt(
     override,
     *,
     for_decision: bool = False,
+    extra_skill_ids: list[int] | None = None,
 ) -> str | None:
     if override is not None and getattr(override, "system_prompt", None) is not None:
         # 自定义 system_prompt 也不能绕过当前时间块（与常规组装路径保持一致）
@@ -248,6 +331,7 @@ def _resolve_system_prompt(
         db,
         agent,
         fallback_prompt="你是一个智能助手，请根据用户输入给出有帮助的回答。",
+        extra_skill_ids=extra_skill_ids,
     )
 
 
@@ -325,12 +409,16 @@ async def invoke_agent(
     _log_invoke(ctx)
 
     user_message, payload = _parse_input(input)
-    for_decision = output_mode in (OUTPUT_MODE_SOC_DECISION, OUTPUT_MODE_BAN_RISK_ANALYZE)
+    for_decision = output_mode in (
+        OUTPUT_MODE_SOC_DECISION,
+        OUTPUT_MODE_BAN_RISK_ANALYZE,
+        OUTPUT_MODE_TICKET_ANALYST,
+    )
     system_prompt = _resolve_system_prompt(db, agent, override, for_decision=for_decision)
     executor = build_hermes_executor(
         db, agent, user, override=override, system_prompt=system_prompt
     )
-    _LINKAGE_CHANNELS = frozenset({"ban_workflow", "workflow", "workflow_ai_agent"})
+    _LINKAGE_CHANNELS = frozenset({"ban_workflow", "workflow", "workflow_ai_agent", "ticket_analyst"})
     if channel in _LINKAGE_CHANNELS:
         from app.database import LinkageSessionLocal, close_db_session
 
@@ -369,6 +457,15 @@ async def invoke_agent(
             raw=decision,
         )
 
+    if output_mode == OUTPUT_MODE_TICKET_ANALYST:
+        decision = adapt_ticket_analyst(final_text)
+        return AgentInvokeResult(
+            response=final_text,
+            messages=new_messages,
+            decision=decision,
+            raw=decision,
+        )
+
     return AgentInvokeResult(
         response=final_text,
         messages=new_messages,
@@ -388,6 +485,7 @@ async def invoke_agent_sse(
     session_id: str = "default",
     history: list[dict] | None = None,
     executor_holder: list | None = None,
+    skill_ids: list[int] | None = None,
 ) -> AsyncIterator[str]:
     agent = _load_agent(db, agent_id, agent)
     engine = resolve_engine(agent)
@@ -405,7 +503,7 @@ async def invoke_agent_sse(
     _log_invoke(ctx)
 
     user_message, _payload = _parse_input(input)
-    system_prompt = _resolve_system_prompt(db, agent, override)
+    system_prompt = _resolve_system_prompt(db, agent, override, extra_skill_ids=skill_ids)
     executor = build_hermes_executor(
         db, agent, user, override=override, system_prompt=system_prompt
     )

@@ -15,8 +15,9 @@ export default defineConfig({
     // 后端容器映射到宿主机 8001（soar-backend-dev，uvicorn --reload 热重载），
     // 因此本机开发时 /api 代理须指向 8001，否则请求超时、页面加载不出数据。
     proxy: {
-      // ws: true 让 /api 前缀的 WebSocket 升级请求同样走代理（通知实时推送通道）
-      '/api': { target: 'http://localhost:8001', changeOrigin: true, ws: true },
+      // 仅代理 /api/ 前缀，避免误匹配前端路由 /api-open（直接访问/刷新该路由会返回后端 404）
+      // ws: true 让 /api/ 前缀的 WebSocket 升级请求同样走代理（通知实时推送通道）
+      '^/api/': { target: 'http://localhost:8001', changeOrigin: true, ws: true },
     },
   },
 })

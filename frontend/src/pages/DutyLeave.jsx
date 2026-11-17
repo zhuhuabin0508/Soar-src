@@ -5,7 +5,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, labelCls } from '../components/property/FormControls'
-import {Button, PageContainer, DataTable, Pagination, StatusBadge, CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
+import {Button, PageContainer, PageHeader, DataTable, Pagination, StatusBadge, CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
 
@@ -190,20 +190,15 @@ export default function DutyLeave() {
 
   return (
     <PageContainer>
-      {/* 标题区：主标题 + 描述 + 右侧提交按钮 */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">请假管理</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">值班人员请假申请与审批，批准后请假期间自动跳过排班</p>
-        </div>
-        {canEdit && (
-          <div className="flex shrink-0 items-center gap-2">
-            <Button variant="primary" size="sm" onClick={openCreate}>
-              <CalendarX className="mr-1 h-3.5 w-3.5" />提交请假
-            </Button>
-          </div>
+      {/* 标题区：主标题 + 右侧提交按钮 */}
+      <PageHeader
+        title="请假管理"
+        actions={canEdit && (
+          <Button variant="primary" size="sm" onClick={openCreate}>
+            <CalendarX className="mr-1 h-3.5 w-3.5" />提交请假
+          </Button>
         )}
-      </div>
+      />
 
       {/* 请假统计：本月请假人次 + 待审批数量 */}
       <div className="mb-4 flex gap-4">
@@ -212,8 +207,8 @@ export default function DutyLeave() {
             <CalendarDays className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <div className="text-[24px] font-bold leading-none text-foreground tabular-nums">{monthCount}</div>
-            <div className="mt-1 text-[13px] text-muted-foreground">本月请假人次</div>
+            <div className="text-2xl font-bold leading-none text-foreground tabular-nums">{monthCount}</div>
+            <div className="mt-1 text-xs text-muted-foreground">本月请假人次</div>
           </div>
         </div>
         <div className="flex flex-1 items-center gap-3 rounded-md border border-border bg-card px-4 py-3">
@@ -221,8 +216,8 @@ export default function DutyLeave() {
             <Clock className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <div className={`text-[24px] font-bold leading-none tabular-nums ${pendingCount > 0 ? 'text-amber-500' : 'text-foreground'}`}>{pendingCount}</div>
-            <div className="mt-1 text-[13px] text-muted-foreground">待审批数量</div>
+            <div className={`text-2xl font-bold leading-none tabular-nums ${pendingCount > 0 ? 'text-amber-500' : 'text-foreground'}`}>{pendingCount}</div>
+            <div className="mt-1 text-xs text-muted-foreground">待审批数量</div>
           </div>
         </div>
       </div>
@@ -290,7 +285,7 @@ export default function DutyLeave() {
           </>
         }
       >
-        <div className="grid grid-cols-2 gap-5 py-2">
+        <div className="grid grid-cols-2 gap-4 py-2">
           <div className="col-span-2">
             <label className={labelCls}>请假人员<span className="text-red-500">*</span></label>
             <CompactSelect size="lg" block value={form.member_id} onChange={(e) => setForm({ ...form, member_id: e.target.value })}>

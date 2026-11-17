@@ -84,6 +84,7 @@ class AgentRun:
         load_history: bool = False,
         persist_history: bool = False,
         trigger_type: str = "agent_test",
+        skill_ids: list[int] | None = None,
     ):
         self.db = db
         self.agent = agent
@@ -95,6 +96,7 @@ class AgentRun:
         self.load_history = load_history
         self.persist_history = persist_history
         self.trigger_type = trigger_type
+        self.skill_ids = skill_ids or []
         self.user_id = int(getattr(user, "id", 0) or 0)
 
     async def stream(self) -> AsyncIterator[str]:
@@ -153,6 +155,7 @@ class AgentRun:
                 session_id=self.session_id,
                 history=history or None,
                 executor_holder=executor_holder,
+                skill_ids=self.skill_ids,
             ):
                 if chunk.startswith("data: "):
                     try:

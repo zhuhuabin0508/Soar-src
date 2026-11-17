@@ -91,7 +91,8 @@ def test_qingteng_host_compact_aligns_display_fields():
         "source_id": "3:agent-1",
         "agent_id": "agent-1",
         "hostname": "web-01",
-        "display_ip": "10.137.254.230",
+        "display_ip": "192.168.1.12",
+        "connection_ip": "10.223.132.23",
         "os_type": "linux",
         "platform": "CentOS",
         "agent_status_label": "在线",
@@ -100,11 +101,22 @@ def test_qingteng_host_compact_aligns_display_fields():
     })
     assert data["resource_type"] == "qingteng_host"
     assert data["resource_label"]
-    # 通用展示字段对齐：与 Excel 资产统一按 ip_address / instance_name 理解
-    assert data["ip_address"] == "10.137.254.230"
+    # 通用展示字段对齐：青藤主机以「连接 IP」作为 IP 口径（展示 IP 仅兜底）
+    assert data["ip_address"] == "10.223.132.23"
+    assert data["connection_ip"] == "10.223.132.23"
+    assert data["display_ip"] == "192.168.1.12"
     assert data["instance_name"] == "web-01"
     assert data["agent_status_label"] == "在线"
     assert data["qingteng_device_name"] == "青藤万相"
+
+
+def test_qingteng_host_ip_search_priority_and_labels():
+    """青藤主机的 IP 检索以连接 IP 为主，字段中文名对照包含连接 IP。"""
+    from app.agent.discovery_search import _DISCOVERY_FIELD_LABELS, _IP_COLUMNS
+
+    assert _IP_COLUMNS["qingteng_host"][0] == "connection_ip"
+    assert _DISCOVERY_FIELD_LABELS["connection_ip"] == "连接 IP"
+    assert _DISCOVERY_FIELD_LABELS["display_ip"] == "展示 IP"
 
 
 def test_compact_passes_through_type_specific_fields():

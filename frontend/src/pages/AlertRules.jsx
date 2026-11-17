@@ -42,7 +42,7 @@ function StatCard({ icon: Icon, label, value, sub, onClick, clickable, title, ac
         <div className="truncate text-xs text-muted-foreground">{label}</div>
         <div className="mt-0.5 flex items-baseline gap-1.5">
           <span className={`text-xl font-semibold tabular-nums ${tone === 'danger' ? 'text-destructive' : 'text-foreground'}`}>{value}</span>
-          {sub && <span className="text-[11px] text-muted-foreground">{sub}</span>}
+          {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
         </div>
       </div>
     </div>
@@ -392,7 +392,7 @@ export default function AlertRules() {
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <button
-                className="max-w-full truncate text-left text-[13px] font-medium text-foreground transition hover:text-primary"
+                className="max-w-full truncate text-left text-xs font-medium text-foreground transition hover:text-primary"
                 title={r.description || r.name}
                 onClick={(e) => { e.stopPropagation(); goEdit(r) }}
               >
@@ -406,7 +406,7 @@ export default function AlertRules() {
             </div>
             {r.enabled && !r.draft && !r.has_hit_24h && (
               <span
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-warning"
+                className="mt-1 inline-flex items-center gap-1 text-xs text-warning"
                 title="该规则启用中但近 24 小时零命中。可能原因：条件过严 / 数据源断流 / 被更高优先级规则抢先命中"
               >
                 <AlertTriangle className="h-3 w-3" />疑似失效
@@ -418,7 +418,7 @@ export default function AlertRules() {
       {
         key: 'group', header: '分组', width: '92px',
         render: (r) => (
-          <span className="inline-flex max-w-full items-center rounded border border-border bg-muted px-1.5 py-0.5 text-[11.5px] text-muted-foreground" title={`分组：${r.group || '其他'}`}>
+          <span className="inline-flex max-w-full items-center rounded border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" title={`分组：${r.group || '其他'}`}>
             <span className="truncate">{r.group || '其他'}</span>
           </span>
         ),
@@ -427,7 +427,7 @@ export default function AlertRules() {
         key: 'type', header: '类型', width: '118px',
         render: (r) => (
           <div className="flex flex-wrap items-center gap-1">
-            <span className={r.type === 'stats' ? 'text-[12px] font-medium text-primary' : 'text-[12px] text-foreground'}>
+            <span className={r.type === 'stats' ? 'text-xs font-medium text-primary' : 'text-xs text-foreground'}>
               {ruleTypeLabel(r)}
             </span>
             {r.type !== 'stats' && r.action !== 'alert' && (
@@ -444,14 +444,14 @@ export default function AlertRules() {
             return (
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 <span
-                  className="inline-flex max-w-full items-center gap-1 rounded border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-[11.5px] text-primary"
+                  className="inline-flex max-w-full items-center gap-1 rounded border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-xs text-primary"
                   title={`统计配置：${summary}；筛选条件：${condSummary(r) || '（无）'}`}
                 >
                   <span className="truncate">{summary || '--'}</span>
                 </span>
                 {r.alert_aggregation?.keys?.length > 0 && (
                   <span
-                    className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
                     title={`告警聚合：${aggregationSummary(r.alert_aggregation)}`}
                   >
                     <Layers className="h-3 w-3" />聚合
@@ -463,12 +463,12 @@ export default function AlertRules() {
           const summary = condSummary(r)
           return (
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="block max-w-[300px] truncate text-[12.5px] text-muted-foreground" title={summary}>
+              <span className="block max-w-[300px] truncate text-xs text-muted-foreground" title={summary}>
                 {summary || '--'}
               </span>
               {r.alert_aggregation?.keys?.length > 0 && (
                 <span
-                  className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                  className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
                   title={`告警聚合：${aggregationSummary(r.alert_aggregation)}`}
                 >
                   <Layers className="h-3 w-3" />聚合
@@ -478,7 +478,7 @@ export default function AlertRules() {
           )
         },
       },
-      { key: 'priority', header: '优先级', width: '72px', numeric: true, render: (r) => <span className="font-mono text-[12.5px] tabular-nums" title={r.priority == null ? '未统计' : undefined}>{r.priority == null ? '--' : r.priority.toLocaleString()}</span> },
+      { key: 'priority', header: '优先级', width: '72px', numeric: true, render: (r) => <span className="font-mono text-xs tabular-nums" title={r.priority == null ? '未统计' : undefined}>{r.priority == null ? '--' : r.priority.toLocaleString()}</span> },
       {
         key: 'enabled', header: '状态', width: '72px',
         render: (r) => (
@@ -493,7 +493,7 @@ export default function AlertRules() {
         key: 'today_hits', header: '今日命中', width: '84px', numeric: true,
         render: (r) => (
           <button
-            className={`font-mono text-[12.5px] tabular-nums transition hover:text-primary ${r.today_hits > 0 ? 'text-foreground' : 'text-muted-foreground'}`}
+            className={`font-mono text-xs tabular-nums transition hover:text-primary ${r.today_hits > 0 ? 'text-foreground' : 'text-muted-foreground'}`}
             title={r.today_hits == null ? '未统计' : '点击查看今日命中日志'}
             onClick={(e) => { e.stopPropagation(); setHitsFilter({ ruleId: r.id, ruleName: r.name, today: true }) }}
           >
@@ -505,7 +505,7 @@ export default function AlertRules() {
         key: 'hit_count', header: '累计命中', width: '84px', numeric: true,
         render: (r) => (
           <button
-            className={`font-mono text-[12.5px] tabular-nums transition hover:text-primary ${r.hit_count > 0 ? 'text-foreground' : 'text-muted-foreground'}`}
+            className={`font-mono text-xs tabular-nums transition hover:text-primary ${r.hit_count > 0 ? 'text-foreground' : 'text-muted-foreground'}`}
             title={r.hit_count == null ? '未统计' : '点击查看近 7 天命中日志'}
             onClick={(e) => { e.stopPropagation(); setHitsFilter({ ruleId: r.id, ruleName: r.name }) }}
           >
@@ -516,7 +516,7 @@ export default function AlertRules() {
       {
         key: 'last_hit_at', header: '最近触发', width: '104px',
         render: (r) => (
-          <span className="text-[12.5px] text-muted-foreground" title={absTime(r.last_hit_at)}>
+          <span className="text-xs text-muted-foreground" title={absTime(r.last_hit_at)}>
             {relTime(r.last_hit_at)}
           </span>
         ),
@@ -524,9 +524,9 @@ export default function AlertRules() {
       {
         key: 'updated_at', header: '更新时间', width: '142px',
         render: (r) => (
-          <div className="text-[12px] leading-tight">
+          <div className="text-xs leading-tight">
             <div className="text-muted-foreground">{fmtTime(r.updated_at)}</div>
-            {r.updated_by && <div className="mt-0.5 text-[11px] text-muted-foreground">{r.updated_by}</div>}
+            {r.updated_by && <div className="mt-0.5 text-xs text-muted-foreground">{r.updated_by}</div>}
           </div>
         ),
       },
@@ -624,10 +624,10 @@ export default function AlertRules() {
         {/* ===== 左侧分组树面板 ===== */}
         <aside className="card hidden w-56 shrink-0 p-3 lg:block">
           <div className="mb-2 flex items-center justify-between px-1">
-            <span className="text-[12.5px] font-semibold text-foreground">规则分组</span>
+            <span className="text-xs font-semibold text-foreground">规则分组</span>
             {canEdit && (
               <button
-                className={`flex h-6 items-center gap-1 rounded px-1.5 text-[11.5px] transition ${groupManage ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
+                className={`flex h-6 items-center gap-1 rounded px-1.5 text-xs transition ${groupManage ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
                 title={groupManage ? '退出分组管理' : '管理分组（新建 / 重命名 / 删除）'}
                 onClick={() => { setGroupManage((v) => !v); setGroupCreating(false); setGroupRenamingId(null) }}
               >
@@ -638,20 +638,20 @@ export default function AlertRules() {
           <div className="space-y-0.5">
             {/* 全部 */}
             <button
-              className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[12.5px] transition ${!groupFilter ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
+              className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition ${!groupFilter ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
               onClick={() => setGroupFilter('')}
             >
               <span>全部规则</span>
-              <span className="font-mono text-[11.5px] tabular-nums opacity-80">{totalRules}</span>
+              <span className="font-mono text-xs tabular-nums opacity-80">{totalRules}</span>
             </button>
             {/* 草稿 */}
             <button
-              className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-[12.5px] transition ${groupFilter === '__draft__' ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
+              className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition ${groupFilter === '__draft__' ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
               onClick={() => setGroupFilter(groupFilter === '__draft__' ? '' : '__draft__')}
               title="未发布的草稿规则（不参与线上匹配）"
             >
               <span className="flex items-center gap-1.5">草稿箱{draftCount > 0 && <Badge variant="warning">{draftCount}</Badge>}</span>
-              <span className="font-mono text-[11.5px] tabular-nums opacity-80">{draftCount}</span>
+              <span className="font-mono text-xs tabular-nums opacity-80">{draftCount}</span>
             </button>
             <div className="my-1.5 border-t border-border" />
             {/* 各分组 */}
@@ -661,7 +661,7 @@ export default function AlertRules() {
                 return (
                   <div key={g.id} className="flex items-center gap-1 px-1 py-1">
                     <input
-                      autoFocus className={`${inputBaseCls} h-7 min-w-0 flex-1 px-2 text-[12px]`}
+                      autoFocus className={`${inputBaseCls} h-7 min-w-0 flex-1 px-2 text-xs`}
                       value={groupRenameValue} maxLength={64}
                       onChange={(e) => setGroupRenameValue(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') renameGroup(g); if (e.key === 'Escape') setGroupRenamingId(null) }}
@@ -680,12 +680,12 @@ export default function AlertRules() {
               return (
                 <div key={g.id} className="flex items-center gap-0.5">
                   <button
-                    className={`flex min-w-0 flex-1 items-center justify-between rounded-md px-2.5 py-1.5 text-[12.5px] transition ${active ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
+                    className={`flex min-w-0 flex-1 items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition ${active ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}
                     onClick={() => setGroupFilter(active ? '' : g.name)}
                     title={g.name === '其他' ? '默认分组（不可删除）' : undefined}
                   >
                     <span className="max-w-[110px] truncate">{g.name}</span>
-                    <span className="font-mono text-[11.5px] tabular-nums opacity-80">{g.count}</span>
+                    <span className="font-mono text-xs tabular-nums opacity-80">{g.count}</span>
                   </button>
                   {groupManage && (
                     <button className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:bg-accent hover:text-foreground"
@@ -709,7 +709,7 @@ export default function AlertRules() {
               groupCreating ? (
                 <div className="flex items-center gap-1 px-1 py-1">
                   <input
-                    autoFocus className={`${inputBaseCls} h-7 min-w-0 flex-1 px-2 text-[12px]`}
+                    autoFocus className={`${inputBaseCls} h-7 min-w-0 flex-1 px-2 text-xs`}
                     value={groupNewName} maxLength={64} placeholder="分组名称"
                     onChange={(e) => setGroupNewName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') createGroup(); if (e.key === 'Escape') setGroupCreating(false) }}
@@ -725,7 +725,7 @@ export default function AlertRules() {
                 </div>
               ) : (
                 <button
-                  className="flex w-full items-center gap-1.5 rounded-md border border-dashed border-border px-2.5 py-1.5 text-[12px] text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+                  className="flex w-full items-center gap-1.5 rounded-md border border-dashed border-border px-2.5 py-1.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
                   onClick={() => setGroupCreating(true)}
                 >
                   <FolderPlus className="h-3.5 w-3.5" />新建分组
@@ -739,7 +739,7 @@ export default function AlertRules() {
         <div className="min-w-0 flex-1 space-y-4">
           {/* 严格模式提示条（可折叠，状态本地持久化） */}
           <div className="rounded-lg border border-warning/30 bg-warning/5">
-            <div className="flex items-center gap-2.5 px-4 py-2.5 text-[12.5px]">
+            <div className="flex items-center gap-2.5 px-4 py-2.5 text-xs">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span className="min-w-0 flex-1">
                 <span className="font-medium text-warning">严格模式：</span>
@@ -757,7 +757,7 @@ export default function AlertRules() {
               </button>
             </div>
             {bannerOpen && (
-              <div className="grid grid-cols-1 gap-3 border-t border-warning/20 px-4 py-3 text-[12px] leading-relaxed md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 border-t border-warning/20 px-4 py-3 text-xs leading-relaxed md:grid-cols-2">
                 <div className="rounded-md border border-border bg-background p-3">
                   <div className="mb-1 font-medium text-foreground">严格模式（当前）</div>
                   <div className="text-muted-foreground">
@@ -771,7 +771,7 @@ export default function AlertRules() {
                     解析成功的日志默认全部产生告警，规则仅用于抑制或调整。
                     例：刚接入设备想先看全量告警，可使用「全部告警（宽松兜底）」模板达到类似效果。
                   </div>
-                  <div className="mt-1.5 text-[11px] text-muted-foreground">当前平台仅支持严格模式。</div>
+                  <div className="mt-1.5 text-xs text-muted-foreground">当前平台仅支持严格模式。</div>
                 </div>
               </div>
             )}
@@ -784,7 +784,7 @@ export default function AlertRules() {
                 <ShieldCheck className="h-6 w-6" />
               </div>
               <h3 className="mt-4 text-base font-semibold text-foreground">还没有告警规则</h3>
-              <p className="mt-1.5 max-w-md text-center text-[13px] text-muted-foreground">
+              <p className="mt-1.5 max-w-md text-center text-xs text-muted-foreground">
                 严格模式下，解析成功的日志需要命中规则才会产生告警。从下方模板快速开始，或从空白创建。
               </p>
               {canEdit && (
@@ -799,13 +799,13 @@ export default function AlertRules() {
                     className="group relative flex flex-col rounded-xl border border-border bg-card p-4 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
                   >
                     {t.recommended && (
-                      <span className="absolute -top-2 right-3 rounded-full bg-primary px-2 py-0.5 text-[10.5px] font-medium text-primary-foreground">
+                      <span className="absolute -top-2 right-3 rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
                         推荐
                       </span>
                     )}
-                    <div className="text-[13.5px] font-semibold">{t.name}</div>
-                    <div className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{t.description}</div>
-                    <div className="mt-1.5 text-[11.5px] leading-relaxed text-muted-foreground">{t.hit_note}</div>
+                    <div className="text-xs font-semibold">{t.name}</div>
+                    <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t.description}</div>
+                    <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{t.hit_note}</div>
                     <Button
                       className="mt-3 w-full"
                       variant={t.recommended ? 'primary' : 'secondary'}
@@ -866,20 +866,20 @@ export default function AlertRules() {
                   <option value="draft">草稿</option>
                 </CompactSelect>
                 {groupFilter && (
-                  <button className="flex h-9 items-center gap-1.5 rounded-md border border-primary/50 bg-primary/5 px-3 text-[12px] text-primary transition hover:bg-primary/10"
+                  <button className="flex h-9 items-center gap-1.5 rounded-md border border-primary/50 bg-primary/5 px-3 text-xs text-primary transition hover:bg-primary/10"
                     onClick={() => setGroupFilter('')}>
-                    {groupFilter === '__draft__' ? '草稿箱' : groupFilter} <span className="text-[13px] leading-none">×</span>
+                    {groupFilter === '__draft__' ? '草稿箱' : groupFilter} <span className="text-xs leading-none">×</span>
                   </button>
                 )}
                 {cardFilter === 'stale' && (
-                  <button className="flex h-9 items-center gap-1.5 rounded-md border border-warning/50 bg-warning/10 px-3 text-[12px] text-warning transition hover:bg-warning/20"
+                  <button className="flex h-9 items-center gap-1.5 rounded-md border border-warning/50 bg-warning/10 px-3 text-xs text-warning transition hover:bg-warning/20"
                     onClick={() => setCardFilter('')}>
-                    疑似失效筛选 <span className="text-[13px] leading-none">×</span>
+                    疑似失效筛选 <span className="text-xs leading-none">×</span>
                   </button>
                 )}
                 {canEdit && selectedKeys.length > 0 && (
                   <div className="ml-auto flex items-center gap-2">
-                    <span className="text-[12px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       已选 <span className="font-medium tabular-nums text-foreground">{selectedKeys.length.toLocaleString()}</span> 条
                     </span>
                     <Button variant="secondary" size="sm" onClick={() => runBatch('enable')}>批量启用</Button>

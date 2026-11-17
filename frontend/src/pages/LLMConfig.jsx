@@ -17,7 +17,7 @@ import { TutorialButton, TutorialDrawer } from '../components/TutorialDrawer'
 import { LLM_TUTORIAL } from '../components/tutorialContent'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import { DataTable, Pagination, CompactSelect } from '../components/ui'
+import { DataTable, Pagination, CompactSelect, PillTabs } from '../components/ui'
 import FilterBar from '../components/FilterBar'
 import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
@@ -49,7 +49,7 @@ function ProbeErrorPanel({ result }) {
   if (!result || result.success) return null
   const checklist = Array.isArray(result.error_checklist) ? result.error_checklist : []
   return (
-    <div className="mt-2 flex flex-col gap-2 text-[11px]">
+    <div className="mt-2 flex flex-col gap-2 text-xs">
       {result.error_label && (
         <div className="font-medium text-destructive">类型：{result.error_label}</div>
       )}
@@ -61,7 +61,7 @@ function ProbeErrorPanel({ result }) {
       {(result.error_detail || result.error) && (
         <div>
           <div className="mb-0.5 text-muted-foreground">技术详情</div>
-          <pre className="max-h-32 overflow-auto rounded bg-background p-2 font-mono text-[10px] text-destructive ring-1 ring-border">
+          <pre className="max-h-32 overflow-auto rounded bg-background p-2 font-mono text-xs text-destructive ring-1 ring-border">
             {result.error_detail || result.error}
           </pre>
         </div>
@@ -127,7 +127,7 @@ const PROVIDER_ICONS = {
 
 // ============ 迷你折线图（Sparkline，纯 SVG） ============
 function Sparkline({ data, color = '#6366f1', height = 40, width = 120 }) {
-  if (!data || data.length < 2) return <div className="text-[10px] text-muted-foreground">暂无趋势</div>
+  if (!data || data.length < 2) return <div className="text-xs text-muted-foreground">暂无趋势</div>
   const max = Math.max(...data, 1)
   const min = Math.min(...data, 0)
   const range = max - min || 1
@@ -145,7 +145,7 @@ function Sparkline({ data, color = '#6366f1', height = 40, width = 120 }) {
 function HealthBadge({ status }) {
   const meta = HEALTH_META[status] || HEALTH_META.untested
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium ${meta.cls}`}>
+    <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
       {meta.label}
     </span>
@@ -154,7 +154,7 @@ function HealthBadge({ status }) {
 // 模型类型徽章
 function ModelTypeBadge({ type }) {
   const meta = MODEL_TYPE_META[type] || MODEL_TYPE_META.chat
-  return <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${meta.cls}`}>{meta.label}</span>
+  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
 }
 // Provider 图标 + 名称
 function ProviderCell({ provider, providers }) {
@@ -258,7 +258,7 @@ function MonitorTab() {
               <Activity className="h-4 w-4 text-primary" />
             </div>
             <div className="text-2xl font-bold text-foreground">{summary.total_calls ?? 0}</div>
-            <div className="mt-1 text-[11px] text-muted-foreground">{summary.total_success ?? 0} 成功 / {summary.total_failed ?? 0} 失败</div>
+            <div className="mt-1 text-xs text-muted-foreground">{summary.total_success ?? 0} 成功 / {summary.total_failed ?? 0} 失败</div>
           </div>
           <div className="rounded-lg border border-border bg-card p-4">
             <div className="mb-2 flex items-center justify-between">
@@ -266,7 +266,7 @@ function MonitorTab() {
               <TrendingUp className={`h-4 w-4 ${(summary.avg_success_rate ?? 0) >= 0.9 ? 'text-success' : 'text-warning'}`} />
             </div>
             <div className={`text-2xl font-bold ${(summary.avg_success_rate ?? 0) >= 0.9 ? 'text-success' : 'text-warning'}`}>{((summary.avg_success_rate ?? 0) * 100).toFixed(1)}<span className="text-sm text-muted-foreground">%</span></div>
-            <div className="mt-1 text-[11px] text-muted-foreground">最近 {days} 天</div>
+            <div className="mt-1 text-xs text-muted-foreground">最近 {days} 天</div>
           </div>
           <div className="rounded-lg border border-border bg-card p-4">
             <div className="mb-2 flex items-center justify-between">
@@ -274,7 +274,7 @@ function MonitorTab() {
               <Timer className="h-4 w-4 text-primary" />
             </div>
             <div className="text-2xl font-bold text-foreground">{summary.avg_latency_ms ?? 0}<span className="text-sm text-muted-foreground"> ms</span></div>
-            <div className="mt-1 text-[11px] text-muted-foreground">所有模型平均</div>
+            <div className="mt-1 text-xs text-muted-foreground">所有模型平均</div>
           </div>
           <div className="rounded-lg border border-border bg-card p-4">
             <div className="mb-2 flex items-center justify-between">
@@ -282,7 +282,7 @@ function MonitorTab() {
               <Zap className="h-4 w-4 text-warning" />
             </div>
             <div className="text-2xl font-bold text-foreground">{(summary.total_tokens ?? 0).toLocaleString()}</div>
-            <div className="mt-1 text-[11px] text-muted-foreground">入 + 出合计</div>
+            <div className="mt-1 text-xs text-muted-foreground">入 + 出合计</div>
           </div>
         </div>
       )}
@@ -298,11 +298,11 @@ function MonitorTab() {
             ) : (
               <div className="flex flex-col gap-3">
                 <div>
-                  <div className="mb-1 text-[11px] text-muted-foreground">每日调用次数</div>
+                  <div className="mb-1 text-xs text-muted-foreground">每日调用次数</div>
                   <Sparkline data={dailyTrend.map((d) => d.total)} color="#6366f1" height={50} width={500} />
                 </div>
                 <div>
-                  <div className="mb-1 text-[11px] text-muted-foreground">每日 Token 用量</div>
+                  <div className="mb-1 text-xs text-muted-foreground">每日 Token 用量</div>
                   <Sparkline data={dailyTrend.map((d) => d.tokens)} color="#f59e0b" height={50} width={500} />
                 </div>
               </div>
@@ -324,7 +324,7 @@ function MonitorTab() {
                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-secondary">
                         <div className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
                       </div>
-                      <span className="w-12 text-right text-[11px] font-mono text-foreground">{s.count}</span>
+                      <span className="w-12 text-right text-xs font-mono text-foreground">{s.count}</span>
                     </div>
                   )
                 })}
@@ -341,9 +341,9 @@ function MonitorTab() {
           <div className="flex flex-col gap-2">
             {errorTop.map((e, i) => (
               <div key={i} className="flex items-start gap-2 rounded-md border border-destructive/20 bg-background px-3 py-2">
-                <span className="shrink-0 rounded bg-destructive/20 px-1.5 py-0.5 text-[10px] font-bold text-destructive">#{i + 1}</span>
-                <code className="flex-1 break-all text-[11px] text-destructive/90">{e.error}</code>
-                <span className="shrink-0 text-[11px] font-mono text-muted-foreground">{e.count} 次</span>
+                <span className="shrink-0 rounded bg-destructive/20 px-1.5 py-0.5 text-xs font-bold text-destructive">#{i + 1}</span>
+                <code className="flex-1 break-all text-xs text-destructive/90">{e.error}</code>
+                <span className="shrink-0 text-xs font-mono text-muted-foreground">{e.count} 次</span>
               </div>
             ))}
           </div>
@@ -442,18 +442,18 @@ function MonitorTab() {
               <tbody>
                 {calls.map((c, idx) => (
                   <tr key={c.id || idx} className={`border-t border-border ${c.status === 'failed' ? 'bg-destructive/5' : idx % 2 === 0 ? 'bg-card' : ''}`}>
-                    <td className="px-3 py-2 text-[11px] text-muted-foreground" title={fmtTime(c.created_at)}>{fmtTime(c.created_at)}</td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground" title={fmtTime(c.created_at)}>{fmtTime(c.created_at)}</td>
                     <td className="px-3 py-2">
-                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${c.status === 'success' ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
+                      <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${c.status === 'success' ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
                         {c.status === 'success' ? '成功' : '失败'}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-[11px] text-muted-foreground">{c.latency_ms || '-'}ms</td>
-                    <td className="px-3 py-2 text-right font-mono text-[11px] text-muted-foreground">{c.input_tokens ?? '-'}</td>
-                    <td className="px-3 py-2 text-right font-mono text-[11px] text-muted-foreground">{c.output_tokens ?? '-'}</td>
-                    <td className="px-3 py-2 text-[11px] text-muted-foreground">{TRIGGER_LABELS[c.trigger_type] || c.trigger_type || '-'}</td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-muted-foreground">{c.source_ip || '-'}</td>
-                    <td className="truncate px-3 py-2 text-[11px] text-destructive" title={c.error_message || ''}>
+                    <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">{c.latency_ms || '-'}ms</td>
+                    <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">{c.input_tokens ?? '-'}</td>
+                    <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">{c.output_tokens ?? '-'}</td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">{TRIGGER_LABELS[c.trigger_type] || c.trigger_type || '-'}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{c.source_ip || '-'}</td>
+                    <td className="truncate px-3 py-2 text-xs text-destructive" title={c.error_message || ''}>
                       {c.error_message ? c.error_message.slice(0, 100) : '-'}
                     </td>
                   </tr>
@@ -504,14 +504,14 @@ function TestHistoryModal({ open, configId, configName, onClose }) {
             <tbody>
               {history.map((h, idx) => (
                 <tr key={h.id || idx} className={`border-t border-border ${h.status === 'failed' ? 'bg-destructive/5' : idx % 2 === 0 ? 'bg-card' : ''}`}>
-                  <td className="px-3 py-2 text-[11px] text-muted-foreground" title={fmtTime(h.created_at)}>{fmtRelative(h.created_at)}</td>
+                  <td className="px-3 py-2 text-xs text-muted-foreground" title={fmtTime(h.created_at)}>{fmtRelative(h.created_at)}</td>
                   <td className="px-3 py-2">
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${h.status === 'success' ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
+                    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${h.status === 'success' ? 'bg-success/20 text-success' : 'bg-destructive/20 text-destructive'}`}>
                       {h.status === 'success' ? '成功' : '失败'}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-[11px] text-muted-foreground">{h.latency_ms ?? '-'}ms</td>
-                  <td className="truncate px-3 py-2 text-[11px] text-destructive" title={h.error_message || ''}>{h.error_message ? h.error_message.slice(0, 80) : '-'}</td>
+                  <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">{h.latency_ms ?? '-'}ms</td>
+                  <td className="truncate px-3 py-2 text-xs text-destructive" title={h.error_message || ''}>{h.error_message ? h.error_message.slice(0, 80) : '-'}</td>
                 </tr>
               ))}
             </tbody>
@@ -826,7 +826,7 @@ function LLMConfig() {
     { key: 'name', header: '名称', render: (r) => (
       <div className="flex flex-col gap-0.5">
         <span className="truncate text-foreground">{r.name || '-'}</span>
-        {!r.enabled && <span className="text-[10px] text-muted-foreground">已禁用</span>}
+        {!r.enabled && <span className="text-xs text-muted-foreground">已禁用</span>}
       </div>
     ) },
     { key: 'provider', header: 'Provider', width: '160px', render: (r) => <ProviderCell provider={r.provider} providers={providers} /> },
@@ -870,14 +870,14 @@ function LLMConfig() {
       render: (r) => (
         <div className="flex flex-col gap-0.5" title={r.last_test_error || ''}>
           <HealthBadge status={r.health_status} />
-          {r.last_test_at && <span className="text-[10px] text-muted-foreground" title={fmtTime(r.last_test_at)}>{fmtRelative(r.last_test_at)}</span>}
+          {r.last_test_at && <span className="text-xs text-muted-foreground" title={fmtTime(r.last_test_at)}>{fmtRelative(r.last_test_at)}</span>}
         </div>
       ),
     },
     {
       key: 'is_default', header: '默认', width: '70px',
       render: (r) => r.is_default
-        ? <span className="rounded bg-success/20 px-2 py-0.5 text-[11px] font-medium text-success">默认</span>
+        ? <span className="rounded bg-success/20 px-2 py-0.5 text-xs font-medium text-success">默认</span>
         : <span className="text-xs text-muted-foreground">-</span>,
     },
     {
@@ -907,7 +907,7 @@ function LLMConfig() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-xl font-semibold text-foreground">模型设置</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">模型设置</h1>
           {activeTab === 'configs' && <span className="text-xs text-muted-foreground">共 {filteredRows.length} 个</span>}
         </div>
         {activeTab === 'configs' && (
@@ -945,13 +945,8 @@ function LLMConfig() {
       </header>
 
       {/* Tab 切换 */}
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6">
-        {tabs.map((t) => (
-          <button key={t.key} type="button" onClick={() => setActiveTab(t.key)}
-            className={`-mb-px border-b-2 px-4 py-3 text-sm transition ${activeTab === t.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-            {t.label}
-          </button>
-        ))}
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs items={tabs} value={activeTab} onChange={setActiveTab} />
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
@@ -1047,11 +1042,11 @@ function LLMConfig() {
             </button>
           </div>
           {form.api_key && !form.api_key.startsWith('sk-') && form.provider !== 'ollama' && form.provider !== 'azure' && (
-            <div className="mt-1 text-[11px] text-warning">⚠ API Key 通常以 sk- 开头，请确认格式正确</div>
+            <div className="mt-1 text-xs text-warning">⚠ API Key 通常以 sk- 开头，请确认格式正确</div>
           )}
           <TextInput label="Base URL" value={form.base_url} onChange={setField('base_url')} placeholder="https://api.anthropic.com" />
           {providers[form.provider]?.docs && (
-            <a href={providers[form.provider].docs} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+            <a href={providers[form.provider].docs} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
               <ExternalLink className="h-3 w-3" /> Provider 文档
             </a>
           )}
@@ -1106,12 +1101,12 @@ function LLMConfig() {
               </span>
             </div>
             {dialogTestResult.success && dialogTestResult.probe_transport && (
-              <div className="mt-1 text-[10px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 {PROBE_TRANSPORT_LABELS[dialogTestResult.probe_transport] || dialogTestResult.probe_transport}
               </div>
             )}
             {dialogTestResult.success && dialogTestResult.response && (
-              <pre className="mt-2 rounded bg-background p-2 font-mono text-[11px] text-foreground ring-1 ring-border">{dialogTestResult.response}</pre>
+              <pre className="mt-2 rounded bg-background p-2 font-mono text-xs text-foreground ring-1 ring-border">{dialogTestResult.response}</pre>
             )}
             {!dialogTestResult.success && <ProbeErrorPanel result={dialogTestResult} />}
           </div>
@@ -1127,7 +1122,7 @@ function LLMConfig() {
               <Check className="h-4 w-4 text-success" /><span className="text-sm text-success">连接成功 · 延迟 {testResult.latency_ms ?? '-'}ms</span>
             </div>
             {testResult.probe_transport && (
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 {PROBE_TRANSPORT_LABELS[testResult.probe_transport] || testResult.probe_transport}
               </div>
             )}
@@ -1173,7 +1168,7 @@ function ModelNameInput({ form, providers, setField }) {
       <div className="mb-1 flex items-center justify-between">
         <label className="text-xs font-medium text-muted-foreground">Model Name</label>
         {modelOptions.length > 0 && (
-          <button type="button" onClick={() => setUseCustom((p) => !p)} className="text-[11px] text-primary hover:underline">
+          <button type="button" onClick={() => setUseCustom((p) => !p)} className="text-xs text-primary hover:underline">
             {useCustom ? '选择常用' : '自定义输入'}
           </button>
         )}

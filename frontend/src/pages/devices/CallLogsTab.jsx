@@ -236,12 +236,12 @@ export function CallLogsTab() {
                   }`}
                   onClick={() => openDetail(l)}
                 >
-                  <td className="px-4 py-3 text-[11px] text-muted-foreground" title={fmtTime(l.created_at)}>
+                  <td className="px-4 py-3 text-xs text-muted-foreground" title={fmtTime(l.created_at)}>
                     {fmtRelative(l.created_at)}
                   </td>
                   <td className="px-4 py-3">
                     <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
                         l.status === 'success'
                           ? 'bg-success/20 text-success'
                           : 'bg-destructive/20 text-destructive'
@@ -252,23 +252,23 @@ export function CallLogsTab() {
                   </td>
                   <td className="truncate px-4 py-3 text-foreground">
                     <div className="truncate">{l.device_name || '-'}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">
+                    <div className="truncate text-xs text-muted-foreground">
                       {l.action_name || '-'}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-[11px] text-muted-foreground">
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
                     {l.source || '-'}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono text-[11px] text-muted-foreground">
+                  <td className="px-4 py-3 text-right font-mono text-xs text-muted-foreground">
                     {l.latency_ms != null ? `${l.latency_ms}ms` : '-'}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono text-[11px] text-muted-foreground">
+                  <td className="px-4 py-3 text-right font-mono text-xs text-muted-foreground">
                     {l.status_code ?? '-'}
                   </td>
-                  <td className="truncate px-4 py-3 font-mono text-[11px] text-muted-foreground">
+                  <td className="truncate px-4 py-3 font-mono text-xs text-muted-foreground">
                     {l.source_ip || '-'}
                   </td>
-                  <td className="truncate px-4 py-3 text-[11px] text-destructive" title={l.error_message || ''}>
+                  <td className="truncate px-4 py-3 text-xs text-destructive" title={l.error_message || ''}>
                     {l.error_message ? truncate(l.error_message, 50) : '-'}
                   </td>
                 </tr>
@@ -298,17 +298,17 @@ export function CallLogsTab() {
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-[11px] text-muted-foreground">设备</div>
+                <div className="text-xs text-muted-foreground">设备</div>
                 <div className="text-sm text-foreground">{detailLog.device_name || '-'}</div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">动作</div>
+                <div className="text-xs text-muted-foreground">动作</div>
                 <div className="text-sm text-foreground">{detailLog.action_name || '-'}</div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">状态</div>
+                <div className="text-xs text-muted-foreground">状态</div>
                 <span
-                  className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium ${
+                  className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${
                     detailLog.status === 'success'
                       ? 'bg-success/20 text-success'
                       : 'bg-destructive/20 text-destructive'
@@ -318,32 +318,32 @@ export function CallLogsTab() {
                 </span>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">HTTP 状态码</div>
+                <div className="text-xs text-muted-foreground">HTTP 状态码</div>
                 <div className="font-mono text-sm text-foreground">{detailLog.status_code ?? '-'}</div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">耗时</div>
+                <div className="text-xs text-muted-foreground">耗时</div>
                 <div className="font-mono text-sm text-foreground">
                   {detailLog.latency_ms != null ? `${detailLog.latency_ms}ms` : '-'}
                 </div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">来源</div>
+                <div className="text-xs text-muted-foreground">来源</div>
                 <div className="text-sm text-foreground">{detailLog.source || '-'}</div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">来源 IP</div>
+                <div className="text-xs text-muted-foreground">来源 IP</div>
                 <div className="font-mono text-sm text-foreground">{detailLog.source_ip || '-'}</div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">时间</div>
+                <div className="text-xs text-muted-foreground">时间</div>
                 <div className="text-sm text-foreground">{fmtTime(detailLog.created_at)}</div>
               </div>
             </div>
             {detailLog.request_summary && (
               <div>
-                <div className="mb-1 text-[11px] text-muted-foreground">请求摘要</div>
-                <pre className="max-h-40 overflow-auto rounded-md bg-card p-3 font-mono text-[11px] text-foreground ring-1 ring-border">
+                <div className="mb-1 text-xs text-muted-foreground">请求摘要</div>
+                <pre className="max-h-40 overflow-auto rounded-md bg-card p-3 font-mono text-xs text-foreground ring-1 ring-border">
                   {typeof detailLog.request_summary === 'string'
                     ? detailLog.request_summary
                     : JSON.stringify(detailLog.request_summary, null, 2)}
@@ -352,8 +352,8 @@ export function CallLogsTab() {
             )}
             {detailLog.response_summary && (
               <div>
-                <div className="mb-1 text-[11px] text-muted-foreground">响应摘要</div>
-                <pre className="max-h-40 overflow-auto rounded-md bg-card p-3 font-mono text-[11px] text-foreground ring-1 ring-border">
+                <div className="mb-1 text-xs text-muted-foreground">响应摘要</div>
+                <pre className="max-h-40 overflow-auto rounded-md bg-card p-3 font-mono text-xs text-foreground ring-1 ring-border">
                   {typeof detailLog.response_summary === 'string'
                     ? detailLog.response_summary
                     : JSON.stringify(detailLog.response_summary, null, 2)}
@@ -362,8 +362,8 @@ export function CallLogsTab() {
             )}
             {detailLog.error_message && (
               <div>
-                <div className="mb-1 text-[11px] text-destructive">错误信息</div>
-                <pre className="max-h-40 overflow-auto rounded-md border border-destructive/40 bg-destructive/10 p-3 font-mono text-[11px] text-destructive">
+                <div className="mb-1 text-xs text-destructive">错误信息</div>
+                <pre className="max-h-40 overflow-auto rounded-md border border-destructive/40 bg-destructive/10 p-3 font-mono text-xs text-destructive">
                   {detailLog.error_message}
                 </pre>
               </div>

@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom'
 import { GitGraph, Plus, Pencil, Trash2, Rocket, FileJson, Power, Download, Upload, RefreshCw, MoreVertical } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import { Button, PageContainer, DataTable, Pagination, EmptyState } from '../components/ui'
+import { Button, PageContainer, PageHeader, DataTable, Pagination, EmptyState } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
 
@@ -294,41 +294,38 @@ export default function TicketFlowList() {
 
   return (
     <PageContainer>
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">流程模板</h1>
-            {!loading && (
-              <span className="text-sm font-medium tabular-nums text-foreground">
-                共 {total.toLocaleString()} 个模板
-              </span>
-            )}
-          </div>
-          <p className="mt-2 text-[13px] text-muted-foreground">自定义工单流转程序：节点绑定处理分组、节点字段自定义、流转路由支持条件判断；模板发布后即可发起工单</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新流程模板列表">
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
-          </button>
-          {canEdit && (
-            <button
-              type="button"
-              onClick={() => importRef.current?.click()}
-              disabled={importing}
-              className="btn-secondary btn-sm"
-              title="从 JSON 文件导入模板"
-            >
-              <Upload className="mr-1 h-3.5 w-3.5" />{importing ? '导入中' : '导入'}
+      <PageHeader
+        title="流程模板"
+        extra={!loading && (
+          <span className="text-sm font-medium tabular-nums text-foreground">
+            共 {total.toLocaleString()} 个模板
+          </span>
+        )}
+        actions={
+          <>
+            <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新流程模板列表">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
             </button>
-          )}
-          {canEdit && (
-            <Button variant="primary" size="sm" onClick={openNew}>
-              <Plus className="mr-1 h-3.5 w-3.5" />新建模板
-            </Button>
-          )}
-          <input ref={importRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
-        </div>
-      </div>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => importRef.current?.click()}
+                disabled={importing}
+                className="btn-secondary btn-sm"
+                title="从 JSON 文件导入模板"
+              >
+                <Upload className="mr-1 h-3.5 w-3.5" />{importing ? '导入中' : '导入'}
+              </button>
+            )}
+            {canEdit && (
+              <Button variant="primary" size="sm" onClick={openNew}>
+                <Plus className="mr-1 h-3.5 w-3.5" />新建模板
+              </Button>
+            )}
+            <input ref={importRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+          </>
+        }
+      />
 
       <div className="overflow-hidden rounded-lg border border-border">
         <DataTable

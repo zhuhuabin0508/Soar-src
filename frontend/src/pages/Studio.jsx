@@ -16,6 +16,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { agents as agentsApi, workflows as workflowsApi, isAgentPublished } from '../api/client'
+import { SearchInput, PillTabs } from '../components/ui'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { hasPermission, canEditResource } from '../utils/permissions'
@@ -201,9 +202,6 @@ function Studio() {
               </span>
             )}
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            智能体与工作流作为应用统一管理；工具、技能、知识库在应用内挂载
-          </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {hasPermission('skill', 'view') && (
@@ -262,31 +260,19 @@ function Studio() {
         </div>
       </header>
 
-      <div className="flex shrink-0 items-center gap-6 border-b border-border px-6">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setParams(t.id === 'all' ? {} : { tab: t.id })}
-            className={`relative py-3 text-sm transition ${
-              tab === t.id ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            {t.label}
-            {tab === t.id && (
-              <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />
-            )}
-          </button>
-        ))}
-        <div className="relative ml-auto mb-2 mt-2 w-64">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="搜索应用"
-            className="h-8 w-full rounded-md border border-border bg-secondary pl-8 pr-2 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-          />
-        </div>
+      <div className="flex shrink-0 items-center gap-3 border-b border-border px-6 py-3">
+        <PillTabs
+          items={TABS.map((t) => ({ key: t.id, label: t.label }))}
+          value={tab}
+          onChange={(id) => setParams(id === 'all' ? {} : { tab: id })}
+        />
+        <SearchInput
+          className="ml-auto w-64"
+          value={q}
+          onChange={setQ}
+          placeholder="搜索应用"
+          onClear={() => setQ('')}
+        />
       </div>
 
       <div className="flex-1 overflow-auto px-6 py-6">
@@ -440,7 +426,7 @@ function Studio() {
                       </div>
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold">{it.name}</div>
-                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                        <div className="mt-0.5 text-xs text-muted-foreground">
                           {it.kind === 'agent' ? '智能体' : '工作流'}
                           {it.kind === 'agent' && it.engine ? ` · ${it.engine}` : ''}
                           {it.kind === 'agent' && !it.published ? ' · 草稿' : ''}
@@ -511,7 +497,7 @@ function Studio() {
                   <p className="line-clamp-2 min-h-[2.5rem] text-xs text-muted-foreground">
                     {it.description || '暂无描述'}
                   </p>
-                  <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
                     <span>{fmtTime(it.updated_at)}</span>
                     {it.kind === 'agent' && it.published && (
                       <button

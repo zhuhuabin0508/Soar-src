@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { ShieldBan, RotateCw, Inbox, Search, X, LockOpen, Loader2 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelect } from '../../components/ui'
+import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelect, Pagination, SearchInput } from '../../components/ui'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
@@ -52,16 +52,16 @@ const loadBlacklistPageSize = () => {
 // 安博通黑名单面板列（展示设备返回的全部字段；未知新字段可后续追加）
 // 数值语义列（时长/剩余/命中次数）按设计系统规范右对齐（col.numeric）
 const blacklistColumns = [
-  { key: 'blist', header: '黑名单条目', width: '170px', render: (r) => <span className="font-mono text-[13px] font-medium">{r.blist}</span> },
+  { key: 'blist', header: '黑名单条目', width: '170px', render: (r) => <span className="font-mono text-xs font-medium">{r.blist}</span> },
   { key: 'age', header: '封禁时长', width: '110px', numeric: true, render: (r) => <span>{fmtDeviceDuration(r.age)}</span> },
   { key: 'leftTime', header: '剩余时长', width: '110px', numeric: true, render: (r) => <span>{fmtDeviceDuration(r.leftTime)}</span> },
-  { key: 'effectTime', header: '生效时间', width: '160px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.effectTime != null && r.effectTime !== '' ? String(r.effectTime).replace('T', ' ').slice(0, 19) : '--'}</span> },
+  { key: 'effectTime', header: '生效时间', width: '160px', render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.effectTime != null && r.effectTime !== '' ? String(r.effectTime).replace('T', ' ').slice(0, 19) : '--'}</span> },
   { key: 'reason', header: '封禁原因', width: '180px', render: (r) => <span className="block max-w-[170px] truncate text-muted-foreground" title={r.reason}>{r.reason || '--'}</span> },
   { key: 'policy_group_name', header: '策略组', width: '120px', render: (r) => <span>{r.policy_group_name || '--'}</span> },
   { key: 'state', header: '状态', width: '90px', render: (r) => <span>{r.state ?? '--'}</span> },
   { key: 'enable', header: '启用', width: '80px', render: (r) => <Badge variant={r.enable === 1 || r.enable === '1' ? 'success' : 'neutral'}>{r.enable === 1 || r.enable === '1' ? '启用' : '停用'}</Badge> },
   { key: 'hit_num', header: '命中次数', width: '90px', numeric: true, render: (r) => <span>{r.hit_num ?? '--'}</span> },
-  { key: 'node_id', header: '节点 ID', width: '110px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{r.node_id ?? '--'}</span> },
+  { key: 'node_id', header: '节点 ID', width: '110px', render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.node_id ?? '--'}</span> },
 ]
 
 /**
@@ -287,26 +287,14 @@ export default function AnbotongBlacklist({ embedded = false }) {
       </div>
       {/* 筛选栏：IP 精确查询为本区域唯一主操作；查询模式提供返回列表出口 */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <div className="relative w-72 max-w-full">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className={`${inputBaseCls} w-full pl-8 pr-8`}
-            placeholder="输入 IP 查询是否在黑名单中"
-            value={blQueryIp}
-            onChange={(e) => setBlQueryIp(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !blQueryLoading) runBlacklistQuery() }}
-          />
-          {blQueryIp && (
-            <button
-              type="button"
-              aria-label="清空查询 IP"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-              onClick={() => setBlQueryIp('')}
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+        <SearchInput
+          className="w-72"
+          placeholder="输入 IP 查询是否在黑名单中"
+          value={blQueryIp}
+          onChange={setBlQueryIp}
+          onClear={() => setBlQueryIp('')}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !blQueryLoading) runBlacklistQuery() }}
+        />
         <Button size="sm" className="shrink-0" loading={blQueryLoading} onClick={runBlacklistQuery}>
           <Search className="h-3.5 w-3.5" /> 查询
         </Button>
@@ -328,12 +316,12 @@ export default function AnbotongBlacklist({ embedded = false }) {
       </div>
       {/* 三态横幅：拉取失败 / 查询结果 / 分页越界提示（浅底深字） */}
       {blacklistError && (
-        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-600">
+        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
           拉取失败：{blacklistError}{blacklistRefreshMs ? '（将自动重试）' : ''}
         </div>
       )}
       {blQuery && (
-        <div className={`mt-2 rounded-md border px-3 py-2 text-[13px] ${blQuery.found ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600' : 'border-amber-500/30 bg-amber-500/10 text-amber-600'}`}>
+        <div className={`mt-2 rounded-md border px-3 py-2 text-xs ${blQuery.found ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600' : 'border-amber-500/30 bg-amber-500/10 text-amber-600'}`}>
           {blQuery.found
             ? `已在安博通黑名单中找到 ${blQuery.ip}（更新于 ${fmtTime(blQuery.fetched_at)}），下方为该条目详情`
             : `${blQuery.ip} 不在安博通黑名单中（更新于 ${fmtTime(blQuery.fetched_at)}）`}
@@ -341,7 +329,7 @@ export default function AnbotongBlacklist({ embedded = false }) {
         </div>
       )}
       {!blQuery && blacklist.note && (
-        <div className="mt-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[13px] text-blue-600">
+        <div className="mt-2 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-600">
           {blacklist.note}（请返回上一页）
         </div>
       )}
@@ -360,59 +348,64 @@ export default function AnbotongBlacklist({ embedded = false }) {
           emptyIcon={Inbox}
         />
       </div>
-      {/* 底部分页栏：左侧总页数/总条数，右侧每页条数与翻页；查询模式隐藏，避免与单条详情混淆 */}
+      {/* 底部分页栏：与全站统一分页组件一致；查询模式隐藏，避免与单条详情混淆 */}
       {blacklist.paginated && !blQuery && (
-        <div ref={paginationRef} className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-            {blTotal.total != null
-              ? `第 ${blacklistPage} / ${blTotalPages} 页 · 共 ${blTotal.total} 条`
-              : blTotal.loading
-                ? `第 ${blacklistPage} 页 · 总条数统计中…`
-                : `第 ${blacklistPage} 页 · 总条数暂不可用`}
-            {!blTotal.loading && blTotal.error && (
-              <button
-                type="button"
-                className="ml-1 text-primary transition hover:underline"
-                onClick={loadBlacklistTotal}
-              >
-                重试
-              </button>
-            )}
-          </span>
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="flex shrink-0 items-center gap-2">
-              <span className="text-xs text-muted-foreground">每页</span>
-              {/* 不指定宽度：CompactSelect sm 触发器自带 min-w，外层窄于内部
-                  min-width 时按钮会溢出容器、与右侧按钮重叠 */}
-              <CompactSelect
-                size="sm"
-                className="shrink-0"
-                value={String(blacklistPageSize)}
-                onChange={(e) => changeBlacklistPageSize(e.target.value)}
-              >
-                {BLACKLIST_PAGE_SIZE_OPTIONS.map((n) => (
-                  <option key={n} value={String(n)}>{n} 条</option>
-                ))}
-              </CompactSelect>
+        <div ref={paginationRef} className="mt-3">
+          {blTotal.total != null ? (
+            <Pagination
+              page={blacklistPage}
+              pageSize={blacklistPageSize}
+              total={blTotal.total}
+              onPageChange={gotoBlacklistPage}
+              onPageSizeChange={changeBlacklistPageSize}
+              pageSizeOptions={BLACKLIST_PAGE_SIZE_OPTIONS}
+              showJumper={false}
+            />
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 px-1 text-xs text-muted-foreground">
+              <span className="shrink-0 tabular-nums">
+                第 {blacklistPage} 页 · {blTotal.loading ? '总条数统计中…' : '总条数暂不可用'}
+                {!blTotal.loading && blTotal.error && (
+                  <button
+                    type="button"
+                    className="ml-1 text-primary transition hover:underline"
+                    onClick={loadBlacklistTotal}
+                  >
+                    重试
+                  </button>
+                )}
+              </span>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <label className="flex shrink-0 items-center gap-1.5">
+                  <span>每页</span>
+                  <CompactSelect
+                    size="sm"
+                    className="shrink-0"
+                    value={String(blacklistPageSize)}
+                    onChange={(e) => changeBlacklistPageSize(e.target.value)}
+                  >
+                    {BLACKLIST_PAGE_SIZE_OPTIONS.map((n) => (
+                      <option key={n} value={String(n)}>{n} 条</option>
+                    ))}
+                  </CompactSelect>
+                </label>
+                <Button
+                  size="sm" variant="ghost" className="shrink-0"
+                  disabled={blacklistPage <= 1 || blacklistLoading}
+                  onClick={() => gotoBlacklistPage(blacklistPage - 1)}
+                >
+                  上一页
+                </Button>
+                <Button
+                  size="sm" variant="ghost" className="shrink-0"
+                  disabled={!blacklist.page_full || blacklistLoading}
+                  onClick={() => gotoBlacklistPage(blacklistPage + 1)}
+                >
+                  下一页
+                </Button>
+              </div>
             </div>
-            <Button
-              size="sm" variant="ghost" className="shrink-0"
-              disabled={blacklistPage <= 1 || blacklistLoading}
-              onClick={() => gotoBlacklistPage(blacklistPage - 1)}
-            >
-              上一页
-            </Button>
-            <Button
-              size="sm" variant="ghost" className="shrink-0"
-              disabled={
-                (blTotalPages != null ? blacklistPage >= blTotalPages : !blacklist.page_full)
-                || blacklistLoading
-              }
-              onClick={() => gotoBlacklistPage(blacklistPage + 1)}
-            >
-              下一页
-            </Button>
-          </div>
+          )}
         </div>
       )}
     </Card>
@@ -422,10 +415,9 @@ export default function AnbotongBlacklist({ embedded = false }) {
   return (
     <PageContainer>
       <PageHeader
-        title="安博通黑名单"
-        description="安博通阻断器设备侧实时黑名单：分页浏览 + 单个 IP 精确查询（404 = 未封禁）"
+        title="安博通黑名单"
         actions={(
-          <Button size="sm" variant="ghost" loading={blacklistLoading} onClick={() => loadBlacklist()}>
+          <Button size="sm" variant="secondary" loading={blacklistLoading} onClick={() => loadBlacklist()}>
             <RotateCw className="h-3.5 w-3.5" /> 刷新
           </Button>
         )}

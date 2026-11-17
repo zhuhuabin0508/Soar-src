@@ -34,6 +34,10 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "asset_templates": ["view", "edit", "delete"],
     "asset_discovery": ["view", "edit", "delete"],
     "deliverable": ["view", "edit", "delete"],
+    # 报告中心（模板库 / 配置 / 运行 / 审核发布）
+    # view=查看模板与报告、edit=编辑模板与配置、execute=触发运行、
+    # publish=发布模板/配置/审核通过并归档、delete=删除
+    "report": ["view", "edit", "delete", "execute", "publish"],
     # IP地址库（独立菜单项：4 库 IPv4 数据源查询/导入）
     "ip_library": ["view", "edit"],
     # 连接配置（设备对接下含：设备列表 / 解析策略 / 告警列表 / 入库监控）
@@ -56,7 +60,7 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "system_config": ["view", "edit"],
     "system_monitor": ["view"],
     "audit_log": ["view"],
-    # API 开放平台（应用/密钥/授权管理 + 调用监控）
+    # API 开放（应用/密钥/授权管理 + 调用监控）
     "open_api": ["view", "edit"],
     # 运营管理（值班管理拆分为二级权限：人员/值班表/请假/调班/大屏）
     "duty_member": ["view", "edit", "delete"],
@@ -111,7 +115,7 @@ MODULE_LABELS: dict[str, str] = {
     "system_config": "系统设置",
     "system_monitor": "系统监控",
     "audit_log": "审计日志",
-    "open_api": "API开放平台",
+    "open_api": "API开放",
     # 运营管理（值班管理二级权限）
     "duty_member": "值班人员",
     "duty_schedule": "值班表",
@@ -208,8 +212,17 @@ def migrate_permissions(perms: dict[str, list[str]] | None) -> dict[str, list[st
     ticket_actions = result.get("ticket")
     if ticket_actions and "edit" in ticket_actions and "pause" not in ticket_actions:
         result["ticket"] = [*ticket_actions, "pause"]
-    # 已有系统设置权限的角色自动补 API 开放平台（动作取交集：view→view，edit→view+edit）
+    # 已有系统设置权限的角色自动补 API 开放（动作取交集：view→view，edit→view+edit）
     _inherit_module_actions(result, "open_api", "system_config")
+    # 报告中心为新增模块：已有材料管理权限的角色补 view/edit，
+    # 可编辑配置的角色同时补 execute（发布/删除权限仍需显式授予）
+    if "report" not in result and perms.get("deliverable"):
+        inherited = [action for action in ("view", "edit") if action in perms["deliverable"]]
+        if inherited:
+            result["report"] = inherited
+    report_actions = result.get("report")
+    if report_actions and "edit" in report_actions and "execute" not in report_actions:
+        result["report"] = [*report_actions, "execute"]
 
     return result
 
@@ -245,6 +258,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "asset_templates": ["view", "edit", "delete"],
             "asset_discovery": ["view", "edit", "delete"],
             "deliverable": ["view", "edit"],
+            "report": ["view", "edit", "execute"],
             "ip_library": ["view", "edit"],
             "duty_member": ["view", "edit", "delete"],
             "duty_schedule": ["view", "edit", "delete"],
@@ -287,6 +301,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "asset_templates": ["view"],
             "asset_discovery": ["view"],
             "deliverable": ["view"],
+            "report": ["view"],
             "ip_library": ["view"],
             "duty_member": ["view"],
             "duty_schedule": ["view"],

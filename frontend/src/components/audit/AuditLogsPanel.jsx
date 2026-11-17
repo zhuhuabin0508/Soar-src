@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { ClipboardList, Copy } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { systemMonitorApi } from '../../api/systemMonitor'
-import { CompactSelect, DatePicker } from '../ui'
+import { CompactSelect, DatePicker, Pagination } from '../ui'
 
 // 资源类型中文映射
 export const RESOURCE_LABELS = {
@@ -33,15 +33,15 @@ const RESOURCE_OPTIONS = Object.keys(RESOURCE_LABELS)
 
 export function ActionBadge({ action }) {
   const meta = ACTION_META[action] || { label: action || '-', cls: 'bg-secondary text-muted-foreground', icon: '' }
-  return <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${meta.cls}`}>{meta.label}</span>
+  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
 }
 
 export function ResultBadge({ result }) {
   const isSuccess = result === 'success' || result === 'ok' || result === true
   const isFailed = result === 'failed' || result === 'fail' || result === 'error'
-  if (isSuccess) return <span className="rounded bg-success/20 px-2 py-0.5 text-[11px] font-medium text-success">成功</span>
-  if (isFailed) return <span className="rounded bg-destructive/20 px-2 py-0.5 text-[11px] font-medium text-destructive">失败</span>
-  return <span className="rounded bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{result || '-'}</span>
+  if (isSuccess) return <span className="rounded bg-success/20 px-2 py-0.5 text-xs font-medium text-success">成功</span>
+  if (isFailed) return <span className="rounded bg-destructive/20 px-2 py-0.5 text-xs font-medium text-destructive">失败</span>
+  return <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{result || '-'}</span>
 }
 
 // ============ 面板内部工具 ============
@@ -154,7 +154,7 @@ export default function AuditLogsPanel() {
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">时间范围：</span>
           {[['24h', '最近24小时'], ['today', '今天'], ['7d', '最近7天'], ['30d', '最近30天'], ['custom', '自定义']].map(([k, label]) => (
-            <button key={k} type="button" onClick={() => handleQuickRange(k)} className={`rounded-full border px-2.5 py-0.5 text-[11px] ${input.quickRange === k ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'}`}>{label}</button>
+            <button key={k} type="button" onClick={() => handleQuickRange(k)} className={`rounded-full border px-2.5 py-0.5 text-xs ${input.quickRange === k ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'}`}>{label}</button>
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -236,7 +236,7 @@ export default function AuditLogsPanel() {
                         <td colSpan={7} className="px-4 py-3">
                           <div className="mb-2 flex items-center justify-between">
                             <span className="text-xs text-muted-foreground">详情（点击行收起）</span>
-                            <button onClick={() => copyText(detail || '')} className="flex items-center gap-1 text-[11px] text-primary hover:underline"><Copy className="h-3 w-3" /> 复制</button>
+                            <button onClick={() => copyText(detail || '')} className="flex items-center gap-1 text-xs text-primary hover:underline"><Copy className="h-3 w-3" /> 复制</button>
                           </div>
                           {detail ? (
                             <pre className="max-h-72 w-full overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background p-4 font-mono text-xs leading-relaxed" dangerouslySetInnerHTML={{ __html: highlightJson(detail) }} />
@@ -254,13 +254,14 @@ export default function AuditLogsPanel() {
 
       {/* 分页 */}
       {!loading && logs.length > 0 && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span className="tabular-nums">共 {total} 条，第 {currentPage} / {totalPages} 页</span>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)); setExpandedId(null) }} disabled={offset === 0} className="btn-secondary btn-sm">上一页</button>
-            <button type="button" onClick={() => { setOffset(offset + PAGE_SIZE); setExpandedId(null) }} disabled={offset + PAGE_SIZE >= total} className="btn-secondary btn-sm">下一页</button>
-          </div>
-        </div>
+        <Pagination
+          page={currentPage}
+          pageSize={PAGE_SIZE}
+          total={total}
+          onPageChange={(p) => { setOffset((p - 1) * PAGE_SIZE); setExpandedId(null) }}
+          showPageSize={false}
+          showDensity={false}
+        />
       )}
     </div>
   )
