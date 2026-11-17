@@ -97,6 +97,7 @@ from app.dependencies import (
 )
 from app.devices.action_executor import execute_device_action
 from app.models.ban_hit_stat import BanHitStat
+from app.models.ban_hit_daily import BanHitDaily
 from app.models.device import Device, DeviceAction
 from app.models.notification import Notification
 from app.models.ticket import (
@@ -1533,7 +1534,11 @@ _BLACKLIST_FETCH_MAX_PAGES = 20
 # 全量拉取结果缓存 TTL（秒）：万级条目分页拉取一轮可达分钟级，短 TTL 会让
 # 高频轮询退化为连续全量拉取打爆设备；60s 让轮询绝大多数命中缓存
 _BLACKLIST_CACHE_TTL_SECONDS = 60.0
-_blacklist_cache: dict = {"at": 0.0, "items": [], "truncated": False}
+# 设备拉取失败后的冷却期（秒）：连接被重置/超时时不反复打设备，冷却结束再重试
+_BLACKLIST_ERROR_COOLDOWN_SECONDS = 60.0
+_blacklist_cache: dict = {
+    "at": 0.0, "items": [], "truncated": False, "error": None, "error_at": 0.0,
+}
 _blacklist_cache_lock = threading.Lock()
 # 全量拉取 single-flight 锁：并发请求（两卡 + 轮询叠加）共用一次进行中的拉取，
 # 后到者在锁上等待并直接复用其结果，避免多个分钟级翻页请求同时压到设备
@@ -1588,14 +1593,19 @@ def _parse_hit_num(value) -> int:
 def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
     """将本次拉取的设备黑名单条目并入命中累计表（ban_hit_stats，历史累计口径）。
 
-    - 新条目：hit_total = last_hit = 当前 hit_num；
+    - 新条目：hit_total 从 0 开始，last_hit = 当前 hit_num。设备 hit_num 是按
+      IP 保留的持久计数，可能包含本轮封禁之前的历史值（实测新封禁条目十余秒
+      后 hit_num 已达数亿），首次观测不能整包计入，否则单日统计会凭空多出
+      数亿甚至十几亿「新增拦截」；之后只累计平台观测到的增量；
     - 已有条目：设备侧 hit_num 单调递增，取差值计入累计；
     - 「解封后重新封禁」的全额重计必须同时满足两个条件：设备计数回落
       （hit < last_hit）**且 effectTime 前进**（重封会刷新生效时间）。只看计数
       回落会把乱序快照误判为重封——并发全量拉取时代旧快照后到，一轮误重计
       就把全表当前计数整轮再加一遍（实测 2 小时膨胀 72 倍）；此时跳过本条
       不改写（不下调 last_hit，避免下一轮再全量重计一次）；
-    - 条目从设备消失（解封/到期）不删除记录：累计值保留，统计只增不减。
+    - 条目从设备消失（解封/到期）不删除记录：累计值保留，统计只增不减；
+    - 每次实际计入的增量同时汇总到 ``ban_hit_daily``（按自然日），供重保
+      期间与每日趋势使用；首次观测的历史基线不计入日增量。
 
     同一批条目重复同步幂等（last_hit 已更新为当前值，差值为 0）。
     """
@@ -1603,6 +1613,7 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
         return
     rows = {r.blist: r for r in db.query(BanHitStat).all()}
     now = beijing_now()
+    observed_delta = 0  # 本次同步实际观测到的命中增量（不含新条目基线）
     for it in items:
         blist = str(it.get("blist") or "").strip()
         if not blist:
@@ -1611,7 +1622,8 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
         eff = _parse_effect_time(it.get("effectTime"))
         row = rows.get(blist)
         if row is None:
-            row = BanHitStat(blist=blist, hit_total=hit, last_hit=hit,
+            # 设备计数可能带封禁前历史值：首次观测只记基线，此后按增量累计
+            row = BanHitStat(blist=blist, hit_total=0, last_hit=hit,
                              effect_time=eff, first_seen_at=now, last_seen_at=now)
             db.add(row)
             rows[blist] = row  # 同批同 blist 去重
@@ -1623,6 +1635,7 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
             changed = delta > 0 or (eff is not None and eff != row.effect_time)
             if delta > 0:
                 row.hit_total = (row.hit_total or 0) + delta
+                observed_delta += delta
             row.last_hit = hit
             if eff is not None:
                 row.effect_time = eff
@@ -1631,6 +1644,7 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
         elif eff is not None and row.effect_time is not None and eff > row.effect_time:
             # 真实重封：effectTime 前进且设备计数清零，按新一轮全量计入
             row.hit_total = (row.hit_total or 0) + hit
+            observed_delta += hit
             row.last_hit = hit
             row.effect_time = eff
             row.last_seen_at = now
@@ -1639,6 +1653,17 @@ def _sync_ban_hit_stats(db: Session, items: list[dict]) -> None:
         # 已知限制（有意保守）：若历史行 effect_time 为 NULL 或设备重封后
         # 不返回 effectTime，真实重封无法识别，将跳过并少计该条增量，
         # 直到设备计数重新超过 last_hit 才恢复正常——宁少计勿误多计。
+    if observed_delta:
+        stat_date = now.date()
+        daily = (
+            db.query(BanHitDaily)
+            .filter(BanHitDaily.stat_date == stat_date)
+            .one_or_none()
+        )
+        if daily is None:
+            db.add(BanHitDaily(stat_date=stat_date, hit_delta=observed_delta))
+        else:
+            daily.hit_delta = (daily.hit_delta or 0) + observed_delta
     db.commit()
 
 
@@ -1650,14 +1675,17 @@ def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
     items 为空；truncated=True 表示超出翻页上限，仅统计到前
     ``_BLACKLIST_FETCH_MAX_PAGES`` 页。
 
-    万级条目分页拉取一轮可达分钟级：并发请求（封禁IP统计卡 / 重保拦截趋势卡
-    及其轮询叠加）在 single-flight 锁上排队，共用首个请求的拉取结果——等锁
-    期间若缓存已新鲜则直接返回缓存；首请求失败时后到者依次重试拉取。
+    万级条目分页拉取一轮可达分钟级：并发请求（封禁IP统计卡及其轮询）在
+    single-flight 锁上排队，共用首个请求的拉取结果——等锁期间若缓存已新鲜则
+    直接返回缓存；任一页失败都按整体失败处理，并记录 60 秒冷却，期间后续
+    请求直接复用错误，避免设备连接异常时轮询持续重试把设备打挂。
     """
     now_ts = time.monotonic()
     with _blacklist_cache_lock:
         if _blacklist_cache["items"] and now_ts - _blacklist_cache["at"] < _BLACKLIST_CACHE_TTL_SECONDS:
             return _blacklist_cache["items"], None, _blacklist_cache["truncated"]
+        if _blacklist_cache["error"] and now_ts - _blacklist_cache["error_at"] < _BLACKLIST_ERROR_COOLDOWN_SECONDS:
+            return [], _blacklist_cache["error"], _blacklist_cache["truncated"]
 
     with _blacklist_fetch_lock:
         # 等锁期间前一个请求可能已完成拉取并刷新缓存：double-check 后直接复用
@@ -1665,6 +1693,8 @@ def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
         with _blacklist_cache_lock:
             if _blacklist_cache["items"] and now_ts - _blacklist_cache["at"] < _BLACKLIST_CACHE_TTL_SECONDS:
                 return _blacklist_cache["items"], None, _blacklist_cache["truncated"]
+            if _blacklist_cache["error"] and now_ts - _blacklist_cache["error_at"] < _BLACKLIST_ERROR_COOLDOWN_SECONDS:
+                return [], _blacklist_cache["error"], _blacklist_cache["truncated"]
 
         from app.devices.anbotong import LIST_PAGE_SIZE, list_blacklist_on_anbotong
 
@@ -1674,11 +1704,13 @@ def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
         while page <= _BLACKLIST_FETCH_MAX_PAGES:
             res = list_blacklist_on_anbotong(db, page=page, count=LIST_PAGE_SIZE, source="monitor")
             if not res.get("success"):
-                # 首页失败：整体失败；翻页中途失败：保留已拉到的部分（数据可能不全但可展示）
-                if page == 1:
-                    return [], res.get("error") or "安博通黑名单接口调用失败", False
-                logger.warning("黑名单全量拉取在第 %d 页中断: %s", page, res.get("error"))
-                break
+                # 任一页失败都按整体失败处理：本接口的 total/period_count 依赖完整
+                # 黑名单条目，返回部分数据会把「设备当前总数」显示成偏小值。
+                err = res.get("error") or f"安博通黑名单第 {page} 页拉取失败"
+                logger.warning("黑名单全量拉取在第 %d 页中断: %s", page, err)
+                with _blacklist_cache_lock:
+                    _blacklist_cache.update(error=err, error_at=time.monotonic())
+                return [], err, False
             items.extend(res.get("items") or [])
             if not res.get("page_full"):
                 break
@@ -1698,7 +1730,12 @@ def _fetch_full_blacklist(db: Session) -> tuple[list[dict], str | None, bool]:
                 logger.warning("黑名单命中累计表同步失败（本次按旧累计值返回）: %s", exc)
 
         with _blacklist_cache_lock:
-            _blacklist_cache.update(at=now_ts, items=items, truncated=truncated)
+            # TTL 从拉取完成时刻起算：全量翻页可能耗时分钟级，用开始时刻会让
+            # 刚写入的缓存立即接近过期，轮询很快再次触发全量拉取
+            _blacklist_cache.update(
+                at=time.monotonic(), items=items, truncated=truncated,
+                error=None, error_at=0.0,
+            )
         return items, None, truncated
 
 
@@ -1711,20 +1748,21 @@ def ticket_monitor_ban_live(
 ):
     """封禁IP统计（大屏「封禁IP统计」卡专用，独立于 /monitor 聚合接口轮询）。
 
-    历史累计口径（数据源 ban_hit_stats 命中累计表，每次全量拉取设备黑名单后
-    增量合并，见 ``_sync_ban_hit_stats``）：条目解封/到期从设备消失后计数保留，
-    只增不减；解封后重新封禁按新一轮命中继续累计。
+    封禁数量口径与设备当前黑名单对齐（每次全量拉取设备黑名单的实时条目）：
 
-    - ``total``：累计封禁条目（去重 blist）总数（含已解封/到期）；
-    - ``total_hit_count``：全量条目的拦截（命中）次数累计总和；
-    - ``period_count``：重保时间范围内「产生」的封禁条目数（按条目最近一次
-      effectTime 落在 ``[period_start, period_end]` 统计）；起止均未传时为
-      null（前端提示未配置）；
-    - ``period_hit_count``：重保时间范围内产生条目的拦截（命中）次数总和；
-      未配置范围时为 null。
+    - ``total``：设备当前黑名单条目总数（不含已解封/到期后从设备消失的条目；
+      条目数超过翻页上限时为 null）；
+    - ``period_count``：设备当前黑名单中 ``effectTime`` 落在
+      ``[period_start, period_end]`` 的条目数；起止均未传时为 null；
+      条目数超过翻页上限时为 null；
+    - ``total_hit_count``：命中累计（辅助字段，当前卡片不展示；含 2026-11-09
+      首次全量导入时按旧口径写入的设备历史基线）；
+    - ``period_hit_count``：平台实际观测到的期间命中增量（辅助字段，当前卡片
+      不展示；数据源 ``ban_hit_daily``）；未配置范围时为 null；
+    - ``hit_data_start``：日增量统计起始日（辅助字段）。
 
     设备接口异常时返回 ``ok=false`` + ``error``（HTTP 仍为 200），前端据此降级：
-    保留最近一次成功快照并给出错误提示，而非空白。全量拉取结果后端缓存 10 秒，
+    保留最近一次成功快照并给出错误提示，而非空白。全量拉取结果后端缓存 60 秒，
     卡片高频轮询不会逐次打到设备。
     """
     if (period_start is None) != (period_end is None):
@@ -1734,7 +1772,8 @@ def ticket_monitor_ban_live(
     if ps and pe and pe < ps:
         raise HTTPException(status_code=400, detail="重保时间范围终点不能早于起点")
 
-    def _payload(ok, total, period_count, total_hit=None, period_hit=None, error=None, truncated=False) -> dict:
+    def _payload(ok, total, period_count, total_hit=None, period_hit=None,
+                 error=None, truncated=False, hit_data_start=None) -> dict:
         return {
             "ok": ok,
             "error": error,
@@ -1742,34 +1781,49 @@ def ticket_monitor_ban_live(
             "total_hit_count": total_hit,
             "period_count": period_count,
             "period_hit_count": period_hit,
+            "hit_data_start": hit_data_start.isoformat() if hit_data_start else None,
             "period_start": ps.isoformat() if ps else None,
             "period_end": pe.isoformat() if pe else None,
             "truncated": truncated,
             "fetched_at": beijing_now().isoformat(),
         }
 
-    # 全量拉取（内部已同步命中累计表；缓存命中时直接用表内累计值）
-    _, err, truncated = _fetch_full_blacklist(db)
+    # 全量拉取（内部已同步命中累计表；缓存命中时直接复用设备条目）
+    items, err, truncated = _fetch_full_blacklist(db)
     if err:
         logger.warning("大屏封禁IP统计失败: %s", err)
         return _payload(False, None, None, error=err)
-    # 历史累计口径：从命中累计表聚合（解封/到期条目仍计数，只增不减）
-    total = db.query(func.count(BanHitStat.id)).scalar() or 0
+    # 封禁数量与设备当前黑名单对齐：total = 本次拉取的设备条目数；
+    # 重保期间数量 = 当前条目中 effectTime 落在范围内的条目数。
+    # 超过翻页上限时条目集不完整，数值返回 null，避免把部分数据当成设备总数。
+    total = None if truncated else len(items)
     total_hit_count = db.query(func.coalesce(func.sum(BanHitStat.hit_total), 0)).scalar() or 0
+    hit_data_start = db.query(func.min(BanHitDaily.stat_date)).scalar()
     period_count = None
     period_hit_count = None
     if ps and pe:
-        period_q = db.query(BanHitStat).filter(
-            BanHitStat.effect_time.isnot(None),
-            BanHitStat.effect_time >= ps,
-            BanHitStat.effect_time <= pe,
-        )
-        period_count = period_q.count()
-        period_hit_count = (
-            period_q.with_entities(func.coalesce(func.sum(BanHitStat.hit_total), 0)).scalar() or 0
-        )
+        if not truncated:
+            period_count = 0
+            for it in items:
+                eff = _parse_effect_time(it.get("effectTime"))
+                if eff is not None and ps <= eff <= pe:
+                    period_count += 1
+        # 期间命中次数：真实观测日增量，避免首次导入 / 重封终身计数归属；
+        # 期间整体早于日增量统计起点时无分日数据，返回 null（前端显示 --）
+        if hit_data_start and pe.date() < hit_data_start:
+            period_hit_count = None
+        else:
+            period_hit_count = (
+                db.query(func.coalesce(func.sum(BanHitDaily.hit_delta), 0))
+                .filter(
+                    BanHitDaily.stat_date >= ps.date(),
+                    BanHitDaily.stat_date <= pe.date(),
+                )
+                .scalar() or 0
+            )
     return _payload(True, total, period_count, total_hit=total_hit_count,
-                    period_hit=period_hit_count, truncated=truncated)
+                    period_hit=period_hit_count, truncated=truncated,
+                    hit_data_start=hit_data_start)
 
 
 # 重保期间每日拦截趋势最大天数（避免误配超长范围时返回上千日桶；超出时仅保留最近 N 天）
@@ -1783,20 +1837,27 @@ def ticket_monitor_ban_intercept_trend(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket_monitor", "view")),
 ):
-    """重保期间每日拦截次数趋势（大屏右上「重保拦截趋势」卡专用）。
+    """重保期间每日新增封禁IP数量趋势（大屏右上「每日新增封禁IP」卡专用）。
 
-    按日分桶统计重保时间范围内「产生」的黑名单条目命中（拦截）次数（历史累计
-    口径，数据源 ban_hit_stats 命中累计表）：某日拦截次数 = 最近一次 effectTime
-    落在该日的条目累计命中（hit_total）之和，同时返回该日新增条目数 ban_count
-    （辅助口径）。逐日求和与 ``/monitor/ban-live`` 的 ``period_hit_count``
-    完全一致（同一条目集合同一口径），两卡数字可互相核对。
+    按日统计条目的「首次封禁日期」落在该日的数量 ``ban_count``。首次封禁日期取
+    ``min(effectTime, first_seen_at)``：
+
+    - 正常新增：两者同日，按封禁日归桶；
+    - 初始导入 / 同步空档补拉：``effectTime`` 更早，按实际封禁日归桶；
+    - 解封后重封：``first_seen_at`` 更早，仍归首次观测日，避免历史柱随重封
+      迁移（旧逻辑按最新 effectTime 归桶，重封会把该 IP 从原日期挪走）。
+
+    「封禁IP统计」卡的 ``period_count`` 是设备当前黑名单的子集，本趋势是历史
+    新增流量口径（含之后解封/到期的条目），两者可能略有差异。``count`` 字段
+    保留为平台实际观测到的每日命中增量（辅助数据，当前卡片不展示）。
 
     - 起止必须同时提供且起点不晚于终点（否则 HTTP 400）；
     - 范围终点晚于当前时间时截断到今天（未来天数无数据不返回）；
-    - 范围跨度超过 366 天时仅返回最近 366 天（window_truncated=true）。
+    - 范围跨度超过 366 天时仅返回最近 366 天（window_truncated=true）；
+    - ``data_start``：日增量统计起始日（辅助字段，当前卡片不展示）。
 
     设备接口异常时返回 200 + ok=false + error（前端降级保留最近快照）；
-    全量拉取结果与 ban-live 共享 10 秒缓存，两卡轮询不会重复打设备。
+    全量拉取结果与 ban-live 共享 60 秒缓存，两卡轮询不会重复打设备。
     """
     if period_start is None or period_end is None:
         raise HTTPException(status_code=400, detail="重保时间范围需同时提供起止时间")
@@ -1805,18 +1866,19 @@ def ticket_monitor_ban_intercept_trend(
     if pe < ps:
         raise HTTPException(status_code=400, detail="重保时间范围终点不能早于起点")
 
-    def _payload(ok: bool, days=None, error=None, window_truncated=False) -> dict:
+    def _payload(ok: bool, days=None, error=None, window_truncated=False, data_start=None) -> dict:
         return {
             "ok": ok,
             "error": error,
             "days": days or [],
             "window_truncated": window_truncated,
+            "data_start": data_start.isoformat() if data_start else None,
             "period_start": ps.isoformat(),
             "period_end": pe.isoformat(),
             "fetched_at": beijing_now().isoformat(),
         }
 
-    # 全量拉取（内部已同步命中累计表）+ 从累计表按日分桶（历史累计口径）
+    # 全量拉取（内部已同步命中累计表与日增量表）
     _, err, _ = _fetch_full_blacklist(db)
     if err:
         logger.warning("大屏重保拦截趋势获取黑名单失败: %s", err)
@@ -1831,22 +1893,43 @@ def ticket_monitor_ban_intercept_trend(
         first_day = last_day - timedelta(days=_INTERCEPT_TREND_MAX_DAYS - 1)
         total_days = _INTERCEPT_TREND_MAX_DAYS
 
+    data_start = db.query(func.min(BanHitDaily.stat_date)).scalar()
     counts = [0] * total_days
-    bans = [0] * total_days
-    for eff, hit_total in (
-        db.query(BanHitStat.effect_time, BanHitStat.hit_total)
-        .filter(BanHitStat.effect_time.isnot(None))
+    for stat_date, hit_delta in (
+        db.query(BanHitDaily.stat_date, BanHitDaily.hit_delta)
+        .filter(
+            BanHitDaily.stat_date >= first_day.date(),
+            BanHitDaily.stat_date <= last_day.date(),
+        )
         .all()
     ):
-        idx = (eff.replace(hour=0, minute=0, second=0, microsecond=0) - first_day).days
+        idx = (stat_date - first_day.date()).days
         if 0 <= idx < total_days:
-            counts[idx] += hit_total or 0
+            counts[idx] += hit_delta or 0
+    bans = [0] * total_days
+    for eff, first_seen in (
+        db.query(BanHitStat.effect_time, BanHitStat.first_seen_at)
+        .all()
+    ):
+        # 首次封禁日期：effectTime 与首次观测时间取较早者。
+        # 正常新增两者同日；初始导入 / 补拉取 effectTime（实际封禁日）；
+        # 解封后重封取 first_seen_at（仍归首次观测日，历史柱不随重封迁移）。
+        if eff is None:
+            first_banned = first_seen
+        elif first_seen is None:
+            first_banned = eff
+        else:
+            first_banned = min(eff, first_seen)
+        if first_banned is None:
+            continue
+        idx = (first_banned.replace(hour=0, minute=0, second=0, microsecond=0) - first_day).days
+        if 0 <= idx < total_days:
             bans[idx] += 1
     days = []
     for i in range(total_days):
         d = first_day + timedelta(days=i)
         days.append({"date": d.date().isoformat(), "count": counts[i], "ban_count": bans[i]})
-    return _payload(True, days=days, window_truncated=window_truncated)
+    return _payload(True, days=days, window_truncated=window_truncated, data_start=data_start)
 
 
 @router.get("/monitor")

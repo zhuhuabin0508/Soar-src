@@ -9,20 +9,17 @@
 // 七个分区（代码内以注释分隔）：
 //   ① 顶部：标题栏 + 核心 KPI 总览（等宽数字；超时预警↔处理中橙红描边编组）
 //   ② 左上：工单趋势分析（近 24 小时 / 7 天 / 30 天，新增 vs 关闭）
-//   ③ 左下：分布统计（Tab 自动轮播：严重度×状态堆叠条形 ↔ 来源平台统计状态构成堆叠；
-//          8s 自动切换，悬停暂停 / 手动切换重置计时，点击图表段下钻对应工单列表）
+//   ③ 左下：工单分布统计（严重度×状态堆叠条形，点击图表段下钻对应工单列表）
 //   ④ 中央：处置状态流转图（全部启用流程多泳道同屏：每流程一条节点链 + 停留件数，无需切换）
 //          + 提交团队工单排名（横排 Top 8，其余合并尾签）
 //          + 最新工单实时列表
-//   ⑤ 右上：重保拦截趋势（重保期间每日拦截次数折线面积图：时间维度筛选近 7/15/30 天 / 全程，
-//          峰值 / 均值关键节点标注；重保时间范围与刷新节奏和「封禁IP统计」卡共享、任一卡配置
-//          即时互通；独立轮询实时更新，接口异常保留最近快照降级展示）
-//   ⑥ 右下：封禁IP统计（2×2 网格四大数据项：上行封禁数量 / 下行拦截次数，左列总量 / 右列重保期间；
-//          历史累计口径：后端按 blist 去重累计命中（解封/到期条目仍计数，只增不减）；
-//          总封禁IP数量 = 累计封禁条目总数；总封禁IP拦截次数 = 条目累计命中总和；
-//          重保期间数量 / 拦截次数 = 重保时间范围内产生的封禁条目及其命中次数，范围经卡片头部
-//          设置按钮配置（未设置时橙色描边提示）、变更即刷新。
+//   ⑤ 右上：封禁IP统计（1×2 网格两大数据项：总封禁数量 / 重保期间封禁数量；
+//          数量与设备当前黑名单对齐：总封禁IP数量 = 设备当前黑名单条目数；
+//          重保期间封禁IP数量 = 当前条目中生效时间落在重保范围内的条目数，
+//          范围经卡片头部设置按钮配置（未设置时橙色描边提示）、变更即刷新。
 //          卡片独立轮询（间隔可配 + 手动刷新），接口异常保留最近快照降级展示）
+//   ⑥ 右下：来源平台统计（从工单分布统计拆出的独立卡片：平台 × 状态构成堆叠条形图，
+//          柱端标注平台工单总量；点击图表段下钻对应平台/状态工单）
 //   ⑦ 底部：告警播报跑马灯（仅超时 / 紧急工单，不与实时列表重复）
 //   ⑧ 全屏交互：弹窗下钻体系（不跳转路由）——各统计区块点击压入弹窗栈逐级覆盖显示，
 //      面包屑可回跳任意上级（ESC / 遮罩点击关闭当前层）：
@@ -590,35 +587,15 @@ function TrendChart({ trend, onDrill }) {
   )
 }
 
-// ============ ③ 左下：分布统计（Tab 自动轮播：严重度×状态 ↔ 来源平台统计） ============
-// 两视图共居一卡（原「告警类型」视图已下线）：8s 自动切换、悬停暂停、手动切换重置计时；
-// 图表配置与点击下钻沿用各自原实现，数据展示口径不变。
-// 严重度堆叠条形图：段内白字数值（仅非 0 段显示）
+// ============ ③ 左下：工单分布统计（严重度×状态堆叠条形，点击图表段下钻） ============
+// 严重度堆叠条形图：段内白字数值（仅非 0 段显示）；点击图表段下钻对应工单列表。
 const SEG_LABEL = {
   show: true, position: 'inside', color: '#FFFFFF', fontSize: 12,
   fontFamily: 'monospace', formatter: (p) => (p.value > 0 ? p.value : ''),
 }
 
-// 分布模块视图 Tab：严重度×状态 / 来源平台统计（点击图表段下钻对应口径工单列表）
-const DIST_TABS = [['sev', '严重度×状态'], ['platform', '来源平台统计']]
-
-function DistPanel({ severityStatus, platformStats, onDrill }) {
-  const [tab, setTab] = useState('sev')
-  const [paused, setPaused] = useState(false)
+function DistPanel({ severityStatus, onDrill }) {
   const sev = severityStatus || []
-  const platforms = platformStats || []
-
-  // 自动轮播：8s 切换下一视图；hover 面板暂停；手动切换后重新计时
-  useEffect(() => {
-    if (paused) return undefined
-    const t = setInterval(() => {
-      setTab((cur) => {
-        const i = DIST_TABS.findIndex(([k]) => k === cur)
-        return DIST_TABS[(i + 1) % DIST_TABS.length][0]
-      })
-    }, 8000)
-    return () => clearInterval(t)
-  }, [paused, tab])
 
   // 严重度堆叠图点击段下钻：段 = 严重度 × 状态
   const handleSevClick = (p) => {
@@ -627,26 +604,6 @@ function DistPanel({ severityStatus, platformStats, onDrill }) {
     const stat = { 进行中: 'processing', 已完成: 'completed', 已取消: 'cancelled' }[p.seriesName]
     if (!prio || !stat) return
     onDrill({ kind: 'tickets', title: `${p.name} · ${p.seriesName}工单`, subtitle: '严重度 × 状态下钻', filters: { priority: prio, status: stat } })
-  }
-  // 来源平台堆叠图点击段下钻：平台 × 状态构成（待处理/处理中→进行中，已解决→已完成）
-  const handlePlatformClick = (p) => {
-    if (!onDrill || p?.componentType !== 'series' || !p.name) return
-    let f
-    let seg
-    if (p.seriesName === '已解决') {
-      f = { platform: p.name, status: 'completed' }
-      seg = '已解决'
-    } else if (p.seriesName === '已取消') {
-      f = { platform: p.name, status: 'cancelled' }
-      seg = '已取消'
-    } else if (p.seriesName === '处理中') {
-      f = { platform: p.name, status: 'processing', activeToday: true }
-      seg = '处理中（今日活跃）'
-    } else {
-      f = { platform: p.name, status: 'processing' }
-      seg = '待处理'
-    }
-    onDrill({ kind: 'tickets', title: `「${p.name}」· ${seg}工单`, subtitle: '来源平台下钻', filters: f })
   }
 
   const stackOption = useMemo(() => ({
@@ -685,29 +642,51 @@ function DistPanel({ severityStatus, platformStats, onDrill }) {
 
   return (
     <Panel
-      title="工单分布统计" subtitle="DISTRIBUTION" icon={AlertTriangle} className="min-h-0 flex-1"
-      bodyClassName="px-3 py-2"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-      right={DIST_TABS.map(([key, label]) => (
-        <button key={key} onClick={() => setTab(key)} className="rounded px-2 py-0.5 text-[12px] transition"
-          style={tab === key
-            ? { background: 'rgba(78,138,212,0.35)', color: C.text, border: `1px solid ${C.techBlue}66` }
-            : { color: C.subText, border: '1px solid rgba(96,138,188,0.25)' }}>
-          {label}
-        </button>
-      ))}
+      title="工单分布统计" subtitle="DISTRIBUTION" icon={AlertTriangle}
+      className="min-h-0 flex-1" bodyClassName="px-3 py-2"
     >
-      {tab === 'sev' ? (
-        <ReactECharts key="sev" option={stackOption} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }}
-          onEvents={{ click: handleSevClick }} />
+      <ReactECharts key="sev" option={stackOption} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }}
+        onEvents={{ click: handleSevClick }} />
+    </Panel>
+  )
+}
+
+// 来源平台统计（从工单分布统计拆出的独立卡片）：平台 × 状态构成堆叠条形图，
+// 柱端标注平台工单总量；点击图表段下钻对应平台/状态工单。
+function PlatformPanel({ platformStats, onDrill }) {
+  const platforms = platformStats || []
+
+  // 来源平台堆叠图点击段下钻：平台 × 状态构成（待处理/处理中→进行中，已解决→已完成）
+  const handlePlatformClick = (p) => {
+    if (!onDrill || p?.componentType !== 'series' || !p.name) return
+    let f
+    let seg
+    if (p.seriesName === '已解决') {
+      f = { platform: p.name, status: 'completed' }
+      seg = '已解决'
+    } else if (p.seriesName === '已取消') {
+      f = { platform: p.name, status: 'cancelled' }
+      seg = '已取消'
+    } else if (p.seriesName === '处理中') {
+      f = { platform: p.name, status: 'processing', activeToday: true }
+      seg = '处理中（今日活跃）'
+    } else {
+      f = { platform: p.name, status: 'processing' }
+      seg = '待处理'
+    }
+    onDrill({ kind: 'tickets', title: `「${p.name}」· ${seg}工单`, subtitle: '来源平台下钻', filters: f })
+  }
+
+  return (
+    <Panel
+      title="来源平台统计" subtitle="SOURCE PLATFORM" icon={Activity}
+      className="min-h-0 flex-1" bodyClassName="px-3 py-2"
+    >
+      {platforms.length === 0 ? (
+        <div className="flex h-full items-center justify-center text-[13px]" style={{ color: C.subText }}>暂无数据</div>
       ) : (
-        platforms.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-[13px]" style={{ color: C.subText }}>暂无数据</div>
-        ) : (
-          <ReactECharts key="platform" option={platformBarOption(platforms)} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }}
-            onEvents={{ click: handlePlatformClick }} />
-        )
+        <ReactECharts key="platform" option={platformBarOption(platforms)} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }}
+          onEvents={{ click: handlePlatformClick }} />
       )}
     </Panel>
   )
@@ -1526,6 +1505,15 @@ function fmtBanPeriod(v) {
   return `${(d || '').slice(5)} ${(t || '').slice(0, 5)}`
 }
 
+// 设备网络类异常 → 简洁提示（原始异常只保留在后端日志/控制台，不直接展示给用户）
+function friendlyBanError(raw) {
+  const s = String(raw || '')
+  if (/ConnectError|Connection reset|ConnectTimeout|ReadTimeout|timed out|Errno 104|Network is unreachable|Server disconnected|EOF/i.test(s)) {
+    return '安博通设备连接异常，请稍后重试'
+  }
+  return s || '安博通黑名单接口返回异常'
+}
+
 // 数字滚动动画（封禁IP统计卡专用）：数值变化时 rAF + easeOutCubic 从旧值平滑滚动到新值。
 // 防抖机制：新目标到来时取消进行中的动画、从「当前动画中间值」续接，频繁刷新不重置不跳变；
 // 非数字目标（null/undefined/--）不动画直接显示；卸载/目标再变时取消 rAF 不泄漏。
@@ -1572,15 +1560,16 @@ function useRollingNumber(target, duration = 800) {
 // 单个统计数据块（网格单元统一结构，四块同行基线对齐）：
 // 色条 + 标题（字号与数字基本一致）→ 说明小字 → 大号数字 + 单位，内容整体垂直居中
 // 色条沿用卡片标题竖条设计语言（替代图标徽标，为 20px 标题释放宽度），颜色 = 块主色
-// loading = 首帧骨架；noValue = 无值（接口失败无快照 / 重保范围未设置）时显示灰色 --
+// loading = 首帧骨架；noValue = 无值（接口失败无快照 / 重保范围未设置 / 设备条目超限返回 null）时显示灰色 --
 function BanStatBlock({ color, label, desc, value, unit = '个', loading, noValue }) {
-  // 数字滚动过渡（800ms 平滑递增/递减；noValue 时不动画）
-  const shown = useRollingNumber(noValue ? null : value)
+  // 无值必须显式判空：Number(null) === 0，直接交给滚动组件会错误显示成 0
+  const empty = noValue || value === null || value === undefined
+  // 数字滚动过渡（800ms 平滑递增/递减；无值时不动画）
+  const shown = useRollingNumber(empty ? null : value)
   // 数值千位分隔（滚动中间值取整，避免小数闪现；无值显示 --）
-  const text = noValue || shown === null || shown === undefined || !Number.isFinite(Number(shown))
+  const text = empty || shown === null || shown === undefined || !Number.isFinite(Number(shown))
     ? '--' : Math.round(shown).toLocaleString('en-US')
-  // 数字自适应字号（始终 ≥ 标题，保证数字视觉权重高于标题）：
-  // 拦截次数可达 10 位（含千位分隔 13 字符），超长数字降号防溢出半宽单元格
+  // 数字自适应字号：数值过长时降号防溢出单元格
   const size = text.length <= 7 ? '24px'
     : text.length <= 10 ? '23px'
     : text.length <= 13 ? '22px' : '17px'
@@ -1597,7 +1586,7 @@ function BanStatBlock({ color, label, desc, value, unit = '个', loading, noValu
           <span className="h-[28px] w-20 animate-pulse rounded" style={{ background: 'rgba(96,138,188,0.18)' }} />
         ) : (
           <span className="whitespace-nowrap font-mono font-bold leading-none tabular-nums"
-            style={{ fontSize: size, color: noValue ? C.grayBlue : C.text, textShadow: noValue ? 'none' : `0 0 14px ${color}40` }}>
+            style={{ fontSize: size, color: empty ? C.grayBlue : C.text, textShadow: empty ? 'none' : `0 0 14px ${color}40` }}>
             {text}
           </span>
         )}
@@ -1608,8 +1597,8 @@ function BanStatBlock({ color, label, desc, value, unit = '个', loading, noValu
 }
 
 function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, onPeriod }) {
-  // 重保时间范围与刷新节奏由大屏统一持有（与右上「重保拦截趋势」卡共享）：
-  // 任一卡配置/切换，两卡即时同步按新参数刷新；本卡仅保留数据快照与配置覆盖层状态
+  // 重保时间范围与刷新节奏由大屏统一持有（配置本地记忆）：
+  // 本卡仅保留数据快照与配置覆盖层状态
   const [data, setData] = useState(null)        // 最近一次成功快照 { total, period_count, fetched_at }
   const [loading, setLoading] = useState(false) // 首帧加载（骨架占位；轮询刷新不打断数字展示）
   const [spinning, setSpinning] = useState(false)
@@ -1676,7 +1665,7 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
   }
 
   // 演示模式：后端聚合接口不可用时以演示数据渲染（总数取演示封禁统计，
-  // 重保数 / 拦截次数按演示封禁记录 created_at 与 hit_num 落入范围统计），不发起真实请求
+  // 重保数按演示封禁记录 created_at 落入范围统计），不发起真实请求
   const inDemoPeriod = useCallback((b) => !!(
     b?.created_at && period && b.created_at.slice(0, 16) >= period.start && b.created_at.slice(0, 16) <= period.end
   ), [period])
@@ -1684,24 +1673,13 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
     () => (demo && period ? (demoBans || []).filter(inDemoPeriod).length : null),
     [demo, demoBans, period, inDemoPeriod],
   )
-  const demoTotalHit = useMemo(
-    () => (demo ? (demoBans || []).reduce((s, b) => s + (Number(b?.hit_num) || 0), 0) : null),
-    [demo, demoBans],
-  )
-  const demoPeriodHit = useMemo(
-    () => (demo && period
-      ? (demoBans || []).filter(inDemoPeriod).reduce((s, b) => s + (Number(b?.hit_num) || 0), 0)
-      : null),
-    [demo, demoBans, period, inDemoPeriod],
-  )
   const total = demo ? (demoTotal ?? 0) : (data?.total ?? null)
   const periodCount = demo ? demoPeriodCount : (data ? data.period_count : null)
-  const totalHit = demo ? demoTotalHit : (data ? data.total_hit_count : null)
-  const periodHit = demo ? demoPeriodHit : (data ? data.period_hit_count : null)
   const snapAt = data?.fetched_at ? new Date(data.fetched_at) : null
   const pad2 = (n) => String(n).padStart(2, '0')
   const snapText = snapAt
     ? `${pad2(snapAt.getHours())}:${pad2(snapAt.getMinutes())}:${pad2(snapAt.getSeconds())}` : ''
+  const errText = friendlyBanError(error)
   // 与工具条一致的控件样式（玻璃底 + 微描边，悬停提亮）
   const toolBtn = {
     borderColor: 'rgba(96,138,188,0.40)',
@@ -1711,13 +1689,13 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
 
   return (
     <Panel title="封禁IP统计" subtitle="BANNED IP" icon={ShieldBan}
-      className="h-[424px] shrink-0" bodyClassName="relative flex flex-col gap-2 px-3 py-3"
+      className="h-[220px] shrink-0" bodyClassName="relative flex flex-col gap-2 px-3 py-3"
       right={!demo && (
         <>
-          {/* 重保时间范围配置（与右上「重保拦截趋势」卡共享）：未设置时橙色描边提示待配置，
+          {/* 重保时间范围配置：未设置时橙色描边提示待配置，
               打开后配置覆盖层悬浮于卡片数据区 */}
           <button type="button" onClick={toggleCfg} aria-expanded={showCfg}
-            title="配置重保时间范围（与重保拦截趋势卡共享，应用后两卡立即按新范围刷新，配置本地记忆）"
+            title="配置重保时间范围（应用后立即按新范围刷新，配置本地记忆）"
             aria-label="配置重保时间范围"
             className="flex h-6 w-6 items-center justify-center rounded border transition hover:brightness-125"
             style={{
@@ -1743,29 +1721,19 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
           </button>
         </>
       )}>
-      {/* 2×2 网格：上行 = 封禁数量（核心，同行水平对齐），下行 = 拦截次数；
-          左列 = 总量口径（蓝系），右列 = 重保期间口径（橙系）；四块结构统一、数字基线对齐 */}
-      <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-2">
-        {/* 总封禁IP数量 —— 历史累计封禁条目总数（解封/到期仍计数） */}
+      {/* 1×2 网格：仅保留封禁数量（左 = 总量口径，右 = 重保期间口径），
+          两块同排对齐，避免去掉拦截次数后留下空块 */}
+      <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-1 gap-2">
+        {/* 总封禁IP数量 —— 设备当前黑名单条目总数（与设备实时对齐） */}
         <BanStatBlock color={C.cyan} label="总封禁IP数量"
-          desc={demo ? '演示数据 · 黑名单全量' : '安博通黑名单 · 历史累计'}
+          desc={demo ? '演示数据 · 黑名单全量' : '安博通黑名单 · 当前总数'}
           value={total} loading={loading && !data} noValue={!demo && !data} />
-        {/* 重保期间封禁IP数量 —— 重保时间范围内产生的封禁条目（范围可配置） */}
+        {/* 重保期间封禁IP数量 —— 设备当前条目中生效时间落在范围内的数量 */}
         <BanStatBlock color={C.accent} label="重保期间封禁IP数量"
           desc={period
-            ? `${fmtBanPeriod(period.start)} ~ ${fmtBanPeriod(period.end)}`
+            ? `${fmtBanPeriod(period.start)} ~ ${fmtBanPeriod(period.end)} · 当前黑名单`
             : '未设置重保时间范围'}
           value={periodCount} loading={loading && !data} noValue={period == null || (!demo && !data)} />
-        {/* 总封禁IP拦截次数 —— 全量条目命中（hit_num）累计总和（解封/到期不回退） */}
-        <BanStatBlock color={C.lightBlue} label="总封禁IP拦截次数" unit="次"
-          desc={demo ? '演示数据 · 命中累计' : '安博通黑名单 · 命中累计'}
-          value={totalHit} loading={loading && !data} noValue={!demo && !data} />
-        {/* 重保期间封禁IP拦截次数 —— 重保时间范围内产生条目的命中次数总和 */}
-        <BanStatBlock color={C.orange} label="重保期间拦截次数" unit="次"
-          desc={period
-            ? `${fmtBanPeriod(period.start)} ~ ${fmtBanPeriod(period.end)}`
-            : '未设置重保时间范围'}
-          value={periodHit} loading={loading && !data} noValue={period == null || (!demo && !data)} />
       </div>
       {/* 异常降级提示：有快照保留数字 + 黄条提示；无快照红条 + 重试（均不白屏） */}
       {error && !demo && (
@@ -1776,15 +1744,15 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
             color: data ? C.orange : C.red,
           }}>
           <AlertTriangle className="h-3 w-3 shrink-0" />
-          <span className="min-w-0 flex-1 truncate" title={error}>
-            {data ? `接口异常，展示 ${snapText} 快照：${error}` : `数据加载失败：${error}`}
+          <span className="min-w-0 flex-1 truncate" title={errText}>
+            {data ? `接口异常，展示 ${snapText} 快照（${errText}）` : `数据加载失败：${errText}`}
           </span>
           <button type="button" onClick={() => load()}
             className="shrink-0 rounded border px-1.5 transition hover:brightness-125"
             style={{ borderColor: 'currentColor' }}>重试</button>
         </div>
       )}
-      {/* 重保时间范围配置覆盖层（与重保拦截趋势卡共用组件；应用/清除后立即刷新两卡统计） */}
+      {/* 重保时间范围配置覆盖层（应用/清除后立即刷新本卡统计） */}
       {showCfg && !demo && (
         <BanPeriodCfgOverlay draft={cfg} onDraft={setCfg} onApply={applyPeriod} onClear={clearPeriod} onClose={() => setShowCfg(false)} />
       )}
@@ -1792,8 +1760,8 @@ function BanPanel({ demo, demoTotal, demoBans, period, refreshMs, onRefreshMs, o
   )
 }
 
-// ============ ③ 数据源：来源平台统计图配置（状态构成堆叠条形图，柱端直接标注工单总量） ============
-// 供左下「工单分布统计」的来源平台视图使用；颜色语义与全屏一致：
+// ============ ⑥ 数据源：来源平台统计图配置（状态构成堆叠条形图，柱端直接标注工单总量） ============
+// 供右栏「来源平台统计」卡使用；颜色语义与全屏一致：
 // 待处理=橙、处理中=蓝、已解决=绿、已取消=灰蓝；口径与顶部 KPI 相同。
 // 悬停提示框保留原统计表全部指标（总量/今日新增/待处理/处理中/已解决/已取消）。
 // 提示框指标元数据：字段 / 名称 / 数值颜色
@@ -1858,29 +1826,8 @@ function platformBarOption(rows) {
   }
 }
 
-// ============ ⑤ 右上：重保拦截趋势（重保期间每日拦截次数折线，时间维度筛选 + 关键节点标注） ============
-// 数据源：GET /tickets/monitor/ban-intercept-trend（安博通黑名单条目按 effectTime 逐日分桶、
-// hit_num 求和；逐日之和与「封禁IP统计」卡的重保期间拦截次数同口径，两卡数字可互相核对）。
-// 重保时间范围与刷新节奏由大屏统一持有（两卡共享，任一卡配置即时互通）；
-// 时间维度筛选：近 7 / 15 / 30 天 / 全程（截取范围末尾天数，本地记忆）；
-// 关键节点标注：峰值点放大标记 + 均值虚线，图上方附累计 / 日均 / 峰值摘要；
-// 独立轮询实时更新（0 = 暂停仅手动）；接口异常保留最近快照降级展示。
-
-// 时间维度筛选选项（值 = 展示天数；all = 整个重保期间）
-const INTERCEPT_WINDOWS = [['7', '近7天'], ['15', '近15天'], ['30', '近30天'], ['all', '全程']]
-const INTERCEPT_WINDOW_KEY = 'ticket_monitor_intercept_window'
-
-function readInterceptWindow() {
-  try {
-    const raw = window.localStorage.getItem(INTERCEPT_WINDOW_KEY)
-    return INTERCEPT_WINDOWS.some(([k]) => k === raw) ? raw : 'all'
-  } catch {
-    return 'all'
-  }
-}
-
-// 重保时间范围配置覆盖层（封禁IP统计卡 / 重保拦截趋势卡共用）：
-// 悬浮于卡片内容区之上不挤压数据块；应用/清除经 onPeriod 由大屏统一持久化并即时刷新两卡
+// 重保时间范围配置覆盖层（封禁IP统计卡专用）：
+// 悬浮于卡片内容区之上不挤压数据块；应用/清除经 onPeriod 由大屏统一持久化并即时刷新
 function BanPeriodCfgOverlay({ draft, onDraft, onApply, onClear, onClose }) {
   const toolBtn = {
     borderColor: 'rgba(96,138,188,0.40)',
@@ -1893,7 +1840,7 @@ function BanPeriodCfgOverlay({ draft, onDraft, onApply, onClear, onClose }) {
       style={{ background: 'rgba(13,24,36,0.94)', borderColor: C.panelBorder }}>
       <div className="text-[13px] font-semibold" style={{ color: C.text }}>重保时间范围</div>
       <div className="text-[11px] leading-relaxed" style={{ color: C.subText }}>
-        统计该时间范围内产生的封禁 IP 条目（按黑名单条目生效时间）。应用后「封禁IP统计」与「重保拦截趋势」立即按新范围刷新，配置本地记忆。
+        统计该时间范围内产生的封禁 IP 条目（按黑名单条目生效时间）。应用后「封禁IP统计」立即按新范围刷新，配置本地记忆。
       </div>
       <div className="flex items-center gap-2">
         <input type="datetime-local" value={draft.start} aria-label="重保开始时间"
@@ -1925,271 +1872,12 @@ function BanPeriodCfgOverlay({ draft, onDraft, onApply, onClear, onClose }) {
   )
 }
 
-// 重保时间范围草稿校验（两卡共用）：校验失败 toast 提示并返回 null；成功返回 { next }
+// 重保时间范围草稿校验（封禁IP统计卡）：校验失败 toast 提示并返回 null；成功返回 { next }
 function applyBanPeriodDraft(draft) {
   const { start, end } = draft
   if (!start !== !end) { toast.error('重保时间范围需同时设置起止时间'); return null }
   if (start && end && end < start) { toast.error('重保时间范围终点不能早于起点'); return null }
   return { next: start && end ? { start, end } : null }
-}
-
-function InterceptTrendPanel({ demo, period, refreshMs, onPeriod, demoBans }) {
-  const [win, setWin] = useState(readInterceptWindow)
-  const [days, setDays] = useState(null)        // 最近一次成功快照 [{date, count, ban_count}]
-  const [loading, setLoading] = useState(false) // 首帧骨架；轮询刷新不打断图表
-  const [spinning, setSpinning] = useState(false)
-  const [error, setError] = useState(null)
-  const [showCfg, setShowCfg] = useState(false) // 重保时间范围配置覆盖层（与封禁IP统计卡共用）
-  const [cfg, setCfg] = useState({ start: '', end: '' })
-
-  const periodRef = useRef(period)
-  periodRef.current = period
-  // 请求序号竞态保护：范围切换/手动刷新与轮询并发时，丢弃过期响应避免旧数据覆盖新范围
-  const loadSeq = useRef(0)
-
-  const load = useCallback(async (silent = false) => {
-    if (demo) return
-    const p = periodRef.current
-    if (!p?.start || !p?.end) return // 未配置重保范围：不发请求，展示引导态
-    const seq = ++loadSeq.current
-    if (silent) setSpinning(true)
-    else setLoading(true)
-    try {
-      const res = await ticketApi.getBanInterceptTrend(p.start, p.end)
-      if (seq !== loadSeq.current) return // 参数已变化，丢弃本次过期响应
-      if (res?.ok) {
-        setDays(Array.isArray(res.days) ? res.days : [])
-        setError(null)
-      } else {
-        // 设备/接口异常：保留最近一次成功快照（days 不动），仅记录错误供降级提示
-        setError(res?.error || '安博通黑名单接口返回异常')
-      }
-    } catch (e) {
-      if (seq !== loadSeq.current) return
-      setError(String(e?.message || e))
-    } finally {
-      if (seq === loadSeq.current) {
-        setLoading(false)
-        setSpinning(false)
-      }
-    }
-  }, [demo])
-
-  // 首帧 + 重保范围变更 → 立即按新范围刷新；清除范围 → 清空快照回引导态
-  useEffect(() => {
-    if (period?.start && period?.end) load()
-    else { setDays(null); setError(null) }
-  }, [load, period])
-
-  // 自动轮询（0 = 暂停，仅手动刷新；与封禁IP统计卡共享节奏，后端 10s 缓存不会重复打设备）
-  useEffect(() => {
-    if (!refreshMs || demo) return undefined
-    const t = setInterval(() => load(true), refreshMs)
-    return () => clearInterval(t)
-  }, [refreshMs, load, demo])
-
-  const selectWin = (v) => {
-    setWin(v)
-    try { window.localStorage.setItem(INTERCEPT_WINDOW_KEY, v) } catch { /* 忽略存储异常 */ }
-  }
-  const toggleCfg = () => {
-    setCfg({ start: period?.start || '', end: period?.end || '' })
-    setShowCfg((v) => !v)
-  }
-  const applyPeriod = () => {
-    const r = applyBanPeriodDraft(cfg)
-    if (!r) return
-    onPeriod(r.next)
-    setShowCfg(false)
-  }
-  const clearPeriod = () => {
-    onPeriod(null)
-    setCfg({ start: '', end: '' })
-    setShowCfg(false)
-  }
-
-  // 演示模式：按演示封禁记录 created_at 落入重保范围逐日聚合 hit_num（与封禁卡演示口径一致）
-  const demoDays = useMemo(() => {
-    if (!demo || !period) return null
-    const inRange = (b) => !!(
-      b?.created_at && b.created_at.slice(0, 16) >= period.start && b.created_at.slice(0, 16) <= period.end
-    )
-    const byDate = new Map()
-    ;(demoBans || []).forEach((b) => {
-      if (!inRange(b)) return
-      const key = b.created_at.slice(0, 10)
-      const cur = byDate.get(key) || { count: 0, ban_count: 0 }
-      cur.count += Number(b.hit_num) || 0
-      cur.ban_count += 1
-      byDate.set(key, cur)
-    })
-    // 日桶序列：从范围起点当日到 min(范围终点, 今天)（未来天数无数据不生成）
-    const todayStr = isoLocal(new Date()).slice(0, 10)
-    const endDayStr = [period.end.slice(0, 10), todayStr].sort()[0]
-    const out = []
-    for (let t = new Date(`${period.start.slice(0, 10)}T00:00:00`).getTime(), end = new Date(`${endDayStr}T00:00:00`).getTime();
-      t <= end && out.length < 366; t += 86400000) {
-      const date = isoLocal(new Date(t)).slice(0, 10)
-      out.push({ date, ...(byDate.get(date) || { count: 0, ban_count: 0 }) })
-    }
-    return out
-  }, [demo, period, demoBans])
-
-  const allDays = demo ? demoDays : days
-  // 时间维度筛选：近 N 天 = 截取末尾 N 天（全程 = 整个重保范围）
-  const rows = useMemo(() => {
-    const list = allDays || []
-    return win === 'all' ? list : list.slice(-Number(win))
-  }, [allDays, win])
-
-  // 关键指标摘要（当前窗口口径）：累计 / 日均 / 峰值及峰值日
-  const stats = useMemo(() => {
-    const counts = rows.map((r) => r.count || 0)
-    const sum = counts.reduce((s, v) => s + v, 0)
-    let maxIdx = -1
-    counts.forEach((v, i) => { if (maxIdx < 0 || v > counts[maxIdx]) maxIdx = i })
-    return {
-      sum,
-      max: maxIdx >= 0 ? counts[maxIdx] : 0,
-      maxDate: maxIdx >= 0 ? (rows[maxIdx]?.date || '') : '',
-      avg: rows.length ? Math.round((sum / rows.length) * 10) / 10 : 0,
-    }
-  }, [rows])
-
-  const option = useMemo(() => ({
-    ...CHART_BASE,
-    grid: { left: 48, right: 20, top: 34, bottom: 26 },
-    tooltip: {
-      trigger: 'axis', backgroundColor: C.tooltipBg, borderColor: C.panelBorder,
-      textStyle: { color: C.text, fontSize: 13 },
-      formatter: (ps) => {
-        const r = rows[ps?.[0]?.dataIndex]
-        if (!r) return ''
-        return `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(r.date)}</div>`
-          + `拦截次数：<b style="color:${C.orange}">${fmtInt(r.count)}</b> 次<br/>`
-          + `当日新增封禁：<b style="color:${C.paleBlue}">${fmtInt(r.ban_count)}</b> 条`
-      },
-    },
-    xAxis: { type: 'category', boundaryGap: false, data: rows.map((r) => r.date.slice(5)), ...axisStyle({ interval: 'auto' }) },
-    yAxis: { type: 'value', minInterval: 1, name: '次', nameTextStyle: { color: C.subText, fontSize: 12 }, splitLine: { lineStyle: { color: C.split } }, ...axisStyle() },
-    series: [{
-      name: '拦截次数', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5,
-      data: rows.map((r) => r.count || 0),
-      lineStyle: { width: 2, color: C.orange }, itemStyle: { color: C.orange },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
-        { offset: 0, color: 'rgba(255,169,64,0.28)' }, { offset: 1, color: 'rgba(255,169,64,0.02)' }] } },
-      // 关键节点标注：峰值点放大标记 + 均值虚线（全零数据不标注）
-      ...(stats.max > 0 ? {
-        markPoint: {
-          data: [{ type: 'max', name: '峰值' }], symbolSize: 44,
-          itemStyle: { color: C.orange, borderColor: '#0B131C', borderWidth: 1 },
-          label: { color: '#FFFFFF', fontSize: 11, formatter: (p) => fmtInt(p.value) },
-        },
-        markLine: {
-          data: [{ type: 'average', name: '均值' }], symbol: 'none',
-          lineStyle: { color: C.cyan, type: 'dashed', opacity: 0.75 },
-          label: { color: C.cyan, fontSize: 11, formatter: (p) => `均值 ${Math.round(p.value * 10) / 10}` },
-        },
-      } : {}),
-    }],
-  }), [rows, stats.max])
-
-  // 与工具条一致的控件样式（玻璃底 + 微描边，悬停提亮）
-  const toolBtn = {
-    borderColor: 'rgba(96,138,188,0.40)',
-    background: 'rgba(78,138,212,0.10)',
-    color: C.paleBlue,
-  }
-
-  return (
-    <Panel
-      title="重保拦截趋势" subtitle={period ? `重保期间 ${fmtBanPeriod(period.start)} ~ ${fmtBanPeriod(period.end)}` : 'INTERCEPT TREND'}
-      icon={Activity} className="min-h-0 flex-1" bodyClassName="relative flex flex-col gap-1 px-3 py-2"
-      right={(
-        <>
-          {/* 时间维度筛选：近 7 / 15 / 30 天 / 全程（选择后立即生效并本地记忆） */}
-          <select value={win} onChange={(e) => selectWin(e.target.value)}
-            title="时间维度筛选（近 7 / 15 / 30 天 / 整个重保期间；选择后立即生效并记住）"
-            className="cursor-pointer rounded border px-1 py-0.5 text-[11px] outline-none transition hover:brightness-125"
-            style={{ ...toolBtn, background: C.controlBg, colorScheme: 'dark' }}>
-            {INTERCEPT_WINDOWS.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-          </select>
-          {/* 重保时间范围配置（与封禁IP统计卡共享）：未设置时橙色描边提示待配置 */}
-          <button type="button" onClick={toggleCfg} aria-expanded={showCfg}
-            title="配置重保时间范围（与封禁IP统计卡共享，应用后两卡立即按新范围刷新，配置本地记忆）"
-            aria-label="配置重保时间范围"
-            className="flex h-6 w-6 items-center justify-center rounded border transition hover:brightness-125"
-            style={{
-              ...toolBtn,
-              color: showCfg ? C.cyan : (period ? C.paleBlue : C.orange),
-              borderColor: showCfg ? 'rgba(69,184,205,0.55)' : (period ? toolBtn.borderColor : 'rgba(255,169,64,0.55)'),
-            }}>
-            <Settings2 className="h-3.5 w-3.5" />
-          </button>
-          {/* 手动刷新（刷新中图标旋转；轮询静默刷新不打断图表） */}
-          {!demo && (
-            <button type="button" onClick={() => load(true)} title="立即刷新重保拦截趋势"
-              aria-label="立即刷新重保拦截趋势"
-              className="flex h-6 w-6 items-center justify-center rounded border transition hover:brightness-125"
-              style={toolBtn}>
-              <RefreshCw className={`h-3.5 w-3.5 ${spinning ? 'animate-spin' : ''}`} />
-            </button>
-          )}
-        </>
-      )}>
-      {!period ? (
-        // 未配置重保范围：引导态（右上设置按钮橙色描边提示）
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1.5 text-[13px]" style={{ color: C.subText }}>
-          <Activity className="h-5 w-5" style={{ color: C.orange, opacity: 0.8 }} />
-          未设置重保时间范围
-          <span className="text-[11px]">点击右上设置按钮配置，配置后展示重保期间每日拦截趋势</span>
-        </div>
-      ) : loading && !allDays ? (
-        <div className="m-1 min-h-0 flex-1 animate-pulse rounded" style={{ background: 'rgba(96,138,188,0.14)' }} />
-      ) : (allDays || []).length === 0 ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center text-[13px]" style={{ color: C.subText }}>重保期间暂无拦截记录</div>
-      ) : (
-        <>
-          {/* 关键指标摘要（当前窗口口径）：累计 / 日均 / 峰值，与图表峰值/均值标注互相呼应 */}
-          <div className="flex shrink-0 items-center justify-between gap-2 text-[11px]" style={{ color: C.subText }}>
-            <span className="min-w-0 truncate">
-              {win === 'all' ? '重保全程' : `近 ${win} 天`}累计拦截 <b style={{ color: C.orange }}>{fmtInt(stats.sum)}</b> 次
-            </span>
-            <span className="shrink-0">日均 <b style={{ color: C.text }}>{stats.avg}</b> 次</span>
-            {stats.max > 0 && (
-              <span className="min-w-0 shrink-0 truncate" title={stats.maxDate}>
-                峰值 <b style={{ color: C.orange }}>{fmtInt(stats.max)}</b> 次（{stats.maxDate.slice(5)}）
-              </span>
-            )}
-          </div>
-          <div className="min-h-0 flex-1">
-            <ReactECharts option={option} notMerge style={{ height: '100%' }} opts={{ renderer: 'canvas' }} />
-          </div>
-        </>
-      )}
-      {/* 异常降级提示：有快照保留图表 + 黄条提示；无快照红条 + 重试（均不白屏） */}
-      {error && !demo && (
-        <div className="flex shrink-0 items-center gap-1.5 rounded border px-2 py-1 text-[11px]"
-          style={{
-            background: days ? 'rgba(255,169,64,0.10)' : 'rgba(255,77,79,0.10)',
-            borderColor: days ? 'rgba(255,169,64,0.4)' : 'rgba(255,77,79,0.4)',
-            color: days ? C.orange : C.red,
-          }}>
-          <AlertTriangle className="h-3 w-3 shrink-0" />
-          <span className="min-w-0 flex-1 truncate" title={error}>
-            {days ? `接口异常，展示最近快照：${error}` : `数据加载失败：${error}`}
-          </span>
-          <button type="button" onClick={() => load()}
-            className="shrink-0 rounded border px-1.5 transition hover:brightness-125"
-            style={{ borderColor: 'currentColor' }}>重试</button>
-        </div>
-      )}
-      {/* 重保时间范围配置覆盖层（与封禁IP统计卡共用组件；应用/清除后立即刷新两卡） */}
-      {showCfg && (
-        <BanPeriodCfgOverlay draft={cfg} onDraft={setCfg} onApply={applyPeriod} onClear={clearPeriod} onClose={() => setShowCfg(false)} />
-      )}
-    </Panel>
-  )
 }
 
 // ============ ⑦ 底部：告警播报跑马灯（仅超时 / 紧急工单，每 8 秒轮播一条） ============
@@ -3263,9 +2951,9 @@ function buildDemoBans(tickets) {
     byIp.set(r.ip, cur)
   })
   // 最新在前（与后端下钻封禁记录集按最新记录 id 降序一致）；
-  // 附 hit_num（该 IP 拦截/命中次数，0~5000 确定性随机）：大屏「封禁IP统计」卡演示拦截次数用
+  // 附 ban_count（该 IP 封禁条数）：大屏封禁统计演示数据用
   return [...byIp.values()]
-    .map(({ latest, count }) => ({ ...latest, ban_count: count, hit_num: between(0, 5000) }))
+    .map(({ latest, count }) => ({ ...latest, ban_count: count }))
     .sort((a, b) => b.id - a.id)
 }
 
@@ -3427,8 +3115,7 @@ export default function TicketMonitorScreen() {
   )
   const [refreshing, setRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState(null)
-  // 重保设备数据共享配置（右栏两卡共用）：重保时间范围 + 刷新节奏。
-  // 「封禁IP统计」与「重保拦截趋势」任一卡配置/切换，两卡同步按新参数刷新；本地记忆。
+  // 封禁IP统计卡的重保时间范围 + 刷新节奏（本地记忆）。
   const [banPeriod, setBanPeriod] = useState(readBanPeriod)
   const [banRefreshMs, setBanRefreshMs] = useState(readBanRefreshMs)
   // KPI 迷你趋势采样（本屏观测最近 24 次）
@@ -3478,8 +3165,8 @@ export default function TicketMonitorScreen() {
     try { window.localStorage.setItem(REFRESH_KEY, String(v)) } catch { /* 忽略存储异常 */ }
   }
 
-  // 重保时间范围 / 封禁数据刷新节奏：右栏两卡共享状态的持久化（读写均经此，
-  // 组件内不再直接操作 localStorage，保证任一卡配置两卡同步）
+  // 重保时间范围 / 封禁数据刷新节奏：封禁IP统计卡配置的持久化（读写均经此，
+  // 组件内不再直接操作 localStorage）
   const applyBanPeriod = useCallback((next) => {
     setBanPeriod(next)
     try {
@@ -3978,9 +3665,9 @@ export default function TicketMonitorScreen() {
           <div className="flex w-[470px] shrink-0 flex-col gap-3">
             {/* ② 工单趋势分析（点击数据点下钻该时段工单） */}
             <TrendChart trend={data?.trend} onDrill={openDrill} />
-            {/* ③ 分布统计（严重度×状态 ↔ 来源平台统计：8s 自动轮播、悬停暂停、
-                点击图表段下钻对应口径工单列表；图表配置与数据展示口径沿用原实现） */}
-            <DistPanel severityStatus={data?.severity_status} platformStats={data?.platform_stats} onDrill={openDrill} />
+            {/* ③ 分布统计（严重度×状态：点击图表段下钻对应口径工单列表；
+                来源平台统计已拆分为右栏独立卡片） */}
+            <DistPanel severityStatus={data?.severity_status} onDrill={openDrill} />
           </div>
 
           {/* 中央栏（视觉焦点） */}
@@ -4001,16 +3688,14 @@ export default function TicketMonitorScreen() {
 
           {/* 右栏 */}
           <div className="flex w-[470px] shrink-0 flex-col gap-3">
-            {/* ⑤ 重保拦截趋势（重保期间每日拦截次数折线：时间维度筛选近 7/15/30 天/全程、
-                峰值/均值关键节点标注；重保范围与刷新节奏和下方封禁IP统计卡共享，任一卡配置
-                两卡同步；独立轮询实时更新，接口异常保留快照降级展示） */}
-            <InterceptTrendPanel demo={isDemo} period={banPeriod} onPeriod={applyBanPeriod}
-              refreshMs={banRefreshMs} demoBans={drillBans} />
-            {/* ⑥ 封禁IP统计（原右上卡整体迁移至右下，数据与交互保持不变：总封禁IP = 安博通
-                黑名单实时全量；重保期间 = 可配置时间范围内产生；卡片独立轮询 + 手动刷新，
+            {/* ⑤ 封禁IP统计（仅保留封禁数量：总封禁IP = 安博通黑名单实时全量；
+                重保期间 = 可配置时间范围内产生；卡片独立轮询 + 手动刷新，
                 接口异常保留快照降级展示） */}
             <BanPanel demo={isDemo} demoTotal={data?.ban_stats?.total} demoBans={drillBans}
               period={banPeriod} onPeriod={applyBanPeriod} refreshMs={banRefreshMs} onRefreshMs={selectBanRefreshMs} />
+            {/* ⑥ 来源平台统计（从工单分布统计拆出的独立卡片：平台 × 状态构成，
+                柱端标注平台工单总量；点击图表段下钻对应平台/状态工单） */}
+            <PlatformPanel platformStats={data?.platform_stats} onDrill={openDrill} />
           </div>
         </div>
 

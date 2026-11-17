@@ -8,9 +8,12 @@ from app.database import Base
 class BanHitStat(Base):
     """黑名单条目命中（拦截）累计：按 blist 去重，一个条目一行。
 
-    大屏封禁统计每次刷新时以设备侧实时黑名单合并增量：hit_num 单调递增取
-    差值累计；解封后重新封禁（设备计数清零重计）按新一轮全量计入；条目从
-    设备消失（解封/到期）不删除本表记录，保证「封禁数量 / 拦截次数」只增不减。
+    大屏封禁统计每次刷新时以设备侧实时黑名单合并增量：首次观测到的 hit_num
+    仅作为基线（可能含封禁前历史值，不计入累计），此后单调递增取差值累计；
+    解封后重新封禁（设备计数清零重计）按新一轮全量计入；条目从设备消失
+    （解封/到期）不删除本表记录，保证「封禁数量 / 拦截次数」只增不减。
+    注意：2026-11-09 首次全量导入时按旧口径写入的设备历史基线仍保留在
+    hit_total 中，属于一次性历史数据。
     """
 
     __tablename__ = "ban_hit_stats"
@@ -18,7 +21,7 @@ class BanHitStat(Base):
     id = Column(Integer, primary_key=True, index=True)
     # 黑名单条目（IP / 域名，与设备 blist 字段同口径）
     blist = Column(String(253), nullable=False, unique=True, index=True)
-    # 累计命中（拦截）次数：历轮设备 hit_num 之和，只增不减。
+    # 累计命中（拦截）次数：平台首次观测后各轮设备 hit_num 增量之和，只增不减。
     # 用 BigInteger：高频拦截 IP 的累计值可超 int4 上限（21.4 亿），
     # 实测已有条目逼近该值导致同步 UPDATE 报 integer out of range
     hit_total = Column(BigInteger, nullable=False, default=0)

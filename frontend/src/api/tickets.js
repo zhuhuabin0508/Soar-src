@@ -59,19 +59,15 @@ export const ticketApi = {
     return request(`/tickets/monitor${_qs(params)}`)
   },
   advanceTicket: (id, body) => request(`/tickets/${id}/advance`, { method: 'POST', body }),
-  // 封禁IP统计（大屏「封禁IP统计」卡独立轮询，历史累计口径：解封/到期不回退）：
-  // 累计封禁条目（去重 blist）总数 + 全量拦截（命中 hit_num）累计次数总和
-  // + 重保时间范围内产生的封禁条目数与拦截次数。
+  // 封禁IP统计（大屏「封禁IP统计」卡独立轮询，数量与设备当前黑名单对齐）：
+  // total = 设备当前黑名单条目总数；period_count = 当前条目中 effect_time 落在
+  // 重保范围内的数量。
+  // 接口同时返回命中累计字段（total_hit_count / period_hit_count），当前卡片不展示。
   // periodStart/periodEnd 为 datetime-local 值（YYYY-MM-DDTHH:mm）；两者须同时传或
   // 同时不传（不传时 period_count / period_hit_count 为 null）。
   // 设备接口异常时后端仍返回 200 + ok=false + error，前端据此降级展示。
   getBanLiveStats: (periodStart, periodEnd) =>
     request(`/tickets/monitor/ban-live${_qs({ period_start: periodStart || undefined, period_end: periodEnd || undefined })}`),
-  // 重保期间每日拦截次数趋势（大屏右上「重保拦截趋势」卡独立轮询）：按日分桶统计
-  // 重保时间范围内产生条目的命中次数（逐日求和 = ban-live 的 period_hit_count）。
-  // periodStart/periodEnd 为 datetime-local 值，两者须同时传（未设置范围时前端不发请求）。
-  getBanInterceptTrend: (periodStart, periodEnd) =>
-    request(`/tickets/monitor/ban-intercept-trend${_qs({ period_start: periodStart || undefined, period_end: periodEnd || undefined })}`),
   // 执行当前节点设备动作（如安博通阻断器封禁/解封）：body={action_id, params, field_values}
   executeDeviceAction: (id, body) => request(`/tickets/${id}/device-actions/execute`, { method: 'POST', body }),
   // 设备动作异步执行：失败重试（复用同一执行记录，不重复生成动作槽位）
