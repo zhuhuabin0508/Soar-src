@@ -100,6 +100,7 @@ export default function TicketCenter() {
   const canEdit = hasPermission('ticket', 'edit')
   const canDelete = hasPermission('ticket', 'delete')
   const canPause = hasPermission('ticket', 'pause')
+  const canExport = hasPermission('ticket', 'export')
   const canMonitor = hasPermission('ticket_monitor', 'view')
   const navigate = useNavigate()
   const location = useLocation()
@@ -912,10 +913,12 @@ export default function TicketCenter() {
             <Button variant="secondary" size="sm" onClick={load} title="刷新工单列表">
               <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
             </Button>
-            <Button variant="secondary" size="sm" onClick={handleExport} disabled={exporting || loading}
-              title="按当前视图与筛选条件导出 CSV（UTF-8 BOM，Excel 可直接打开）">
-              <Download className="mr-1 h-3.5 w-3.5" />{exporting ? '导出中' : '导出'}
-            </Button>
+            {canExport && (
+              <Button variant="secondary" size="sm" onClick={handleExport} disabled={exporting || loading}
+                title="按当前视图与筛选条件导出 CSV（UTF-8 BOM，Excel 可直接打开）">
+                <Download className="mr-1 h-3.5 w-3.5" />{exporting ? '导出中' : '导出'}
+              </Button>
+            )}
             {canEdit && (
               <Button variant="primary" size="sm" onClick={openCreate}>
                 <Plus className="mr-1 h-3.5 w-3.5" />发起工单

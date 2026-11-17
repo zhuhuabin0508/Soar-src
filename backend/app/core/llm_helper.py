@@ -224,6 +224,9 @@ def create_llm_from_config(
         kwargs["seed"] = seed
     if base_url:
         kwargs["base_url"] = normalize_openai_base_url(base_url)
+    # 同步/异步客户端都要显式注入，否则 ChatOpenAI 会用默认 httpx.AsyncClient
+    # (trust_env=True) 读取容器 HTTP_PROXY，导致 IP 型 base_url 的异步调用
+    # （流式对话 / ainvoke）被绕到宿主机代理，代理断开即全部失败。
     kwargs["http_client"] = _no_proxy_http_client(base_url, http_timeout)
     try:
         kwargs["http_async_client"] = _no_proxy_async_client(base_url, http_timeout)
