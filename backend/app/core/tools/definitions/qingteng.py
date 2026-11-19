@@ -169,4 +169,17 @@ QINGTENG_TOOLS: list[dict[str, Any]] = [
         "security",
         ["青藤", "导出", "qingteng_export_all"],
     ),
+    _qingteng_tool(
+        "qingteng_search_component",
+        "青藤云：按组件关键字（如 redis）检索主机清单，返回主机、命中证据（应用/安装包/进程/数据库/服务/端口）与版本；"
+        "已做词边界与排除词清洗，不命中 redisson/redis-cli 等干扰项。结果为疑似存在该组件，不代表存在漏洞。",
+        [
+            {"name": "device", "type": "String", "required": False, "description": "设备标识，默认 gongwuyun", "default": "gongwuyun"},
+            {"name": "keyword", "type": "String", "required": True, "description": "组件关键字，如 redis / nginx / openjdk"},
+            {"name": "port", "type": "Integer", "required": False, "description": "只保留该端口在监听的主机，如 6379"},
+            {"name": "limit", "type": "Integer", "required": False, "description": "返回主机数上限，默认 20", "default": 20},
+        ],
+        "security",
+        ["青藤", "组件检索", "资产", "qingteng_search_component"],
+    ),
 ]

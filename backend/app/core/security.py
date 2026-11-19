@@ -1490,7 +1490,14 @@ def run_lightweight_migrations(engine) -> None:
         ensure_columns(
             engine,
             "govcloud_import_batches",
-            {"import_mode": "VARCHAR(16) DEFAULT 'full'"},
+            {
+                "import_mode": "VARCHAR(16) DEFAULT 'full'",
+                # 异步同步进度（青藤组件同步）：历史批次视为已完成
+                "status": "VARCHAR(16) NOT NULL DEFAULT 'success'",
+                "phase": "VARCHAR(32) NOT NULL DEFAULT ''",
+                "percent": "INTEGER NOT NULL DEFAULT 100",
+                "stats": "JSONB NOT NULL DEFAULT '{}'::jsonb",
+            },
         )
         # tickets 表新增阶段2 列：节点停留超时提醒（到达时间/提醒进度）+ 归档标记
         ensure_columns(

@@ -320,3 +320,35 @@ async def qingteng_export_all(device: str = "gongwuyun", resource: str = "host",
             break
     return {"ok": True, "count": len(results), "device": find_device(device).get("name"),
             "resource": resource, "data": results}
+
+
+async def qingteng_search_component(device: str = "gongwuyun", keyword: str = "",
+                                    port: Optional[int] = None, limit: int = 20):
+    """按组件关键字检索主机清单（如 redis），返回主机、命中证据与版本摘要。
+
+    返回结构：summary / hosts（含 evidence/version/confidence）/ warnings / has_more。
+    结果已按词边界与排除词清洗，不会命中 redisson、redis-cli 等干扰项。
+    """
+    from types import SimpleNamespace
+
+    from app.core.qingteng_component_search import search_components
+
+    try:
+        dev = find_device(device)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    device_obj = SimpleNamespace(
+        id=f"env:{dev.get('device_id') or dev.get('name')}",
+        name=dev.get("name") or "",
+        api_url=dev.get("base_url") or "",
+        username=dev.get("username") or "",
+        password=dev.get("password") or "",
+        timeout=dev.get("timeout") or 30,
+        verify_tls=bool(dev.get("verify_ssl", False)),
+    )
+    try:
+        return await asyncio.to_thread(
+            search_components, device_obj, keyword, port, limit,
+        )
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Boxes, CheckCircle2, FileSpreadsheet, Loader2, RefreshCw, Search, Server, Network, Globe, Cpu,
-  Upload, Download, X, ShieldOff, Shield, Monitor, AlertTriangle,
+  Upload, Download, X, ShieldOff, Shield, Monitor, AlertTriangle, ChevronRight, Package,
 } from 'lucide-react'
 import { govCloudApi } from '../api/govcloud'
 import { toast } from '../store/toastStore'
@@ -25,6 +25,7 @@ const SOURCE_ICONS = {
   itsm_ops: Globe,
   intranet_mapping: Network,
   qingteng_host: Server,
+  qingteng_component: Package,
   jiaotu_yunsuo: Shield,
   tianqing_endpoint: Monitor,
 }
@@ -213,6 +214,247 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
   )
 }
 
+const RESTART_LABELS = { 0: '未知', 1: '无需重启', 2: '重启服务', 3: '重启系统' }
+
+function severityBadgeTone(code) {
+  if (code >= 4) return 'danger'
+  if (code === 3) return 'warning'
+  if (code === 2) return 'info'
+  return 'neutral'
+}
+
+// 单条命中证据：漏洞/补丁检测给出的版本比对、POC 结果与修复建议
+function CveHitCard({ hit }) {
+  const versions = (hit.check_details || [])
+    .map((d) => {
+      if (!d) return ''
+      const name = d.name || d.pm || d.package || ''
+      const current = d.version || d.currentVersion || ''
+      const fixed = d.fixedVersion || d.fixVersion || ''
+      return `${name}${current ? ` ${current}` : ''}${fixed ? ` → ${fixed}` : ''}`.trim()
+    })
+    .filter(Boolean)
+  const pocText = (hit.poc_check_results || [])
+    .map((r) => (typeof r === 'string' ? r : r?.result || r?.msg || ''))
+    .filter(Boolean)
+    .join('\n')
+  const facts = [
+    ['检测方式', hit.check_type || '—'],
+    ['影响应用', (hit.apps || []).join('、') || hit.app_version || '—'],
+    ['版本信息', versions.join('；') || '—'],
+    ['CVSS', hit.cvss_score != null && hit.cvss_score !== '' ? String(hit.cvss_score) : '—'],
+    ['EXP/POC', `${hit.has_exp ? '有 EXP' : '无 EXP'} / ${hit.has_poc ? '有 POC' : '无 POC'}`],
+    ['属性', [hit.kernel && '内核', hit.remote && '远程', hit.local_escalation && '本地提权'].filter(Boolean).join('、') || '—'],
+    ['重启影响', RESTART_LABELS[hit.restart_opts] || '—'],
+    ['补丁/KB', hit.kb_num || hit.bullet_id || '—'],
+    ['首次检测', hit.first_check_time || '—'],
+  ]
+  return (
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={severityBadgeTone(Number(hit.severity_code) || 0)}>{hit.severity || '未知'}</Badge>
+        <Badge variant="neutral">{hit.source_label}</Badge>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={hit.vul_name}>
+          {hit.vul_name}
+        </span>
+      </div>
+      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        {facts.map(([key, value]) => (
+          <div key={key} className="flex min-w-0 gap-1.5">
+            <dt className="shrink-0 text-muted-foreground">{key}</dt>
+            <dd className="min-w-0 flex-1 break-words text-foreground">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {(hit.check_info || pocText) && (
+        <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-[11px] text-muted-foreground">
+          {hit.check_info || pocText}
+        </pre>
+      )}
+      {(hit.remed_description || hit.remed_desc || hit.remed_cmd) && (
+        <div className="mt-2 text-xs text-muted-foreground">
+          <span className="text-foreground">修复建议：</span>
+          {hit.remed_description || hit.remed_desc || hit.remed_cmd}
+        </div>
+      )}
+      {hit.install_package && (
+        <div className="mt-1 break-all text-[11px] text-muted-foreground">安装包：{hit.install_package}</div>
+      )}
+    </div>
+  )
+}
+
+// CVE 影响面：按 CVE 实时查询青藤命中主机，并展开每台主机的命中证据
+function CveImpactModal({ open, deviceId, deviceName, onClose }) {
+  const [cve, setCve] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [expanded, setExpanded] = useState({})
+
+  useEffect(() => {
+    if (!open) {
+      setCve('')
+      setData(null)
+      setError('')
+      setExpanded({})
+      setLoading(false)
+    }
+  }, [open])
+
+  async function runQuery(force = false) {
+    const value = cve.trim().toUpperCase()
+    if (!value) {
+      setError('请输入 CVE 编号')
+      return
+    }
+    if (!deviceId) {
+      setError('当前数据表未关联青藤设备')
+      return
+    }
+    setLoading(true)
+    setError('')
+    setData(null)
+    setExpanded({})
+    try {
+      const res = await govCloudApi.cveHosts({ deviceId, cve: value, refresh: force })
+      setData(res)
+    } catch (err) {
+      setError(err.message || '查询失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function submit(e) {
+    e.preventDefault()
+    runQuery(false)
+  }
+
+  function toggle(key) {
+    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`CVE 影响面${deviceName ? ` · ${deviceName}` : ''}`}
+      size="xl"
+      footer={<Button variant="secondary" onClick={onClose}>关闭</Button>}
+    >
+      <form onSubmit={submit} className="flex items-center gap-2">
+        <input
+          className={inputCls}
+          placeholder="输入 CVE 编号，如 CVE-2024-21762"
+          value={cve}
+          onChange={(e) => setCve(e.target.value)}
+          autoFocus
+        />
+        <Button type="submit" variant="primary" disabled={loading}>
+          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+          查询
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => runQuery(true)}
+          disabled={loading || !cve.trim()}
+          title="忽略 10 分钟缓存，重新拉取青藤漏洞/补丁索引"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+          刷新索引
+        </Button>
+      </form>
+      <p className="text-xs text-muted-foreground">
+        命中关系来自青藤漏洞检测与补丁检测结果，索引缓存 10 分钟；进程/组件清单不含 CVE，不参与判定。
+      </p>
+      {loading && (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-muted-foreground">正在构建风险索引并匹配主机，首次查询可能需要几十秒…</p>
+          <LoadingState rows={4} cols={3} />
+        </div>
+      )}
+      {error && (
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+      {data && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-mono text-sm font-semibold text-foreground">{data.cve}</span>
+            <span>
+              影响主机 <b className="text-foreground">{data.summary?.host_count || 0}</b> 台
+            </span>
+            <span>
+              命中记录 <b className="text-foreground">{data.summary?.hit_count || 0}</b> 条
+            </span>
+            <span>索引构建 {data.built_at || '—'}</span>
+          </div>
+          {!data.covered && (
+            <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+              青藤漏洞库/补丁库未收录该 CVE，或匹配字段缺失，暂无命中主机。
+            </div>
+          )}
+          {data.warnings?.length > 0 && (
+            <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+              {data.warnings.join('；')}
+            </div>
+          )}
+          {data.covered && data.hosts?.length === 0 && (
+            <EmptyState
+              title="暂无命中主机"
+              description="该 CVE 在青藤规则库中存在，但当前没有主机命中记录。"
+            />
+          )}
+          <div className="flex flex-col gap-2">
+            {data.hosts?.map((host) => {
+              const key = host.agent_id || host.host_ip
+              const openHost = !!expanded[key]
+              const maxSeverity = Math.max(0, ...(host.hits || []).map((h) => Number(h.severity_code) || 0))
+              return (
+                <div key={key} className="overflow-hidden rounded-lg border border-border">
+                  <button
+                    type="button"
+                    onClick={() => toggle(key)}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition hover:bg-muted/40"
+                  >
+                    <ChevronRight
+                      className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${openHost ? 'rotate-90' : ''}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-sm font-medium text-foreground">{host.host_ip || '—'}</span>
+                        <span className="truncate text-xs text-muted-foreground">{host.host_name || host.remark || ''}</span>
+                        {Number(host.online_status) === 0 && <Badge variant="neutral">离线</Badge>}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                        <span>{host.biz_group || '未分组'}</span>
+                        {host.owner && <span>负责人 {host.owner}</span>}
+                        {host.location && <span>{host.location}</span>}
+                      </div>
+                    </div>
+                    <Badge variant={severityBadgeTone(maxSeverity)}>{host.hit_count} 条命中</Badge>
+                  </button>
+                  {openHost && (
+                    <div className="flex flex-col gap-2 border-t border-border bg-muted/20 p-3">
+                      {(host.hits || []).map((hit, idx) => (
+                        <CveHitCard key={`${hit.source}-${hit.vul_id}-${idx}`} hit={hit} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </Modal>
+  )
+}
+
 export default function GovCloudAssets() {
   const canView = hasPermission('asset_discovery', 'view')
   const canEdit = hasPermission('asset_discovery', 'edit')
@@ -231,9 +473,14 @@ export default function GovCloudAssets() {
   const [importPhase, setImportPhase] = useState('')
   // 青藤主机 API 同步中（登录青藤平台 → 分页拉取 linux/win 主机 → 入库）
   const [syncing, setSyncing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState(null)
+  // 组件同步轮询开关：页面卸载后停止继续请求
+  const syncPollRef = useRef(false)
+  useEffect(() => () => { syncPollRef.current = false }, [])
   const [exporting, setExporting] = useState(false)
   const [detail, setDetail] = useState(null)
   const [detailOpen, setDetailOpen] = useState(false)
+  const [cveOpen, setCveOpen] = useState(false)
   const [listColumns, setListColumns] = useState([])
   // 来源元数据加载标记（仅用于骨架屏展示）
   const [metaLoading, setMetaLoading] = useState(true)
@@ -252,6 +499,8 @@ export default function GovCloudAssets() {
   const sourceEnabled = Boolean(currentGroup?.enabled && tables.length)
   // 青藤来源：数据来自设备管理配置的青藤平台 API 同步（不支持 Excel 导入）
   const isQingteng = currentGroup?.code === 'qingteng_host'
+  const isQingtengComponent = currentGroup?.code === 'qingteng_component'
+  const isQingtengApi = isQingteng || isQingtengComponent
 
   // 对齐状态统计 + 资产总量（从当前来源数据表派生，供指标条与头部计数展示）
   const consStats = useMemo(() => {
@@ -324,7 +573,9 @@ export default function GovCloudAssets() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (pageOverride) => {
+    // 点击事件会传入 event，只有显式数字才覆盖页码
+    const targetPage = Number.isInteger(pageOverride) ? pageOverride : page
     if (!canView || !sourceEnabled || !currentTable?.code) {
       setLoading(false)
       setItems([])
@@ -337,7 +588,7 @@ export default function GovCloudAssets() {
     try {
       const type = currentTable.code
       const [list, c, sum] = await Promise.all([
-        govCloudApi.list({ resource_type: type, keyword, page, page_size: pageSize }),
+        govCloudApi.list({ resource_type: type, keyword, page: targetPage, page_size: pageSize }),
         govCloudApi.consistency(type),
         govCloudApi.summary(),
       ])
@@ -401,7 +652,7 @@ export default function GovCloudAssets() {
       }
       setImportOpen(false)
       setPage(1)
-      await load()
+      await load(1)
     } catch (e) {
       toast.error(e.message || '导入失败')
     } finally {
@@ -442,11 +693,62 @@ export default function GovCloudAssets() {
       failItems.forEach((r) => toast.error(`${r.device_name} 同步失败：${r.error || '未知错误'}`))
       if (!results.length) toast.success('同步完成')
       setPage(1)
-      await load()
+      await load(1)
     } catch (e) {
       toast.error(e.message || '同步失败')
     } finally {
       setSyncing(false)
+    }
+  }
+
+  // 青藤组件异步同步：创建批次后轮询进度（phase/percent），完成后刷新列表
+  async function handleComponentSync() {
+    const deviceIds = currentTable?.device_id ? [currentTable.device_id] : []
+    setSyncing(true)
+    setSyncProgress({ status: 'pending', phase: '派发任务', percent: 0 })
+    syncPollRef.current = true
+    try {
+      const result = await govCloudApi.syncQingtengComponents({ deviceIds })
+      const batches = result?.batches || []
+      if (!batches.length) throw new Error('未创建同步批次')
+      const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
+      const deadline = Date.now() + 60 * 60 * 1000
+      let final = null
+      while (syncPollRef.current && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        if (!syncPollRef.current) break
+        const statuses = await Promise.all(
+          batches.map((b) => govCloudApi.componentSyncStatus({ batchId: b.batch_id })),
+        )
+        const running = statuses.find((s) => s.status === 'running') || statuses[0]
+        setSyncProgress(running)
+        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
+          final = statuses
+          break
+        }
+      }
+      if (!final) {
+        toast.error('组件同步耗时较长，请稍后刷新查看结果')
+        return
+      }
+      final.forEach((s) => {
+        const name = nameByBatch.get(s.id) || s.resource_type
+        if (s.status === 'failed') {
+          toast.error(`${name} 组件同步失败：${s.note || '未知错误'}`)
+        } else {
+          toast.success(
+            `${name} 组件同步${s.status === 'partial' ? '部分完成' : '完成'}：拉取 ${s.excel_rows} 行 / 库内 ${s.live_count} 条`,
+          )
+        }
+      })
+      setPage(1)
+      await load(1)
+    } catch (e) {
+      toast.error(e.message || '组件同步失败')
+    } finally {
+      syncPollRef.current = false
+      setSyncing(false)
+      setSyncProgress(null)
     }
   }
 
@@ -484,7 +786,7 @@ export default function GovCloudAssets() {
             </span>
           )}
           <span className="hidden text-xs text-muted-foreground xl:inline">
-            发现来源同级展示，综合运管平台每周全量爬取，青藤主机按设备 API 同步
+            发现来源同级展示，综合运管平台每周全量爬取，青藤主机/组件按设备 API 同步
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -492,6 +794,18 @@ export default function GovCloudAssets() {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </Button>
+          {canView && sourceEnabled && isQingteng && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setCveOpen(true)}
+              disabled={!currentTable?.device_id}
+              title="按 CVE 实时查询青藤命中的主机与命中证据"
+            >
+              <Search className="h-3.5 w-3.5" />
+              CVE 影响面
+            </Button>
+          )}
           {canView && sourceEnabled && (
             <Button
               variant="secondary"
@@ -504,16 +818,22 @@ export default function GovCloudAssets() {
               {exporting ? '导出中' : `导出${currentTable?.excel_name || ' CSV'}`}
             </Button>
           )}
-          {canEdit && sourceEnabled && isQingteng ? (
+          {canEdit && sourceEnabled && (isQingteng || isQingtengComponent) ? (
             <Button
               variant="primary"
               size="sm"
               disabled={syncing || loading || importing || !currentTable}
-              onClick={handleSync}
-              title="登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库"
+              onClick={isQingtengComponent ? handleComponentSync : handleSync}
+              title={
+                isQingtengComponent
+                  ? '异步同步该青藤设备的组件清单（安装包 / 软件应用 / 数据库 / Jar 包 / Web 框架）'
+                  : '登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库'
+              }
             >
               {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-              {syncing ? '同步中' : `同步${currentTable?.excel_name || '青藤主机'}`}
+              {syncing
+                ? (isQingtengComponent && syncProgress?.percent != null ? `同步中 ${syncProgress.percent}%` : '同步中')
+                : isQingtengComponent ? '同步组件' : `同步${currentTable?.excel_name || '青藤主机'}`}
             </Button>
           ) : canEdit && sourceEnabled ? (
             <Button
@@ -632,7 +952,9 @@ export default function GovCloudAssets() {
                         <div className="flex min-w-0 items-center gap-2">
                           {isQingteng
                             ? <Server className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
-                            : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
+                            : isQingtengComponent
+                              ? <Package className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
+                              : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
                           <span className={`truncate text-sm font-medium ${on ? 'text-primary' : 'text-foreground'}`}>
                             {t.excel_name || t.label}
                           </span>
@@ -650,6 +972,11 @@ export default function GovCloudAssets() {
                       {isQingteng && (
                         <div className="mt-1 text-xs text-muted-foreground">
                           API 同步 · linux / win 主机
+                        </div>
+                      )}
+                      {isQingtengComponent && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          API 同步 · 组件清单
                         </div>
                       )}
                     </button>
@@ -672,8 +999,8 @@ export default function GovCloudAssets() {
                     </div>
                     {cons.last_batch && (
                       <div className="mt-1 text-xs tabular-nums text-muted-foreground">
-                        {isQingteng ? '最近同步' : '最近导入'} {cons.last_batch.filename} ·
-                        {isQingteng ? ' 拉取' : ' Excel'} {(cons.excel_rows ?? 0).toLocaleString()} 行 ·
+                        {isQingtengApi ? '最近同步' : '最近导入'} {cons.last_batch.filename} ·
+                        {isQingtengApi ? ' 拉取' : ' Excel'} {(cons.excel_rows ?? 0).toLocaleString()} 行 ·
                         唯一 ID {(cons.unique_source_ids ?? 0).toLocaleString()} · 库内 {(cons.live_count ?? 0).toLocaleString()} ·
                         {fmtTime(cons.last_batch.created_at)}
                         {cons.last_batch.note ? ` · ${cons.last_batch.note}` : ''}
@@ -761,20 +1088,26 @@ export default function GovCloudAssets() {
               ) : items.length === 0 ? (
                 <div className="min-h-0 flex-1 overflow-auto">
                 <EmptyState
-                  icon={isQingteng ? Server : FileSpreadsheet}
+                  icon={isQingteng ? Server : isQingtengComponent ? Package : FileSpreadsheet}
                   title={keyword ? '未找到匹配的资产' : `${currentTable?.excel_name || '当前表'}暂无数据`}
                   description={
                     keyword
                       ? '调整关键词或清除筛选条件后再试'
                       : isQingteng
                         ? (canEdit ? '点击同步从青藤平台拉取主机清单' : '等待管理员从青藤平台同步主机清单')
-                        : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
+                        : isQingtengComponent
+                          ? (canEdit ? '点击同步从青藤平台拉取组件清单' : '等待管理员从青藤平台同步组件清单')
+                          : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
                   }
                   bordered
                   action={
                     keyword ? (
                       <Button variant="secondary" size="sm" onClick={() => { setKeyword(''); setPage(1) }}>
                         清除筛选
+                      </Button>
+                    ) : canEdit && isQingtengComponent ? (
+                      <Button variant="primary" size="sm" disabled={syncing} onClick={handleComponentSync}>
+                        <RefreshCw className="h-3.5 w-3.5" /> 同步青藤组件
                       </Button>
                     ) : canEdit && isQingteng ? (
                       <Button variant="primary" size="sm" disabled={syncing} onClick={handleSync}>
@@ -878,6 +1211,13 @@ export default function GovCloudAssets() {
           </dl>
         )}
       </Drawer>
+
+      <CveImpactModal
+        open={cveOpen}
+        deviceId={currentTable?.device_id}
+        deviceName={currentTable?.label || currentTable?.excel_name}
+        onClose={() => setCveOpen(false)}
+      />
     </div>
   )
 }

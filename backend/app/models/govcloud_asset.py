@@ -29,6 +29,11 @@ class GovCloudImportBatch(Base):
     consistent = Column(Integer, nullable=False, default=0)
     duration_ms = Column(Integer, nullable=False, default=0)
     import_mode = Column(String(16), nullable=False, default="full")
+    # 异步同步进度：历史批次视为已完成（success/100）
+    status = Column(String(16), nullable=False, default="success")
+    phase = Column(String(32), nullable=False, default="")
+    percent = Column(Integer, nullable=False, default=100)
+    stats = Column(JSONB, nullable=False, default=dict)
     note = Column(Text, default="")
     created_by = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=beijing_now, index=True)
@@ -49,6 +54,10 @@ class GovCloudImportBatch(Base):
             "consistent": bool(self.consistent),
             "duration_ms": self.duration_ms,
             "import_mode": self.import_mode or "full",
+            "status": self.status or "success",
+            "phase": self.phase or "",
+            "percent": int(self.percent if self.percent is not None else 100),
+            "stats": self.stats or {},
             "note": self.note or "",
             "created_by": self.created_by,
             "created_at": to_beijing_iso(self.created_at),

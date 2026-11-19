@@ -1537,6 +1537,42 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["block_ip_on_firewall"] = block_ip_on_firewall
     except ImportError:  # pragma: no cover
         logger.debug("firewall 模块未安装，工具命名空间不注入 block_ip_on_firewall")
+    # 青藤万相直连能力注入：沙箱禁止 import，登录签名依赖 hashlib/ssl/http.client，
+    # 均在 app.tools.qingteng_tools 内实现；工具代码只传业务参数。
+    # 设备凭据走 QINGTENG_DEVICES 环境变量，工具代码与日志均不接触明文口令。
+    try:
+        from app.tools.qingteng_tools import (
+            qingteng_assets,
+            qingteng_baseline,
+            qingteng_detect,
+            qingteng_export_all,
+            qingteng_login,
+            qingteng_microseg,
+            qingteng_post,
+            qingteng_query,
+            qingteng_risk,
+            qingteng_search_component,
+            qingteng_system_audit,
+            qingteng_vul_check,
+        )
+
+        for _fn in (
+            qingteng_login,
+            qingteng_query,
+            qingteng_post,
+            qingteng_assets,
+            qingteng_detect,
+            qingteng_risk,
+            qingteng_baseline,
+            qingteng_system_audit,
+            qingteng_vul_check,
+            qingteng_microseg,
+            qingteng_export_all,
+            qingteng_search_component,
+        ):
+            namespace[_fn.__name__] = _fn
+    except ImportError:  # pragma: no cover
+        logger.debug("qingteng_tools 未安装，工具命名空间不注入青藤函数")
     # 设备动作执行注入：execute_device_action_by_id 按动作 ID 调用设备 API
     # （智能体 execute_device_action 工具使用）。通过 partial 绑定 agent_id/user_id
     # 审计作用域（DeviceCallLog source='agent'），工具代码无需显式传递。

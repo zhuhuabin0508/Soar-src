@@ -33,6 +33,8 @@ from app.core.govcloud_schema import (
     skip_excel_header,
 )
 from app.core.qingteng_asset_sync import get_qingteng_devices, sync_device_hosts
+from app.core.qingteng_component_search import search_components
+from app.core.qingteng_cve import query_cve_hosts
 from app.core.timezone import beijing_now
 from app.database import get_db
 from app.dependencies import require_permission
@@ -44,7 +46,15 @@ from app.models.qingteng_host import (
     QINGTENG_HOST_FIELDS,
     QINGTENG_LIST_FIELDS,
 )
+from app.models.qingteng_component import (
+    COMPONENT_SOURCES,
+    QingtengComponentAsset,
+    QINGTENG_COMPONENT_FIELD_LABELS,
+    QINGTENG_COMPONENT_FIELDS,
+    QINGTENG_COMPONENT_LIST_FIELDS,
+)
 from app.models.user import User
+from app.tasks.qingteng_component_tasks import sync_qingteng_components
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +113,25 @@ RESOURCE_TYPES = {
             "agent_id", "biz_group", "serial_number", "charge_name", "remark",
         ),
     },
+    # 青藤组件：同样按设备维度生成 "qingteng_component:<设备ID>" 数据表卡片
+    "qingteng_component": {
+        "label": "青藤组件",
+        "excel_name": "青藤组件资产",
+        "source_group": "qingteng_component",
+        "filename_hints": (),
+        "search_fields": (
+            "name", "name_norm", "version", "display_ip", "hostname",
+            "agent_id", "path", "component_type", "qingteng_device_name",
+        ),
+    },
 }
 
 # 青藤主机模型注册（数据表卡片由设备列表动态派生，见 meta/summary）
 RESOURCE_MODELS["qingteng_host"] = QingtengHostAsset
+RESOURCE_MODELS["qingteng_component"] = QingtengComponentAsset
+
+# 支持 "<类型>:<设备ID>" 后缀的青藤资源类型
+QINGTENG_DEVICE_TYPES = ("qingteng_host", "qingteng_component")
 
 SOURCE_GROUPS = {
     "itsm_ops": {
@@ -129,6 +154,13 @@ SOURCE_GROUPS = {
         "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
         "sort_order": 3,
         "description": "登录设备管理中配置的青藤平台（支持多台），API 拉取 linux / win 主机清单入库",
+    },
+    "qingteng_component": {
+        "label": "青藤组件资产发现",
+        "index": "1.2.1",
+        "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
+        "sort_order": 3,
+        "description": "按青藤设备同步安装包 / 软件应用 / 数据库 / Jar 包 / Web 框架清单，支撑 CVE 版本匹配",
     },
     "jiaotu_yunsuo": {
         "label": "椒图云锁主机资产发现",
@@ -202,7 +234,8 @@ def _row_cells(
 
 
 def _resolve_type(resource_type: str) -> tuple[str, dict, int | None]:
-    """解析资源类型：支持青藤的设备维度 ``qingteng_host:<设备ID>``。
+    """解析资源类型：支持青藤的设备维度 ``qingteng_host:<设备ID>`` /
+    ``qingteng_component:<设备ID>``。
 
     返回 (基础类型, 类型元数据, 设备 ID)。青藤之外的多余后缀视为非法。
     """
@@ -211,10 +244,13 @@ def _resolve_type(resource_type: str) -> tuple[str, dict, int | None]:
     if not meta:
         raise HTTPException(status_code=400, detail="不支持的资源类型")
     if ":" in (resource_type or ""):
-        if base != "qingteng_host":
+        if base not in QINGTENG_DEVICE_TYPES:
             raise HTTPException(status_code=400, detail="该资源类型不支持设备维度参数")
         if not dev or not dev.isdigit():
-            raise HTTPException(status_code=400, detail="青藤资源类型格式应为 qingteng_host:<设备ID>")
+            raise HTTPException(
+                status_code=400,
+                detail=f"青藤资源类型格式应为 {base}:<设备ID>",
+            )
         return base, meta, int(dev)
     return base, meta, None
 
@@ -232,7 +268,7 @@ def _model(resource_type: str):
 
 def _device_filter(model, base: str, device_id: int | None):
     """青藤模型按设备维度过滤（None 表示全部设备）。其它类型返回 None。"""
-    if base == "qingteng_host" and device_id is not None:
+    if base in QINGTENG_DEVICE_TYPES and device_id is not None:
         return model.qingteng_device_id == device_id
     return None
 
@@ -242,10 +278,20 @@ def _qt_columns() -> list[dict]:
     return [{"key": k, "label": QINGTENG_FIELD_LABELS.get(k, k)} for k in QINGTENG_LIST_FIELDS]
 
 
+def _qt_component_columns() -> list[dict]:
+    """青藤组件列表页展示列。"""
+    return [
+        {"key": k, "label": QINGTENG_COMPONENT_FIELD_LABELS.get(k, k)}
+        for k in QINGTENG_COMPONENT_LIST_FIELDS
+    ]
+
+
 def _columns(resource_type: str) -> list[dict]:
     base, _, _ = _resolve_type(resource_type)
     if base == "qingteng_host":
         return _qt_columns()
+    if base == "qingteng_component":
+        return _qt_component_columns()
     cols = []
     for key in RESOURCE_EXCEL_FIELDS[base]:
         cols.append({"key": key, "label": FIELD_LABELS.get(key, key)})
@@ -425,12 +471,50 @@ def _type_payload(code: str, meta: dict, device: Device | None = None) -> dict:
     }
 
 
-def _qingteng_table_payloads(db: Session) -> list[dict]:
+def _qingteng_table_payloads(
+    db: Session,
+    base: str = "qingteng_host",
+    devices: list[Device] | None = None,
+) -> list[dict]:
     """青藤数据表卡片：每台已启用的青藤设备一张（多青藤零配置纳管）。"""
-    return [
-        _type_payload("qingteng_host", RESOURCE_TYPES["qingteng_host"], device=dev)
-        for dev in get_qingteng_devices(db)
-    ]
+    meta = RESOURCE_TYPES[base]
+    devices = devices if devices is not None else get_qingteng_devices(db)
+    return [_type_payload(base, meta, device=dev) for dev in devices]
+
+
+def _qingteng_group_tables(db: Session, gcode: str, devices: list[Device]) -> list[dict]:
+    """青藤分组下按设备统计的数据表卡片（主机/组件共用）。"""
+    model = RESOURCE_MODELS[gcode]
+    columns = _qt_columns() if gcode == "qingteng_host" else _qt_component_columns()
+    tables = []
+    for dev in devices:
+        code = f"{gcode}:{dev.id}"
+        live = int(
+            db.query(func.count(model.id))
+            .filter(model.qingteng_device_id == dev.id)
+            .scalar() or 0
+        )
+        last_batch = (
+            db.query(GovCloudImportBatch)
+            .filter(GovCloudImportBatch.resource_type == code)
+            .order_by(GovCloudImportBatch.id.desc())
+            .first()
+        )
+        unique_ids = last_batch.unique_source_ids if last_batch else 0
+        consistent = (live == unique_ids and (last_batch.skipped == 0 if last_batch else True))
+        if last_batch is None:
+            consistent = live == 0
+        tables.append({
+            "code": code,
+            "label": dev.name,
+            "excel_name": dev.name,
+            "excel_columns": columns,
+            "total": live,
+            "consistent": consistent,
+            "last_batch": last_batch.to_dict() if last_batch else None,
+            "device_id": dev.id,
+        })
+    return tables
 
 
 @router.get("/meta")
@@ -438,17 +522,22 @@ def govcloud_meta(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
 ) -> dict:
-    qingteng_tables = _qingteng_table_payloads(db)
+    qingteng_devices = get_qingteng_devices(db)
+    qingteng_host_tables = _qingteng_table_payloads(db, "qingteng_host", qingteng_devices)
+    qingteng_component_tables = _qingteng_table_payloads(db, "qingteng_component", qingteng_devices)
     types = [
         _type_payload(code, meta)
         for code, meta in RESOURCE_TYPES.items()
-        if code != "qingteng_host"
+        if code not in QINGTENG_DEVICE_TYPES
     ]
-    types.extend(qingteng_tables)
+    types.extend(qingteng_host_tables)
+    types.extend(qingteng_component_tables)
     groups = []
     for gcode, gmeta in SOURCE_GROUPS.items():
         if gcode == "qingteng_host":
-            tables, enabled = qingteng_tables, bool(qingteng_tables)
+            tables, enabled = qingteng_host_tables, bool(qingteng_host_tables)
+        elif gcode == "qingteng_component":
+            tables, enabled = qingteng_component_tables, bool(qingteng_component_tables)
         else:
             tables = [t for t in types if t["source_group"] == gcode]
             enabled = bool(gmeta.get("enabled", True))
@@ -465,7 +554,11 @@ def govcloud_meta(
     return {
         "types": types,
         "groups": groups,
-        "field_labels": {**FIELD_LABELS, **QINGTENG_FIELD_LABELS},
+        "field_labels": {
+            **FIELD_LABELS,
+            **QINGTENG_FIELD_LABELS,
+            **QINGTENG_COMPONENT_FIELD_LABELS,
+        },
     }
 
 
@@ -478,35 +571,9 @@ def govcloud_summary(
     qingteng_devices = get_qingteng_devices(db)
     for gcode, gmeta in SOURCE_GROUPS.items():
         tables = []
-        if gcode == "qingteng_host":
-            # 每台青藤设备一张数据表卡片：总数/一致性按设备维度统计
-            for dev in qingteng_devices:
-                code = f"qingteng_host:{dev.id}"
-                live = int(
-                    db.query(func.count(QingtengHostAsset.id))
-                    .filter(QingtengHostAsset.qingteng_device_id == dev.id)
-                    .scalar() or 0
-                )
-                last_batch = (
-                    db.query(GovCloudImportBatch)
-                    .filter(GovCloudImportBatch.resource_type == code)
-                    .order_by(GovCloudImportBatch.id.desc())
-                    .first()
-                )
-                unique_ids = last_batch.unique_source_ids if last_batch else 0
-                consistent = (live == unique_ids and (last_batch.skipped == 0 if last_batch else True))
-                if last_batch is None:
-                    consistent = live == 0
-                tables.append({
-                    "code": code,
-                    "label": dev.name,
-                    "excel_name": dev.name,
-                    "excel_columns": _qt_columns(),
-                    "total": live,
-                    "consistent": consistent,
-                    "last_batch": last_batch.to_dict() if last_batch else None,
-                    "device_id": dev.id,
-                })
+        if gcode in QINGTENG_DEVICE_TYPES:
+            # 每台青藤设备一张数据表卡片（主机 / 组件）：总数/一致性按设备维度统计
+            tables = _qingteng_group_tables(db, gcode, qingteng_devices)
             groups.append({
                 "code": gcode,
                 "label": gmeta["label"],
@@ -518,7 +585,7 @@ def govcloud_summary(
             })
             continue
         for code, meta in RESOURCE_TYPES.items():
-            if meta.get("source_group") != gcode or code == "qingteng_host":
+            if meta.get("source_group") != gcode or code in QINGTENG_DEVICE_TYPES:
                 continue
             model = RESOURCE_MODELS[code]
             live = int(db.query(func.count(model.id)).scalar() or 0)
@@ -614,6 +681,14 @@ def export_govcloud_assets(
     if base == "qingteng_host":
         fields = list(QINGTENG_HOST_FIELDS)
         labels = QINGTENG_FIELD_LABELS
+        extra_col = "extra"
+        tail = QT_EXPORT_TAIL_COLUMNS
+    elif base == "qingteng_component":
+        # 组件来源导出中文标签（source_type_label 为模型属性）
+        fields = ["source_type_label"] + [
+            f for f in QINGTENG_COMPONENT_FIELDS if f != "source_type"
+        ]
+        labels = QINGTENG_COMPONENT_FIELD_LABELS
         extra_col = "extra"
         tail = QT_EXPORT_TAIL_COLUMNS
     else:
@@ -808,10 +883,10 @@ def import_govcloud_excel(
         raise HTTPException(status_code=413, detail="文件超过 200MB")
 
     rtype = infer_resource_type(filename, resource_type)
-    if rtype == "qingteng_host":
+    if rtype.split(":", 1)[0] in QINGTENG_DEVICE_TYPES:
         raise HTTPException(
             status_code=400,
-            detail="青藤主机来自 API 同步（设备管理配置青藤设备后一键拉取），不支持 Excel 导入",
+            detail="青藤主机/组件来自 API 同步（设备管理配置青藤设备后一键拉取），不支持 Excel 导入",
         )
     model = _model(rtype)
     started = time.perf_counter()
@@ -1018,3 +1093,306 @@ def sync_qingteng_hosts(
         "ok_count": ok_count,
         "results": results,
     }
+
+
+class QingtengComponentSyncRequest(BaseModel):
+    """青藤组件同步请求：不传 device_ids 同步全部已启用的青藤设备。"""
+    device_ids: list[int] = Field(default_factory=list, description="青藤设备 ID 列表（空 = 全部）")
+    mode: str = Field("full", description="full 全量对齐 / incremental 增量 upsert 不删除")
+    sources: list[str] = Field(
+        default_factory=list,
+        description="组件来源：pkg/app/dbinfo/jar_pkg/webframe（空 = 全部）",
+    )
+
+
+@router.post("/qingteng/component-sync", status_code=202)
+def sync_qingteng_components_endpoint(
+    payload: QingtengComponentSyncRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "edit")),
+) -> dict:
+    """异步触发青藤组件清单同步（Celery 任务 + 批次进度轮询）。
+
+    - 先为每台设备创建 pending 批次，再派发 ``sync_qingteng_components``；
+    - 同一设备已有 pending/running 批次时拒绝重复派发；
+    - 派发失败（Redis/Celery 未就绪）返回 503 并把批次置为 failed。
+    """
+    devices = get_qingteng_devices(db)
+    if payload.device_ids:
+        wanted = set(payload.device_ids)
+        devices = [d for d in devices if d.id in wanted]
+        missing = wanted - {d.id for d in devices}
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"青藤设备不存在或未启用: {sorted(missing)}，请到「设备管理」检查",
+            )
+    if not devices:
+        raise HTTPException(
+            status_code=400,
+            detail="没有已启用的青藤设备：请先在「设备管理」配置并启用青藤设备",
+        )
+
+    import_mode = payload.mode if payload.mode in ("full", "incremental") else "full"
+    invalid = [s for s in payload.sources if s not in COMPONENT_SOURCES]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的组件来源: {invalid}，可选: {list(COMPONENT_SOURCES)}",
+        )
+    sources = list(dict.fromkeys(payload.sources)) or list(COMPONENT_SOURCES)
+
+    device_ids = [d.id for d in devices]
+    active_types = [f"qingteng_component:{did}" for did in device_ids]
+    active = (
+        db.query(GovCloudImportBatch)
+        .filter(
+            GovCloudImportBatch.resource_type.in_(active_types),
+            GovCloudImportBatch.status.in_(("pending", "running")),
+        )
+        .all()
+    )
+    if active:
+        names = ", ".join(sorted({b.resource_type.split(":", 1)[-1] for b in active}))
+        raise HTTPException(
+            status_code=409,
+            detail=f"设备 {names} 已有组件同步任务在运行，请等待完成后再试",
+        )
+
+    now = beijing_now()
+    batches: list[tuple[Device, GovCloudImportBatch]] = []
+    for dev in devices:
+        batch = GovCloudImportBatch(
+            resource_type=f"qingteng_component:{dev.id}",
+            filename=f"API同步组件:{dev.name}"[:300],
+            file_size=0,
+            excel_rows=0,
+            unique_source_ids=0,
+            inserted=0,
+            updated=0,
+            deleted=0,
+            skipped=0,
+            live_count=0,
+            consistent=0,
+            import_mode=import_mode,
+            status="pending",
+            phase="等待执行",
+            percent=0,
+            stats={},
+            note="",
+            created_by=user.id,
+            created_at=now,
+        )
+        db.add(batch)
+        db.flush()
+        batches.append((dev, batch))
+    db.commit()
+
+    task_id = ""
+    try:
+        task = sync_qingteng_components.delay(
+            device_ids, user.id, import_mode, sources,
+        )
+        task_id = str(getattr(task, "id", "") or "")
+        for _dev, batch in batches:
+            batch.stats = {**(batch.stats or {}), "task_id": task_id}
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("青藤组件同步任务派发失败: %s", exc)
+        for _dev, batch in batches:
+            batch.status = "failed"
+            batch.phase = "派发失败"
+            batch.percent = 100
+            batch.note = f"异步任务派发失败（Redis/Celery 未就绪）: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="组件同步任务派发失败，请确认后台任务服务（Celery worker）已启动",
+        )
+
+    try:
+        log_audit(
+            db,
+            user_id=user.id,
+            username=user.username,
+            action="sync",
+            resource_type="asset_discovery",
+            detail=(
+                f"qingteng components {import_mode} devices={device_ids} "
+                f"sources={','.join(sources)} task={task_id}"
+            ),
+            ip_address=get_client_ip(request) if request else None,
+            result="success",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("同步审计写入失败（忽略）: %s", exc)
+
+    return {
+        "mode": import_mode,
+        "sources": sources,
+        "task_id": task_id,
+        "batches": [
+            {
+                "device_id": dev.id,
+                "device_name": dev.name,
+                "batch_id": batch.id,
+                "status": batch.status,
+            }
+            for dev, batch in batches
+        ],
+    }
+
+
+@router.get("/qingteng/component-sync/status")
+def qingteng_component_sync_status(
+    batch_id: int | None = Query(None, description="批次 ID"),
+    device_id: int | None = Query(None, description="青藤设备 ID（取最近批次）"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
+) -> dict:
+    """查询组件同步批次进度（前端轮询）。"""
+    if batch_id is None and device_id is None:
+        raise HTTPException(status_code=400, detail="batch_id 与 device_id 至少传一个")
+    query = db.query(GovCloudImportBatch)
+    if batch_id is not None:
+        batch = query.filter(GovCloudImportBatch.id == batch_id).first()
+    else:
+        batch = (
+            query.filter(GovCloudImportBatch.resource_type == f"qingteng_component:{device_id}")
+            .order_by(GovCloudImportBatch.id.desc())
+            .first()
+        )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="同步批次不存在")
+    return batch.to_dict()
+
+
+@router.get("/qingteng/cve-hosts")
+def qingteng_cve_hosts(
+    device_id: int = Query(..., description="青藤设备 ID"),
+    cve: str = Query(..., description="CVE 编号，如 CVE-2024-21762"),
+    refresh: bool = Query(False, description="是否强制重建索引"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
+) -> dict:
+    """按 CVE 实时查询青藤中命中的主机及每台主机的命中证据。
+
+    - 索引来自青藤漏洞检测（cves）与补丁检测（ref），缓存 10 分钟；
+    - 主机上下文优先取已同步的主机资产（负责人/机房/资产编号/在线状态）；
+    - 进程与组件清单不含 CVE 字段，不参与命中判定。
+    """
+    device = (
+        db.query(Device)
+        .filter(
+            Device.id == device_id,
+            Device.auth_type == "qingteng",
+            Device.enabled.is_(True),
+        )
+        .first()
+    )
+    if device is None:
+        raise HTTPException(status_code=404, detail="青藤设备不存在或未启用")
+
+    try:
+        result = query_cve_hosts(device, cve, force_refresh=refresh)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("青藤 CVE 查询失败 device=%s(%d) cve=%s err=%s", device.name, device.id, cve, exc)
+        raise HTTPException(status_code=502, detail=f"青藤 CVE 查询失败: {exc}")
+
+    agent_ids = [h.get("agent_id") for h in result.get("hosts", []) if h.get("agent_id")]
+    if agent_ids:
+        records = (
+            db.query(QingtengHostAsset)
+            .filter(
+                QingtengHostAsset.qingteng_device_id == device.id,
+                QingtengHostAsset.agent_id.in_(agent_ids),
+            )
+            .all()
+        )
+        extra = {r.agent_id: r for r in records}
+        for host in result["hosts"]:
+            rec = extra.get(host.get("agent_id"))
+            if rec is None:
+                continue
+            host["owner"] = rec.charge_name or ""
+            host["location"] = rec.host_location or ""
+            host["os_type"] = rec.os_type or ""
+            host["online_status"] = rec.online_status
+            host["agent_status"] = rec.agent_status_label or ""
+            host["last_online_time"] = rec.last_online_time or ""
+            host["host_name"] = host.get("host_name") or rec.hostname or ""
+            host["biz_group"] = host.get("biz_group") or rec.biz_group or ""
+
+    return result
+
+
+@router.get("/qingteng/component-hosts")
+def qingteng_component_hosts(
+    device_id: int = Query(..., description="青藤设备 ID"),
+    keyword: str = Query(..., description="组件关键字，如 redis / nginx / openjdk"),
+    port: int | None = Query(None, description="只保留该端口在监听的主机，如 6379"),
+    limit: int = Query(20, ge=1, le=200, description="返回主机数上限"),
+    refresh: bool = Query(False, description="是否忽略 10 分钟缓存"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
+) -> dict:
+    """按组件关键字检索青藤主机清单，返回主机、命中证据与组件版本。
+
+    - 覆盖软件应用 / 安装包 / 进程 / 数据库 / 服务 / 监听端口六类清单；
+    - 名称经词边界匹配与排除词清洗（redis 不会命中 redisson / redis-cli 等）；
+    - 主机上下文补齐已同步的负责人 / 机房 / 在线状态；
+    - 结果为「疑似存在该组件」，不等于组件存在漏洞。
+    """
+    device = (
+        db.query(Device)
+        .filter(
+            Device.id == device_id,
+            Device.auth_type == "qingteng",
+            Device.enabled.is_(True),
+        )
+        .first()
+    )
+    if device is None:
+        raise HTTPException(status_code=404, detail="青藤设备不存在或未启用")
+
+    try:
+        result = search_components(
+            device, keyword, port=port, limit=limit, force_refresh=refresh,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "青藤组件检索失败 device=%s(%d) keyword=%s err=%s",
+            device.name, device.id, keyword, exc,
+        )
+        raise HTTPException(status_code=502, detail=f"青藤组件检索失败: {exc}")
+
+    agent_ids = [h.get("agent_id") for h in result.get("hosts", []) if h.get("agent_id")]
+    if agent_ids:
+        records = (
+            db.query(QingtengHostAsset)
+            .filter(
+                QingtengHostAsset.qingteng_device_id == device.id,
+                QingtengHostAsset.agent_id.in_(agent_ids),
+            )
+            .all()
+        )
+        extra = {r.agent_id: r for r in records}
+        for host in result["hosts"]:
+            rec = extra.get(host.get("agent_id"))
+            if rec is None:
+                continue
+            host["owner"] = rec.charge_name or ""
+            host["location"] = rec.host_location or ""
+            host["os_type"] = rec.os_type or ""
+            host["online_status"] = rec.online_status
+            host["agent_status"] = rec.agent_status_label or ""
+            host["last_online_time"] = rec.last_online_time or ""
+            host["host_name"] = host.get("host_name") or rec.hostname or ""
+            host["biz_group"] = host.get("biz_group") or rec.biz_group or ""
+
+    return result

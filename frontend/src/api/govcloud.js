@@ -51,6 +51,33 @@ export const govCloudApi = {
     method: 'POST',
     body: JSON.stringify({ device_ids: deviceIds, mode: mode === 'incremental' ? 'incremental' : 'full' }),
   }),
+  // 青藤组件异步同步：返回每台设备的批次 ID，随后轮询 componentSyncStatus
+  syncQingtengComponents: ({ deviceIds = [], mode = 'full', sources = [] } = {}) => request(
+    '/govcloud/qingteng/component-sync',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        device_ids: deviceIds,
+        mode: mode === 'incremental' ? 'incremental' : 'full',
+        sources,
+      }),
+    },
+  ),
+  componentSyncStatus: ({ batchId, deviceId } = {}) => {
+    const qs = new URLSearchParams()
+    if (batchId) qs.set('batch_id', String(batchId))
+    if (deviceId) qs.set('device_id', String(deviceId))
+    return request(`/govcloud/qingteng/component-sync/status?${qs.toString()}`)
+  },
+  // CVE 影响面：按 CVE 实时查询青藤命中的主机与命中证据
+  cveHosts: ({ deviceId, cve, refresh = false }) => {
+    const qs = new URLSearchParams()
+    qs.set('device_id', String(deviceId))
+    qs.set('cve', cve)
+    if (refresh) qs.set('refresh', 'true')
+    // 首次查询需要构建青藤风险索引（拉取漏洞/补丁详情），放宽超时
+    return request(`/govcloud/qingteng/cve-hosts?${qs.toString()}`, { timeoutMs: 180000 })
+  },
   importExcel: (file, resource_type, onProgress, mode = 'full') => new Promise((resolve, reject) => {
     const fd = new FormData()
     fd.append('file', file)
