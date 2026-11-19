@@ -52,6 +52,14 @@ def test_name_matches_word_boundary():
     assert name_matches("jdkzip-utils", "jdk") == (False, "")
 
 
+def test_name_matches_chinese_keyword_falls_back_to_substring():
+    assert name_matches("达梦数据库管理系统", "达梦") == (True, "contains")
+    assert name_matches("达梦", "达梦") == (True, "exact")
+    assert name_matches("Oracle Database", "达梦") == (False, "")
+    # 混合中文 + 英文按子串匹配，不做 ASCII 词边界拆分
+    assert name_matches("东方通TongWeb", "东方通TongWeb") == (True, "exact")
+
+
 def test_clean_version():
     assert clean_version("17.0.9+9-1~deb12u1") == ("17.0.9+9-1~deb12u1", "17.0.9+9-1~deb12u1")
     assert clean_version("1:6.2.7-1") == ("1:6.2.7-1", "6.2.7-1")

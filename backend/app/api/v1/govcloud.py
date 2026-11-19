@@ -9,7 +9,7 @@ import io
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -482,6 +482,19 @@ def _qingteng_table_payloads(
     return [_type_payload(base, meta, device=dev) for dev in devices]
 
 
+def _batch_consistent(live: int, batch: GovCloudImportBatch | None) -> bool:
+    """库内条数是否与批次对齐。
+
+    批次未成功（pending/running/partial/failed）时一律视为未对齐，
+    避免部分同步（失败源保留旧数据）被误判为「已对齐」。
+    """
+    if batch is None:
+        return live == 0
+    if (batch.status or "success").lower() != "success":
+        return False
+    return live == batch.unique_source_ids and batch.skipped == 0
+
+
 def _qingteng_group_tables(db: Session, gcode: str, devices: list[Device]) -> list[dict]:
     """青藤分组下按设备统计的数据表卡片（主机/组件共用）。"""
     model = RESOURCE_MODELS[gcode]
@@ -500,10 +513,7 @@ def _qingteng_group_tables(db: Session, gcode: str, devices: list[Device]) -> li
             .order_by(GovCloudImportBatch.id.desc())
             .first()
         )
-        unique_ids = last_batch.unique_source_ids if last_batch else 0
-        consistent = (live == unique_ids and (last_batch.skipped == 0 if last_batch else True))
-        if last_batch is None:
-            consistent = live == 0
+        consistent = _batch_consistent(live, last_batch)
         tables.append({
             "code": code,
             "label": dev.name,
@@ -595,10 +605,7 @@ def govcloud_summary(
                 .order_by(GovCloudImportBatch.id.desc())
                 .first()
             )
-            unique_ids = last_batch.unique_source_ids if last_batch else 0
-            consistent = (live == unique_ids and (last_batch.skipped == 0 if last_batch else True))
-            if last_batch is None:
-                consistent = live == 0
+            consistent = _batch_consistent(live, last_batch)
             tables.append({
                 "code": code,
                 "label": meta["label"],
@@ -813,6 +820,8 @@ def check_consistency(
                 GovCloudImportBatch.import_mode.is_(None),
                 GovCloudImportBatch.import_mode == "",
             ),
+            # 运行中的批次不计入一致性基准（组件异步同步会先建 pending 批次）
+            GovCloudImportBatch.status.notin_(("pending", "running")),
         )
         .order_by(GovCloudImportBatch.id.desc())
         .first()
@@ -837,7 +846,8 @@ def check_consistency(
                 else "尚未导入过该类型，库内应为空才算一致"
             ),
         }
-    consistent = live == last_full.unique_source_ids and last_full.skipped == 0
+    batch_ok = (last_full.status or "success").lower() == "success"
+    consistent = batch_ok and live == last_full.unique_source_ids and last_full.skipped == 0
     if last_full.consistent != int(consistent) or last_full.live_count != live:
         last_full.consistent = int(consistent)
         last_full.live_count = live
@@ -854,7 +864,11 @@ def check_consistency(
         "message": (
             "与最近一次全量导入一致"
             if consistent
-            else f"与最近一次全量不一致：库内 {live} 条，全量唯一 ID {last_full.unique_source_ids} 条"
+            else (
+                f"最近一次全量为部分完成（{last_full.status}），失败/截断来源保留旧数据，不计为对齐"
+                if not batch_ok
+                else f"与最近一次全量不一致：库内 {live} 条，全量唯一 ID {last_full.unique_source_ids} 条"
+            )
         ),
     }
 
@@ -1145,16 +1159,29 @@ def sync_qingteng_components_endpoint(
 
     device_ids = [d.id for d in devices]
     active_types = [f"qingteng_component:{did}" for did in device_ids]
-    active = (
-        db.query(GovCloudImportBatch)
-        .filter(
-            GovCloudImportBatch.resource_type.in_(active_types),
-            GovCloudImportBatch.status.in_(("pending", "running")),
-        )
-        .all()
+    active_query = db.query(GovCloudImportBatch).filter(
+        GovCloudImportBatch.resource_type.in_(active_types),
+        GovCloudImportBatch.status.in_(("pending", "running")),
     )
+    # 超过 2 小时仍未完成的批次视为失效（worker 被硬杀/漏改状态），允许重新派发
+    stale_before = beijing_now() - timedelta(hours=2)
+    stale = active_query.filter(GovCloudImportBatch.created_at < stale_before).all()
+    if stale:
+        for b in stale:
+            b.status = "failed"
+            b.phase = "超时"
+            b.percent = 100
+            b.note = "同步任务超过 2 小时未完成，已标记失败"
+        db.commit()
+    active = active_query.filter(GovCloudImportBatch.created_at >= stale_before).all()
     if active:
-        names = ", ".join(sorted({b.resource_type.split(":", 1)[-1] for b in active}))
+        busy_ids = {
+            int(b.resource_type.split(":", 1)[-1])
+            for b in active
+            if b.resource_type.split(":", 1)[-1].isdigit()
+        }
+        name_by_id = {d.id: d.name for d in devices}
+        names = "、".join(name_by_id.get(i, str(i)) for i in sorted(busy_ids))
         raise HTTPException(
             status_code=409,
             detail=f"设备 {names} 已有组件同步任务在运行，请等待完成后再试",
@@ -1263,7 +1290,7 @@ def qingteng_component_sync_status(
             .order_by(GovCloudImportBatch.id.desc())
             .first()
         )
-    if batch is None:
+    if batch is None or not (batch.resource_type or "").startswith("qingteng_component:"):
         raise HTTPException(status_code=404, detail="同步批次不存在")
     return batch.to_dict()
 

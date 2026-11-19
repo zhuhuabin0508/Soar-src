@@ -712,7 +712,8 @@ export default function GovCloudAssets() {
       const batches = result?.batches || []
       if (!batches.length) throw new Error('未创建同步批次')
       const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
-      const deadline = Date.now() + 60 * 60 * 1000
+      // 后端任务上限 65 分钟（time_limit=3900s），前端轮询留出余量
+      const deadline = Date.now() + 70 * 60 * 1000
       let final = null
       while (syncPollRef.current && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2000))

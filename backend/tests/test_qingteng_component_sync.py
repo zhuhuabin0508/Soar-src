@@ -19,7 +19,7 @@ import pytest  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 import app.core.qingteng_component_sync as qsync  # noqa: E402
-from app.api.v1.govcloud import _columns, _resolve_type  # noqa: E402
+from app.api.v1.govcloud import _batch_consistent, _columns, _resolve_type  # noqa: E402
 from app.core.qingteng_component_sync import (  # noqa: E402
     _iter_source_rows,
     _norm_version,
@@ -52,6 +52,58 @@ def test_component_columns():
     assert keys[:4] == ["hostname", "display_ip", "os_type", "source_type_label"]
     assert "name" in keys and "version" in keys
     assert any(c["label"] == "组件名" for c in cols)
+
+
+def test_batch_consistent_requires_success_status():
+    assert _batch_consistent(0, None) is True
+    assert _batch_consistent(3, None) is False
+
+    ok = GovCloudImportBatch(status="success", unique_source_ids=3, skipped=0)
+    assert _batch_consistent(3, ok) is True
+    assert _batch_consistent(4, ok) is False
+
+    # 部分完成/运行中/失败均不计为对齐（失败源保留旧数据，库内可能恰好相等）
+    for status in ("partial", "running", "pending", "failed"):
+        assert _batch_consistent(3, GovCloudImportBatch(status=status, unique_source_ids=3, skipped=0)) is False
+
+    skipped = GovCloudImportBatch(status="success", unique_source_ids=3, skipped=1)
+    assert _batch_consistent(3, skipped) is False
+
+
+class _TaskDB:
+    def __init__(self, batch):
+        self.batch = batch
+        self.commits = 0
+        self.rollbacks = 0
+
+    def query(self, model):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self.batch
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+def test_mark_batch_failed_only_touches_unfinished_batches():
+    from app.tasks.qingteng_component_tasks import _mark_batch_failed
+
+    running = _TaskDB(GovCloudImportBatch(status="running"))
+    _mark_batch_failed(running, 1, "boom")
+    assert running.batch.status == "failed"
+    assert running.commits == 1
+
+    success = _TaskDB(GovCloudImportBatch(status="success"))
+    _mark_batch_failed(success, 1, "boom")
+    assert success.batch.status == "success"
+    assert success.commits == 0
 
 
 # ============ source_id / 版本归一化 ============

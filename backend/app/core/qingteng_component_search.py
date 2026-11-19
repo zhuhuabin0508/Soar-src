@@ -130,12 +130,28 @@ def _tokens(text: str) -> list[str]:
 def name_matches(name: str, keyword: str) -> tuple[bool, str]:
     """判断组件名是否命中关键字。
 
+    英文/数字按词边界匹配（redis 不命中 redisson）；中文等非 ASCII
+    关键字没有词边界概念，退化为子串匹配（达梦命中「达梦数据库」）。
+
     Returns:
-        (是否命中, 命中类型 exclusive/``exact``/``prefix``/``contains``)
+        (是否命中, 命中类型 ``exact``/``prefix``/``contains``)
     """
-    tokens = _tokens(name)
-    kw_tokens = _tokens(keyword)
-    if not tokens or not kw_tokens:
+    text = unicodedata.normalize("NFKC", str(name or "")).strip().lower()
+    kw = unicodedata.normalize("NFKC", str(keyword or "")).strip().lower()
+    if not kw:
+        return False, ""
+    # 含中文等非 ASCII 字符的关键字没有词边界，按子串匹配
+    if any(ord(ch) > 127 for ch in kw):
+        if kw not in text:
+            return False, ""
+        return True, "exact" if text == kw else "contains"
+
+    kw_tokens = _tokens(kw)
+    if not kw_tokens:
+        return False, ""
+
+    tokens = _tokens(text)
+    if not tokens:
         return False, ""
     n = len(kw_tokens)
     for i in range(len(tokens) - n + 1):
