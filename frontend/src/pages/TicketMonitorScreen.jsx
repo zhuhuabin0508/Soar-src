@@ -1116,7 +1116,7 @@ const ROW_UNIT = 52        // 单行占位高度 = 48px 行高 + 4px 行间距�
 const LIVE_MAX_ROWS = 100  // 最多渲染行数（防超长 DOM；筛选计数仍展示全量）
 
 // status/onStatus：状态筛选由父组件持有（便于快捷键 1-4 与 URL 参数联动）
-function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
+function LiveList({ latest, tickets, onDrill, status = 'all', onStatus, onTeamsDrill }) {
   const [hovering, setHovering] = useState(false)
   const [viewportH, setViewportH] = useState(0)
   const [speed, setSpeed] = useState(readSpeed)
@@ -1306,6 +1306,16 @@ function LiveList({ latest, tickets, onDrill, status = 'all', onStatus }) {
       alert={(latest || []).some((r) => r.timeout)}
       right={
         <>
+          {/* 提交团队排名「查看全部」：排名卡片已隐藏，入口保留在实时列表工具条 */}
+          {onTeamsDrill && (
+            <button
+              onClick={onTeamsDrill}
+              title="弹窗查看全部团队的排名明细（点击团队行可继续下钻其工单列表）"
+              className="rounded px-2 py-0.5 text-[12px] transition hover:brightness-125"
+              style={{ color: C.cyan, border: '1px solid rgba(69,184,205,0.4)', background: 'rgba(69,184,205,0.08)' }}>
+              查看全部
+            </button>
+          )}
           {/* 工单状态筛选（计数按全量口径，点击即筛选实时列表） */}
           <div className="flex items-center gap-1">
             {LIVE_FILTERS.map((f) => {
@@ -3380,7 +3390,7 @@ export default function TicketMonitorScreen() {
     setDrillStack((s) => (s.some((v) => v.tour) ? [] : s))
   }, [])
 
-  // 值守轮播：每 15s 依次展示 处理中 / 超时预警 / 平台（取量最大平台）/ 提交团队排名
+  // 值守轮播：每 15s 依次展示 处理中 / 超时预警 / 平台（取量最大平台）
   useEffect(() => {
     if (!tourOn) return undefined
     let i = 0
@@ -3403,7 +3413,8 @@ export default function TicketMonitorScreen() {
           subtitle: 'AUTO TOUR · 每 15 秒切换', filters: { platform: top.name },
         })
       }
-      views.push({ kind: 'teams', tour: true, title: '值守轮播 · 提交团队排名', subtitle: 'AUTO TOUR · 每 15 秒切换' })
+      // 提交团队排名模块已隐藏，原轮播视图保留（如需恢复取消注释即可）
+      // views.push({ kind: 'teams', tour: true, title: '值守轮播 · 提交团队排名', subtitle: 'AUTO TOUR · 每 15 秒切换' })
       return views
     }
     const tick = () => {
@@ -3674,13 +3685,15 @@ export default function TicketMonitorScreen() {
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             {/* ④ 处置状态流转图（全部启用流程多泳道：节点/流程标签/统一已解决节点均可点击下钻；右上「查看全部」弹出全部流程状态明细） */}
             <FlowPanel lanes={data?.flow_lanes} completedTotal={kpi?.completed} onDrill={openDrill} />
-            {/* ④ 提交团队工单排名（模板「提交团队」字段聚合；卡片/尾签/查看全部可下钻） */}
-            <TeamRankPanel rows={data?.team_stats} onDrill={openDrill} />
+            {/* ④ 提交团队工单排名已隐藏，腾出的高度由下方实时列表（flex-1）自动补全；
+                原渲染保留（如需恢复取消下方注释即可）
+            <TeamRankPanel rows={data?.team_stats} onDrill={openDrill} /> */}
             {/* ④ 最新工单实时列表（状态筛选 + 自动滚动 + 行点击查看工单详情） */}
             {/* 实时列表行点击 → 工单详情：latest 记录字段精简，按 id 从下钻工单集换完整对象，
                 保证详情页 team/platform/alert_type/SLA 时长等字段完整展示 */}
             <LiveList latest={data?.latest} tickets={drillTickets}
               status={liveStatus} onStatus={setLiveStatus}
+              onTeamsDrill={() => openDrill({ kind: 'teams', title: '提交团队 · 全部团队数据', subtitle: '全部团队工单排名' })}
               onDrill={(v) => openDrill(v.kind === 'detail' && v.ticket
                 ? { ...v, ticket: drillTickets.find((x) => x.id === v.ticket.id) || v.ticket }
                 : v)} />

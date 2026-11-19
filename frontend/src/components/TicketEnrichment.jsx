@@ -232,8 +232,37 @@ function AssetMatchFields({ asset, fallbackIp }) {
   )
 }
 
+// 资产发现可能命中的 IP 类字段 → 展示名。资产匹配按所有 IP 列精确匹配，
+// 命中列未必是展示的「IP 地址」（如青藤主机的 VIP 绑定在 internal_ip），
+// 此处归因命中字段，避免看起来匹配到 IP 不一致的资产。
+const DISCOVERY_IP_FIELD_LABELS = [
+  ['display_ip', '展示 IP'], ['connection_ip', '连接 IP'], ['external_ip', '外部 IP'],
+  ['internal_ip', '内部 IP'], ['proxy_ip', '代理 IP'], ['ip_address', 'IP 地址'],
+  ['floatip_address', '浮动 IP'], ['IP', 'IP'], ['ip', 'IP'], ['弹性IP', '弹性 IP'],
+]
+
+function discoveryIpHitText(asset, targetIp) {
+  const target = String(targetIp || '').trim()
+  if (!target) return null
+  const labels = []
+  const seen = new Set()
+  for (const [key, label] of DISCOVERY_IP_FIELD_LABELS) {
+    const value = String(asset?.[key] ?? '').trim()
+    if (value !== target || seen.has(value)) continue
+    seen.add(value)
+    if (!labels.includes(label)) labels.push(label)
+  }
+  // 内部 IP 始终展示（集群/VIP 场景下它是命中原因）；再标注命中的字段列
+  const internalIp = String(asset?.internal_ip ?? '').trim()
+  if (internalIp) {
+    return labels.length ? `${internalIp}（命中：${labels.join('、')}）` : internalIp
+  }
+  return labels.length ? `命中：${labels.join('、')}` : null
+}
+
 const DISCOVERY_FIELD_LABELS = [
   ['资源类型', 'resource_label'], ['实例名称', 'instance_name'], ['IP 地址', 'ip_address'],
+  ['内部 IP/命中字段', '__ip_hit__'],
   ['浮动 IP', 'floatip_address'], ['网段', 'cidr'], ['所属部门', 'user_department'],
   ['申请部门', 'applicant_department'], ['操作系统', 'operating_system'],
   ['主机状态', 'host_status'], ['资源区域', 'biz_region_name'], ['带宽(M)', 'bandwidth'],
@@ -277,7 +306,9 @@ function DiscoveryMatchFields({ asset, fallbackIp }) {
           ) : null}
           <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs leading-relaxed sm:grid-cols-2">
             {DISCOVERY_FIELD_LABELS.map(([label, key]) => {
-              const raw = m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null)
+              const raw = key === '__ip_hit__'
+                ? discoveryIpHitText(m, asset.asset_ip || fallbackIp)
+                : (m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null))
               const text = fmtAssetVal(raw)
               return (
                 <div key={key} className="flex min-w-0 items-start gap-2">
