@@ -199,7 +199,7 @@ export default function MiddlewareConfig({ value, onChange }) {
         </div>
 
         <div className="rounded-md border border-border bg-muted p-3">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             警告阈值（warn_after）
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -232,11 +232,11 @@ export default function MiddlewareConfig({ value, onChange }) {
 
         <div className="rounded-md border border-border bg-muted p-3">
           <div className="mb-2 flex items-center gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               硬停止阈值（hard_stop_after）
             </span>
             {!guardrails.hard_stop_enabled && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                 需开启「启用硬停止」生效
               </span>
             )}
@@ -269,7 +269,7 @@ export default function MiddlewareConfig({ value, onChange }) {
           </div>
         </div>
 
-        <div className="rounded-md border border-border bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="rounded-md border border-border bg-muted p-2 text-xs leading-relaxed text-muted-foreground">
           <span className="text-muted-foreground">说明：</span>
           <span className="ml-1">block = 阻断本次调用并返回合成错误（不计入迭代预算）；halt = 终止整个 turn 进入 grace call。</span>
         </div>
@@ -317,7 +317,7 @@ export default function MiddlewareConfig({ value, onChange }) {
           />
         </div>
 
-        <div className="rounded-md border border-border bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="rounded-md border border-border bg-muted p-2 text-xs leading-relaxed text-muted-foreground">
           <span className="text-muted-foreground">验证结果：</span>
           <span className="ml-1">approved=放行；needs_clarification=引导 Agent 调 clarify 问用户；blocked=拒绝执行回写错误。</span>
         </div>
@@ -352,11 +352,11 @@ export default function MiddlewareConfig({ value, onChange }) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-foreground">{m.label}</span>
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                         priority={m.priority}
                       </span>
                     </div>
-                    <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{m.desc}</p>
+                    <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{m.desc}</p>
                   </div>
                 </div>
 
@@ -385,10 +385,10 @@ export default function MiddlewareConfig({ value, onChange }) {
         {/* 当前中间件链顺序预览 */}
         {getMiddlewares(value).length > 0 && (
           <div className="rounded-md border border-border bg-card p-2">
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
               执行顺序（按 priority 升序）
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px]">
+            <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
               {[...getMiddlewares(value)]
                 .sort((a, b) => {
                   const pa = BUILTIN_MIDDLEWARES.find((x) => x.name === a?.name)?.priority ?? 100
@@ -409,7 +409,7 @@ export default function MiddlewareConfig({ value, onChange }) {
           </div>
         )}
 
-        <div className="rounded-md border border-border bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="rounded-md border border-border bg-muted p-2 text-xs leading-relaxed text-muted-foreground">
           <span className="text-muted-foreground">钩子点：</span>
           <span className="ml-1">
             before_tool_call / after_tool_call / before_llm_call / after_llm_call；

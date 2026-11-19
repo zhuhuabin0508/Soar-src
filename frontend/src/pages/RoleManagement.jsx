@@ -10,7 +10,7 @@ import { usersApi } from '../api/users'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
 import { Drawer, Modal } from '../components/Dialog'
 import { Section, TextInput } from '../components/property/FormControls'
-import { Badge, StatusBadge, CompactSelect } from '../components/ui'
+import { Badge, StatusBadge, CompactSelect, SearchInput } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
@@ -28,7 +28,7 @@ const LOCAL_MODULE_LABELS = {
   bigscreen: '盾立方W',
   bigscreen2: '盾立方指挥大屏',
   ticket_monitor: '工单监控大屏',
-  open_api: 'API开放平台',
+  open_api: 'API开放',
 }
 
 function mergeModuleDef(modData) {
@@ -74,7 +74,7 @@ const MODULE_GROUPS = [
   {
     key: 'resources',
     label: '资源管理',
-    modules: ['asset_overview', 'asset_list', 'asset_templates', 'asset_discovery', 'ip_library', 'deliverable'],
+    modules: ['asset_overview', 'asset_list', 'asset_templates', 'asset_discovery', 'report', 'ip_library', 'deliverable'],
   },
   {
     key: 'operations',
@@ -104,7 +104,7 @@ const MODULE_GROUPS = [
 ]
 
 // 所有动作列表（用于表头）
-const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'handle', 'pause']
+const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'import', 'publish', 'handle', 'pause']
 
 // 检查是否拥有全部权限
 function hasAllPermissions(permissions, moduleDef) {
@@ -335,11 +335,11 @@ function PermissionMatrixTable({ form, moduleDef, onToggle, onSetModuleAll, onSe
         >
           {isAllChecked ? '✓ 全部权限已开启' : '一键开启全部权限'}
         </button>
-        <span className="text-[11px] text-muted-foreground">|</span>
+        <span className="text-xs text-muted-foreground">|</span>
         <button
           type="button"
           onClick={() => toggleActionAll('view')}
-          className="rounded px-2 py-0.5 text-[11px] text-muted-foreground transition hover:text-foreground"
+          className="rounded px-2 py-0.5 text-xs text-muted-foreground transition hover:text-foreground"
         >
           {isActionAllChecked('view') ? '取消' : '勾选'}全部查看
         </button>
@@ -365,7 +365,7 @@ function PermissionMatrixTable({ form, moduleDef, onToggle, onSetModuleAll, onSe
                   <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
                 )}
                 {group.label}
-                <span className="text-[10px] font-normal text-muted-foreground">
+                <span className="text-xs font-normal text-muted-foreground">
                   已授权 {authorized}/{total} 项
                 </span>
               </button>
@@ -373,7 +373,7 @@ function PermissionMatrixTable({ form, moduleDef, onToggle, onSetModuleAll, onSe
                 <button
                   type="button"
                   onClick={() => setGroupAll(group, !groupAllChecked)}
-                  className="rounded px-2 py-0.5 text-[10px] text-muted-foreground transition hover:bg-secondary hover:text-foreground"
+                  className="rounded px-2 py-0.5 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                 >
                   {groupAllChecked ? '清空本组' : '全选本组'}
                 </button>
@@ -384,9 +384,9 @@ function PermissionMatrixTable({ form, moduleDef, onToggle, onSetModuleAll, onSe
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-border bg-secondary">
-                    <th className="px-3 py-2 text-left text-[11px] font-medium text-muted-foreground">模块</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">模块</th>
                     {actionsInUse.map((action) => (
-                      <th key={action} className="px-2 py-2 text-center text-[11px] font-medium text-muted-foreground">
+                      <th key={action} className="px-2 py-2 text-center text-xs font-medium text-muted-foreground">
                         <button
                           type="button"
                           onClick={() => toggleActionAll(action)}
@@ -408,7 +408,7 @@ function PermissionMatrixTable({ form, moduleDef, onToggle, onSetModuleAll, onSe
                       <tr key={modName} className="border-b border-border last:border-0 hover:bg-secondary">
                         <td className="px-3 py-3 text-xs text-foreground">
                           <div className="font-medium">{moduleLabels[modName] || LOCAL_MODULE_LABELS[modName] || modName}</div>
-                          <div className="text-[10px] text-muted-foreground">{modName}</div>
+                          <div className="text-xs text-muted-foreground">{modName}</div>
                         </td>
                         {actionsInUse.map((action) => {
                           const supported = actions.includes(action)
@@ -743,7 +743,7 @@ function RoleManagement() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">角色管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">角色管理</h1>
           <span className="text-xs text-muted-foreground tabular-nums">共 {rows.length} 个角色</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -763,20 +763,17 @@ function RoleManagement() {
 
         {/* 搜索筛选 */}
         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-4 py-2.5">
-          <div className="relative min-w-[240px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索角色名 / 描述..."
-              className="input-base h-9 pl-9 pr-3"
-            />
-          </div>
+          <SearchInput
+            className="min-w-[240px] flex-1"
+            value={search}
+            onChange={setSearch}
+            placeholder="搜索角色名 / 描述..."
+            onClear={() => setSearch('')}
+          />
           <CompactSelect
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            size="lg"
+            size="sm"
           >
             <option value="">全部类型</option>
             <option value="system">系统内置</option>
@@ -823,7 +820,7 @@ function RoleManagement() {
               return (
                 <div
                   key={r.id}
-                  className={`rounded-lg border bg-card p-5 transition hover:border-primary/40 ${
+                  className={`rounded-lg border bg-card p-4 transition hover:border-primary/40 ${
                     r.is_system ? 'border-warning/30' : 'border-border'
                   }`}
                 >
@@ -843,7 +840,7 @@ function RoleManagement() {
                           {r.name}
                         </button>
                         {r.is_system && (
-                          <Badge variant="warning" className="px-2 py-0.5 text-[10px]">系统内置</Badge>
+                          <Badge variant="warning" className="px-2 py-0.5 text-xs">系统内置</Badge>
                         )}
                       </div>
 
@@ -857,15 +854,15 @@ function RoleManagement() {
                       {/* 权限总览 */}
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         {isFull ? (
-                          <Badge variant="primary" className="text-[11px]">
+                          <Badge variant="primary" className="text-xs">
                             全部权限 · {permCount} 项 / {totalModules} 模块
                           </Badge>
                         ) : (
-                          <Badge variant="neutral" className="text-[11px]">
+                          <Badge variant="neutral" className="text-xs">
                             {permCount} 项权限 · {moduleCount} 个模块
                           </Badge>
                         )}
-                        <Badge variant="neutral" className="text-[11px]">
+                        <Badge variant="neutral" className="text-xs">
                           <Users className="h-3 w-3" />
                           已分配 {r.user_count || 0} 人
                         </Badge>
@@ -880,7 +877,7 @@ function RoleManagement() {
                             return (
                               <span
                                 key={modName}
-                                className="rounded border border-border bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground"
+                                className="rounded border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground"
                                 title={`${moduleLabels[modName] || modName}：${userActions.map((a) => actionLabels[a] || a).join(' / ')}`}
                               >
                                 <span className="text-foreground">{moduleLabels[modName] || modName}</span>
@@ -971,16 +968,13 @@ function RoleManagement() {
         <Section title="权限矩阵" hint="勾选对应模块下的动作，编辑权限会自动勾选查看权限">
           {/* 权限搜索 */}
           <div className="mb-3">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                type="text"
-                value={permSearch}
-                onChange={(e) => setPermSearch(e.target.value)}
-                placeholder="搜索权限模块..."
-                className="input-base h-9 pl-9 pr-3"
-              />
-            </div>
+            <SearchInput
+              className="w-64"
+              value={permSearch}
+              onChange={setPermSearch}
+              placeholder="搜索权限模块..."
+              onClear={() => setPermSearch('')}
+            />
           </div>
 
           <PermissionMatrixTable

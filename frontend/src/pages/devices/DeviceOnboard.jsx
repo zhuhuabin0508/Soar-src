@@ -411,7 +411,7 @@ export default function DeviceOnboard() {
                 <div className={`mt-1.5 whitespace-nowrap text-xs ${active ? 'font-medium text-foreground' : 'text-muted-foreground'}`}>{s.label}</div>
               </div>
               {i < steps.length - 1 && (
-                <div className={`mx-3 h-0.5 flex-1 self-start mt-5 ${i < stepIdx ? 'bg-primary' : 'bg-border'}`} />
+                <div className={`mx-3 h-0.5 flex-1 self-start mt-4 ${i < stepIdx ? 'bg-primary' : 'bg-border'}`} />
               )}
             </div>
           )
@@ -498,7 +498,7 @@ function StepCapability({ caps, onToggle }) {
               key={c.key}
               type="button"
               onClick={() => onToggle(c.key)}
-              className={`relative flex items-start gap-4 rounded-lg border-2 p-5 text-left transition ${
+              className={`relative flex items-start gap-4 rounded-lg border-2 p-4 text-left transition ${
                 selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/50'
               }`}
             >
@@ -517,7 +517,7 @@ function StepCapability({ caps, onToggle }) {
                 <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{c.desc}</span>
                 <span className="mt-3 flex flex-wrap gap-1.5">
                   {c.tags.map((t) => (
-                    <span key={t} className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">{t}</span>
+                    <span key={t} className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{t}</span>
                   ))}
                 </span>
               </span>
@@ -623,7 +623,7 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
       ? `${selectedReceiver.syslog_bind || '0.0.0.0'}:${selectedReceiver.syslog_port}（${(selectedReceiver.syslog_proto || 'udp').toUpperCase()}）`
       : ''
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* 采集配置 */}
       <ConfigSection icon={ScrollText} title="采集配置">
         {/* 采集器选择：现有列表 + 新建选项 */}
@@ -738,7 +738,7 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
                   onBlur={() => setTouched((t) => ({ ...t, bind: true }))}
                   placeholder="0.0.0.0" />
                 {touched.bind && bindError && (
-                  <div className="mt-1 text-[11px] text-destructive">{bindError}</div>
+                  <div className="mt-1 text-xs text-destructive">{bindError}</div>
                 )}
               </div>
               <div>
@@ -747,7 +747,7 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
                   onChange={(e) => onChange({ encoding: e.target.value })} size="lg" block>
                   {ENCODING_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
                 </CompactSelect>
-                <div className="mt-1 text-[11px] text-muted-foreground">设备日志的字符编码，选错会导致中文乱码</div>
+                <div className="mt-1 text-xs text-muted-foreground">设备日志的字符编码，选错会导致中文乱码</div>
               </div>
               <div>
                 <label className={labelCls}>接收器名称</label>
@@ -760,21 +760,21 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
                   onChange={(e) => onChange({ timeCorrect: e.target.value })} size="lg" block>
                   {TIME_CORRECT_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
                 </CompactSelect>
-                <div className="mt-1 text-[11px] text-muted-foreground">设备日志时间存在时区偏差时的校正方式</div>
+                <div className="mt-1 text-xs text-muted-foreground">设备日志时间存在时区偏差时的校正方式</div>
               </div>
               {form.timeCorrect === 'custom' && (
                 <div>
                   <label className={labelCls}>时区偏移（小时）</label>
                   <input type="number" className={inputCls} value={form.tzOffset}
                     onChange={(e) => onChange({ tzOffset: e.target.value })} placeholder="8" />
-                  <div className="mt-1 text-[11px] text-muted-foreground">范围 -12 ~ 14，如东八区填 8</div>
+                  <div className="mt-1 text-xs text-muted-foreground">范围 -12 ~ 14，如东八区填 8</div>
                 </div>
               )}
               <div>
                 <label className={labelCls}>上报异常通知间隔（分钟）</label>
                 <input type="number" className={inputCls} value={form.notifyInterval}
                   onChange={(e) => onChange({ notifyInterval: e.target.value })} placeholder="0" />
-                <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
                   接收器监听中断或解析异常时经通知中心提醒：0=仅首次通知，&gt;0=异常期间每 N 分钟重复提醒
                 </div>
               </div>
@@ -795,16 +795,16 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
               onBlur={() => setTouched((t) => ({ ...t, sourceIp: true }))}
               placeholder="设备发送日志的 IP，如：192.168.1.10" />
             {touched.sourceIp && sourceIpError && (
-              <div className="mt-1 text-[11px] text-destructive">{sourceIpError}</div>
+              <div className="mt-1 text-xs text-destructive">{sourceIpError}</div>
             )}
-            <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
               日志到达后按来源 IP 自动生成数据源条目，请确保与设备实际发送 IP 一致
             </div>
           </div>
           <div>
             <label className={labelCls}>日志发送目标</label>
             <input readOnly className={`${inputCls} cursor-default font-mono read-only:bg-secondary read-only:text-muted-foreground read-only:hover:border-input read-only:focus:border-input read-only:focus:ring-0`} value={target} placeholder="--" />
-            <div className="mt-1 text-[11px] text-muted-foreground">请将设备侧日志发送目标配置为此地址</div>
+            <div className="mt-1 text-xs text-muted-foreground">请将设备侧日志发送目标配置为此地址</div>
           </div>
         </div>
         <div className="text-xs font-medium text-muted-foreground">解析模板</div>
@@ -878,7 +878,7 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
   const [ipTouched, setIpTouched] = useState(false)
   const deviceIpError = validateSingleIP(form.deviceIp, '设备 IP')
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* 连接配置 */}
       <ConfigSection icon={Globe} title="连接配置">
         <div className="grid grid-cols-2 gap-4">
@@ -891,7 +891,7 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
               onBlur={() => setIpTouched(true)}
               placeholder="如：192.168.1.10" />
             {ipTouched && deviceIpError && (
-              <div className="mt-1 text-[11px] text-destructive">{deviceIpError}</div>
+              <div className="mt-1 text-xs text-destructive">{deviceIpError}</div>
             )}
           </div>
           <div>
@@ -907,7 +907,7 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
               <input className={inputCls} value={form.apiPath}
                 onChange={(e) => onChange({ apiPath: e.target.value })} placeholder="API 路径（如 /api）或完整 URL" />
             </div>
-            <div className="mt-1 break-all text-[11px] text-muted-foreground">
+            <div className="mt-1 break-all text-xs text-muted-foreground">
               最终 API 基地址：<span className="font-mono text-foreground">{apiUrl || '--'}</span>
             </div>
           </div>
@@ -1033,7 +1033,7 @@ function StepDone({ done, caps, deviceForm, logForm, strategies }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* 成功横幅 */}
       <div className="flex flex-col items-center py-4">
         <span className="flex h-14 w-14 items-center justify-center rounded-full bg-success/15 text-success">

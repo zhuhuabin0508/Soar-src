@@ -239,7 +239,7 @@ def list_tool_catalog() -> dict:
     }
 
 
-@router.get("/export", dependencies=[Depends(require_permission("tool", "view"))])
+@router.get("/export", dependencies=[Depends(require_permission("tool", "export"))])
 def export_tools(
     ids: str | None = None,
     include_preset: bool = False,
@@ -283,7 +283,7 @@ def export_tools(
     }
 
 
-@router.post("/import", dependencies=[Depends(require_permission("tool", "edit"))])
+@router.post("/import", dependencies=[Depends(require_permission("tool", "import"))])
 def import_tools(
     body: ToolImportRequest,
     db: Session = Depends(get_db),
@@ -457,7 +457,7 @@ def update_tool(
     return to_dict(tool)
 
 
-@router.delete("/{tool_id:int}", dependencies=[Depends(require_permission("tool", "edit"))])
+@router.delete("/{tool_id:int}", dependencies=[Depends(require_permission("tool", "delete"))])
 def delete_tool(
     tool_id: int,
     db: Session = Depends(get_db),
@@ -635,7 +635,7 @@ def _operations_from_spec(spec: dict) -> list[dict]:
     return operations
 
 
-@router.post("/import-openapi")
+@router.post("/import-openapi", dependencies=[Depends(require_permission("tool", "import"))])
 async def import_openapi(body: OpenAPIImportRequest) -> dict:
     """解析 OpenAPI/Swagger JSON（或从 URL 拉取），返回操作列表供前端选择。
 

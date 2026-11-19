@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     BAN_ANALYST_AGENT_ID: int = 0
     WORKFLOW_SYSTEM_USER_ID: int = 0
     WORKFLOW_SOC_AGENT_ID: int = 0
+    # 工单安全分析研判智能体（output_mode=ticket_analyst）；
+    # 0 = 按名称「工单安全分析研判智能体」兜底解析，启动时幂等自动创建
+    TICKET_ANALYST_AGENT_ID: int = 0
 
     # ===== XDR 开放性 OpenAPI（联动码签名调用）=====
     # XDR 平台地址，建议带协议（https://host[:port]）；不带协议时默认 https

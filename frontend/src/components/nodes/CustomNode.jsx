@@ -171,7 +171,7 @@ function BranchHandles({ type, data }) {
           className="absolute right-0 flex items-center"
           style={{ top: `${start + i * maxGap}%`, transform: 'translateY(-50%)', zIndex: 20 }}
         >
-          <span className="mr-1 rounded bg-card px-1 text-[10px] text-foreground">
+          <span className="mr-1 rounded bg-card px-1 text-xs text-foreground">
             {o.label}
           </span>
           <Handle
@@ -188,7 +188,7 @@ function BranchHandles({ type, data }) {
 
 // 节点 hover 工具栏按钮样式
 const toolbarBtnCls =
-  'flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition whitespace-nowrap'
+  'flex items-center gap-1 rounded px-2 py-1 text-xs font-medium transition whitespace-nowrap'
 
 // 未配置警告角标
 function ConfigWarningBadge() {
@@ -407,7 +407,7 @@ function CustomNode({ id, type, data, selected }) {
               <div className="truncate text-sm font-semibold leading-tight">
                 {data?.label || def.label}
               </div>
-              <div className="truncate text-[11px] text-muted-foreground leading-tight">
+              <div className="truncate text-xs text-muted-foreground leading-tight">
                 {type}
                 <span className="ml-1 text-muted-foreground">· 双击改名</span>
               </div>
@@ -417,7 +417,7 @@ function CustomNode({ id, type, data, selected }) {
           {/* 用户自定义描述（若有） */}
           {data?.description && (
             <div
-              className="mt-1.5 truncate text-[11px] italic text-muted-foreground"
+              className="mt-1.5 truncate text-xs italic text-muted-foreground"
               title={data.description}
             >
               {data.description}

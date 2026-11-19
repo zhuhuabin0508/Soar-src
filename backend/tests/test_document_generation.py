@@ -110,7 +110,7 @@ def test_save_document_rejects_empty_content():
 
 
 def test_save_document_rejects_invalid_format():
-    result = save_document_as_agent_file("正文", "报告", fmt="pptx")
+    result = save_document_as_agent_file("正文", "报告", fmt="zip")
     assert "error" in result
     assert "仅支持 docx / xlsx / md" in result["error"]
 
@@ -211,6 +211,71 @@ def test_save_document_docx(fake_file_store):
     assert normal.element.rPr.rFonts.get(qn("w:eastAsia")) == "微软雅黑"
 
 
+def test_save_document_docx_gb9704(fake_file_store):
+    """options.style='gb9704' 按党政机关公文格式排版。"""
+    import docx as docx_lib
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+
+    tmp_path, fake = fake_file_store
+    content = (
+        "为贯彻落实工作要求，现就有关事项通知如下。\n\n"
+        "一、总体要求\n\n"
+        "（一）指导思想\n\n"
+        "坚持问题导向，压实主体责任。\n\n"
+        "1.健全工作机制\n\n"
+        "（1）明确责任人\n\n"
+        "| 单位 | 联系人 |\n| --- | --- |\n| 甲单位 | 张三 |\n"
+    )
+    result = save_document_as_agent_file(
+        content,
+        "通知",
+        fmt="docx",
+        options={"style": "gb9704", "title": "关于开展安全生产大检查的通知"},
+    )
+    assert result.get("ok") is True
+
+    doc = docx_lib.Document(str(tmp_path / fake.rec.stored_name))
+
+    def east_asian(paragraph):
+        return paragraph.runs[0]._element.rPr.rFonts.get(qn("w:eastAsia"))
+
+    paragraphs = [p for p in doc.paragraphs if p.text.strip()]
+    title = paragraphs[0]
+    assert title.text == "关于开展安全生产大检查的通知"
+    assert title.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert title.runs[0].font.size.pt == 22
+    assert east_asian(title) == "方正小标宋简体"
+
+    fonts = {p.text: east_asian(p) for p in paragraphs[1:]}
+    assert fonts["一、总体要求"] == "黑体"
+    assert fonts["（一）指导思想"] == "楷体_GB2312"
+    assert fonts["1.健全工作机制"] == "仿宋_GB2312"
+    assert fonts["（1）明确责任人"] == "仿宋_GB2312"
+    body = next(p for p in paragraphs if p.text == "坚持问题导向，压实主体责任。")
+    assert east_asian(body) == "仿宋_GB2312"
+    assert body.runs[0].font.size.pt == 16
+
+    # 全文固定行距 28 磅（560 缇）、首行缩进 2 字符（标题为 0）
+    for paragraph in paragraphs:
+        spacing = paragraph._p.pPr.spacing
+        assert spacing.get(qn("w:line")) == "560"
+        assert spacing.get(qn("w:lineRule")) == "exact"
+        indent = paragraph._p.pPr.ind.get(qn("w:firstLineChars"))
+        assert indent == ("0" if paragraph is title else "200")
+
+    normal = doc.styles["Normal"]
+    assert normal.font.name == "仿宋_GB2312"
+    assert normal.element.rPr.rFonts.get(qn("w:eastAsia")) == "仿宋_GB2312"
+
+    # 表格内文字：三号以外的 12pt 仿宋，单倍行距
+    assert len(doc.tables) == 1
+    cell_run = doc.tables[0].cell(1, 1).paragraphs[0].runs[0]
+    assert cell_run.text == "张三"
+    assert cell_run.font.size.pt == 12
+    assert cell_run._element.rPr.rFonts.get(qn("w:eastAsia")) == "仿宋_GB2312"
+
+
 def test_save_document_xlsx(fake_file_store):
     from openpyxl import load_workbook
 
@@ -268,6 +333,68 @@ def test_save_document_format_alias_and_default(fake_file_store):
     assert r1["file_type"] == "md"
     r2 = save_document_as_agent_file("正文二", "默认")
     assert r2["file_type"] == "docx"
+    # 常见别名归一（ppt -> pptx、htm -> html）
+    r3 = save_document_as_agent_file("正文三", "演示", fmt="ppt")
+    assert r3["file_type"] == "pptx"
+    r4 = save_document_as_agent_file("正文四", "网页", fmt="htm")
+    assert r4["file_type"] == "html"
+
+
+def test_save_document_extension_overrides_format(fake_file_store):
+    """文件名显式扩展名优先：模型传错 format 时不产出错误类型文件。"""
+    tmp_path, fake = fake_file_store
+    result = save_document_as_agent_file("正文", "汇报.pptx", fmt="docx")
+    assert result.get("ok") is True
+    assert result["file_type"] == "pptx"
+    assert result["file_name"] == "汇报.pptx"
+
+
+def test_save_document_pptx(fake_file_store):
+    from pptx import Presentation
+
+    tmp_path, fake = fake_file_store
+    result = save_document_as_agent_file(SAMPLE, "周会汇报", fmt="pptx", options={"title": "安全周报"})
+    assert result.get("ok") is True
+    assert result["file_type"] == "pptx"
+    prs = Presentation(str(tmp_path / fake.rec.stored_name))
+    # 封面 + 「风险清单」标题页 + 表格页 + 列表页 + 代码页
+    assert len(prs.slides) >= 3
+    texts = [
+        run.text
+        for slide in prs.slides
+        for shape in slide.shapes
+        if shape.has_text_frame
+        for para in shape.text_frame.paragraphs
+        for run in para.runs
+    ]
+    assert "安全周报" in texts
+    assert "风险清单" in texts
+    # 表格转为 PPT 表格（表头 + 2 行数据）
+    tables = [shape.table for slide in prs.slides for shape in slide.shapes if shape.has_table]
+    assert tables and len(tables[0].rows) == 3
+    assert tables[0].cell(0, 0).text == "IP"
+
+
+def test_save_document_pdf(fake_file_store):
+    tmp_path, fake = fake_file_store
+    result = save_document_as_agent_file(SAMPLE, "风险报告", fmt="pdf", options={"title": "风险周报"})
+    assert result.get("ok") is True
+    assert result["file_type"] == "pdf"
+    data = (tmp_path / fake.rec.stored_name).read_bytes()
+    assert data.startswith(b"%PDF") and len(data) > 1000
+
+
+def test_save_document_html(fake_file_store):
+    tmp_path, fake = fake_file_store
+    result = save_document_as_agent_file(SAMPLE, "分析报告", fmt="html")
+    assert result.get("ok") is True
+    assert result["file_type"] == "html"
+    html = (tmp_path / fake.rec.stored_name).read_text(encoding="utf-8")
+    assert "<h1>" in html and "<table>" in html
+    assert "<strong>重点</strong>" in html
+    # 单文件：不引用任何外部资源
+    assert "http://" not in html and "https://" not in html
+    assert "<script" not in html
 
 
 def test_coerce_cell():

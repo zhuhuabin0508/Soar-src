@@ -105,7 +105,7 @@ function InfoTip({ text, placement = 'top', className = '' }) {
       {/* 圆圈感叹号图标 */}
       <span
         ref={triggerRef}
-        className="flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-border text-[9px] font-bold text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+        className="flex h-3.5 w-3.5 cursor-help items-center justify-center rounded-full border border-border text-xs font-bold text-muted-foreground transition-colors hover:border-primary hover:text-primary"
         tabIndex={0}
         role="img"
         aria-label="提示"

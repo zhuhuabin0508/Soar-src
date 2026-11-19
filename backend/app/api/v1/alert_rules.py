@@ -545,7 +545,7 @@ def list_templates(current_user=Depends(require_permission("alert_rule", "view")
 def export_rules(
     ids: str = "",
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("alert_rule", "view")),
+    current_user=Depends(require_permission("alert_rule", "export")),
 ):
     """导出规则（JSON 配置，含草稿）。
 
@@ -571,7 +571,7 @@ def export_rules(
 
 
 @router.post("/import")
-def import_rules(payload: ImportBody, request: Request, db: Session = Depends(get_db), current_user=Depends(require_permission("alert_rule", "edit"))):
+def import_rules(payload: ImportBody, request: Request, db: Session = Depends(get_db), current_user=Depends(require_permission("alert_rule", "import"))):
     """批量导入规则（JSON；重名跳过；校验同新建）。"""
     imported, skipped, errors = [], [], []
     seen_names = set()

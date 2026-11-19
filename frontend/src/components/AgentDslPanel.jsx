@@ -109,11 +109,11 @@ export default function AgentDslPanel({ agentId, form, onApplyDsl, canEdit = tru
           </button>
         </div>
       </div>
-      <p className="mb-2 text-[11px] text-muted-foreground">
+      <p className="mb-2 text-xs text-muted-foreground">
         可导出为 JSON 做版本管理；粘贴 DSL 后点「应用到表单」或「另存为新智能体」。
       </p>
       <AutoGrowTextarea
-        className={`${textareaCls} min-h-[200px] font-mono text-[11px]`}
+        className={`${textareaCls} min-h-[200px] font-mono text-xs`}
         value={dslText}
         onChange={(e) => setDslText(e.target.value)}
         readOnly={!canEdit}

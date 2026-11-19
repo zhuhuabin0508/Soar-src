@@ -4804,6 +4804,11 @@ def requery_ticket_enrichment_api(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(ticket)
+    # 同步路径（≤20 IP，pending=false）commit 后链式触发智能体重研判后台任务；
+    # >20 IP 的后台路径由 _requery_bg_worker 补全后自行链式触发，避免重复提交
+    agent_ips = result.get("agent_ips") or []
+    if agent_ips and not result.get("pending"):
+        start_agent_analysis_bg(ticket.id, agent_ips, ticket.title or "")
     write_audit(
         db, action="ticket_enrichment_requery", resource_type="ticket",
         resource_id=ticket.id,

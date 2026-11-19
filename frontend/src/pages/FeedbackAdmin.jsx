@@ -9,7 +9,7 @@ import {
 import { feedbackApi } from '../api/client'
 import { toast } from '../store/toastStore'
 import {PageContainer, PageHeader, DataTable, Pagination, Button,
-  CompactSelect, DatePicker, AutoGrowTextarea } from '../components/ui'
+  CompactSelect, DatePicker, AutoGrowTextarea, SearchInput } from '../components/ui'
 import {
   FEEDBACK_TYPES,
   FEEDBACK_STATUSES,
@@ -129,7 +129,7 @@ function ConfirmDialog({
   if (!open) return null
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-2xl">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-2xl">
         <div className="flex items-start gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-destructive">
             <AlertTriangle className="h-5 w-5" />
@@ -141,7 +141,7 @@ function ConfirmDialog({
             )}
           </div>
         </div>
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-4 flex justify-end gap-2">
           <Button variant="secondary" size="sm" onClick={onClose} disabled={loading}>
             {cancelText}
           </Button>
@@ -182,7 +182,7 @@ function StatsBar({ stats, loading }) {
       <div className="flex min-w-[220px] flex-1 flex-col justify-center rounded-lg border border-border bg-card px-3 py-2">
         <div className="mb-1.5 flex items-center justify-between">
           <span className="text-xs font-medium text-foreground">状态分布</span>
-          <span className="text-[10px] text-muted-foreground">共 {total} 条</span>
+          <span className="text-xs text-muted-foreground">共 {total} 条</span>
         </div>
         {total > 0 ? (
           <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
@@ -198,13 +198,13 @@ function StatsBar({ stats, loading }) {
             )}
           </div>
         ) : (
-          <div className="flex h-2.5 w-full items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">
+          <div className="flex h-2.5 w-full items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
             暂无数据
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
           {statusItems.map((it) => (
-            <span key={it.value} className="flex items-center gap-1 text-[10px]">
+            <span key={it.value} className="flex items-center gap-1 text-xs">
               <span className={`h-2 w-2 rounded-full ${it.cls}`} />
               <span className="text-muted-foreground">{it.label}</span>
               <span className="font-medium tabular-nums text-foreground">{it.count}</span>
@@ -217,7 +217,7 @@ function StatsBar({ stats, loading }) {
       <div className="flex min-w-[180px] flex-col justify-center rounded-lg border border-border bg-card px-3 py-2">
         <div className="mb-1.5 flex items-center justify-between">
           <span className="text-xs font-medium text-foreground">类型分布</span>
-          <span className="text-[10px] text-muted-foreground">共 {sum(typeItems)} 条</span>
+          <span className="text-xs text-muted-foreground">共 {sum(typeItems)} 条</span>
         </div>
         {sum(typeItems) > 0 ? (
           <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
@@ -233,13 +233,13 @@ function StatsBar({ stats, loading }) {
             )}
           </div>
         ) : (
-          <div className="flex h-2.5 w-full items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">
+          <div className="flex h-2.5 w-full items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
             暂无数据
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
           {typeItems.map((it) => (
-            <span key={it.value} className="flex items-center gap-1 text-[10px]">
+            <span key={it.value} className="flex items-center gap-1 text-xs">
               <span className={`h-2 w-2 rounded-full ${it.cls}`} />
               <span className="text-muted-foreground">{it.label}</span>
               <span className="font-medium tabular-nums text-foreground">{it.count}</span>
@@ -265,7 +265,7 @@ function StatCard({ icon: Icon, color, label, value, loading }) {
         <Icon className="h-4 w-4" />
       </div>
       <div className="min-w-0">
-        <div className="text-[10px] text-muted-foreground truncate">{label}</div>
+        <div className="text-xs text-muted-foreground truncate">{label}</div>
         <div className="text-base font-semibold leading-tight tabular-nums text-foreground">
           {loading ? '—' : value}
         </div>
@@ -499,7 +499,7 @@ function AdminDetailDrawer({ open, onClose, feedbackId, onChanged }) {
                 </div>
 
                 {/* 附件（图片点击放大 lightbox） */}
-                <div className="mt-5">
+                <div className="mt-4">
                   <h4 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
                     <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
                     附件
@@ -527,7 +527,7 @@ function AdminDetailDrawer({ open, onClose, feedbackId, onChanged }) {
                               loading="lazy"
                               className="h-24 w-full object-cover bg-muted"
                             />
-                            <div className="truncate px-2 py-1 text-[11px] text-muted-foreground">
+                            <div className="truncate px-2 py-1 text-xs text-muted-foreground">
                               {a.name} · {fmtSize(a.size)}
                             </div>
                           </button>
@@ -1095,19 +1095,16 @@ function FeedbackAdmin() {
             title="结束日期"
           />
         </div>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            value={draft.keyword}
-            onChange={(e) => setDraft({ ...draft, keyword: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') applyFilter()
-            }}
-            placeholder="关键词（标题/描述）"
-            className={`${filterInputCls} w-44 pl-8`}
-          />
-        </div>
+        <SearchInput
+          className="w-44"
+          value={draft.keyword}
+          onChange={(v) => setDraft({ ...draft, keyword: v })}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') applyFilter()
+          }}
+          placeholder="关键词（标题/描述）"
+          onClear={() => setDraft({ ...draft, keyword: '' })}
+        />
         <div className="flex items-center gap-2">
           <Button size="sm" variant="primary" onClick={applyFilter}>
             筛选

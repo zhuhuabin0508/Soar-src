@@ -42,13 +42,13 @@ function LineageNode({ data }) {
         <div className="flex-1 truncate text-sm font-medium text-foreground" title={label}>{label}</div>
       </div>
       <div className="mt-2 flex items-center justify-between">
-        <span className="text-[10px] text-muted-foreground">{tm.label}</span>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] ${HEALTH_STYLE[health] || HEALTH_STYLE.disabled}`}>
+        <span className="text-xs text-muted-foreground">{tm.label}</span>
+        <span className={`rounded px-1.5 py-0.5 text-xs ${HEALTH_STYLE[health] || HEALTH_STYLE.disabled}`}>
           {HEALTH_LABEL[health] || health}
         </span>
       </div>
       {meta && (
-        <div className="mt-1.5 space-y-0.5 border-t border-border pt-1.5 text-[10px] text-muted-foreground">
+        <div className="mt-1.5 space-y-0.5 border-t border-border pt-1.5 text-xs text-muted-foreground">
           {meta.type && <div>类型：{meta.type}</div>}
           {meta.ip && <div className="truncate" title={meta.ip}>IP：{meta.ip}</div>}
           {meta.protocol && <div>协议：{meta.protocol}{meta.port ? `:${meta.port}` : ''}</div>}
@@ -169,7 +169,7 @@ export default function LineageView() {
         {/* 拓扑图：加载中渲染分列骨架屏占位，无数据给接入引导，正常渲染拓扑图 */}
         <div className="min-h-[480px] flex-1 rounded-lg border border-border bg-background">
           {loading ? (
-            <div className="flex h-full flex-col gap-5 p-5">
+            <div className="flex h-full flex-col gap-4 p-4">
               <div className="flex items-center justify-between">
                 <div className="h-4 w-44 rounded skeleton-shimmer" />
                 <div className="h-4 w-56 rounded skeleton-shimmer" />

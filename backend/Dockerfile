@@ -17,6 +17,8 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 # gcc + libc6-dev：部分依赖（jieba 等）在 ARM64 上无预编译 wheel，需从源码编译，需要 C 标准库头文件
 # postgresql-client：pg_dump / psql 命令行工具（数据备份与恢复）
 # libjpeg-dev + zlib1g-dev：Pillow（图形验证码）编译所需的 JPEG/PNG 库头文件
+# libreoffice-writer + fonts-noto-cjk：报告 docx → PDF 保真预览（soffice --headless）；
+#   镜像会增大约 400MB，如不需要 PDF 可移除，并通过 REPORT_SOFFICE_BIN 接入外部转换服务
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
         gcc \
@@ -24,6 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         postgresql-client \
         libjpeg-dev \
         zlib1g-dev \
+        libreoffice-writer \
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 # 先单独复制 requirements.txt 安装依赖，利用 Docker 缓存层

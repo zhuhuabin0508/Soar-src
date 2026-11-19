@@ -110,7 +110,7 @@ export default function EmbedScreen({
           type="button"
           onClick={load}
           disabled={loading}
-          className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary disabled:opacity-50"
+          className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-xs text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary disabled:opacity-50"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
           <span>{loadLabel}</span>
@@ -118,7 +118,7 @@ export default function EmbedScreen({
         <button
           type="button"
           onClick={toggleFull}
-          className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
+          className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-xs text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
         >
           {fullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
           <span>{fullscreen ? '退出全屏' : '全屏'}</span>
@@ -128,7 +128,7 @@ export default function EmbedScreen({
             href={url}
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-[11px] text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
+            className="flex items-center gap-1 rounded-md border border-white/15 bg-black/55 px-2 py-1 text-xs text-white/80 backdrop-blur-sm transition hover:border-primary/60 hover:text-primary"
           >
             <ExternalLink className="h-3 w-3" />
             <span>新窗口</span>

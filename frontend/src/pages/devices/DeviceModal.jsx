@@ -202,7 +202,7 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
                 placeholder="如：192.168.1.10"
               />
               {ipTouched && ipError && (
-                <div className="mt-1 text-[11px] text-destructive">{ipError}</div>
+                <div className="mt-1 text-xs text-destructive">{ipError}</div>
               )}
             </label>
             <label>
@@ -390,7 +390,7 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
                 placeholder="粘贴深信服 XDR 联动码"
                 autoComplete="off"
               />
-              <div className="mt-1 text-[11px] text-muted-foreground">
+              <div className="mt-1 text-xs text-muted-foreground">
                 联动码用于 AK/SK 签名，保存后拆分为 AK/SK 加密存储。
                 {initial?.id ? '已配置时留空表示不修改，重新填写将覆盖。' : ''}
               </div>
@@ -457,7 +457,7 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
               </span>
             </div>
             {!testResult.success && testResult.error && (
-              <pre className="mt-2 overflow-auto rounded bg-background p-2 font-mono text-[11px] text-destructive ring-1 ring-border">
+              <pre className="mt-2 overflow-auto rounded bg-background p-2 font-mono text-xs text-destructive ring-1 ring-border">
                 {testResult.error}
               </pre>
             )}
@@ -518,7 +518,7 @@ export function ParamsEditor({ value, onChange }) {
               </option>
             ))}
           </CompactSelect>
-          <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
             <input
               type="checkbox"
               className="h-3 w-3 accent-primary"

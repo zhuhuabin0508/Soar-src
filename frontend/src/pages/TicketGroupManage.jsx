@@ -7,7 +7,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls } from '../components/property/FormControls'
-import {Button, PageContainer, EmptyState, AutoGrowTextarea } from '../components/ui'
+import {Button, PageContainer, PageHeader, EmptyState, AutoGrowTextarea, SearchInput } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
 import { usersApi } from '../api/users'
@@ -117,29 +117,26 @@ export default function TicketGroupManage() {
 
   return (
     <PageContainer>
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">处理分组</h1>
-            {!loading && (
-              <span className="text-sm font-medium tabular-nums text-foreground">
-                共 {groups.length.toLocaleString()} 个分组
-              </span>
+      <PageHeader
+        title="处理分组"
+        extra={!loading && (
+          <span className="text-sm font-medium tabular-nums text-foreground">
+            共 {groups.length.toLocaleString()} 个分组
+          </span>
+        )}
+        actions={
+          <>
+            <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新分组列表">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
+            </button>
+            {canEdit && (
+              <Button variant="primary" size="sm" onClick={openCreate}>
+                <Plus className="mr-1 h-3.5 w-3.5" />新建分组
+              </Button>
             )}
-          </div>
-          <p className="mt-2 text-[13px] text-muted-foreground">将系统人员账号自定义分组（如监测预警组、研判分析组、应急处置组），流程节点绑定分组后，组内全员可见、任一成员提交即代表全组</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新分组列表">
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
-          </button>
-          {canEdit && (
-            <Button variant="primary" size="sm" onClick={openCreate}>
-              <Plus className="mr-1 h-3.5 w-3.5" />新建分组
-            </Button>
-          )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {loading ? (
         <div className="card-stagger grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -193,7 +190,7 @@ export default function TicketGroupManage() {
                         {g.enabled ? '启用' : '停用'}
                       </span>
                     </div>
-                    <p className="mt-1 truncate text-[13px] text-muted-foreground">{g.description || '暂无描述'}</p>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{g.description || '暂无描述'}</p>
                   </div>
                 </div>
                 {canEdit && (
@@ -256,7 +253,7 @@ export default function TicketGroupManage() {
           </div>
           <div>
             <label className={labelCls}>启用状态</label>
-            <div className="flex items-center gap-5">
+            <div className="flex items-center gap-4">
               {[true, false].map((b) => (
                 <label key={String(b)} className="flex cursor-pointer items-center gap-1.5">
                   <input type="radio" name="group-enabled" className="h-4 w-4 accent-primary" checked={form.enabled === b}
@@ -286,15 +283,13 @@ export default function TicketGroupManage() {
       >
         {memberTarget && (
           <div className="py-2">
-            <div className="relative mb-3">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                className={`${inputBaseCls} h-9 w-full pl-9`}
-                placeholder="搜索账号 / 姓名 / 部门"
-                value={memberSearch}
-                onChange={(e) => setMemberSearch(e.target.value)}
-              />
-            </div>
+            <SearchInput
+              className="mb-3 w-full"
+              placeholder="搜索账号 / 姓名 / 部门"
+              value={memberSearch}
+              onChange={setMemberSearch}
+              onClear={() => setMemberSearch('')}
+            />
             <div className="max-h-[420px] space-y-0.5 overflow-y-auto rounded-md border border-border p-2">
               {filteredUsers.length ? filteredUsers.map((u) => {
                 const checked = memberIds.includes(u.id)

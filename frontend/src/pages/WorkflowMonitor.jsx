@@ -54,7 +54,7 @@ function StatCard({ label, value, sub, color = 'text-foreground' }) {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`mt-1 text-2xl font-semibold tabular-nums ${color}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
+      {sub && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
     </div>
   )
 }
@@ -256,7 +256,7 @@ function WorkflowMonitor() {
           >
             ← 返回
           </button>
-          <h1 className="text-xl font-semibold text-foreground">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             工作流监控
             {workflow && (
               <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -315,7 +315,7 @@ function WorkflowMonitor() {
                     {workflow.description || '无描述'}
                   </div>
                 </div>
-                <div className="flex gap-3 text-[11px] text-muted-foreground">
+                <div className="flex gap-3 text-xs text-muted-foreground">
                   <span>触发: {triggerLabel(workflow.trigger_type)}</span>
                   <span>·</span>
                   <span>状态: {workflow.status || '-'}</span>

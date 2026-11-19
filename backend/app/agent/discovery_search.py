@@ -9,8 +9,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.v1.govcloud import RESOURCE_TYPES
 from app.core.govcloud_schema import EXTRA_IP_KEYS, EXTRA_NAME_KEYS, FIELD_LABELS
 from app.models.govcloud_asset import RESOURCE_MODELS
+from app.models.qingteng_host import QINGTENG_FIELD_LABELS
 
 logger = logging.getLogger(__name__)
+
+# 资产发现字段中文名对照：Excel 四类资产 + 青藤主机专有字段（连接 IP / 展示 IP 等）
+_DISCOVERY_FIELD_LABELS = {**FIELD_LABELS, **QINGTENG_FIELD_LABELS}
 
 _MAX_LIMIT = 20
 _DEFAULT_LIMIT = 10
@@ -25,8 +29,9 @@ _IP_COLUMNS = {
     "bare_metal": ("ip_address", "floatip_address"),
     "e_government_network": ("ip_address",),
     "elastic_ip": ("ip_address", "floatip_address"),
-    # 青藤主机（API 同步）：IP 分布在多个专用列，JSONB 兜底列叫 extra（非 extra_excel）
-    "qingteng_host": ("display_ip", "connection_ip", "external_ip", "internal_ip", "proxy_ip"),
+    # 青藤主机（API 同步）：以「连接 IP」为主检索字段，其余 IP 列兼容查询；
+    # JSONB 兜底列叫 extra（非 extra_excel）
+    "qingteng_host": ("connection_ip", "display_ip", "external_ip", "internal_ip", "proxy_ip"),
 }
 _CIDR_COLUMNS = {
     "e_government_network": ("cidr",),
@@ -178,9 +183,12 @@ def _compact(resource_type: str, mapping) -> dict:
         }
         # 全字段透出：青藤主机专有字段（CPU/内存/磁盘水位、标签、位置、负责人等）
         _merge_type_fields(data, mapping, extra)
-        # 对齐 Excel 资产的通用展示字段：LLM 与合并逻辑统一按 ip_address / instance_name 理解
-        if not data.get("ip_address") and mapping.get("display_ip"):
-            data["ip_address"] = mapping["display_ip"]
+        # 对齐 Excel 资产的通用展示字段：LLM 与合并逻辑统一按 ip_address / instance_name 理解。
+        # 青藤主机以「连接 IP」作为 IP 口径（展示 IP 可能与之不同，仅作兜底）
+        if not data.get("ip_address"):
+            primary_ip = mapping.get("connection_ip") or mapping.get("display_ip")
+            if primary_ip:
+                data["ip_address"] = primary_ip
         if not data.get("instance_name") and mapping.get("hostname"):
             data["instance_name"] = mapping["hostname"]
         if isinstance(extra, dict):
@@ -331,7 +339,7 @@ def _run_sync(keyword: str, resource_type: str, limit: int) -> dict:
             "truncated": one["truncated"],
             "assets": one["assets"],
             # 字段中文名对照（英文键 → 中文列名），供 Agent 按类型实际字段展示
-            "field_labels": FIELD_LABELS,
+            "field_labels": _DISCOVERY_FIELD_LABELS,
         }
         if one.get("error"):
             payload["error"] = one["error"]
@@ -343,7 +351,7 @@ def _run_sync(keyword: str, resource_type: str, limit: int) -> dict:
         "truncated": any(item["truncated"] for item in results),
         "queries": results,
         # 字段中文名对照（英文键 → 中文列名），供 Agent 按类型实际字段展示
-        "field_labels": FIELD_LABELS,
+        "field_labels": _DISCOVERY_FIELD_LABELS,
     }
 
 

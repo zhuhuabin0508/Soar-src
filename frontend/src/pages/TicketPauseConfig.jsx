@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { PauseCircle, RotateCcw, RefreshCw } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { inputCls, labelCls, hintCls } from '../components/property/FormControls'
-import { Button, PageContainer, CompactSelect, EmptyState } from '../components/ui'
+import { Button, PageContainer, PageHeader, CompactSelect, EmptyState } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import ticketApi from '../api/tickets'
 
@@ -179,30 +179,27 @@ export default function TicketPauseConfig() {
 
   return (
     <PageContainer>
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">暂停策略配置</h1>
-          <p className="mt-2 text-[13px] text-muted-foreground">
-            设定工单暂停的时效上限、到期提醒与超时处置；暂停期间 SLA 与节点停留计时冻结，到期未恢复将按策略自动处置。
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新暂停策略">
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
-          </button>
-          {canEdit && config && (
-            <>
-              <Button variant="secondary" size="sm" onClick={handleReset}
-                title="撤销未保存的修改，回滚到最近加载/保存的配置">
-                <RotateCcw className="mr-1 h-3.5 w-3.5" />撤销修改
-              </Button>
-              <Button variant="primary" size="sm" loading={saving} onClick={handleSave}>
-                保存配置
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
+      <PageHeader
+        title="暂停策略配置"
+        actions={
+          <>
+            <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新暂停策略">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
+            </button>
+            {canEdit && config && (
+              <>
+                <Button variant="secondary" size="sm" onClick={handleReset}
+                  title="撤销未保存的修改，回滚到最近加载/保存的配置">
+                  <RotateCcw className="mr-1 h-3.5 w-3.5" />撤销修改
+                </Button>
+                <Button variant="primary" size="sm" loading={saving} onClick={handleSave}>
+                  保存配置
+                </Button>
+              </>
+            )}
+          </>
+        }
+      />
 
       {!config && !loading ? (
         <EmptyState
@@ -211,9 +208,9 @@ export default function TicketPauseConfig() {
           description="请刷新页面重试，或联系管理员检查服务端配置"
         />
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {/* 全局策略 */}
-          <section className="rounded-lg border border-border bg-card p-5">
+          <section className="rounded-lg border border-border bg-card p-4">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-foreground">全局策略</h2>
               <label className="inline-flex items-center gap-2 text-sm text-foreground">
@@ -288,11 +285,11 @@ export default function TicketPauseConfig() {
               if (!item) return null
               const allowClose = code === 'duplicate_merge'
               return (
-                <div key={code} className="rounded-lg border border-border bg-card p-5">
+                <div key={code} className="rounded-lg border border-border bg-card p-4">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-foreground">{item.label || code}</span>
-                      <span className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">{code}</span>
+                      <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">{code}</span>
                     </div>
                     <label className="inline-flex items-center gap-2 text-sm text-foreground">
                       <input type="checkbox" disabled={!canEdit} className="h-4 w-4 accent-primary"
@@ -380,7 +377,7 @@ export default function TicketPauseConfig() {
           </section>
 
           {!loading && (
-            <div className="flex items-start gap-2 rounded-lg border border-border bg-card px-6 py-4 text-[13px] text-muted-foreground">
+            <div className="flex items-start gap-2 rounded-lg border border-border bg-card px-6 py-4 text-xs text-muted-foreground">
               <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
               <p>
                 到期提醒由后台定时任务每 5 分钟扫描：按阈值百分比提醒处理人，到期后按「到期处置」自动恢复 / 恢复并升级 /

@@ -275,7 +275,7 @@ def update_llm_config(
     return to_dict(config)
 
 
-@router.delete("/{config_id}", dependencies=[Depends(require_permission("llm_config", "edit"))])
+@router.delete("/{config_id}", dependencies=[Depends(require_permission("llm_config", "delete"))])
 def delete_llm_config(config_id: int, request: Request, db: Session = Depends(get_db)) -> dict:
     """删除 LLM 配置。"""
     logger.info("删除 LLM 配置: id=%s", config_id)

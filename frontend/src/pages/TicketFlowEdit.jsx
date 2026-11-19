@@ -287,31 +287,31 @@ function TicketFlowNodeCard({ data, selected }) {
     <div className={`w-[216px] rounded-lg border bg-card px-3 py-2.5 shadow-sm transition ${invalid ? 'border-destructive' : selected ? 'border-primary ring-2 ring-primary/20' : 'border-border'}`}>
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-2 !border-background !bg-muted-foreground" />
       <div className="flex items-center gap-2">
-        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${n.type === 'end' ? 'bg-muted text-muted-foreground' : 'bg-primary/15 text-primary'}`}>
+        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${n.type === 'end' ? 'bg-muted text-muted-foreground' : 'bg-primary/15 text-primary'}`}>
           {n.type === 'end' ? '✓' : index + 1}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{n.name || n.key}</span>
         {collectDeviceCfgs(n).length > 0 && (
-          <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-[10px] font-medium text-cyan-600">设备</span>
+          <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-xs font-medium text-cyan-600">设备</span>
         )}
         {(invalid || warn) && (
-          <span className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white ${invalid ? 'bg-destructive' : 'bg-amber-500'}`}>
+          <span className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 text-xs font-bold text-white ${invalid ? 'bg-destructive' : 'bg-amber-500'}`}>
             {invalid ? errCount : warnCount}
           </span>
         )}
       </div>
-      <div className="mt-1.5 truncate text-[11px] text-muted-foreground">
+      <div className="mt-1.5 truncate text-xs text-muted-foreground">
         {n.type === 'end' ? '结束节点'
           : n.type === 'parallel' ? `并行会签 · ${gname || '未绑定分组'} · ${(n.fields || []).length} 字段`
           : `${gname || '未绑定分组'} · ${(n.fields || []).length} 字段`}
       </div>
       {n.type === 'parallel' && (
-        <div className="mt-1 truncate text-[10px] font-medium text-violet-500">
+        <div className="mt-1 truncate text-xs font-medium text-violet-500">
           {n.finish_policy === 'any' ? '任一分组提交即流转' : '全部会签完成才流转'}
         </div>
       )}
       {collectDeviceCfgs(n).length > 0 && (
-        <div className="mt-1 truncate text-[10px] font-medium text-cyan-600">
+        <div className="mt-1 truncate text-xs font-medium text-cyan-600">
           {data.actionName ? `设备 · ${data.actionName}` : '设备动作'}
         </div>
       )}
@@ -1365,27 +1365,27 @@ export default function TicketFlowEdit() {
                     title={nErrs.length ? `校验错误：\n${nErrs.join('\n')}` : nWarns.length ? `提醒：\n${nWarns.join('\n')}` : undefined}
                     className={`flex w-full items-center gap-2.5 rounded-md border px-3 py-2.5 text-left transition ${invalid ? 'border-destructive bg-destructive/5' : warn ? 'border-amber-500/60 bg-amber-500/5' : active ? 'border-primary bg-primary/5' : 'border-transparent hover:bg-muted'}`}
                   >
-                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${n.type === 'end' ? 'bg-muted text-muted-foreground' : 'bg-primary/15 text-primary'}`}>
+                    <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${n.type === 'end' ? 'bg-muted text-muted-foreground' : 'bg-primary/15 text-primary'}`}>
                       {n.type === 'end' ? '✓' : idx + 1}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5">
                         <span className="truncate text-sm font-medium text-foreground">{n.name || n.key}</span>
                         {n.type === 'parallel' && (
-                          <span className="shrink-0 rounded bg-violet-500/15 px-1 py-0.5 text-[10px] font-medium text-violet-500">会签</span>
+                          <span className="shrink-0 rounded bg-violet-500/15 px-1 py-0.5 text-xs font-medium text-violet-500">会签</span>
                         )}
                         {collectDeviceCfgs(n).length > 0 && (
-                          <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-[10px] font-medium text-cyan-600">设备</span>
+                          <span className="shrink-0 rounded bg-cyan-500/15 px-1 py-0.5 text-xs font-medium text-cyan-600">设备</span>
                         )}
                       </span>
-                      <span className="block truncate text-[11px] text-muted-foreground">
+                      <span className="block truncate text-xs text-muted-foreground">
                         {n.type === 'end' ? '结束节点'
                           : n.type === 'parallel' ? `${(n.sign_groups || []).map((gid) => groupName(gid)).filter(Boolean).join('、') || '未绑定分组'} · 会签`
                           : `${groupName(n.group_id) || '未绑定分组'} · ${(n.fields || []).length} 字段${(() => { const an = firstDeviceName(n, actionMap); return an ? ` · ${an}` : '' })()}`}
                       </span>
                     </span>
                     {(invalid || warn) && (
-                      <span className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white ${invalid ? 'bg-destructive' : 'bg-amber-500'}`}>
+                      <span className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 text-xs font-bold text-white ${invalid ? 'bg-destructive' : 'bg-amber-500'}`}>
                         {invalid ? (nErrs.length || '!') : nWarns.length}
                       </span>
                     )}
@@ -1428,7 +1428,7 @@ export default function TicketFlowEdit() {
                 <Plus className="h-3.5 w-3.5" />新增节点
               </button>
             )}
-            <span className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-md border border-border bg-card/80 px-2 py-1 text-[11px] text-muted-foreground shadow-sm backdrop-blur">
+            <span className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-md border border-border bg-card/80 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
               拖动节点整理布局（不保存）· 从节点右侧圆点拖线创建路由 · 点击节点在右侧编辑
             </span>
           </div>
@@ -1448,7 +1448,7 @@ export default function TicketFlowEdit() {
                 const nWarns = validation.nodeWarnings[selected.key] || []
                 if (!nErrs.length && !nWarns.length) return null
                 return (
-                  <div className="mb-5 space-y-2">
+                  <div className="mb-4 space-y-2">
                     {nErrs.length > 0 && (
                       <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
                         <div className="flex items-center gap-1.5 text-xs font-semibold text-destructive">
@@ -1763,7 +1763,7 @@ export default function TicketFlowEdit() {
                                   <div>
                                     <label className={labelCls}>智能体研判</label>
                                     <label className="flex cursor-pointer items-center gap-2 py-[7px]"
-                                      title="发起工单时调用「IP风险智能研判与封禁决策」智能体研判该 IP，安全上下文仅展示风险等级、处置建议与决策依据；仅标识（key）或告警字段映射为 src_ip / dst_ip 的字段生效，默认关闭，需配置 BAN_ANALYST_AGENT_ID">
+                                      title="发起工单时调用「工单安全分析研判智能体」研判该 IP，安全上下文仅展示风险等级、处置建议与决策依据；仅标识（key）或告警字段映射为 src_ip / dst_ip 的字段生效，默认关闭，智能体由 TICKET_ANALYST_AGENT_ID 指定（未配置时按名称自动创建）">
                                       <input type="checkbox" className="h-4 w-4 accent-primary" disabled={!canEdit}
                                         checked={f.auto_agent === true}
                                         onChange={(e) => patchField(f.key, { auto_agent: e.target.checked })} />
@@ -1936,27 +1936,27 @@ export default function TicketFlowEdit() {
                                               return (
                                                 <div key={p.name} className="mb-2.5 last:mb-0 rounded border border-border/70 bg-background p-2">
                                                   <div className="flex items-center justify-between gap-2">
-                                                    <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
+                                                    <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
                                                       {p.description || p.name}{p.required ? ' *' : ''}
                                                       <span className="ml-1 font-mono opacity-60">{p.name}</span>
                                                     </span>
                                                     {canEdit && (
                                                       <button type="button"
                                                         onClick={() => { setParamCfg(p.name, null); setParamPresets(p.name, []) }}
-                                                        className="shrink-0 rounded px-1 py-0.5 text-[11px] text-destructive hover:bg-destructive/10"
+                                                        className="shrink-0 rounded px-1 py-0.5 text-xs text-destructive hover:bg-destructive/10"
                                                         title="移除该参数的全部配置（展示方式 / 默认值模板 / 快捷选项）">
                                                         移除
                                                       </button>
                                                     )}
                                                   </div>
                                                   <div className="mt-1.5 grid grid-cols-[4rem_1fr] items-center gap-x-2 gap-y-1">
-                                                    <span className="text-[10px] text-muted-foreground">展示方式</span>
+                                                    <span className="text-xs text-muted-foreground">展示方式</span>
                                                     <CompactSelect size="sm" block disabled={!canEdit} value={display}
                                                       onChange={(e) => patchEntry({ display: e.target.value })}
                                                       title="控制该参数在工单详情中的展示：只读=可见不可改；隐藏=不可见，提交时按默认值传设备">
                                                       {DISPLAY_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                                                     </CompactSelect>
-                                                    <span className="text-[10px] text-muted-foreground">默认值</span>
+                                                    <span className="text-xs text-muted-foreground">默认值</span>
                                                     <input className={`${inputCls} h-8 min-w-0 text-xs`} disabled={!canEdit}
                                                       placeholder={paramDefaultPlaceholder(p, picked?.action_type)}
                                                       title={`默认值模板。支持变量：{ticket_no} 工单号、{ticket_title} 标题、{creator} 发起人、{f:字段key} 取工单字段值；${paramDefaultPlaceholder(p, picked?.action_type)}`}
@@ -1964,17 +1964,17 @@ export default function TicketFlowEdit() {
                                                       onChange={(e) => patchEntry({ default_template: e.target.value })} />
                                                   </div>
                                                   {display === 'hidden' && (
-                                                    <p className="mt-1 text-[10px] text-amber-600">隐藏参数处理人不可见，提交时按默认值模板传给设备；未配置模板时使用动作默认值</p>
+                                                    <p className="mt-1 text-xs text-amber-600">隐藏参数处理人不可见，提交时按默认值模板传给设备；未配置模板时使用动作默认值</p>
                                                   )}
                                                   <div className="mt-1.5">
                                                     <div className="flex items-center justify-between gap-2">
-                                                      <span className="text-[10px] text-muted-foreground">
+                                                      <span className="text-xs text-muted-foreground">
                                                         快捷选项{display !== 'editable' && '（参数只读/隐藏时不生效）'}
                                                       </span>
                                                       {canEdit && (
                                                         <button type="button"
                                                           onClick={() => patchPresets([...presets, { label: '', value: '' }])}
-                                                          className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-cyan-700 hover:bg-cyan-500/10">
+                                                          className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium text-cyan-700 hover:bg-cyan-500/10">
                                                           <Plus className="h-3 w-3" />添加选项
                                                         </button>
                                                       )}
@@ -1989,12 +1989,12 @@ export default function TicketFlowEdit() {
                                                             <input className={`${inputCls} h-8 min-w-0 flex-1 text-xs`} disabled={!canEdit}
                                                               placeholder="选项名，如：3天" value={it.label || ''}
                                                               onChange={(e) => patchPresets(presets.map((x, i) => (i === pi ? { ...x, label: e.target.value } : x)))} />
-                                                            <span className="shrink-0 text-[10px] text-muted-foreground">→</span>
+                                                            <span className="shrink-0 text-xs text-muted-foreground">→</span>
                                                             <input className={`${inputCls} h-8 min-w-0 flex-[1.6] font-mono text-xs`} disabled={!canEdit}
                                                               placeholder="实际值，如 3*24*3600" value={it.value ?? ''}
                                                               onChange={(e) => patchPresets(presets.map((x, i) => (i === pi ? { ...x, value: e.target.value } : x)))} />
                                                             {showEval && (
-                                                              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="表达式求值结果">
+                                                              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground" title="表达式求值结果">
                                                                 {String(evaluated)}
                                                               </span>
                                                             )}
@@ -2027,7 +2027,7 @@ export default function TicketFlowEdit() {
                                               </CompactSelect>
                                             )}
                                             {!cfgParams.length && (
-                                              <p className="text-[11px] text-muted-foreground">未配置：所有参数由处理人在工单中直接输入（追溯类参数可设只读 + 默认值模板，需转换的参数如封禁时长可配置快捷选项）</p>
+                                              <p className="text-xs text-muted-foreground">未配置：所有参数由处理人在工单中直接输入（追溯类参数可设只读 + 默认值模板，需转换的参数如封禁时长可配置快捷选项）</p>
                                             )}
                                           </div>
                                         )

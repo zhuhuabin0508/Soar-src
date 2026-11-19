@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { notificationsApi, notificationRulesApi } from '../api/notifications'
 import NotificationRulesPanel from '../components/NotificationRulesPanel'
-import { EmptyState, Skeleton, CompactSelect } from '../components/ui'
+import { EmptyState, Skeleton, CompactSelect, Pagination, PillTabs } from '../components/ui'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
 
 // 根据通知关联资源生成跳转链接
@@ -352,8 +352,7 @@ function NotificationCenter() {
       {/* 顶部标题栏 */}
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="min-w-0">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">通知中心</h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">站内通知统一收件箱；各模块事件的通知投递均可在「通知规则」中配置（工单除外）</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">通知中心</h1>
         </div>
         {tab === 'list' && (
           <button
@@ -368,43 +367,16 @@ function NotificationCenter() {
       </header>
 
       {/* Tab 切换栏 */}
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6 py-2">
-        <button
-          type="button"
-          onClick={() => setTab('list')}
-          className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            tab === 'list'
-              ? 'bg-primary/10 text-primary ring-1 ring-primary/25'
-              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-          }`}
-        >
-          <Bell className="h-3.5 w-3.5" />
-          通知列表
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('rules')}
-          className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            tab === 'rules'
-              ? 'bg-primary/10 text-primary ring-1 ring-primary/25'
-              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-          }`}
-        >
-          <Settings2 className="h-3.5 w-3.5" />
-          通知规则
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('prefs')}
-          className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            tab === 'prefs'
-              ? 'bg-primary/10 text-primary ring-1 ring-primary/25'
-              : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-          }`}
-        >
-          <BellRing className="h-3.5 w-3.5" />
-          提醒设置
-        </button>
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs
+          items={[
+            { key: 'list', label: '通知列表', icon: Bell },
+            { key: 'rules', label: '通知规则', icon: Settings2 },
+            { key: 'prefs', label: '提醒设置', icon: BellRing },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
       </div>
 
       {/* 通知规则 Tab */}
@@ -448,7 +420,7 @@ function NotificationCenter() {
                 ))}
               </div>
             ) : (
-              <div className="mt-4 space-y-5">
+              <div className="mt-4 space-y-4">
                 {Object.entries(
                   prefs.reduce((acc, p) => {
                     ;(acc[p.group || '其他'] = acc[p.group || '其他'] || []).push(p)
@@ -480,7 +452,7 @@ function NotificationCenter() {
                                     {p.label || typeLabels[p.event_type] || p.event_type}
                                   </span>
                                   {p.customized && (
-                                    <span className="rounded bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">
+                                    <span className="rounded bg-info/10 px-1.5 py-0.5 text-xs font-medium text-info">
                                       已自定义
                                     </span>
                                   )}
@@ -593,7 +565,7 @@ function NotificationCenter() {
               return (
               <div
                 key={n.id}
-                className="cursor-pointer rounded-lg border border-border bg-card p-5 transition-colors hover:bg-accent"
+                className="cursor-pointer rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent"
               >
                 <div className="flex items-start gap-4">
                   {/* 未读/已读状态圆点：未读主色 / 已读弱化 */}
@@ -621,17 +593,17 @@ function NotificationCenter() {
                           {n.title || '(无标题)'}
                         </span>
                         {!n.is_read && (
-                          <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                          <span className="rounded bg-primary/20 px-1.5 py-0.5 text-xs font-medium text-primary">
                             未读
                           </span>
                         )}
                         {n.type && (
-                          <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title={n.type}>
+                          <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" title={n.type}>
                             {typeLabels[n.type] || n.type}
                           </span>
                         )}
                         {hasRelated && (
-                          <span className="flex items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary" title={`关联：${n.related_type}#${n.related_id}`}>
+                          <span className="flex items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary" title={`关联：${n.related_type}#${n.related_id}`}>
                             <ExternalLink className="h-2.5 w-2.5" />
                             {n.related_type}#{n.related_id}
                           </span>
@@ -691,29 +663,15 @@ function NotificationCenter() {
 
         {/* 分页 */}
         {!loading && filtered.length > 0 && (
-          <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-            <span className="tabular-nums">
-              共 {total} 条，第 {currentPage} / {totalPages} 页
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handlePrev}
-                disabled={!canPrev}
-                className="btn-secondary btn-sm"
-              >
-                上一页
-              </button>
-              <button
-                type="button"
-                onClick={handleNext}
-                disabled={!canNext}
-                className="btn-secondary btn-sm"
-              >
-                下一页
-              </button>
-            </div>
-          </div>
+          <Pagination
+            page={currentPage}
+            pageSize={PAGE_SIZE}
+            total={total}
+            onPageChange={(p) => setOffset((p - 1) * PAGE_SIZE)}
+            showPageSize={false}
+            showDensity={false}
+            className="mt-4"
+          />
         )}
       </div>
 
@@ -734,16 +692,16 @@ function NotificationCenter() {
                 ✕
               </button>
             </div>
-            <div data-allow-scroll className="max-h-[70vh] space-y-3 overflow-y-auto overscroll-contain p-5">
+            <div data-allow-scroll className="max-h-[70vh] space-y-3 overflow-y-auto overscroll-contain p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-base font-semibold text-foreground">{detailItem.title || '(无标题)'}</span>
                 {detailItem.type && (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title={detailItem.type}>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" title={detailItem.type}>
                     {typeLabels[detailItem.type] || detailItem.type}
                   </span>
                 )}
                 {!detailItem.is_read && (
-                  <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  <span className="rounded bg-primary/20 px-1.5 py-0.5 text-xs font-medium text-primary">
                     未读
                   </span>
                 )}

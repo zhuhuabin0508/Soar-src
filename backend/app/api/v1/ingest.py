@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import get_client_ip, log_audit
 from app.core.timezone import BEIJING_TZ, beijing_now
 from app.database import SessionLocal, get_db
-from app.dependencies import get_current_user, require_permission, require_role
+from app.dependencies import get_current_user, require_permission
 from app.engine.classifier import ClassifierRouter, ERR_UNKNOWN_LOG_TYPE
 from app.engine.enum_translator import translate as enum_translate
 from app.engine.extractor import apply_rule_map, extract_fields
@@ -544,7 +544,7 @@ def _today_metrics_by_strategy(db: Session) -> dict[int, dict]:
     return agg
 
 
-@router.get("/strategies", dependencies=[Depends(require_role("admin"))])
+@router.get("/strategies", dependencies=[Depends(require_permission("strategy", "view"))])
 def list_strategies(db: Session = Depends(get_db)) -> list[dict]:
     """列出全部解析策略（含今日解析统计与条目/接收器引用数）。"""
     rows = db.query(ParseStrategy).order_by(ParseStrategy.id.desc()).all()
@@ -592,7 +592,7 @@ def list_strategies(db: Session = Depends(get_db)) -> list[dict]:
     return result
 
 
-@router.get("/strategies/stats", dependencies=[Depends(require_role("admin"))])
+@router.get("/strategies/stats", dependencies=[Depends(require_permission("strategy", "view"))])
 def strategy_stats(db: Session = Depends(get_db)) -> dict:
     """策略列表页顶部统计卡片数据。"""
     rows = db.query(ParseStrategy).all()
@@ -640,7 +640,7 @@ def strategy_stats(db: Session = Depends(get_db)) -> dict:
     }
 
 
-@router.get("/strategies/fields", dependencies=[Depends(require_role("admin"))])
+@router.get("/strategies/fields", dependencies=[Depends(require_permission("strategy", "view"))])
 def strategy_target_fields() -> list[dict]:
     """返回标准模型（alert_events）全部可选目标字段及类型，供表单模式下拉选择。"""
     type_map = {"VARCHAR": "string", "TEXT": "string", "INTEGER": "int", "DATETIME": "datetime"}
@@ -789,7 +789,7 @@ class StrategyImportBody(BaseModel):
     configs: list[dict] | None = Field(None, description="批量模板配置 JSON 数组")
 
 
-@router.get("/strategies/{strategy_id}/export", dependencies=[Depends(require_role("admin"))])
+@router.get("/strategies/{strategy_id}/export", dependencies=[Depends(require_permission("strategy", "export"))])
 def export_strategy(strategy_id: int, db: Session = Depends(get_db)) -> Response:
     """导出模板为 JSON 文件（测试/生产环境迁移）。
 
@@ -818,7 +818,7 @@ def import_strategies(
     body: StrategyImportBody,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("strategy", "edit")),
+    user: User = Depends(require_permission("strategy", "import")),
 ) -> dict:
     """从 JSON 导入模板：校验结构，名称冲突自动重命名，写入审计日志。
 
@@ -1063,7 +1063,7 @@ def _ensure_baseline_version(db: Session, strat: ParseStrategy, username: str) -
     db.flush()
 
 
-@router.get("/strategies/{strategy_id}", dependencies=[Depends(require_role("admin"))])
+@router.get("/strategies/{strategy_id}", dependencies=[Depends(require_permission("strategy", "view"))])
 def get_strategy_detail(strategy_id: int, db: Session = Depends(get_db)) -> dict:
     """模板详情：线上版本配置 + 草稿（存在时）+ 版本摘要。编辑页据此加载。"""
     strat = _get_strategy_or_404(db, strategy_id)
@@ -1185,7 +1185,7 @@ def discard_strategy_draft(
     return {"id": strat.id, "draft_discarded": True}
 
 
-@router.get("/strategies/{strategy_id}/versions", dependencies=[Depends(require_role("admin"))])
+@router.get("/strategies/{strategy_id}/versions", dependencies=[Depends(require_permission("strategy", "view"))])
 def list_strategy_versions(strategy_id: int, db: Session = Depends(get_db)) -> list[dict]:
     """版本历史列表（含当前线上版本标记与草稿提示）。"""
     strat = _get_strategy_or_404(db, strategy_id)
@@ -1209,7 +1209,7 @@ def list_strategy_versions(strategy_id: int, db: Session = Depends(get_db)) -> l
 
 @router.get(
     "/strategies/{strategy_id}/versions/{version_no}",
-    dependencies=[Depends(require_role("admin"))],
+    dependencies=[Depends(require_permission("strategy", "view"))],
 )
 def get_strategy_version(strategy_id: int, version_no: int, db: Session = Depends(get_db)) -> dict:
     """单版本完整配置（版本 diff 的取数端点）。"""

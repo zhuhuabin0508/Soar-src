@@ -394,7 +394,7 @@ def export_audit_logs(
     start_time: Optional[str] = Query(None),
     end_time: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("audit_log", "view")),
+    user: User = Depends(require_permission("audit_log", "export")),
     request: Request = None,
 ) -> StreamingResponse:
     """导出审计日志为 CSV（等保合规存档要求）。

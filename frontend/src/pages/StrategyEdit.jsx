@@ -14,7 +14,7 @@ import {
 import { toast } from '../store/toastStore'
 import { Modal, Drawer } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
-import {Button, PageContainer, Card, Badge, EmptyState, CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {Button, PageContainer, Card, Badge, EmptyState, CompactSelect, AutoGrowTextarea, SearchInput } from '../components/ui'
 import { inputCls, inputBaseCls, labelCls } from '../components/property/FormControls'
 import { hasPermission } from '../utils/permissions'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
@@ -208,7 +208,7 @@ function ParseResultCard({ r }) {
         ) : (
           <span className="text-xs text-muted-foreground">未命中任何规则</span>
         )}
-        <span className="ml-auto tabular-nums text-[11px] text-muted-foreground">{r.parse_ms}ms</span>
+        <span className="ml-auto tabular-nums text-xs text-muted-foreground">{r.parse_ms}ms</span>
       </div>
       {r.error_type && (
         <div className="mb-2 flex items-start gap-1.5 rounded-md bg-destructive/5 px-2 py-1.5 text-xs text-destructive">
@@ -234,7 +234,7 @@ function ParseResultCard({ r }) {
                   {rd.hit ? <Badge variant="success">命中</Badge> : <Badge variant="neutral">未命中</Badge>}
                 </div>
                 {rd.conditions?.length > 0 && (
-                  <table className="w-full border-collapse text-[11px]">
+                  <table className="w-full border-collapse text-xs">
                     <thead>
                       <tr className="border-b border-border text-left text-muted-foreground">
                         <th className="px-1.5 py-1 font-semibold">字段</th>
@@ -318,7 +318,7 @@ function ParseResultCard({ r }) {
           )}
           <details className="rounded-md border border-border p-2">
             <summary className="cursor-pointer select-none text-xs font-semibold text-muted-foreground">标准模型 JSON（入库字段）</summary>
-            <pre className="mt-2 max-h-56 overflow-auto rounded bg-muted p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap">
+            <pre className="mt-2 max-h-56 overflow-auto rounded bg-muted p-2 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
               {JSON.stringify(r.fields, null, 2)}
             </pre>
           </details>
@@ -349,7 +349,7 @@ function FallbackTraceView({ fp }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-semibold text-muted-foreground">元数据直路由：</span>
             {fp.metadata_checks.map((m, i) => (
-              <span key={i} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+              <span key={i} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
                 {m.field}={_pv(m.value)} {m.hit ? `→ ${m.hit}` : '（未命中）'}
               </span>
             ))}
@@ -931,7 +931,7 @@ export default function StrategyEdit() {
           <Button variant="ghost" size="sm" onClick={() => navigate('/strategies')}>
             <ArrowLeft className="h-4 w-4" /> 返回
           </Button>
-          <h1 className="text-lg font-semibold text-foreground">{isNew ? '新建解析模板' : '编辑解析模板'}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{isNew ? '新建解析模板' : '编辑解析模板'}</h1>
           {!isNew && <Badge variant="neutral">ID {id}</Badge>}
           {!isNew && meta?.published_version_no != null && (
             <Badge variant="neutral" title="当前线上生效的发布版本号">线上 v{meta.published_version_no}</Badge>
@@ -981,7 +981,7 @@ export default function StrategyEdit() {
           {/* 基本信息 */}
           <Card>
             <SectionTitle icon={Settings2} desc="模板标识，被数据源条目 / 接收器引用后对日志解析生效">基本信息</SectionTitle>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-4">
               <div>
                 <label className={labelCls}>模板名称 *</label>
                 <input className={inputCls} value={config.strategy_name || ''} placeholder="如：青藤万相全日志 v3.4"
@@ -1014,7 +1014,7 @@ export default function StrategyEdit() {
           {/* 外层解包 */}
           <Card>
             <SectionTitle icon={FileJson} desc="业务数据在原始日志中的位置；header 字段与规则扩展字段一起归档到 extensions">外层解包</SectionTitle>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-3">
               <div>
                 <label className={labelCls}>data 路径</label>
                 <input className={inputCls} value={config.outer_wrapper?.data_path || ''} placeholder="如：data"
@@ -1041,15 +1041,13 @@ export default function StrategyEdit() {
             <div className="flex items-stretch gap-4">
               {/* 左侧：搜索框 + 规则竖排列表 + 添加按钮 */}
               <div className="flex w-60 shrink-0 flex-col">
-                <div className="relative mb-2">
-                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <input
-                    className={`${inputCls} pl-8`}
-                    placeholder="搜索规则 / 日志类型"
-                    value={ruleSearch}
-                    onChange={(e) => setRuleSearch(e.target.value)}
-                  />
-                </div>
+                <SearchInput
+                  className="mb-2 w-full"
+                  placeholder="搜索规则 / 日志类型"
+                  value={ruleSearch}
+                  onChange={setRuleSearch}
+                  onClear={() => setRuleSearch('')}
+                />
                 <div className="max-h-[520px] flex-1 space-y-1 overflow-y-auto pr-0.5">
                   {(() => {
                     const kw = ruleSearch.trim().toLowerCase()
@@ -1081,7 +1079,7 @@ export default function StrategyEdit() {
                         >
                           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${r.enabled === false ? 'bg-muted-foreground' : 'bg-success'}`} />
                           <span className="truncate">{r.log_type || r.rule_id || `规则 ${i + 1}`}</span>
-                          {r.enabled === false && <span className="shrink-0 text-[10px] text-muted-foreground">停用</span>}
+                          {r.enabled === false && <span className="shrink-0 text-xs text-muted-foreground">停用</span>}
                         </button>
                         <button
                           title="删除该规则"
@@ -1660,7 +1658,7 @@ export default function StrategyEdit() {
         <Card>
           <SectionTitle icon={Braces} desc="直接编辑模板 JSON 全文；保存前会做结构与正则校验">模板 JSON</SectionTitle>
           <AutoGrowTextarea
-            className="w-full rounded-md border border-input bg-background p-4 font-mono text-[13px] leading-relaxed text-foreground outline-none transition hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary"
+            className="w-full rounded-md border border-input bg-background p-4 font-mono text-xs leading-relaxed text-foreground outline-none transition hover:border-primary/50 focus:border-primary focus:ring-1 focus:ring-primary"
             style={{ minHeight: 520 }}
             spellCheck={false}
             value={jsonText}
@@ -1731,7 +1729,7 @@ export default function StrategyEdit() {
                       </div>
                       {(testResult.db_hits || []).length > 0 && (
                         <div className="space-y-1">
-                          <div className="text-[11px] text-muted-foreground">已启用模板匹配过程：</div>
+                          <div className="text-xs text-muted-foreground">已启用模板匹配过程：</div>
                           {testResult.db_hits.map((h) => (
                             <div key={h.id} className="flex items-center gap-2 text-xs">
                               <ChevronRight className="h-3 w-3 text-muted-foreground" />
@@ -1799,7 +1797,7 @@ export default function StrategyEdit() {
                     </div>
                     <div>
                       <div className="mb-1.5 text-xs font-semibold text-muted-foreground">标准模型 JSON 预览（入库 alert_events 字段）</div>
-                      <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">
+                      <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs leading-relaxed text-foreground">
                         {JSON.stringify(testResult.fields, null, 2)}
                       </pre>
                     </div>
@@ -1958,7 +1956,7 @@ export default function StrategyEdit() {
               {isNew ? '（新建模板，全部为新增）' : `（对比当前线上版本 v${meta?.published_version_no ?? '-'}）`}
             </span>
           </div>
-          <div className="max-h-[60vh] overflow-auto rounded-md border border-border bg-muted font-mono text-[12px] leading-relaxed">
+          <div className="max-h-[60vh] overflow-auto rounded-md border border-border bg-muted font-mono text-xs leading-relaxed">
             {saveDiffRows.map((r, i) => (
               <div
                 key={i}
@@ -1987,7 +1985,7 @@ export default function StrategyEdit() {
         onClose={() => setOnlineOpen(false)}
         size="lg"
       >
-        <pre className="max-h-[520px] overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap">
+        <pre className="max-h-[520px] overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
           {JSON.stringify(onlineConfig, null, 2)}
         </pre>
       </Modal>
@@ -2085,7 +2083,7 @@ export default function StrategyEdit() {
                           <tr key={i} className="border-b border-border last:border-0">
                             <td className="max-w-[220px] truncate px-2 py-1.5 font-mono" title={d.path}>{d.path}</td>
                             <td className="px-2 py-1.5">
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${meta.chip}`}>{meta.label}</span>
+                              <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${meta.chip}`}>{meta.label}</span>
                             </td>
                             <td className={`max-w-[160px] truncate px-2 py-1.5 font-mono ${d.type === 'removed' ? 'text-destructive' : 'text-muted-foreground'}`} title={_pv(d.a)}>{_pv(d.a)}</td>
                             <td className={`max-w-[160px] truncate px-2 py-1.5 font-mono ${d.type === 'added' ? 'text-success' : ''}`} title={_pv(d.b)}>{_pv(d.b)}</td>
@@ -2143,7 +2141,7 @@ export default function StrategyEdit() {
                     <span className="min-w-0 flex-1 truncate text-muted-foreground" title={it.error_msg}>{it.error_msg}</span>
                     <span className="shrink-0 tabular-nums text-muted-foreground">{fmtTime(it.created_at)}</span>
                   </div>
-                  <pre className="max-h-16 overflow-hidden rounded bg-muted p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap opacity-80">
+                  <pre className="max-h-16 overflow-hidden rounded bg-muted p-2 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap opacity-80">
                     {it.raw_data}
                   </pre>
                   <div className="mt-1.5 text-right">
@@ -2157,8 +2155,8 @@ export default function StrategyEdit() {
             <div className="mt-3 flex items-center justify-between">
               <span className="text-xs text-muted-foreground">共 {samplesData.total} 条 · 点击原因标签可筛选</span>
               <div className="flex items-center gap-2">
-                <Button size="sm" disabled={samplesPage <= 1 || samplesLoading} onClick={() => { const p = samplesPage - 1; setSamplesPage(p); loadSamples(samplesReason, p) }}>上一页</Button>
-                <Button size="sm" disabled={samplesPage * 10 >= samplesData.total || samplesLoading} onClick={() => { const p = samplesPage + 1; setSamplesPage(p); loadSamples(samplesReason, p) }}>下一页</Button>
+                <Button size="sm" variant="ghost" disabled={samplesPage <= 1 || samplesLoading} onClick={() => { const p = samplesPage - 1; setSamplesPage(p); loadSamples(samplesReason, p) }}>上一页</Button>
+                <Button size="sm" variant="ghost" disabled={samplesPage * 10 >= samplesData.total || samplesLoading} onClick={() => { const p = samplesPage + 1; setSamplesPage(p); loadSamples(samplesReason, p) }}>下一页</Button>
               </div>
             </div>
           </div>

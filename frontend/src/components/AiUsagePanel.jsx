@@ -148,7 +148,7 @@ function AiKpiCard({ icon: Icon, label, value, suffix, accent, trend, loading })
       </div>
       {/* 趋势提示 */}
       {trend != null && !isEmpty && (
-        <div className="mt-1.5 flex items-center gap-1 text-[11px]">
+        <div className="mt-1.5 flex items-center gap-1 text-xs">
           {trend > 0 ? (
             <ArrowUp className="h-3 w-3 text-success" />
           ) : trend < 0 ? (
@@ -169,7 +169,7 @@ function AiKpiCard({ icon: Icon, label, value, suffix, accent, trend, loading })
 function ChartCard({ title, icon: Icon, loading, isEmpty, emptyText, emptyDesc, updatedAt, description, children }) {
   const [showTip, setShowTip] = useState(false)
   return (
-    <div className="w-full rounded-xl border border-border bg-card p-5">
+    <div className="w-full rounded-xl border border-border bg-card p-4">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
@@ -180,12 +180,12 @@ function ChartCard({ title, icon: Icon, loading, isEmpty, emptyText, emptyDesc, 
                 type="button"
                 onMouseEnter={() => setShowTip(true)}
                 onMouseLeave={() => setShowTip(false)}
-                className="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-[9px] text-muted-foreground transition hover:text-foreground"
+                className="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground transition hover:text-foreground"
               >
                 ?
               </button>
               {showTip && (
-                <div className="absolute left-1/2 top-full z-20 mt-1 w-48 -translate-x-1/2 rounded-md border border-border bg-popover p-2 text-[11px] leading-relaxed text-muted-foreground shadow-lg">
+                <div className="absolute left-1/2 top-full z-20 mt-1 w-48 -translate-x-1/2 rounded-md border border-border bg-popover p-2 text-xs leading-relaxed text-muted-foreground shadow-lg">
                   {description}
                 </div>
               )}
@@ -193,7 +193,7 @@ function ChartCard({ title, icon: Icon, loading, isEmpty, emptyText, emptyDesc, 
           )}
         </div>
         {updatedAt && !loading && !isEmpty && (
-          <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
             更新于 {updatedAt}
           </span>
@@ -576,7 +576,7 @@ function AiUsagePanel() {
 
           {/* 最后更新时间 */}
           {lastUpdate && (
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               最后更新 {lastUpdate}
             </span>
           )}
@@ -702,7 +702,7 @@ function AiUsagePanel() {
       </div>
 
       {/* 智能体使用排行表格 */}
-      <div className="w-full rounded-xl border border-border bg-card p-5">
+      <div className="w-full rounded-xl border border-border bg-card p-4">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Bot className="h-4 w-4 text-muted-foreground" />
@@ -751,7 +751,7 @@ function AiUsagePanel() {
                     <td className="py-2.5 pr-4 text-foreground">{a.agent_name}</td>
                     <td className="py-2.5 pr-4 text-muted-foreground">
                       {a.engine ? (
-                        <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px]">{a.engine}</span>
+                        <span className="rounded bg-secondary px-1.5 py-0.5 text-xs">{a.engine}</span>
                       ) : '-'}
                     </td>
                     <td className={`py-2.5 pr-4 text-right tabular-nums ${zeroClass(a.conversation_count)}`}>{fmtNum(a.conversation_count)}</td>
@@ -769,7 +769,7 @@ function AiUsagePanel() {
       </div>
 
       {/* 大模型使用排行表格 */}
-      <div className="w-full rounded-xl border border-border bg-card p-5">
+      <div className="w-full rounded-xl border border-border bg-card p-4">
         <div className="mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Cpu className="h-4 w-4 text-muted-foreground" />
@@ -825,14 +825,14 @@ function AiUsagePanel() {
                         {isAnomaly && (
                           <span
                             title="调用次数大于 0 但 Token 为 0，可能未统计 Token 或模型不支持"
-                            className="ml-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning/20 text-[9px] text-warning"
+                            className="ml-1 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-warning/20 text-xs text-warning"
                           >?</span>
                         )}
                       </td>
                       <td className="py-2.5 pr-4 font-mono text-xs text-muted-foreground">{m.model_name || '-'}</td>
                       <td className="py-2.5 pr-4 text-muted-foreground">
                         {m.provider ? (
-                          <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] text-primary">{m.provider}</span>
+                          <span className="rounded bg-primary/15 px-1.5 py-0.5 text-xs text-primary">{m.provider}</span>
                         ) : '-'}
                       </td>
                       <td className="py-2.5 pr-4 text-right tabular-nums text-foreground">{fmtNum(m.call_count)}</td>

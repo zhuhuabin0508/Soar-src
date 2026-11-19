@@ -20,47 +20,52 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "bigscreen": ["view"],
     "bigscreen2": ["view"],
     "approval": ["view", "approve", "delete"],
-    "chat": ["view"],
+    "chat": ["view", "execute"],
     # 智能体编排
     "agent": ["view", "edit", "delete", "execute"],
-    "workflow_list": ["view", "edit", "delete", "execute"],
+    "workflow_list": ["view", "edit", "delete", "execute", "import"],
     "workflow_editor": ["view", "edit"],
-    "skill": ["view", "edit", "delete"],
-    "tool": ["view", "edit", "delete", "execute"],
-    "knowledge_base": ["view", "edit", "delete"],
+    "skill": ["view", "edit", "delete", "import", "export"],
+    "tool": ["view", "edit", "delete", "execute", "import", "export"],
+    "knowledge_base": ["view", "edit", "delete", "export"],
     # 资源管理
     "asset_overview": ["view"],
-    "asset_list": ["view", "edit", "delete"],
-    "asset_templates": ["view", "edit", "delete"],
-    "asset_discovery": ["view", "edit", "delete"],
-    "deliverable": ["view", "edit", "delete"],
+    "asset_list": ["view", "edit", "delete", "import", "export"],
+    "asset_templates": ["view", "edit", "delete", "import", "export"],
+    "asset_discovery": ["view", "edit", "import", "export"],
+    "deliverable": ["view", "edit", "delete", "export"],
+    # 报告中心（模板库 / 配置 / 运行 / 审核发布）
+    # view=查看模板与报告、edit=编辑模板与配置、execute=触发运行、
+    # publish=发布模板/配置/审核通过并归档、export=下载报告文件、delete=删除
+    "report": ["view", "edit", "delete", "execute", "publish", "export"],
     # IP地址库（独立菜单项：4 库 IPv4 数据源查询/导入）
-    "ip_library": ["view", "edit"],
+    "ip_library": ["view", "import", "export"],
     # 连接配置（设备对接下含：设备列表 / 解析策略 / 告警列表 / 入库监控）
     "llm_config": ["view", "edit", "delete"],
-    "device": ["view", "edit"],
-    "strategy": ["view", "edit", "delete"],
+    "device": ["view", "edit", "import", "export"],
+    "strategy": ["view", "edit", "delete", "import", "export"],
     "alert": ["view", "export", "handle"],
-    "alert_rule": ["view", "edit"],
+    "alert_rule": ["view", "edit", "import", "export"],
     "monitor": ["view", "edit"],
     # 运行监控
+    # export=日志中心批量导出（前端基于已授权的 view 数据生成 CSV）
     "execution": ["view", "export"],
     "notification": ["view", "edit"],
     # 告警自动封禁工作流（实例管理 / 封禁审批 / 封禁工作台 / 安博通黑名单 / 触发规则）
     # view=查看（工作台/黑名单/详情）、edit=编辑（封禁/解封/同步/规则）、export=CSV 导出、delete=删除记录
-    "ban_workflow": ["view", "edit", "export", "delete"],
+    "ban_workflow": ["view", "edit", "export", "delete", "import"],
     # 系统管理
-    "user": ["view", "edit", "delete"],
+    "user": ["view", "edit", "delete", "import", "export"],
     "role": ["view", "edit", "delete"],
     "feedback": ["view", "edit", "delete"],
     "system_config": ["view", "edit"],
     "system_monitor": ["view"],
-    "audit_log": ["view"],
-    # API 开放平台（应用/密钥/授权管理 + 调用监控）
+    "audit_log": ["view", "export"],
+    # API 开放（应用/密钥/授权管理 + 调用监控）
     "open_api": ["view", "edit"],
     # 运营管理（值班管理拆分为二级权限：人员/值班表/请假/调班/大屏）
-    "duty_member": ["view", "edit", "delete"],
-    "duty_schedule": ["view", "edit", "delete"],
+    "duty_member": ["view", "edit", "delete", "import"],
+    "duty_schedule": ["view", "edit", "delete", "export"],
     "duty_leave": ["view", "edit", "delete"],
     "duty_log": ["view", "edit", "delete"],
     "duty_dashboard": ["view"],
@@ -92,6 +97,7 @@ MODULE_LABELS: dict[str, str] = {
     "asset_templates": "类型模板",
     "asset_discovery": "资产发现",
     "deliverable": "材料管理",
+    "report": "报告中心",
     "ip_library": "IP地址库",
     # 连接配置（设备对接下含：设备列表 / 解析策略 / 告警列表 / 入库监控）
     "llm_config": "模型设置",
@@ -111,7 +117,7 @@ MODULE_LABELS: dict[str, str] = {
     "system_config": "系统设置",
     "system_monitor": "系统监控",
     "audit_log": "审计日志",
-    "open_api": "API开放平台",
+    "open_api": "API开放",
     # 运营管理（值班管理二级权限）
     "duty_member": "值班人员",
     "duty_schedule": "值班表",
@@ -132,6 +138,8 @@ ACTION_LABELS: dict[str, str] = {
     "execute": "执行",
     "approve": "审批",
     "export": "导出",
+    "import": "导入",
+    "publish": "发布",
     "handle": "处置",
     "pause": "暂停/恢复",
 }
@@ -165,15 +173,22 @@ def _inherit_module_actions(
             return
 
 
-def migrate_permissions(perms: dict[str, list[str]] | None) -> dict[str, list[str]]:
+def migrate_permissions(
+    perms: dict[str, list[str]] | None,
+    *,
+    grant_new_actions: bool = True,
+) -> dict[str, list[str]]:
     """把旧版权限矩阵迁移到新结构（保留已有动作，去重）。
 
     - ``workflow`` 的动作 → 复制到 ``workflow_list``（全量）+ ``workflow_editor``（仅 view/edit）
     - ``asset`` 的动作 → 复制到 ``asset_overview`` / ``asset_list`` / ``asset_templates`` / ``asset_discovery``
     - ``govcloud`` 过渡键 → ``asset_discovery``（与侧栏「资产发现」对齐）
-    - 旧键保留，便于回滚；新键已存在则不覆盖
+    - 迁移完成后清理旧键、空权限项与已下线的非法动作；新键已存在则不覆盖
     - 兼容性补齐：原 ``chat`` 由 ``agent`` 权限覆盖、原 ``device`` 由 ``llm_config`` 覆盖；
       已有 ``asset_list`` 的角色自动补 ``asset_discovery``（动作取交集），避免菜单可见但接口 403
+    - ``grant_new_actions``：仅在启动升级迁移时为存量角色补新增的细粒度动作
+      （alert_rule / chat execute / import / export）；运行期鉴权与角色新增/编辑时应传 False，
+      避免管理员取消勾选导入/导出后被自动补回
     """
     if not perms:
         return {}
@@ -209,10 +224,52 @@ def migrate_permissions(perms: dict[str, list[str]] | None) -> dict[str, list[st
     if ticket_actions and "edit" in ticket_actions and "pause" not in ticket_actions:
         result["ticket"] = [*ticket_actions, "pause"]
     # 工单导出为独立开关（与 alert:export 一致），不因 view 自动补权，需管理员显式授予
-    # 已有系统设置权限的角色自动补 API 开放平台（动作取交集：view→view，edit→view+edit）
+    # 已有系统设置权限的角色自动补 API 开放（动作取交集：view→view，edit→view+edit）
     _inherit_module_actions(result, "open_api", "system_config")
+    # 报告中心为新增模块：已有材料管理权限的角色补 view/edit，
+    # 可编辑配置的角色同时补 execute（发布/删除权限仍需显式授予）
+    if "report" not in result and perms.get("deliverable"):
+        inherited = [action for action in ("view", "edit") if action in perms["deliverable"]]
+        if inherited:
+            result["report"] = inherited
+    report_actions = result.get("report")
+    if report_actions and "edit" in report_actions and "execute" not in report_actions:
+        result["report"] = [*report_actions, "execute"]
+    if grant_new_actions:
+        # 告警规则沿用告警列表的查看权限（自定义角色兼容，避免菜单可见但接口 403）
+        _inherit_module_actions(result, "alert_rule", "alert")
+        # 对话执行沿用智能体执行权限：保留只读角色查看历史，但不允许发起对话
+        chat_actions = result.get("chat")
+        if chat_actions and "execute" not in chat_actions and "execute" in (result.get("agent") or []):
+            result["chat"] = [*chat_actions, "execute"]
+        # 导入为新增动作：已有编辑权限的角色自动补 import，保持升级前可导入行为
+        for mod, actions in list(result.items()):
+            allowed = PERMISSION_MODULES.get(mod, [])
+            if "import" in allowed and "import" not in actions and "edit" in actions:
+                result[mod] = [*actions, "import"]
+        # 导出为新增动作：原导出复用 view 的模块按 view 继承，device 原复用 edit
+        for mod in (
+            "asset_list", "asset_templates", "asset_discovery", "deliverable",
+            "duty_schedule", "ip_library", "alert_rule", "skill", "tool",
+            "user", "audit_log", "report", "knowledge_base",
+        ):
+            actions = result.get(mod) or []
+            if "export" not in actions and "view" in actions:
+                result[mod] = [*actions, "export"]
+        device_actions = result.get("device") or []
+        if "export" not in device_actions and "edit" in device_actions:
+            result["device"] = [*device_actions, "export"]
 
-    return result
+    # 清理：旧键仅用于迁移不再落库；去除已下线动作与空权限项
+    cleaned: dict[str, list[str]] = {}
+    for mod, actions in result.items():
+        allowed = PERMISSION_MODULES.get(mod)
+        if not allowed:
+            continue
+        kept = [action for action in actions if action in allowed]
+        if kept:
+            cleaned[mod] = kept
+    return cleaned
 
 
 # 默认角色权限（种子数据用）
@@ -232,34 +289,35 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "bigscreen": ["view"],
             "bigscreen2": ["view"],
             "approval": ["view", "approve"],
-            "chat": ["view"],
+            "chat": ["view", "execute"],
             "agent": ["view", "edit", "execute"],
-            "workflow_list": ["view", "edit", "delete", "execute"],
+            "workflow_list": ["view", "edit", "delete", "execute", "import"],
             "workflow_editor": ["view", "edit"],
-            "skill": ["view", "edit"],
-            "tool": ["view", "execute"],
-            "knowledge_base": ["view", "edit"],
+            "skill": ["view", "edit", "import", "export"],
+            "tool": ["view", "execute", "export"],
+            "knowledge_base": ["view", "edit", "export"],
             "llm_config": ["view"],
             "device": ["view"],
             "asset_overview": ["view"],
-            "asset_list": ["view", "edit", "delete"],
-            "asset_templates": ["view", "edit", "delete"],
-            "asset_discovery": ["view", "edit", "delete"],
-            "deliverable": ["view", "edit"],
-            "ip_library": ["view", "edit"],
-            "duty_member": ["view", "edit", "delete"],
-            "duty_schedule": ["view", "edit", "delete"],
+            "asset_list": ["view", "edit", "delete", "import", "export"],
+            "asset_templates": ["view", "edit", "delete", "import", "export"],
+            "asset_discovery": ["view", "edit", "import", "export"],
+            "deliverable": ["view", "edit", "export"],
+            "report": ["view", "edit", "execute", "export"],
+            "ip_library": ["view", "import", "export"],
+            "duty_member": ["view", "edit", "delete", "import"],
+            "duty_schedule": ["view", "edit", "delete", "export"],
             "duty_leave": ["view", "edit", "delete"],
             "duty_log": ["view", "edit", "delete"],
             "duty_dashboard": ["view"],
             "execution": ["view", "export"],
             "notification": ["view"],
             "alert": ["view", "export", "handle"],
-            "alert_rule": ["view", "edit"],
+            "alert_rule": ["view", "edit", "import", "export"],
             "monitor": ["view"],
             "feedback": ["view"],
             "system_monitor": ["view"],
-            "audit_log": ["view"],
+            "audit_log": ["view", "export"],
             "ticket": ["view", "edit", "pause", "export"],
             "ticket_monitor": ["view"],
             "ticket_config": ["view", "edit"],
@@ -278,30 +336,31 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "agent": ["view"],
             "workflow_list": ["view"],
             "workflow_editor": ["view"],
-            "skill": ["view"],
-            "tool": ["view"],
-            "knowledge_base": ["view"],
+            "skill": ["view", "export"],
+            "tool": ["view", "export"],
+            "knowledge_base": ["view", "export"],
             "llm_config": ["view"],
             "device": ["view"],
             "asset_overview": ["view"],
-            "asset_list": ["view"],
-            "asset_templates": ["view"],
-            "asset_discovery": ["view"],
-            "deliverable": ["view"],
-            "ip_library": ["view"],
+            "asset_list": ["view", "export"],
+            "asset_templates": ["view", "export"],
+            "asset_discovery": ["view", "export"],
+            "deliverable": ["view", "export"],
+            "report": ["view", "export"],
+            "ip_library": ["view", "export"],
             "duty_member": ["view"],
-            "duty_schedule": ["view"],
+            "duty_schedule": ["view", "export"],
             "duty_leave": ["view"],
             "duty_log": ["view"],
             "duty_dashboard": ["view"],
             "execution": ["view"],
             "notification": ["view"],
             "alert": ["view", "export"],
-            "alert_rule": ["view"],
+            "alert_rule": ["view", "export"],
             "monitor": ["view"],
             "feedback": ["view"],
             "system_monitor": ["view"],
-            "audit_log": ["view"],
+            "audit_log": ["view", "export"],
         },
     },
 ]

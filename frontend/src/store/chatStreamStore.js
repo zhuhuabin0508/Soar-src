@@ -128,7 +128,7 @@ export function listChatTasks({ userId, agentId } = {}) {
  * @param {object} params.userMessage 本轮用户消息快照（页面切换导致缓存未落盘时用于补齐）
  * @returns {object|null} 任务快照；同一会话已有任务在生成时返回 null
  */
-export function startChatStream({ userId, agentId, sid, text, override, messageId, userMessage }) {
+export function startChatStream({ userId, agentId, sid, text, override, messageId, userMessage, skillIds = [] }) {
   const key = streamKey(userId, agentId, sid)
   const existing = tasks.get(key)
   if (existing && existing.status === 'streaming') return null
@@ -166,7 +166,7 @@ export function startChatStream({ userId, agentId, sid, text, override, messageI
   if (existing && existing.cleanupTimer) clearTimeout(existing.cleanupTimer)
   tasks.set(key, task)
   notify(task)
-  void runTask(task, text, override)
+  void runTask(task, text, override, skillIds)
   return publicTask(task)
 }
 
@@ -498,10 +498,10 @@ function finalize(task) {
   }, RESULT_TTL_MS)
 }
 
-async function runTask(task, text, override) {
+async function runTask(task, text, override, skillIds = []) {
   const controller = task.controller
   try {
-    const resp = await agentsApi.chatStream(task.agentId, text, controller.signal, task.sid, override)
+    const resp = await agentsApi.chatStream(task.agentId, text, controller.signal, task.sid, override, skillIds)
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '')

@@ -47,6 +47,8 @@ export default function StrategyList() {
   const navigate = useNavigate()
   const canEdit = hasPermission('strategy', 'edit')
   const canDelete = hasPermission('strategy', 'delete')
+  const canImport = hasPermission('strategy', 'import')
+  const canExport = hasPermission('strategy', 'export')
 
   const [list, setList] = useState([])
   const [stats, setStats] = useState(null)
@@ -269,7 +271,7 @@ export default function StrategyList() {
         <div className="min-w-0">
           <span className={`tabular-nums ${(r.entry_count ?? 0) > 0 ? '' : 'text-muted-foreground'}`}>{(r.entry_count ?? 0).toLocaleString()}</span>
           {(r.receiver_count ?? 0) > 0 && (
-            <div className="text-[10px] leading-tight text-muted-foreground" title={`另有 ${r.receiver_count} 个接收器将其设为默认模板`}>
+            <div className="text-xs leading-tight text-muted-foreground" title={`另有 ${r.receiver_count} 个接收器将其设为默认模板`}>
               另 {r.receiver_count} 接收器默认
             </div>
           )}
@@ -290,7 +292,7 @@ export default function StrategyList() {
         return (
           <div>
             <span className="tabular-nums text-muted-foreground">0</span>
-            <div className="text-[10px] leading-tight text-muted-foreground" title={reason}>{reason}</div>
+            <div className="text-xs leading-tight text-muted-foreground" title={reason}>{reason}</div>
           </div>
         )
       },
@@ -344,14 +346,16 @@ export default function StrategyList() {
           >
             <FlaskConical className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            className="btn-secondary btn-sm"
-            title="导出为 JSON 文件"
-            onClick={() => handleExport(r)}
-          >
-            <Download className="h-3.5 w-3.5" />
-          </button>
+          {canExport && (
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              title="导出为 JSON 文件"
+              onClick={() => handleExport(r)}
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
+          )}
           {canEdit && (
             <button
               type="button"
@@ -393,20 +397,20 @@ export default function StrategyList() {
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新模板列表">
             <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
           </button>
+          {canImport && (
+            <button
+              type="button"
+              onClick={() => { setImportOpen(true); setImportParsed(null) }}
+              className="btn-secondary btn-sm"
+              title="从 JSON 文件导入模板"
+            >
+              <Upload className="mr-1 h-3.5 w-3.5" /> 导入模板
+            </button>
+          )}
           {canEdit && (
-            <>
-              <button
-                type="button"
-                onClick={() => { setImportOpen(true); setImportParsed(null) }}
-                className="btn-secondary btn-sm"
-                title="从 JSON 文件导入模板"
-              >
-                <Upload className="mr-1 h-3.5 w-3.5" /> 导入模板
-              </button>
-              <button type="button" onClick={() => navigate('/strategies/new')} className="btn-primary btn-sm">
-                <Plus className="mr-1 h-3.5 w-3.5" /> 新建模板
-              </button>
-            </>
+            <button type="button" onClick={() => navigate('/strategies/new')} className="btn-primary btn-sm">
+              <Plus className="mr-1 h-3.5 w-3.5" /> 新建模板
+            </button>
           )}
         </div>
       </header>
@@ -577,8 +581,8 @@ export default function StrategyList() {
               共 {errorsTotal} 条 · {errorDrawer?.title ? `模板「${errorDrawer.title}」的解析失败样本` : '仅展示解析失败/无匹配的原始数据'}
             </span>
             <div className="flex items-center gap-2">
-              <Button size="sm" disabled={errorsPage <= 1 || errorsLoading} onClick={() => loadErrors(errorDrawer?.error_type, errorsPage - 1, errorDrawer?.strategy_id)}>上一页</Button>
-              <Button size="sm" disabled={errorsPage * 15 >= errorsTotal || errorsLoading} onClick={() => loadErrors(errorDrawer?.error_type, errorsPage + 1, errorDrawer?.strategy_id)}>下一页</Button>
+              <Button size="sm" variant="ghost" disabled={errorsPage <= 1 || errorsLoading} onClick={() => loadErrors(errorDrawer?.error_type, errorsPage - 1, errorDrawer?.strategy_id)}>上一页</Button>
+              <Button size="sm" variant="ghost" disabled={errorsPage * 15 >= errorsTotal || errorsLoading} onClick={() => loadErrors(errorDrawer?.error_type, errorsPage + 1, errorDrawer?.strategy_id)}>下一页</Button>
             </div>
           </div>
         }
@@ -604,7 +608,7 @@ export default function StrategyList() {
                 render: (r) => (
                   <button
                     type="button"
-                    className="rounded px-1.5 py-0.5 text-[11px] text-primary transition hover:bg-primary/10"
+                    className="rounded px-1.5 py-0.5 text-xs text-primary transition hover:bg-primary/10"
                     title="查看失败样本原文"
                     onClick={(e) => { e.stopPropagation(); setSampleView(r) }}
                   >
@@ -629,8 +633,8 @@ export default function StrategyList() {
               共 {drillData.total} 条{drillReason ? ` · 已按「${drillData.reason_labels?.[drillReason] || drillReason}」筛选` : ' · 点击上方原因标签可筛选'}
             </span>
             <div className="flex items-center gap-2">
-              <Button size="sm" disabled={drillPage <= 1 || drillLoading} onClick={() => loadDrill(drill.strategyId, drillReason, drillPage - 1)}>上一页</Button>
-              <Button size="sm" disabled={drillPage * 15 >= drillData.total || drillLoading} onClick={() => loadDrill(drill.strategyId, drillReason, drillPage + 1)}>下一页</Button>
+              <Button size="sm" variant="ghost" disabled={drillPage <= 1 || drillLoading} onClick={() => loadDrill(drill.strategyId, drillReason, drillPage - 1)}>上一页</Button>
+              <Button size="sm" variant="ghost" disabled={drillPage * 15 >= drillData.total || drillLoading} onClick={() => loadDrill(drill.strategyId, drillReason, drillPage + 1)}>下一页</Button>
             </div>
           </div>
         )}
@@ -689,7 +693,7 @@ export default function StrategyList() {
                         <td className="px-2 py-2">
                           <button
                             type="button"
-                            className="rounded px-1.5 py-0.5 text-[11px] text-primary transition hover:bg-primary/10"
+                            className="rounded px-1.5 py-0.5 text-xs text-primary transition hover:bg-primary/10"
                             title="查看失败样本原始日志"
                             onClick={() => setSampleView({ error_type: it.error_type, error_msg: it.reason_label ? `${it.reason_label} · ${it.error_msg || ''}` : it.error_msg, raw_data: it.raw_data })}
                           >

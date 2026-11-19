@@ -240,14 +240,14 @@ function TreeNode({ node, onPick, filter }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-1 px-2 py-1.5 text-left text-[11px] font-semibold text-foreground hover:bg-accent"
+        className="flex w-full items-center gap-1 px-2 py-1.5 text-left text-xs font-semibold text-foreground hover:bg-accent"
       >
         <ChevronRight
           className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${expanded ? 'rotate-90' : ''}`}
         />
         <VariableIcon className="h-3 w-3 shrink-0 text-primary" />
         <span className="truncate">{node.label}</span>
-        <span className="ml-auto text-[10px] text-muted-foreground">
+        <span className="ml-auto text-xs text-muted-foreground">
           {visibleChildren.length}
         </span>
       </button>
@@ -258,7 +258,7 @@ function TreeNode({ node, onPick, filter }) {
               key={idx}
               type="button"
               onClick={() => onPick(child.insert)}
-              className="block w-full truncate px-7 py-1 text-left text-[11px] text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
+              className="block w-full truncate px-7 py-1 text-left text-xs text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
               title={child.insert}
             >
               {child.label}
@@ -335,7 +335,7 @@ export function VariablePicker({ currentNodeId, onPick, align = 'right' }) {
           {/* 树形列表 */}
           <div className="max-h-[280px] overflow-y-auto">
             {tree.length === 0 ? (
-              <div className="px-3 py-4 text-center text-[11px] text-muted-foreground">
+              <div className="px-3 py-4 text-center text-xs text-muted-foreground">
                 暂无可用变量
               </div>
             ) : (
@@ -420,7 +420,7 @@ export function VariableField({
           <VariablePicker currentNodeId={currentNodeId} onPick={insertVariable} />
         </div>
       </div>
-      {hint && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+      {hint && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
   )
 }

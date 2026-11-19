@@ -393,7 +393,7 @@ def export_records(
     province: str = Query(""),
     request: Request = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("ip_library", "view")),
+    user: User = Depends(require_permission("ip_library", "export")),
 ) -> StreamingResponse:
     """导出当前查询结果为 CSV（UTF-8 BOM）。
 
@@ -487,7 +487,7 @@ def import_csv(
     mode: str = Query("full", description="full 全量对齐（删除文件外旧记录）/ incremental 增量 upsert"),
     request: Request = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("ip_library", "edit")),
+    user: User = Depends(require_permission("ip_library", "import")),
 ) -> dict:
     """上传 CSV 并派发 Celery 异步导入任务，立即返回 batch_id（前端轮询进度）。"""
     if library_type not in LIBRARY_MODELS:

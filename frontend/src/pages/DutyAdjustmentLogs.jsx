@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { ClipboardList, Undo2, Trash2 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import { Button, PageContainer, DataTable, Pagination, DatePicker } from '../components/ui'
+import { Button, PageContainer, PageHeader, DataTable, Pagination, DatePicker } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
 
@@ -160,10 +160,9 @@ export default function DutyAdjustmentLogs() {
 
   return (
     <PageContainer>
-      <div className="mb-6">
-        <h1 className="text-[22px] font-bold tracking-tight text-foreground">调班记录</h1>
-        <p className="mt-1.5 text-sm text-muted-foreground">记录所有手动调整值班人员的操作日志（原值班人、新值班人、原因、操作人），支持撤销</p>
-      </div>
+      <PageHeader
+        title="调班记录"
+      />
 
       <div className="mb-4 flex items-center gap-3 rounded-md border border-border bg-card px-4 py-2.5">
         <label className="text-xs text-muted-foreground whitespace-nowrap">按值班日期</label>

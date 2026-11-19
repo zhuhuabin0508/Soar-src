@@ -183,7 +183,7 @@ def _is_feedback_admin(user: User, db: Session) -> bool:
         return True
     if user.role_id:
         role = db.query(Role).filter(Role.id == user.role_id).first()
-        if role and has_permission(migrate_permissions(role.permissions), "feedback", "view"):
+        if role and has_permission(migrate_permissions(role.permissions, grant_new_actions=False), "feedback", "view"):
             return True
     for default in DEFAULT_ROLES:
         if default["name"] == user.role and has_permission(default["permissions"], "feedback", "view"):

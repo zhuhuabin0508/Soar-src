@@ -122,7 +122,7 @@ export default function TicketFlowVersionsDrawer({
                   <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${expanded === v.version ? 'rotate-180' : ''}`} />
                   <span className="shrink-0 rounded bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">v{v.version}</span>
                   {!isDraft && v.version === currentVersion && (
-                    <span className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-500">当前发布</span>
+                    <span className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-500">当前发布</span>
                   )}
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{fmtTime(v.published_at)}</span>
                   <span className="shrink-0 truncate text-xs text-muted-foreground" title={v.published_by}>{v.published_by || '--'}</span>
@@ -151,7 +151,7 @@ export default function TicketFlowVersionsDrawer({
                     </span>
                   ) : (
                     <div className="space-y-1.5 text-xs">
-                      <p className="text-[11px] text-muted-foreground">相对该版本，当前编辑内容的差异：</p>
+                      <p className="text-xs text-muted-foreground">相对该版本，当前编辑内容的差异：</p>
                       {diff.general.map((g) => (
                         <div key={g} className="flex items-center gap-1.5 text-muted-foreground">
                           <Pencil className="h-3 w-3 shrink-0" />{g}

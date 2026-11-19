@@ -139,7 +139,7 @@ export default function ForceChangePassword({ onSuccess }) {
               {rules.map((r) => (
                 <div
                   key={r.label}
-                  className={`flex items-center gap-1 text-[11px] ${
+                  className={`flex items-center gap-1 text-xs ${
                     r.ok ? 'text-success' : 'text-muted-foreground'
                   }`}
                 >
@@ -168,7 +168,7 @@ export default function ForceChangePassword({ onSuccess }) {
               placeholder="请再次输入新密码"
             />
             {confirmPwd && confirmPwd !== newPwd && (
-              <p className="mt-1 text-[11px] text-destructive">两次输入的密码不一致</p>
+              <p className="mt-1 text-xs text-destructive">两次输入的密码不一致</p>
             )}
           </div>
 

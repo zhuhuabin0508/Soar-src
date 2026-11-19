@@ -229,7 +229,7 @@ function DetailDrawer({ open, onClose, feedbackId, onReopened }) {
               </div>
 
               {/* 附件列表 */}
-              <div className="mt-5">
+              <div className="mt-4">
                 <h4 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
                   <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
                   附件
@@ -288,7 +288,7 @@ function DetailDrawer({ open, onClose, feedbackId, onReopened }) {
               </div>
 
               {/* 管理员回复 */}
-              <div className="mt-5">
+              <div className="mt-4">
                 <h4 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
                   <MessageSquareWarning className="h-3.5 w-3.5 text-muted-foreground" />
                   管理员回复
@@ -318,7 +318,7 @@ function DetailDrawer({ open, onClose, feedbackId, onReopened }) {
               </div>
 
               {/* 处理历史时间线 */}
-              <div className="mt-5 mb-2">
+              <div className="mt-4 mb-2">
                 <h4 className="mb-3 text-sm font-medium text-foreground">处理历史</h4>
                 <HistoryTimeline histories={detail.histories} />
               </div>

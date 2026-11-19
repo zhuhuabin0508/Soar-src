@@ -334,7 +334,7 @@ export default function ShareDialog({
           <div className="truncate text-sm font-medium text-card-foreground">
             {resourceName || '未命名资源'}
           </div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
+          <div className="mt-0.5 text-xs text-muted-foreground">
             {typeMeta.label} · 仅创建者与管理员可管理授权
           </div>
         </div>
@@ -347,7 +347,7 @@ export default function ShareDialog({
             <UserPlus className="h-3.5 w-3.5 text-primary" />
             添加授权
             {availableUsers.length > 0 && (
-              <span className="text-[11px] font-normal text-muted-foreground">
+              <span className="text-xs font-normal text-muted-foreground">
                 （已选 {selectedUserIds.size} / 可选 {availableUsers.length}）
               </span>
             )}
@@ -367,7 +367,7 @@ export default function ShareDialog({
         ) : (
           <>
             {/* 全选 / 反选 / 清空 工具条 */}
-            <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+            <div className="mb-1.5 flex items-center justify-between text-xs text-muted-foreground">
               <label className="inline-flex cursor-pointer items-center gap-1.5 hover:text-foreground">
                 <input
                   type="checkbox"
@@ -437,12 +437,12 @@ export default function ShareDialog({
                         {u.display_name || u.username}
                       </span>
                       {u.display_name && (
-                        <span className="truncate text-[11px] text-muted-foreground">
+                        <span className="truncate text-xs text-muted-foreground">
                           （{u.username}）
                         </span>
                       )}
                       {u.role && (
-                        <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                           {u.role}
                         </span>
                       )}
@@ -479,7 +479,7 @@ export default function ShareDialog({
         </div>
 
         {/* 权限说明随选择切换，更直观 */}
-        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-muted-foreground">
+        <div className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
           {selectedPermission === 'edit' ? (
             <>
               <Pencil className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
@@ -529,7 +529,7 @@ export default function ShareDialog({
             授权角色
           </button>
         </div>
-        <p className="mt-2 text-[11px] text-muted-foreground">
+        <p className="mt-2 text-xs text-muted-foreground">
           该角色下所有用户将获得对应权限（查看或编辑）。
         </p>
       </div>
@@ -540,13 +540,13 @@ export default function ShareDialog({
           <div className="flex items-center gap-1.5 text-xs font-medium text-card-foreground">
             <Users className="h-3.5 w-3.5 text-muted-foreground" />
             已授权用户 / 角色
-            <span className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-secondary px-1.5 text-[10px] font-medium text-muted-foreground">
+            <span className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-secondary px-1.5 text-xs font-medium text-muted-foreground">
               {shares.length}
             </span>
           </div>
           {/* 权限分布统计：编辑 N · 查看 M，让管理员快速了解授权结构 */}
           {shares.length > 0 && (
-            <div className="flex items-center gap-2 text-[11px]">
+            <div className="flex items-center gap-2 text-xs">
               <span className="inline-flex items-center gap-0.5 text-primary">
                 <Pencil className="h-2.5 w-2.5" />
                 编辑 {editCount}
@@ -569,17 +569,17 @@ export default function ShareDialog({
                 <span className="truncate text-sm text-card-foreground">{ownerName}</span>
                 {/* 所有者角色徽标（如有） */}
                 {ownerRole && (
-                  <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                     {ownerRole}
                   </span>
                 )}
               </div>
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 {isOwnerMe ? '资源创建者（你自己）' : '资源创建者'}
               </span>
             </div>
           </div>
-          <span className="inline-flex items-center gap-0.5 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+          <span className="inline-flex items-center gap-0.5 rounded bg-primary/15 px-1.5 py-0.5 text-xs font-medium text-primary">
             <Share2 className="h-2.5 w-2.5" />
             所有者
           </span>
@@ -594,7 +594,7 @@ export default function ShareDialog({
           <div className="flex flex-col items-center justify-center rounded-md border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
             <Users className="mb-1.5 h-5 w-5 opacity-50" />
             暂无被授权用户或角色
-            <span className="mt-0.5 text-[11px] text-muted-foreground">
+            <span className="mt-0.5 text-xs text-muted-foreground">
               在上方选择用户或角色并授权后，将出现在这里
             </span>
           </div>
@@ -621,7 +621,7 @@ export default function ShareDialog({
                       <span className="truncate text-sm text-card-foreground">
                         {displayName}
                       </span>
-                      <span className="truncate text-[11px] text-muted-foreground">
+                      <span className="truncate text-xs text-muted-foreground">
                         {grantor ? `由 ${grantor} 授权` : '由所有者授权'}
                         {s.created_at ? ` · ${new Date(s.created_at).toLocaleString('zh-CN')}` : ''}
                       </span>

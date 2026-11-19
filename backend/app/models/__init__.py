@@ -90,6 +90,15 @@ from app.models.user_notification_pref import UserNotificationPref
 from app.models.parse_error import ParseErrorQueue
 from app.models.parse_strategy import ParseStrategy, ParseStrategyVersion
 from app.models.resource_share import ResourceShare
+from app.models.report import (
+    ReportTemplate,
+    ReportTemplateVersion,
+    ReportConfig,
+    ReportConfigVersion,
+    ReportRun,
+    ReportRunSource,
+    ReportArtifact,
+)
 from app.models.role import Role
 from app.models.skill import Skill
 from app.models.system_config import SystemConfig
@@ -162,6 +171,13 @@ __all__ = [
     "DeviceTemplate",
     "DeviceTemplateAction",
     "ResourceShare",
+    "ReportTemplate",
+    "ReportTemplateVersion",
+    "ReportConfig",
+    "ReportConfigVersion",
+    "ReportRun",
+    "ReportRunSource",
+    "ReportArtifact",
     "ServiceCategory",
     "Deliverable",
     "AlertEvent",

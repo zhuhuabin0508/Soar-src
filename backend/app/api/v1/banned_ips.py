@@ -259,7 +259,7 @@ _LEVEL_LABELS = {"low": "低", "medium": "中", "high": "高", "serious": "严�
 _LEVEL_REVERSE = {v: k for k, v in _LEVEL_LABELS.items()}
 
 
-@router.get("/export/csv", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+@router.get("/export/csv", dependencies=[Depends(require_permission("ban_workflow", "export"))])
 def export_banned_ips(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -327,7 +327,7 @@ def download_import_template():
     )
 
 
-@router.post("/import/csv", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+@router.post("/import/csv", dependencies=[Depends(require_permission("ban_workflow", "import"))])
 async def import_banned_ips(
     file: UploadFile = File(...),
     device_id: int = Query(..., description="执行封禁的设备 ID（调用该设备的 block_ip 动作）"),

@@ -521,7 +521,7 @@ def download_member_template(
 def import_members(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _user: User = Depends(require_permission("duty_member", "edit")),
+    _user: User = Depends(require_permission("duty_member", "import")),
 ):
     """Excel 批量导入值班人员。返回成功/失败条数与错误明细。"""
     from openpyxl import load_workbook
@@ -1080,7 +1080,7 @@ def export_schedule(
     end_date: date = Query(...),
     roster_type: Literal["DAILY", "RESERVE", "ALL"] = Query("DAILY", description="值班表类型（ALL=全部）"),
     db: Session = Depends(get_db),
-    _user: User = Depends(require_permission("duty_schedule", "view")),
+    _user: User = Depends(require_permission("duty_schedule", "export")),
 ):
     """导出指定类型的值班表为 Excel；ALL 导出两类全部记录（含类型列）。"""
     q = db.query(DutyRecord).filter(

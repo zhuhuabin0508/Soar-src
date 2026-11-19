@@ -42,6 +42,45 @@ def _cleanup_removed_and_legacy(db: Session) -> int:
     return removed
 
 
+def _prune_agent_tool_refs(db: Session, retired_names: set[str]) -> int:
+    """从智能体的 ``enabled_tools`` / ``tool_configs`` 中摘除已退役工具名。
+
+    工具从 ``tools`` 表物理删除后，智能体配置里仍可能残留旧名称；运行时会因
+    查不到工具而反复输出 warning。此处按退役名单就地清理两处引用，
+    返回被修改的智能体数量。
+
+    Args:
+        db: 数据库会话。
+        retired_names: 已退役/遗留工具名集合。
+    """
+    if not retired_names:
+        return 0
+    from app.models.agent import Agent
+
+    pruned = 0
+    for agent in db.query(Agent).all():
+        stale: set[str] = set()
+
+        names = agent.enabled_tools
+        if isinstance(names, list):
+            kept = [n for n in names if n not in retired_names]
+            if len(kept) != len(names):
+                agent.enabled_tools = kept
+                stale.update(n for n in names if n in retired_names)
+
+        configs = agent.tool_configs
+        if isinstance(configs, dict):
+            kept_configs = {k: v for k, v in configs.items() if k not in retired_names}
+            if len(kept_configs) != len(configs):
+                agent.tool_configs = kept_configs
+                stale.update(k for k in configs if k in retired_names)
+
+        if stale:
+            pruned += 1
+            logger.info("智能体「%s」摘除已退役工具引用: %s", agent.name, sorted(stale))
+    return pruned
+
+
 def _sync_preset_tool(db: Session, defn: dict, seed_code_map: dict[str, str]) -> tuple[bool, bool, bool, bool, bool]:
     inserted = categorized = repaired = source_synced = desc_synced = False
     name = defn["name"]
@@ -87,9 +126,15 @@ def ensure_preset_tools() -> None:
     db: Session = SessionLocal()
     try:
         removed = _cleanup_removed_and_legacy(db)
-        if removed:
+        retired = ToolCatalog.removed_names() | ToolCatalog.legacy_deprecated_names()
+        pruned = _prune_agent_tool_refs(db, retired)
+        if removed or pruned:
             db.commit()
-            logger.info("已清理 %d 个退役/遗留工具", removed)
+            logger.info(
+                "已清理 %d 个退役/遗留工具，摘除 %d 个智能体的失效工具引用",
+                removed,
+                pruned,
+            )
 
         inserted = categorized = repaired = source_synced = desc_synced = 0
         for defn in ToolCatalog.preset_definitions():

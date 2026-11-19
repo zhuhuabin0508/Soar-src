@@ -5,9 +5,10 @@ import { useAuthStore } from '../store/authStore'
 import { Modal } from '../components/Dialog'
 import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
-import { inputCls, inputBaseCls } from '../components/property/FormControls'
-import {CompactSelect, AutoGrowTextarea } from '../components/ui'
+import { inputCls } from '../components/property/FormControls'
+import { CompactSelect, AutoGrowTextarea, Pagination, SearchInput } from '../components/ui'
 import { validateIPExpression, looksLikeIPKey } from '../utils/ipValidation'
+import { hasPermission } from '../utils/permissions'
 
 // 重要性配色
 const CRITICALITY_META = {
@@ -197,7 +198,7 @@ function AssetFormModal({ open, form, setForm, onSubmit, onClose, submitting, is
             placeholder="192.0.2.10"
           />
           {touched.ip && ipError && (
-            <div className="mt-1 text-[11px] text-destructive">{ipError}</div>
+            <div className="mt-1 text-xs text-destructive">{ipError}</div>
           )}
         </div>
         <div className="flex flex-col">
@@ -245,7 +246,7 @@ function AssetFormModal({ open, form, setForm, onSubmit, onClose, submitting, is
             placeholder='{"序列号": "SN001", "购入日期": "2024-01-01"}'
           />
           {touched.extra && extraErrors.length > 0 && (
-            <div className="mt-1 text-[11px] text-destructive">
+            <div className="mt-1 text-xs text-destructive">
               {extraErrors.map((msg) => <div key={msg}>{msg}</div>)}
             </div>
           )}
@@ -260,6 +261,8 @@ function Assets() {
   const user = useAuthStore((s) => s.user)
   const canManage = user?.role === 'admin' || user?.role === 'analyst'
   const canDelete = user?.role === 'admin'
+  const canExport = hasPermission('asset_list', 'export')
+  const canImport = hasPermission('asset_list', 'import')
 
   const [records, setRecords] = useState([])
   const [stats, setStats] = useState({ total: 0, by_source: {}, by_criticality: {}, by_type: {} })
@@ -585,7 +588,7 @@ function Assets() {
       {/* 页头 */}
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-foreground">资产管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">资产管理</h1>
           <span className="text-xs text-muted-foreground">
             共 {total} 条 / 第 {page}/{totalPages || 1} 页
           </span>
@@ -606,10 +609,12 @@ function Assets() {
               自定义字段
             </button>
           )}
-          <button type="button" onClick={handleExport} disabled={exporting} className="btn-secondary btn-sm">
-            {exporting ? '导出中...' : '导出 CSV'}
-          </button>
-          {canManage && (
+          {canExport && (
+            <button type="button" onClick={handleExport} disabled={exporting} className="btn-secondary btn-sm">
+              {exporting ? '导出中...' : '导出 CSV'}
+            </button>
+          )}
+          {canImport && (
             <button type="button" onClick={openImport} className="btn-secondary btn-sm">
               导入
             </button>
@@ -635,20 +640,21 @@ function Assets() {
 
       {/* 过滤栏 */}
       <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card px-6 py-3">
-        <input
-          className={`${inputBaseCls} max-w-xs`}
+        <SearchInput
+          className="w-72"
           placeholder="搜索名称/IP/负责人..."
           value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
+          onChange={setKeyword}
+          onClear={() => setKeyword('')}
         />
         <CompactSelect value={criticalityFilter}
-          onChange={(e) => setCriticalityFilter(e.target.value)} size="lg" block>
+          onChange={(e) => setCriticalityFilter(e.target.value)} size="sm">
           {CRITICALITY_OPTIONS.map((c) => (
             <option key={c.value} value={c.value}>{c.label}</option>
           ))}
         </CompactSelect>
         <CompactSelect value={sourceFilter}
-          onChange={(e) => setSourceFilter(e.target.value)} size="lg" block>
+          onChange={(e) => setSourceFilter(e.target.value)} size="sm">
           {SOURCE_OPTIONS.map((s) => (
             <option key={s.value} value={s.value}>{s.label}</option>
           ))}
@@ -736,29 +742,15 @@ function Assets() {
         )}
 
         {/* 分页 */}
-        {totalPages > 1 && (
-          <div className="mt-4 flex items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="btn-secondary btn-sm"
-            >
-              上一页
-            </button>
-            <span className="text-sm text-muted-foreground">
-              {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="btn-secondary btn-sm"
-            >
-              下一页
-            </button>
-          </div>
-        )}
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPage}
+          showPageSize={false}
+          showDensity={false}
+          className="mt-4"
+        />
       </div>
 
       {/* 详情弹窗 */}
