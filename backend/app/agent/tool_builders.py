@@ -1,6 +1,7 @@
 """工具入参与知识库、资产检索工具构造。"""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -17,13 +18,27 @@ _TYPE_MAP = {
     "Array": list,
 }
 
+# 进程级缓存：工具入参 pydantic 模型。
+# key = (tool_name, schema 指纹)，value = 模型类。create_model 有反射开销，
+# 而同一工具在每次对话重建注册表时都会重新构造；缓存后跨请求复用，只留
+# 首次构造成本。模型类创建后不可变，缓存安全。
+_args_model_cache: dict[tuple[str, str], Any] = {}
+
+
 def _build_args_model(tool_name: str, parameters_schema: list[dict] | None):
     """根据 parameters_schema 动态构造 pydantic 入参模型。
 
     schema 元素结构：``{name, type, required, description}``。
     """
+    schema = parameters_schema or []
+    fingerprint = json.dumps(schema, sort_keys=True, ensure_ascii=False)
+    key = (tool_name, fingerprint)
+    cached = _args_model_cache.get(key)
+    if cached is not None:
+        return cached
+
     fields: dict[str, Any] = {}
-    for param in parameters_schema or []:
+    for param in schema:
         name = param.get("name")
         if not name:
             continue
@@ -36,7 +51,9 @@ def _build_args_model(tool_name: str, parameters_schema: list[dict] | None):
         else:
             fields[name] = (Optional[py_type], Field(None, description=desc))
     safe_name = "".join(c if c.isalnum() else "_" for c in tool_name) or "Tool"
-    return create_model(f"{safe_name}Args", **fields)
+    model = create_model(f"{safe_name}Args", **fields)
+    _args_model_cache[key] = model
+    return model
 
 
 def _build_db_tools(db, enabled_tools: list[str]) -> list:

@@ -217,6 +217,7 @@ export const tools = {
   test: (id, parameters) =>
     request(`/tools/${id}/test`, { method: 'POST', body: { parameters } }),
   templates: () => request('/tools/templates'),
+  categories: () => request('/tools/categories'),
   // 导出工具配置：ids 逗号分隔，缺省导出全部自定义工具（密钥默认脱敏）
   export: (params = {}) => {
     const qs = new URLSearchParams()
@@ -244,6 +245,11 @@ export const tools = {
   // 模拟对话调试：把工具绑定到 LLM，展示运行链路
   debugChat: (id, message) =>
     request(`/tools/${id}/debug-chat`, { method: 'POST', body: { message } }),
+  // 版本历史（编辑前自动存档，供回滚）
+  versions: (id) => request(`/tools/${id}/versions`),
+  version: (id, version) => request(`/tools/${id}/versions/${version}`),
+  rollback: (id, version) =>
+    request(`/tools/${id}/versions/${version}/rollback`, { method: 'POST' }),
 }
 
 // ============ 智能体 ============

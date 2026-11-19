@@ -103,6 +103,13 @@ const SOURCE_OPTIONS = [
   { value: 'framework', label: '框架' },
 ]
 
+// 生命周期状态徽标（仅非 active 状态显示）
+const TOOL_STATUS_BADGE = {
+  draft: { label: '草稿', cls: 'border-border bg-secondary text-muted-foreground', title: '草稿：尚未完成，不会注册给智能体' },
+  disabled: { label: '停用', cls: 'border-destructive/40 bg-destructive/10 text-destructive', title: '停用：不会注册给智能体' },
+  deprecated: { label: '已弃用', cls: 'border-amber-500/40 bg-warning/10 text-warning', title: '已弃用：保留历史数据，不再注册' },
+}
+
 // 格式化时间
 function fmtTime(t) {
   if (!t) return '-'
@@ -431,9 +438,15 @@ function ToolList() {
     const _ok = await confirm({ message: `确定删除工具「${name || id}」吗？`, variant: 'danger', confirmText: '确定删除' })
     if (!_ok) return
     try {
-      await toolsApi.remove(id)
+      const res = await toolsApi.remove(id)
       setRows((prev) => prev.filter((r) => r.id !== id))
       setSelectedKeys((prev) => prev.filter((k) => k !== id))
+      const affected = res?.affected_agents || []
+      if (affected.length > 0) {
+        toast.success(`已删除「${name}」，并已从 ${affected.length} 个智能体移除该工具`)
+      } else {
+        toast.success(`已删除「${name}」`)
+      }
     } catch (err) {
       const msg = err?.response?.data?.detail || err.message || String(err)
       toast.error(`删除失败：${msg}`)
@@ -545,6 +558,11 @@ function ToolList() {
         <div className="flex items-center gap-2">
           <span className="inline-block max-w-[180px] align-bottom truncate text-sm font-medium text-foreground" title={r.name || ''}>{r.name || '-'}</span>
           <span className="shrink-0 font-mono text-xs text-muted-foreground">#{r.id}</span>
+          {TOOL_STATUS_BADGE[r.status] && r.status !== 'active' ? (
+            <span className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${TOOL_STATUS_BADGE[r.status].cls}`} title={TOOL_STATUS_BADGE[r.status].title}>
+              {TOOL_STATUS_BADGE[r.status].label}
+            </span>
+          ) : null}
         </div>
       ),
     },
@@ -622,6 +640,42 @@ function ToolList() {
               <ListChecks className="h-3 w-3 text-primary" />
               <span className="font-medium tabular-nums text-primary">{count}</span>
               <span className="text-muted-foreground">个</span>
+            </span>
+          </HoverTip>
+        )
+      },
+    },
+    {
+      key: 'health', header: '健康度', width: '130px',
+      render: (r) => {
+        const s = r.stats || {}
+        const total = s.total_calls || 0
+        const failed = s.failed_calls || 0
+        if (total === 0) {
+          return (
+            <HoverTip text="暂无调用记录（僵尸工具）：从未被任何智能体调用过，可评估是否下线">
+              <span className="inline-flex cursor-help items-center gap-1 text-xs text-muted-foreground">
+                <Zap className="h-3 w-3" />
+                无调用
+              </span>
+            </HoverTip>
+          )
+        }
+        const rate = Math.round(((total - failed) / total) * 100)
+        const ok = rate >= 95
+        return (
+          <HoverTip
+            text={
+              <div className="flex flex-col gap-0.5">
+                <span className="font-medium text-foreground">共调用 {total} 次</span>
+                <span className="text-muted-foreground">失败 {failed} 次</span>
+                <span className="text-muted-foreground">最近调用 {fmtTime(s.last_called_at)}</span>
+              </div>
+            }
+            placement="right"
+          >
+            <span className={`inline-flex cursor-help items-center gap-1 text-xs font-medium tabular-nums ${ok ? 'text-success' : 'text-warning'}`}>
+              {rate}% 成功
             </span>
           </HoverTip>
         )

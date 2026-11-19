@@ -55,6 +55,10 @@ class Tool(Base):
     is_preset = Column(Boolean, default=False, nullable=False, server_default="false")
     # 工具来源：builtin | framework | security | custom
     tool_source = Column(String(32), nullable=True)
+    # 生命周期状态：draft（草稿，未完成，不注册）/ active（正常）/ disabled（停用）/
+    # deprecated（已弃用，保留历史数据，不注册）。与 enabled（快速开关）正交：
+    # 只有 enabled=True 且 status=active 的工具才会被注册进智能体工具表。
+    status = Column(String(32), nullable=False, default="active", server_default="active")
 
     def __repr__(self) -> str:
-        return f"<Tool id={self.id} name={self.name!r} type={self.tool_type!r} enabled={self.enabled}>"
+        return f"<Tool id={self.id} name={self.name!r} type={self.tool_type!r} enabled={self.enabled} status={self.status!r}>"

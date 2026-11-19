@@ -9,6 +9,14 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
+# 出站代理：构建机无法直连外网时，通过 --build-arg 注入宿主代理（如
+# HTTP_PROXY=http://127.0.0.1:8999）。未注入时为空，apt/pip 直连。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
     || sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null \
     || true
@@ -19,7 +27,11 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 # libjpeg-dev + zlib1g-dev：Pillow（图形验证码）编译所需的 JPEG/PNG 库头文件
 # libreoffice-writer + fonts-noto-cjk：报告 docx → PDF 保真预览（soffice --headless）；
 #   镜像会增大约 400MB，如不需要 PDF 可移除，并通过 REPORT_SOFFICE_BIN 接入外部转换服务
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "$HTTP_PROXY" ]; then \
+        echo "Acquire::http::Proxy \"$HTTP_PROXY\";"  > /etc/apt/apt.conf.d/99proxy; \
+        echo "Acquire::https::Proxy \"$HTTPS_PROXY\";" >> /etc/apt/apt.conf.d/99proxy; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
         gcc \
         libc6-dev \

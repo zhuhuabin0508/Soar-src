@@ -18,6 +18,9 @@ import {
   Maximize2,
   Minimize2,
   Wand2,
+  History,
+  RotateCcw,
+  Loader2,
 } from 'lucide-react'
 import { tools as toolsApi } from '../api/client'
 import {
@@ -429,6 +432,104 @@ function OpenAPIImportModal({ open, onClose, onPick }) {
   )
 }
 
+// 工具版本历史弹窗：每次编辑前自动存档，支持一键回滚
+function ToolVersionModal({ open, toolId, onClose, onRolledBack }) {
+  const [versions, setVersions] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+  const [rolling, setRolling] = useState(null)
+
+  useEffect(() => {
+    if (!open || !toolId) return
+    let alive = true
+    ;(async () => {
+      setLoading(true)
+      setErr('')
+      try {
+        const res = await toolsApi.versions(toolId)
+        if (alive) setVersions(Array.isArray(res?.items) ? res.items : [])
+      } catch (e) {
+        if (alive) setErr(e.message || '加载版本失败')
+      } finally {
+        if (alive) setLoading(false)
+      }
+    })()
+    return () => { alive = false }
+  }, [open, toolId])
+
+  const handleRollback = async (v) => {
+    const ok = await confirm({
+      message: `确定回滚到 v${v.version} 吗？当前编辑内容将被该版本覆盖。`,
+      variant: 'danger',
+      confirmText: '确定回滚',
+    })
+    if (!ok) return
+    setRolling(v.version)
+    try {
+      const res = await toolsApi.rollback(toolId, v.version)
+      const affected = res?.affected_agents || []
+      if (affected.length > 0) {
+        toast.success(`已回滚到 v${v.version}，工具改名已同步到 ${affected.length} 个智能体`)
+      } else {
+        toast.success(`已回滚到 v${v.version}`)
+      }
+      onRolledBack?.(res)
+      onClose()
+    } catch (e) {
+      toast.error(`回滚失败：${e.message || e}`)
+    } finally {
+      setRolling(null)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      title="工具版本历史"
+      onClose={onClose}
+      maxWidth="max-w-xl"
+      footer={
+        <button type="button" onClick={onClose} className="btn-secondary">关闭</button>
+      }
+    >
+      <p className="mb-3 text-xs text-muted-foreground">
+        每次保存前自动存档，误改后可一键回退到历史版本。
+      </p>
+      {loading ? (
+        <div className="py-6 text-center text-sm text-muted-foreground">加载中…</div>
+      ) : err ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{err}</div>
+      ) : versions.length === 0 ? (
+        <div className="py-6 text-center text-sm text-muted-foreground">暂无版本记录（保存一次后才会产生快照）</div>
+      ) : (
+        <div className="flex max-h-[360px] flex-col gap-1.5 overflow-y-auto">
+          {versions.map((v) => (
+            <div key={v.id} className="flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2">
+              <span className="inline-flex items-center gap-1 text-sm font-medium text-foreground">
+                <History className="h-3.5 w-3.5 text-primary" />
+                v{v.version}
+              </span>
+              <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+                <span className="mr-2">{v.created_by || '系统'}</span>
+                {v.created_at && <span>{new Date(v.created_at).toLocaleString('zh-CN', { hour12: false })}</span>}
+              </div>
+              <button
+                type="button"
+                disabled={rolling === v.version}
+                onClick={() => handleRollback(v)}
+                className="btn-secondary btn-sm shrink-0"
+                title="回滚到此版本"
+              >
+                {rolling === v.version ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  )
+}
+
 // 调试面板：模拟入参测试 + 模拟对话调试
 // 通过 forwardRef + useImperativeHandle 暴露 triggerTest()，
 // 供「保存并测试」按钮在外部保存后直接触发面板内的入参测试
@@ -708,6 +809,7 @@ function ToolEditor() {
     name: '',
     description: '',
     enabled: true,
+    status: 'active', // 生命周期状态：draft / active / disabled / deprecated
     parameters_schema: [],
     code: 'async def run(**kwargs):\n    return {"ok": True}\n',
     tool_type: 'http', // 默认 HTTP（主流推荐）
@@ -728,6 +830,10 @@ function ToolEditor() {
   const [optimizing, setOptimizing] = useState(false)
   // 代码全屏编辑
   const [codeFullscreen, setCodeFullscreen] = useState(false)
+  // 版本历史弹窗
+  const [versionOpen, setVersionOpen] = useState(false)
+  // 分类树（供 optgroup 展示）
+  const [categoryTree, setCategoryTree] = useState([])
 
   const bypassGuard = useUnsavedChanges(dirty)
 
@@ -765,6 +871,7 @@ function ToolEditor() {
             name: tool.name || '',
             description: tool.description || '',
             enabled: tool.enabled !== false,
+            status: tool.status || 'active',
             parameters_schema: tool.parameters_schema || [],
             code: tool.code || '',
             tool_type: tool.tool_type || 'code',
@@ -790,6 +897,18 @@ function ToolEditor() {
     return () => { alive = false }
   }, [id, isEdit])
 
+  // 加载分类树（新建/编辑均需要，用于 optgroup 展示）
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const tree = await toolsApi.categories()
+        if (alive) setCategoryTree(Array.isArray(tree) ? tree : [])
+      } catch { /* 分类树加载失败时回退到空列表，不影响编辑 */ }
+    })()
+    return () => { alive = false }
+  }, [])
+
   const setField = (field) => (value) => {
     setForm((prev) => ({ ...prev, [field]: value }))
     setDirty(true)
@@ -810,6 +929,7 @@ function ToolEditor() {
         name: form.name,
         description: form.description,
         enabled: form.enabled,
+        status: form.status || 'active',
         parameters_schema: form.parameters_schema,
         code: form.code,
         tool_type: form.tool_type,
@@ -825,6 +945,11 @@ function ToolEditor() {
       }
       setDirty(false)
       bypassGuard()
+      // 改名时后端会同步更新智能体引用，返回 affected_agents 提示影响面
+      const affected = result?.affected_agents || []
+      if (affected.length > 0 && !silent) {
+        toast.success(`已保存，工具改名已同步到 ${affected.length} 个智能体`)
+      }
       if (!silent) navigate('/tools')
       return result
     } catch (err) {
@@ -896,6 +1021,24 @@ function ToolEditor() {
     }, 300)
   }
 
+  // 版本回滚后：用后端返回的工具详情刷新表单（回滚可能改名）
+  const handleRolledBack = (res) => {
+    if (!res) return
+    setForm({
+      name: res.name || '',
+      description: res.description || '',
+      enabled: res.enabled !== false,
+      status: res.status || 'active',
+      parameters_schema: res.parameters_schema || [],
+      code: res.code || '',
+      tool_type: res.tool_type || 'code',
+      http_config: res.http_config || { ...DEFAULT_HTTP_CONFIG },
+      category: res.category || null,
+      tags: res.tags || [],
+    })
+    setDirty(false)
+  }
+
   if (loading) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-background text-sm text-muted-foreground">
@@ -929,6 +1072,16 @@ function ToolEditor() {
           {dirty && <span className="text-xs text-warning">● 未保存</span>}
         </div>
         <div className="flex items-center gap-2">
+          {isEdit && (
+            <button
+              type="button"
+              onClick={() => setVersionOpen(true)}
+              className="btn-secondary btn-sm"
+              title="查看历史版本并一键回滚"
+            >
+              <History className="mr-1 h-3.5 w-3.5" /> 版本历史
+            </button>
+          )}
           <button
             type="button"
             onClick={() => handleSaveAndTest()}
@@ -1041,19 +1194,18 @@ function ToolEditor() {
             <div className="flex gap-1.5">
               <CompactSelect
                 size="md"
-                className="w-40 shrink-0"
+                className="w-44 shrink-0"
                 value={form.category || ''}
                 onChange={(e) => setField('category')(e.target.value || null)}
               >
                 <option value="">不分类</option>
-                <option value="file_operations">文件操作</option>
-                <option value="security">安全运营</option>
-                <option value="cron_jobs">定时任务</option>
-                <option value="memory">记忆</option>
-                <option value="computer_use">计算机操作</option>
-                <option value="clarifying_question">澄清提问</option>
-                <option value="task_planning">任务规划</option>
-                <option value="task_delegation">任务委派</option>
+                {categoryTree.map((group) => (
+                  <optgroup key={group.value} label={group.label}>
+                    {(group.children || []).map((leaf) => (
+                      <option key={leaf.value} value={leaf.value}>{leaf.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
                 <option value="_custom">自定义...</option>
               </CompactSelect>
               <input
@@ -1125,7 +1277,23 @@ function ToolEditor() {
               })}
             </div>
           </div>
-          <CheckRow label="启用" checked={form.enabled} onChange={setField('enabled')} hint="禁用后，Agent 推理时不会调用此工具。" />
+          <div className="flex flex-wrap items-end gap-4">
+            <div>
+              <label className={labelCls}>生命周期状态</label>
+              <CompactSelect
+                size="md"
+                className="w-40"
+                value={form.status || 'active'}
+                onChange={(e) => setField('status')(e.target.value)}
+              >
+                <option value="draft">草稿（不注册）</option>
+                <option value="active">启用</option>
+                <option value="disabled">停用</option>
+                <option value="deprecated">已弃用</option>
+              </CompactSelect>
+            </div>
+          </div>
+          <CheckRow label="启用" checked={form.enabled} onChange={setField('enabled')} hint="禁用后，Agent 推理时不会调用此工具。草稿/停用/已弃用状态也不会注册。" />
         </Card>
 
         {/* 维度二：接口定义层（仅 HTTP） */}
@@ -1465,6 +1633,14 @@ function ToolEditor() {
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onPick={handlePickOperation}
+      />
+
+      {/* 工具版本历史弹窗（编辑模式） */}
+      <ToolVersionModal
+        open={versionOpen}
+        toolId={id}
+        onClose={() => setVersionOpen(false)}
+        onRolledBack={handleRolledBack}
       />
 
       {/* 代码全屏编辑弹窗 */}

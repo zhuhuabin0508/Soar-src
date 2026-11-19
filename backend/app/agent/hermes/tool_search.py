@@ -60,10 +60,12 @@ __all__ = [
     "should_activate",
     "build_catalog",
     "search_catalog",
+    "search_catalog_hybrid",
     "bridge_tool_schemas",
     "assemble_tool_defs",
     "is_bridge_tool",
     "dispatch_tool_search",
+    "dispatch_tool_search_async",
     "dispatch_tool_describe",
     "resolve_underlying_call",
 ]
@@ -433,6 +435,53 @@ def build_catalog(
     return catalog
 
 
+# 进程级缓存：延迟工具目录（含预分词 token）。
+# key = 可延迟 tool_defs + source 的 JSON 指纹，value = 目录列表。
+# build_catalog 的 jieba 分词 + CJK 双字二元组是 CPU 开销，而同一批工具在
+# 一次对话里可能被 tool_search 反复检索；缓存后只在工具集合变化时重建。
+# 加容量上限：不同工具集合数量有限，但长期运行 + 频繁增删工具时仍应防无界增长。
+_catalog_cache: Dict[str, List[CatalogEntry]] = {}
+_CATALOG_CACHE_MAX = 128
+
+
+def _catalog_fingerprint(
+    deferrable: List[Dict[str, Any]],
+    source_map: Optional[Dict[str, str]] = None,
+) -> str:
+    """计算可延迟工具目录的指纹（含 source，避免 source 变化复用旧目录）。"""
+    sm = source_map or {}
+    sources = [
+        (
+            (td.get("function") or {}).get("name", ""),
+            sm.get((td.get("function") or {}).get("name", ""), "other"),
+        )
+        for td in deferrable
+    ]
+    return json.dumps({"defs": deferrable, "sources": sources},
+                      sort_keys=True, ensure_ascii=False)
+
+
+def _get_or_build_catalog(
+    deferrable: List[Dict[str, Any]],
+    source_map: Optional[Dict[str, str]] = None,
+) -> List[CatalogEntry]:
+    """返回延迟工具目录，按指纹做进程级缓存。
+
+    分离出来是为了让 ``dispatch_tool_search`` 每次检索都不必重建目录、
+    重复 jieba 分词。
+    """
+    fingerprint = _catalog_fingerprint(deferrable, source_map)
+    cached = _catalog_cache.get(fingerprint)
+    if cached is not None:
+        return cached
+    catalog = build_catalog(deferrable, source_map=source_map)
+    # 超过上限时按插入顺序淘汰最旧条目（dict 保持插入顺序）
+    if len(_catalog_cache) >= _CATALOG_CACHE_MAX:
+        _catalog_cache.pop(next(iter(_catalog_cache)), None)
+    _catalog_cache[fingerprint] = catalog
+    return catalog
+
+
 def _bm25_score(
     query_tokens: List[str],
     doc_tokens: List[str],
@@ -466,18 +515,17 @@ def _bm25_score(
     return score
 
 
-def search_catalog(
+def _bm25_score_all(
     catalog: List[CatalogEntry],
     query: str,
-    limit: int = 5,
-) -> List[CatalogEntry]:
-    """BM25 检索目录，返回 top-``limit`` 条目。
+) -> List[Tuple[float, CatalogEntry]]:
+    """对所有目录条目做 BM25 打分，返回按分数降序的 ``(score, entry)`` 列表。
 
-    当 BM25 无 >0 命中时，回退到工具名子串匹配。这保证查询 ``"github"`` 对
-    一个全是 ``github_*`` 工具的目录仍返回结果——BM25 在 query 与所有 doc
-    共享单一 token（零 IDF）时表现差。
+    当 BM25 无 >0 命中时，回退到工具名子串匹配（给 0.1 分）。这保证查询
+    ``"github"`` 对一个全是 ``github_*`` 工具的目录仍返回结果——BM25 在
+    query 与所有 doc 共享单一 token（零 IDF）时表现差。
     """
-    if not catalog or limit <= 0:
+    if not catalog:
         return []
     query_tokens = _tokenize(query)
     if not query_tokens:
@@ -495,18 +543,137 @@ def search_catalog(
     scored: List[Tuple[float, CatalogEntry]] = []
     for entry in catalog:
         s = _bm25_score(query_tokens, entry._tokens, avg_dl, doc_freq, n_docs)
-        if s > 0:
-            scored.append((s, entry))
+        scored.append((s, entry))
 
-    if not scored:
+    if not any(s > 0 for s, _ in scored):
         # 子串回退（工具名小写包含查询）
         ql = query.lower()
-        for entry in catalog:
-            if ql in entry.name.lower():
-                scored.append((0.1, entry))
+        scored = [(0.1 if ql in e.name.lower() else 0.0, e) for e in catalog]
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def search_catalog(
+    catalog: List[CatalogEntry],
+    query: str,
+    limit: int = 5,
+) -> List[CatalogEntry]:
+    """BM25 检索目录，返回 top-``limit`` 条目。"""
+    if not catalog or limit <= 0:
+        return []
+    scored = _bm25_score_all(catalog, query)
     return [e for _, e in scored[:limit]]
+
+
+# ============================================================================
+# 向量语义召回（BM25 + embedding 混合）
+# ============================================================================
+# 工具描述多为中文自由文本，纯 BM25 对「换个说法」的同义查询召回不足。用
+# embedding 计算 query 与工具描述向量的余弦相似度，与 BM25 分数线性加权融合，
+# 提升语义匹配命中率。embedding 不可用/失败时自动回退纯 BM25，链路始终可用。
+#
+# 文档向量进程级缓存：同一批延迟工具在一段对话内反复被 tool_search 检索，
+# 避免重复调用 embedding API（embed_texts 内部也有按文本的缓存，但这里避免
+# 重复的 dict 重建与函数开销）。
+
+# 融合权重：BM25 占 alpha、语义相似度占 1-alpha。0.5 让关键词与语义各占一半。
+_HYBRID_ALPHA = 0.5
+
+# fingerprint → {工具名: 描述向量}
+_doc_vec_cache: Dict[str, Dict[str, list]] = {}
+_DOC_VEC_CACHE_MAX = 128
+
+
+def _default_embedding_config_id(db) -> Optional[int]:
+    """取 model_type=embedding 的 LLMConfig.id，找不到返回 None（回退默认配置）。"""
+    try:
+        from app.models.llm_config import LLMConfig
+
+        cfg = db.query(LLMConfig).filter(LLMConfig.model_type == "embedding").first()
+        return cfg.id if cfg is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _embed_catalog_docs(
+    catalog: List[CatalogEntry],
+    db,
+    embedding_config_id: Optional[int],
+) -> Optional[Dict[str, list]]:
+    """为目录条目描述批量生成向量（进程级缓存），失败返回 None。"""
+    from app.core.embedding import embed_texts
+
+    texts = [(e.description or e.name) for e in catalog]
+    fp = json.dumps(texts, ensure_ascii=False)
+    cached = _doc_vec_cache.get(fp)
+    if cached is not None:
+        return cached
+
+    vecs = await embed_texts(texts, "", db=db, embedding_config_id=embedding_config_id)
+    if not vecs:
+        return None
+    result = {e.name: vecs[i] for i, e in enumerate(catalog) if i < len(vecs)}
+    # 超过上限时按插入顺序淘汰最旧条目（dict 保持插入顺序）
+    if len(_doc_vec_cache) >= _DOC_VEC_CACHE_MAX:
+        _doc_vec_cache.pop(next(iter(_doc_vec_cache)), None)
+    _doc_vec_cache[fp] = result
+    return result
+
+
+async def search_catalog_hybrid(
+    catalog: List[CatalogEntry],
+    query: str,
+    limit: int = 5,
+    *,
+    db=None,
+    embedding_config_id: Optional[int] = None,
+) -> List[CatalogEntry]:
+    """BM25 + 向量语义混合检索，返回 top-``limit`` 条目。
+
+    embedding 不可用（无配置 / 网络失败 / 模型不支持）时自动退化为纯 BM25，
+    与 ``search_catalog`` 结果一致。融合前对 BM25 分数做 min-max 归一化，
+    语义相似度用余弦（文本 embedding 通常非负，这里 clamp 到 [0,1]）。
+    """
+    if not catalog or limit <= 0:
+        return []
+    bm25 = _bm25_score_all(catalog, query)
+    if not bm25:
+        return []
+
+    # 尝试向量语义召回（失败则纯 BM25）
+    vec_scores: Dict[str, float] = {}
+    if db is not None:
+        try:
+            from app.core.embedding import cosine_similarity, embed_texts
+
+            qvecs = await embed_texts([query], "", db=db, embedding_config_id=embedding_config_id)
+            doc_vecs = await _embed_catalog_docs(catalog, db, embedding_config_id)
+            if qvecs and doc_vecs:
+                qv = qvecs[0]
+                for e in catalog:
+                    dv = doc_vecs.get(e.name)
+                    if dv:
+                        # clamp 到 [0,1]，避免负相似度拉低排序
+                        vec_scores[e.name] = max(0.0, cosine_similarity(qv, dv))
+        except Exception:  # noqa: BLE001
+            vec_scores = {}
+
+    # 融合：min-max 归一化 BM25 后与语义相似度加权
+    bm25_by_name = {e.name: s for s, e in bm25}
+    bm25_scores = [s for s, _ in bm25]
+    mn, mx = min(bm25_scores), max(bm25_scores)
+    rng = (mx - mn) or 1.0
+
+    fused: List[Tuple[float, CatalogEntry]] = []
+    for entry in catalog:
+        bm25_norm = (bm25_by_name.get(entry.name, 0.0) - mn) / rng
+        sem = vec_scores.get(entry.name, 0.0)
+        final = _HYBRID_ALPHA * bm25_norm + (1 - _HYBRID_ALPHA) * sem
+        fused.append((final, entry))
+
+    fused.sort(key=lambda x: x[0], reverse=True)
+    return [e for _, e in fused[:limit]]
 
 
 # ============================================================================
@@ -698,6 +865,24 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     }
 
 
+def _resolve_search_limit(args: Dict[str, Any], config: ToolSearchConfig) -> int:
+    """解析 tool_search 的 limit 参数（钳制到 [1, max_search_limit]）。"""
+    raw_limit = args.get("limit")
+    if raw_limit is None:
+        return config.search_default_limit
+    return max(1, min(config.max_search_limit,
+                      _safe_int(raw_limit, config.search_default_limit)))
+
+
+def _search_result_json(query: str, catalog: List[CatalogEntry], hits: List[CatalogEntry]) -> str:
+    """把检索结果打包成 JSON 字符串（dispatch 两个版本共用）。"""
+    return json.dumps({
+        "query": query,
+        "total_available": len(catalog),
+        "matches": [_format_search_hit(h) for h in hits],
+    }, ensure_ascii=False)
+
+
 def dispatch_tool_search(
     args: Dict[str, Any],
     *,
@@ -705,7 +890,7 @@ def dispatch_tool_search(
     source_map: Optional[Dict[str, str]] = None,
     config: Optional[ToolSearchConfig] = None,
 ) -> str:
-    """执行 ``tool_search`` 桥接工具，返回 JSON 字符串。
+    """执行 ``tool_search`` 桥接工具（纯 BM25），返回 JSON 字符串。
 
     Args:
         args: LLM 传入的参数（``query`` / ``limit``）
@@ -719,23 +904,43 @@ def dispatch_tool_search(
     query = str(args.get("query") or "").strip()
     if not query:
         return json.dumps({"error": "query is required"}, ensure_ascii=False)
+    limit = _resolve_search_limit(args, config)
 
-    raw_limit = args.get("limit")
-    if raw_limit is None:
-        limit = config.search_default_limit
-    else:
-        limit = max(1, min(config.max_search_limit,
-                           _safe_int(raw_limit, config.search_default_limit)))
-
-    # 从完整列表分类出可延迟子集，重建目录
     _, deferrable = classify_tools(full_tool_defs, source_map=source_map)
-    catalog = build_catalog(deferrable, source_map=source_map)
+    catalog = _get_or_build_catalog(deferrable, source_map=source_map)
     hits = search_catalog(catalog, query, limit=limit)
-    return json.dumps({
-        "query": query,
-        "total_available": len(catalog),
-        "matches": [_format_search_hit(h) for h in hits],
-    }, ensure_ascii=False)
+    return _search_result_json(query, catalog, hits)
+
+
+async def dispatch_tool_search_async(
+    args: Dict[str, Any],
+    *,
+    full_tool_defs: List[Dict[str, Any]],
+    source_map: Optional[Dict[str, str]] = None,
+    config: Optional[ToolSearchConfig] = None,
+    db=None,
+) -> str:
+    """执行 ``tool_search`` 桥接工具（BM25 + 向量语义混合），返回 JSON 字符串。
+
+    与 ``dispatch_tool_search`` 唯一的区别：优先用混合检索（提升中文语义召回），
+    embedding 不可用时自动退化为纯 BM25。需要 db 会话用于取 embedding 配置与
+    调用向量化 API。
+    """
+    if config is None:
+        config = default_tool_search_config()
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return json.dumps({"error": "query is required"}, ensure_ascii=False)
+    limit = _resolve_search_limit(args, config)
+
+    _, deferrable = classify_tools(full_tool_defs, source_map=source_map)
+    catalog = _get_or_build_catalog(deferrable, source_map=source_map)
+    embedding_config_id = _default_embedding_config_id(db) if db is not None else None
+    hits = await search_catalog_hybrid(
+        catalog, query, limit=limit,
+        db=db, embedding_config_id=embedding_config_id,
+    )
+    return _search_result_json(query, catalog, hits)
 
 
 def dispatch_tool_describe(
