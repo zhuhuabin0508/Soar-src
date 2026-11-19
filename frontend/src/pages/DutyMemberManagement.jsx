@@ -20,6 +20,7 @@ const EMPTY_FORM = {
 export default function DutyMemberManagement() {
   const canEdit = hasPermission('duty_member', 'edit')
   const canDelete = hasPermission('duty_member', 'delete')
+  const canImport = hasPermission('duty_member', 'import')
 
   const [list, setList] = useState([])
   const [total, setTotal] = useState(0)
@@ -237,7 +238,8 @@ export default function DutyMemberManagement() {
   return (
     <PageContainer>
       <PageHeader
-        title="值班人员管理"
+        title="值班人员管理"
+
         actions={
           <>
             <Button variant="ghost" size="sm" onClick={openStats}>
@@ -246,7 +248,7 @@ export default function DutyMemberManagement() {
             <Button variant="ghost" size="sm" onClick={handleDownloadTemplate}>
               <Download className="mr-1 h-3.5 w-3.5" /> 下载模板
             </Button>
-            {canEdit && (
+            {canImport && (
               <Button variant="secondary" size="sm" onClick={() => setImportOpen(true)}>
                 <Upload className="mr-1 h-3.5 w-3.5" /> 批量导入
               </Button>

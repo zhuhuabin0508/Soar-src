@@ -44,6 +44,7 @@ import {
 import { mergeServerSessions, toDisplayMessages } from '../utils/chatSync'
 import { collectDocFiles } from '../utils/docFiles'
 import { useAuthStore } from '../store/authStore'
+import { hasPermission } from '../utils/permissions'
 import ChatToolbar from '../components/chat/ChatToolbar'
 import ModelSwitcher from '../components/chat/ModelSwitcher'
 import SystemPromptEditor from '../components/chat/SystemPromptEditor'
@@ -2848,6 +2849,8 @@ function ChatInput({
 }) {
   const textareaRef = useRef(null)
   const fileInputRef = useRef(null)
+  // 只读角色可查看对话历史，但发起对话需要 chat:execute
+  const canChat = hasPermission('chat', 'execute')
 
   // ===== 技能快捷选择 =====
   // 手动按钮唤起 / 输入框开头输入 "/" 唤起；技能按分类分组展示，支持模糊过滤与滚动分批加载。
@@ -3063,7 +3066,7 @@ function ChatInput({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       // 文本为空但存在已上传文件时同样允许发送（仅发附件）
-      if (!streaming && (value.trim() || uploadedFiles.length > 0)) {
+      if (!streaming && canChat && (value.trim() || uploadedFiles.length > 0)) {
         onSend(selectedSkills.map((s) => s.id))
       }
     }
@@ -3219,15 +3222,17 @@ function ChatInput({
             onChange={handleValueChange}
             onKeyDown={handleKeyDown}
             placeholder={
-              streaming
-                ? '正在生成回复，可点击右侧停止…'
-                : `和 ${agentName || '智能体'} 对话中…`
+              !canChat
+                ? '当前角色仅可查看对话，无对话执行权限'
+                : streaming
+                  ? '正在生成回复，可点击右侧停止…'
+                  : `和 ${agentName || '智能体'} 对话中…`
             }
             rows={1}
             aria-label="消息输入框"
             className="w-full resize-none bg-transparent px-2 pb-2 pt-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
             style={{ maxHeight: `${INPUT_MAX_HEIGHT}px`, minHeight: '44px' }}
-            disabled={streaming}
+            disabled={streaming || !canChat}
           />
           <div className="flex items-center justify-between gap-2">
             {/* 左：技能选择 + 附件按钮 + 隐藏的文件选择 input */}
@@ -3235,7 +3240,7 @@ function ChatInput({
               <button
                 type="button"
                 onClick={toggleSkillPanel}
-                disabled={streaming}
+                disabled={streaming || !canChat}
                 aria-expanded={skillOpen}
                 className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition disabled:opacity-40 ${
                   skillOpen
@@ -3250,7 +3255,7 @@ function ChatInput({
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={streaming || uploading}
+                disabled={streaming || uploading || !canChat}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
                 title="上传文件（Excel/Word/PDF 等，不做 RAG）"
               >
@@ -3288,7 +3293,7 @@ function ChatInput({
                   type="button"
                   onClick={handleSendClick}
                   // 文本为空但存在已上传文件时同样可发送（仅发附件）
-                  disabled={!(value.trim() || uploadedFiles.length > 0)}
+                  disabled={!canChat || !(value.trim() || uploadedFiles.length > 0)}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition hover:opacity-90 hover:shadow-[0_0_14px_oklch(var(--primary)/0.4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:opacity-40 disabled:hover:shadow-none"
                   title="发送"
                 >

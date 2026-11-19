@@ -216,6 +216,8 @@ function ImportDialog({ open, tableName, sourceName, importing, importPhase, onC
 export default function GovCloudAssets() {
   const canView = hasPermission('asset_discovery', 'view')
   const canEdit = hasPermission('asset_discovery', 'edit')
+  const canImport = hasPermission('asset_discovery', 'import')
+  const canExport = hasPermission('asset_discovery', 'export')
   const [importOpen, setImportOpen] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const [fieldLabels, setFieldLabels] = useState({})
@@ -492,7 +494,7 @@ export default function GovCloudAssets() {
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </Button>
-          {canView && sourceEnabled && (
+          {canExport && sourceEnabled && (
             <Button
               variant="secondary"
               size="sm"
@@ -515,7 +517,7 @@ export default function GovCloudAssets() {
               {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               {syncing ? '同步中' : `同步${currentTable?.excel_name || '青藤主机'}`}
             </Button>
-          ) : canEdit && sourceEnabled ? (
+          ) : canImport && sourceEnabled ? (
             <Button
               variant="primary"
               size="sm"
@@ -768,7 +770,7 @@ export default function GovCloudAssets() {
                       <Button variant="primary" size="sm" disabled={syncing} onClick={handleSync}>
                         <RefreshCw className="h-3.5 w-3.5" /> 同步青藤主机
                       </Button>
-                    ) : canEdit ? (
+                    ) : canImport ? (
                       <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
                         <Upload className="h-3.5 w-3.5" /> 导入 Excel
                       </Button>

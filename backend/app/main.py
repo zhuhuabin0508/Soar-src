@@ -196,10 +196,17 @@ def _sync_role_permission_modules(db) -> None:
     """
     from app.core.permissions import PERMISSION_MODULES, migrate_permissions
     from app.models.role import Role
+    from app.models.system_config import SystemConfig
 
     roles = db.query(Role).all()
     changed = 0
     full = {mod: list(actions) for mod, actions in PERMISSION_MODULES.items()}
+    # 细粒度动作（import/export 等）的兼容补权只在升级后首次启动执行一次，
+    # 之后由管理员显式配置；否则管理员取消勾选后会被每次重启重新补回。
+    grant_key = "permissions.granular_actions_migrated"
+    grant_new_actions = (
+        db.query(SystemConfig).filter(SystemConfig.key == grant_key).first() is None
+    )
     for role in roles:
         if role.name == "admin":
             if role.permissions != full:
@@ -207,12 +214,21 @@ def _sync_role_permission_modules(db) -> None:
                 db.add(role)
                 changed += 1
             continue
+        # 所有非 admin 角色（含系统内置 analyst / viewer）统一走迁移：
+        # 升级后首个启动补新增动作并清理旧键，后续启动保留管理员对系统角色的显式调整
         perms = role.permissions if isinstance(role.permissions, dict) else {}
-        migrated = migrate_permissions(perms)
+        migrated = migrate_permissions(perms, grant_new_actions=grant_new_actions)
         if migrated != perms:
             role.permissions = migrated
             db.add(role)
             changed += 1
+    if grant_new_actions:
+        db.add(SystemConfig(
+            key=grant_key,
+            value="1",
+            description="权限矩阵导入/导出等细粒度动作已完成一次性升级迁移",
+        ))
+        changed += 1
     if changed:
         db.commit()
         logger.info("已同步 %d 个角色的权限模块（含资产发现）", changed)

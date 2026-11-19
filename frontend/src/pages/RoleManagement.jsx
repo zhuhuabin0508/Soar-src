@@ -74,7 +74,7 @@ const MODULE_GROUPS = [
   {
     key: 'resources',
     label: '资源管理',
-    modules: ['asset_overview', 'asset_list', 'asset_templates', 'asset_discovery', 'ip_library', 'deliverable'],
+    modules: ['asset_overview', 'asset_list', 'asset_templates', 'asset_discovery', 'report', 'ip_library', 'deliverable'],
   },
   {
     key: 'operations',
@@ -104,7 +104,7 @@ const MODULE_GROUPS = [
 ]
 
 // 所有动作列表（用于表头）
-const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'handle', 'pause']
+const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'import', 'publish', 'handle', 'pause']
 
 // 检查是否拥有全部权限
 function hasAllPermissions(permissions, moduleDef) {

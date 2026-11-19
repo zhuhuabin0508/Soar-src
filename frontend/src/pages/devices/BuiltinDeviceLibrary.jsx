@@ -19,6 +19,7 @@ import { Modal } from '../../components/Dialog'
 import { CompactSelect, PageContainer, PageHeader, SearchInput } from '../../components/ui'
 import { inputCls } from '../../components/property/FormControls'
 import { toast } from '../../store/toastStore'
+import { isAdmin } from '../../utils/permissions'
 import { ActionFormModal } from './ActionModal'
 import { CategoryBadge, DeviceTypeIcon, MethodBadge, RiskBadge, Section, Switch } from './Badges'
 import {
@@ -518,6 +519,8 @@ function LogsModal({ open, template, logs, loading, onClose }) {
 
 // ============ 主页面 ============
 export default function BuiltinDeviceLibrary() {
+  // 内置模板的写操作仅管理员可用（后端 require_role("admin")）
+  const canManage = isAdmin()
   const [items, setItems] = useState([])
   const [facets, setFacets] = useState({ types: [], vendors: [] })
   const [loading, setLoading] = useState(true)
@@ -804,28 +807,33 @@ export default function BuiltinDeviceLibrary() {
   return (
     <PageContainer>
       <PageHeader
-        title="内置设备库"
+        title="内置设备库"
+
         actions={
           <>
             <button type="button" onClick={loadTemplates} className="btn-secondary btn-sm" title="刷新">
               <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
               刷新
             </button>
-            <button type="button" onClick={openImport} className="btn-secondary btn-sm">
-              <Inbox className="mr-1 h-3.5 w-3.5" />
-              从现有设备入库
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditingTemplate(null)
-                setFormOpen(true)
-              }}
-              className="btn-primary btn-sm"
-            >
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              新增内置条目
-            </button>
+            {canManage && (
+              <button type="button" onClick={openImport} className="btn-secondary btn-sm">
+                <Inbox className="mr-1 h-3.5 w-3.5" />
+                从现有设备入库
+              </button>
+            )}
+            {canManage && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTemplate(null)
+                  setFormOpen(true)
+                }}
+                className="btn-primary btn-sm"
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                新增内置条目
+              </button>
+            )}
           </>
         }
       />
@@ -998,18 +1006,20 @@ export default function BuiltinDeviceLibrary() {
                                     </div>
                                   </button>
                                   <div className="flex shrink-0 items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setInstantiateTemplate(tpl)
-                                        setInstantiateOpen(true)
-                                      }}
-                                      className="btn-primary btn-sm"
-                                      title="复用该模板创建设备"
-                                    >
-                                      <Copy className="mr-1 h-3 w-3" />
-                                      复用创建
-                                    </button>
+                                    {canManage && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setInstantiateTemplate(tpl)
+                                          setInstantiateOpen(true)
+                                        }}
+                                        className="btn-primary btn-sm"
+                                        title="复用该模板创建设备"
+                                      >
+                                        <Copy className="mr-1 h-3 w-3" />
+                                        复用创建
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() => openLogs(tpl)}
@@ -1018,25 +1028,29 @@ export default function BuiltinDeviceLibrary() {
                                     >
                                       <FileClock className="h-3.5 w-3.5" />
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setEditingTemplate(tpl)
-                                        setFormOpen(true)
-                                      }}
-                                      className="btn-secondary btn-sm"
-                                    >
-                                      <Pencil className="mr-1 h-3 w-3" />
-                                      编辑
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteTemplate(tpl)}
-                                      className="btn-danger btn-sm"
-                                    >
-                                      <Trash2 className="mr-1 h-3 w-3" />
-                                      删除
-                                    </button>
+                                    {canManage && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingTemplate(tpl)
+                                            setFormOpen(true)
+                                          }}
+                                          className="btn-secondary btn-sm"
+                                        >
+                                          <Pencil className="mr-1 h-3 w-3" />
+                                          编辑
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDeleteTemplate(tpl)}
+                                          className="btn-danger btn-sm"
+                                        >
+                                          <Trash2 className="mr-1 h-3 w-3" />
+                                          删除
+                                        </button>
+                                      </>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() => toggleExpand(tpl)}
@@ -1058,14 +1072,16 @@ export default function BuiltinDeviceLibrary() {
                                       <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                                         固化动作（{actionsLoading[tpl.id] ? '...' : actions.length} 个）
                                       </h3>
-                                      <button
-                                        type="button"
-                                        onClick={() => openCreateAction(tpl.id)}
-                                        className="btn-primary btn-sm"
-                                      >
-                                        <Plus className="mr-1 h-3 w-3" />
-                                        新增动作
-                                      </button>
+                                      {canManage && (
+                                        <button
+                                          type="button"
+                                          onClick={() => openCreateAction(tpl.id)}
+                                          className="btn-primary btn-sm"
+                                        >
+                                          <Plus className="mr-1 h-3 w-3" />
+                                          新增动作
+                                        </button>
+                                      )}
                                     </div>
                                     {actionsLoading[tpl.id] ? (
                                       <div className="h-20 w-full rounded skeleton-shimmer" />
@@ -1121,20 +1137,24 @@ export default function BuiltinDeviceLibrary() {
                                                 </td>
                                                 <td className="px-3 py-2.5">
                                                   <div className="flex items-center gap-1 whitespace-nowrap">
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => openEditAction(tpl.id, a)}
-                                                      className="btn-secondary btn-sm"
-                                                    >
-                                                      编辑
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => handleDeleteAction(tpl.id, a)}
-                                                      className="btn-danger btn-sm"
-                                                    >
-                                                      删除
-                                                    </button>
+                                                    {canManage && (
+                                                      <>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => openEditAction(tpl.id, a)}
+                                                          className="btn-secondary btn-sm"
+                                                        >
+                                                          编辑
+                                                        </button>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => handleDeleteAction(tpl.id, a)}
+                                                          className="btn-danger btn-sm"
+                                                        >
+                                                          删除
+                                                        </button>
+                                                      </>
+                                                    )}
                                                   </div>
                                                 </td>
                                               </tr>

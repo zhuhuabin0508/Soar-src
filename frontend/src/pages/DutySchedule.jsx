@@ -56,6 +56,7 @@ export default function DutySchedule() {
   const navigate = useNavigate()
   const canEdit = hasPermission('duty_schedule', 'edit')
   const canDelete = hasPermission('duty_schedule', 'delete')
+  const canExport = hasPermission('duty_schedule', 'export')
 
   // 视图模式与日期范围
   const today = new Date()
@@ -465,7 +466,8 @@ export default function DutySchedule() {
             {rosterType === 'RESERVE' ? <ShieldCheck className="h-3 w-3" /> : rosterType === 'ALL' ? <Layers className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
             {rosterLabel(rosterType)}
           </span>
-        }
+        }
+
         actions={
           <>
             {/* 值班表类型切换：日常运营 / 重保，切换后列表、月视图、统计、导出均按类型隔离 */}
@@ -489,7 +491,9 @@ export default function DutySchedule() {
             </div>
             <div className="h-6 w-px bg-border" />
             <Button variant="ghost" size="sm" onClick={openSpecial}><CalendarCog className="mr-1 h-3.5 w-3.5" />特殊日期</Button>
-            <Button variant="ghost" size="sm" onClick={handleExport}><Download className="mr-1 h-3.5 w-3.5" />导出</Button>
+            {canExport && (
+              <Button variant="ghost" size="sm" onClick={handleExport}><Download className="mr-1 h-3.5 w-3.5" />导出</Button>
+            )}
             {canEdit && stats && stats.draft > 0 && <Button variant="secondary" size="sm" className="whitespace-nowrap" onClick={handlePublishRange}><CheckCircle2 className="mr-1 h-3.5 w-3.5" />发布草稿<span className="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-500">{stats.draft}</span></Button>}
             <Button variant="secondary" size="sm" onClick={() => navigate('/duty/schedule/graph')}><LayoutGrid className="mr-1 h-3.5 w-3.5" />值班表（图形化）</Button>
             {canEdit && <Button variant="primary" size="sm" onClick={openCreate}><Plus className="mr-1 h-3.5 w-3.5" />新建值班表</Button>}

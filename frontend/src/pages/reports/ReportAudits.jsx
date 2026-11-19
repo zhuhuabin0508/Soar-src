@@ -24,6 +24,7 @@ export default function ReportAudits() {
   const [comment, setComment] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [pdfTarget, setPdfTarget] = useState(null)
+  const [exportFormat, setExportFormat] = useState('docx')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -71,7 +72,7 @@ export default function ReportAudits() {
     {
       key: 'file_name',
       header: '文件',
-      width: '28%',
+      width: '22%',
       render: (row) => (
         <div className="min-w-0">
           <div className="truncate text-foreground">{row.file_name}</div>
@@ -81,11 +82,11 @@ export default function ReportAudits() {
     },
     { key: 'status', header: '状态', width: '12%', render: (row) => <StatusOf map={ARTIFACT_STATUS} value={row.status} /> },
     { key: 'created_at', header: '生成时间', width: '16%', render: (row) => fmtTime(row.created_at) },
-    { key: 'review', header: '审核意见', width: '14%', render: (row) => row.review_comment || '—' },
+    { key: 'review', header: '审核意见', width: '12%', render: (row) => row.review_comment || '—' },
     {
       key: 'actions',
       header: '操作',
-      width: '12%',
+      width: '20%',
       render: (row) => (
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <Button
@@ -98,15 +99,29 @@ export default function ReportAudits() {
           >
             <FileText className="h-3.5 w-3.5" />
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => reportApi.artifacts
-              .download(row.id, row.file_name)
-              .catch((e) => toast.error(e.message))}
-          >
-            <Download className="h-3.5 w-3.5" />
-          </Button>
+          {hasPermission('report', 'export') && (
+            <div className="flex items-center gap-1">
+              <CompactSelect
+                size="sm"
+                value={exportFormat}
+                onChange={(e) => setExportFormat(e.target.value)}
+                title="导出格式"
+              >
+                <option value="docx">DOCX</option>
+                <option value="pdf">PDF</option>
+                <option value="html">HTML</option>
+              </CompactSelect>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => reportApi.artifacts
+                  .download(row.id, row.file_name, exportFormat)
+                  .catch((e) => toast.error(e.message))}
+              >
+                <Download className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
           {['draft', 'pending_review'].includes(row.status) && hasPermission('report', 'publish') && (
             <>
               <Button size="sm" variant="ghost" onClick={() => openReview(row, 'approve')}>

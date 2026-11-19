@@ -38,7 +38,7 @@ import { confirm } from '../components/ConfirmDialog'
 import {CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
-import { canEditResource } from '../utils/permissions'
+import { canEditResource, hasPermission } from '../utils/permissions'
 
 // 默认 HTTP 工具配置
 const DEFAULT_HTTP_CONFIG = {
@@ -990,17 +990,19 @@ function ToolEditor() {
                   在沙箱中运行 Python 代码，适合复杂逻辑、数据处理、算法实现等。
                 </div>
               </button>
-              <button
-                type="button"
-                onClick={() => setImportOpen(true)}
-                className="flex flex-col items-start gap-1.5 rounded-lg border border-dashed border-primary/50 p-4 text-left transition hover:bg-primary/10"
-              >
-                <Zap className="h-6 w-6 text-primary" />
-                <div className="text-sm font-semibold text-foreground">OpenAPI 导入</div>
-                <div className="text-xs leading-relaxed text-muted-foreground">
-                  从 Swagger/OpenAPI 规范批量导入已有接口，快速生成 HTTP 工具。
-                </div>
-              </button>
+              {hasPermission('tool', 'import') && (
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(true)}
+                  className="flex flex-col items-start gap-1.5 rounded-lg border border-dashed border-primary/50 p-4 text-left transition hover:bg-primary/10"
+                >
+                  <Zap className="h-6 w-6 text-primary" />
+                  <div className="text-sm font-semibold text-foreground">OpenAPI 导入</div>
+                  <div className="text-xs leading-relaxed text-muted-foreground">
+                    从 Swagger/OpenAPI 规范批量导入已有接口，快速生成 HTTP 工具。
+                  </div>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1441,7 +1443,7 @@ function ToolEditor() {
         )}
 
         {/* 维度六：调试与测试面板（framework 工具不可测试） */}
-        {!isFramework && (
+        {!isFramework && hasPermission('tool', 'execute') && (
         <div ref={debugTriggerRef}>
         <Card title="调试与测试面板" icon={<TestTube className="h-4 w-4" />} defaultOpen={false}>
           <DebugPanel

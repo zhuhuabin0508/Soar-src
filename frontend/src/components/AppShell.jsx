@@ -129,7 +129,7 @@ export const NAV_GROUPS = [
           { to: '/source-entries', icon: ListTree, label: '数据源条目', end: true, perm: ['device', 'view'] },
           { to: '/strategies', icon: FileJson, label: '解析模板', end: true, perm: ['strategy', 'view'] },
           { to: '/alerts', icon: BellRing, label: '告警列表', end: true, perm: ['alert', 'view'] },
-          { to: '/alert-rules', icon: Filter, label: '告警规则', end: true, perm: ['alert', 'view'] },
+          { to: '/alert-rules', icon: Filter, label: '告警规则', end: true, perm: ['alert_rule', 'view'] },
           { to: '/ingest-monitor', icon: Activity, label: '入库监控', end: true, perm: ['monitor', 'view'] },
           { to: '/lineage', icon: GitGraph, label: '数据血缘', end: true, perm: ['device', 'view'] },
         ],

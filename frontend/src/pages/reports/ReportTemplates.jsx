@@ -1,6 +1,6 @@
 // 报告模板库：模板 CRUD、docx 版本上传、manifest 解析查看、版本发布与差异对比
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FileText, Plus, RefreshCw, Search, Sparkles, Upload } from 'lucide-react'
+import { FileText, Plus, RefreshCw, Search, Sparkles, Trash2, Upload } from 'lucide-react'
 import { reportApi } from '../../api/reports'
 import {
   Badge, Button, Card, CompactSelect, DataTable, EmptyState, PageContainer, PageHeader, Pagination, SearchInput,
@@ -512,6 +512,7 @@ function TemplateDetailDrawer({ templateId, onClose, onChanged }) {
   const [previewVersion, setPreviewVersion] = useState(null)
   const [publishingId, setPublishingId] = useState(null)
   const [diff, setDiff] = useState(null)
+  const [manifestEditOpen, setManifestEditOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -614,6 +615,7 @@ function TemplateDetailDrawer({ templateId, onClose, onChanged }) {
                     <div className="flex flex-wrap gap-1">
                       <Button size="sm" variant="ghost" onClick={() => setPreviewVersion(r)}>预览</Button>
                       <Button size="sm" variant="ghost" onClick={() => showManifest(r.id)}>清单</Button>
+                      {hasPermission('report', 'export') && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -623,6 +625,7 @@ function TemplateDetailDrawer({ templateId, onClose, onChanged }) {
                       >
                         下载
                       </Button>
+                      )}
                       {r.status !== 'published' && canPublish() && (
                         <Button
                           size="sm"
@@ -648,6 +651,13 @@ function TemplateDetailDrawer({ templateId, onClose, onChanged }) {
               title={`占位符清单 ${manifestVersion ? `（版本 #${manifestVersion}）` : ''}`}
               description={`章节 ${manifest.sections?.length || 0} 个 · 占位符 ${manifest.placeholders?.length || 0} 个`}
             >
+              {canEdit() && (
+                <div className="mb-3 flex justify-end">
+                  <Button size="sm" variant="ghost" onClick={() => setManifestEditOpen(true)}>
+                    <Sparkles className="mr-1 h-3.5 w-3.5" />编辑清单
+                  </Button>
+                </div>
+              )}
               {(manifest.warnings || []).length > 0 && (
                 <div className="mb-3 rounded border border-warning/30 bg-warning/10 p-2 text-xs text-warning">
                   {(manifest.warnings || []).map((w, i) => <div key={i}>{w}</div>)}
@@ -656,6 +666,15 @@ function TemplateDetailDrawer({ templateId, onClose, onChanged }) {
               <ManifestTable manifest={manifest} />
             </Card>
           )}
+
+          <ManifestEditor
+            open={manifestEditOpen}
+            templateId={templateId}
+            versionId={manifestVersion}
+            manifest={manifest}
+            onClose={() => setManifestEditOpen(false)}
+            onSaved={(m) => { setManifest(m); onChanged?.() }}
+          />
 
           {diff && (
             <Card title={`版本差异：v${data.versions?.find((v) => v.id === diff.baseId)?.version_no} → v${data.versions?.find((v) => v.id === diff.targetId)?.version_no}`}>
@@ -810,5 +829,240 @@ function DiffLine({ label, values = [], tone }) {
         {values?.length ? values.join('、') : '无'}
       </span>
     </div>
+  )
+}
+
+// --------------------------------------------------------------------------- //
+// manifest 编辑器：在线修正模板解析结果（章节 / 占位符 / 表格列 增删改）
+// --------------------------------------------------------------------------- //
+function ManifestEditor({ open, templateId, versionId, manifest, onClose, onSaved }) {
+  const [draft, setDraft] = useState({ sections: [], placeholders: [] })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (open && manifest) {
+      setDraft(JSON.parse(JSON.stringify({
+        sections: manifest.sections || [],
+        placeholders: manifest.placeholders || [],
+      })))
+    }
+  }, [open, manifest])
+
+  const sections = draft.sections || []
+  const placeholders = draft.placeholders || []
+
+  const patchSection = (i, patch) => setDraft((d) => {
+    const next = { ...d, sections: [...(d.sections || [])] }
+    next.sections[i] = { ...next.sections[i], ...patch }
+    return next
+  })
+  const addSection = () => setDraft((d) => ({
+    ...d,
+    sections: [...(d.sections || []), { id: `s${Date.now()}`, title: '', required: false }],
+  }))
+  const removeSection = (i) => setDraft((d) => ({
+    ...d,
+    sections: (d.sections || []).filter((_, idx) => idx !== i),
+  }))
+
+  const patchPlaceholder = (i, patch) => setDraft((d) => {
+    const next = { ...d, placeholders: [...(d.placeholders || [])] }
+    next.placeholders[i] = { ...next.placeholders[i], ...patch }
+    return next
+  })
+  const addPlaceholder = () => setDraft((d) => ({
+    ...d,
+    placeholders: [...(d.placeholders || []), {
+      id: `p${Date.now()}`,
+      token: '',
+      label: '',
+      type: 'scalar',
+      required: false,
+      locations: [],
+      columns: [],
+    }],
+  }))
+  const removePlaceholder = (i) => setDraft((d) => ({
+    ...d,
+    placeholders: (d.placeholders || []).filter((_, idx) => idx !== i),
+  }))
+
+  const patchColumn = (pi, ci, patch) => setDraft((d) => {
+    const placeholders = [...(d.placeholders || [])]
+    const cols = [...(placeholders[pi].columns || [])]
+    cols[ci] = { ...cols[ci], ...patch }
+    placeholders[pi] = { ...placeholders[pi], columns: cols }
+    return { ...d, placeholders }
+  })
+  const addColumn = (pi) => setDraft((d) => {
+    const placeholders = [...(d.placeholders || [])]
+    placeholders[pi] = {
+      ...placeholders[pi],
+      columns: [...(placeholders[pi].columns || []), { key: '', label: '', type: 'string' }],
+    }
+    return { ...d, placeholders }
+  })
+  const removeColumn = (pi, ci) => setDraft((d) => {
+    const placeholders = [...(d.placeholders || [])]
+    placeholders[pi] = {
+      ...placeholders[pi],
+      columns: (placeholders[pi].columns || []).filter((_, idx) => idx !== ci),
+    }
+    return { ...d, placeholders }
+  })
+
+  const save = async () => {
+    for (const s of sections) {
+      if (!s.title.trim()) { toast.warning('章节标题不能为空'); return }
+    }
+    for (const p of placeholders) {
+      if (!p.token.trim()) { toast.warning('占位符 token 不能为空'); return }
+      if (p.type === 'table') {
+        for (const c of (p.columns || [])) {
+          if (!c.key.trim()) { toast.warning(`表格占位符 ${p.token} 存在空列名`); return }
+        }
+      }
+    }
+    setSaving(true)
+    try {
+      const res = await reportApi.templates.updateManifest(templateId, versionId, {
+        sections,
+        placeholders,
+      })
+      toast.success('manifest 已更新')
+      onSaved?.(res.manifest)
+      onClose()
+    } catch (err) {
+      toast.error(err.message || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      title="编辑模板清单（manifest）"
+      size="xl"
+      onClose={onClose}
+      footer={(
+        <>
+          <Button onClick={onClose}>取消</Button>
+          <Button variant="primary" loading={saving} onClick={save}>保存</Button>
+        </>
+      )}
+    >
+      <div className="space-y-4 text-sm">
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="font-medium text-foreground">章节（{sections.length}）</h4>
+            <Button size="sm" variant="ghost" onClick={addSection}>
+              <Plus className="mr-1 h-3.5 w-3.5" />新增章节
+            </Button>
+          </div>
+          {!sections.length && <p className="text-xs text-muted-foreground">暂无章节</p>}
+          {sections.map((s, i) => (
+            <div key={s.id || i} className="mb-2 flex items-center gap-2">
+              <input
+                className={inputCls}
+                value={s.title}
+                placeholder="章节标题"
+                onChange={(e) => patchSection(i, { title: e.target.value })}
+              />
+              <label className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={!!s.required}
+                  onChange={(e) => patchSection(i, { required: e.target.checked })}
+                />
+                必填
+              </label>
+              <Button size="sm" variant="ghost" onClick={() => removeSection(i)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="font-medium text-foreground">占位符（{placeholders.length}）</h4>
+            <Button size="sm" variant="ghost" onClick={addPlaceholder}>
+              <Plus className="mr-1 h-3.5 w-3.5" />新增占位符
+            </Button>
+          </div>
+          {!placeholders.length && <p className="text-xs text-muted-foreground">暂无占位符</p>}
+          {placeholders.map((p, i) => (
+            <div key={p.id || i} className="mb-3 rounded border border-border p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <input
+                  className={`${inputCls} font-mono`}
+                  value={p.token}
+                  placeholder="token"
+                  onChange={(e) => patchPlaceholder(i, { token: e.target.value })}
+                />
+                <CompactSelect value={p.type} onChange={(e) => patchPlaceholder(i, { type: e.target.value })}>
+                  <option value="scalar">标量 scalar</option>
+                  <option value="table">表格 table</option>
+                </CompactSelect>
+                <label className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={!!p.required}
+                    onChange={(e) => patchPlaceholder(i, { required: e.target.checked })}
+                  />
+                  必填
+                </label>
+                <Button size="sm" variant="ghost" className="ml-auto" onClick={() => removePlaceholder(i)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <input
+                className={`${inputCls} mb-2`}
+                value={p.label || ''}
+                placeholder="标签（说明该占位符含义）"
+                onChange={(e) => patchPlaceholder(i, { label: e.target.value })}
+              />
+              {p.type === 'table' && (
+                <div>
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">表格列</span>
+                    <Button size="sm" variant="ghost" onClick={() => addColumn(i)}>
+                      <Plus className="mr-1 h-3 w-3" />新增列
+                    </Button>
+                  </div>
+                  {(p.columns || []).map((c, ci) => (
+                    <div key={ci} className="mb-1 flex items-center gap-2">
+                      <input
+                        className={`${inputCls} font-mono`}
+                        value={c.key}
+                        placeholder="列 key"
+                        onChange={(e) => patchColumn(i, ci, { key: e.target.value })}
+                      />
+                      <input
+                        className={inputCls}
+                        value={c.label || ''}
+                        placeholder="列名"
+                        onChange={(e) => patchColumn(i, ci, { label: e.target.value })}
+                      />
+                      <CompactSelect value={c.type || 'string'} onChange={(e) => patchColumn(i, ci, { type: e.target.value })}>
+                        <option value="string">文本</option>
+                        <option value="number">数字</option>
+                        <option value="datetime">时间</option>
+                        <option value="boolean">布尔</option>
+                      </CompactSelect>
+                      <Button size="sm" variant="ghost" onClick={() => removeColumn(i, ci)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                  {!((p.columns || []).length) && <p className="text-xs text-muted-foreground">暂无表格列</p>}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </Modal>
   )
 }

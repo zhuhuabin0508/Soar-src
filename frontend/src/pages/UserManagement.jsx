@@ -484,6 +484,8 @@ function UserManagement() {
   const canView = hasPermission('user', 'view')
   const canEdit = hasPermission('user', 'edit')
   const canDelete = hasPermission('user', 'delete')
+  const canImport = hasPermission('user', 'import')
+  const canExport = hasPermission('user', 'export')
 
   const load = useCallback(async () => {
     if (!canView) {
@@ -1014,7 +1016,7 @@ function UserManagement() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm">刷新</button>
-          {canView && (
+          {canExport && (
             <button
               type="button"
               onClick={handleExport}
@@ -1025,7 +1027,7 @@ function UserManagement() {
               {selectedKeys.length ? `导出选中(${selectedKeys.length})` : '导出'}
             </button>
           )}
-          {canEdit && (
+          {canImport && (
             <button type="button" onClick={openImport} className="btn-secondary btn-sm">
               <Upload className="mr-1 h-3.5 w-3.5" />导入
             </button>

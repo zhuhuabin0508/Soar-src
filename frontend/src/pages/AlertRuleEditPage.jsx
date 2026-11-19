@@ -496,7 +496,7 @@ export default function AlertRuleEditPage() {
   const location = useLocation()
   const { id } = useParams()
   const editingId = id ? Number(id) : null
-  const canEdit = hasPermission('alert', 'handle')
+  const canEdit = hasPermission('alert_rule', 'edit')
 
   const [form, setForm] = useState(() => ruleToForm(location.state?.initial || null))
   const [initialSnap, setInitialSnap] = useState(() => JSON.stringify(ruleToForm(location.state?.initial || null)))

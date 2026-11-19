@@ -14,6 +14,7 @@ import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
 import { useSelection } from '../hooks/useSelection'
 import { usePersistedFilters } from '../hooks/usePersistedFilters'
+import { hasPermission } from '../utils/permissions'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
 
 // ============ 工具函数 ============
@@ -102,6 +103,7 @@ const BACKUP_MODULES = [
 ]
 
 function BackupManagement() {
+  const canEdit = hasPermission('system_config', 'edit')
   const [activeTab, setActiveTab] = useState('records')
   const [backups, setBackups] = useState([])
   const [loading, setLoading] = useState(true)
@@ -267,19 +269,25 @@ function BackupManagement() {
             <button type="button" onClick={() => setDetailId(b.id)} className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground hover:bg-secondary">
               <FileText className="h-3 w-3" /> 详情
             </button>
-            <button type="button" onClick={() => handleDownload(b.id)} disabled={b.status !== 'completed' || b.expired || !!act} className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground hover:bg-secondary disabled:opacity-50">
-              <Download className="h-3 w-3" /> 下载
-            </button>
+            {canEdit && (
+              <button type="button" onClick={() => handleDownload(b.id)} disabled={b.status !== 'completed' || b.expired || !!act} className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground hover:bg-secondary disabled:opacity-50">
+                <Download className="h-3 w-3" /> 下载
+              </button>
+            )}
             <button type="button" onClick={() => handleVerify(b.id)} disabled={b.status !== 'completed' || b.expired || !!act} className={iconBtnCls} title="校验完整性">
               {act === 'verify' ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
             </button>
-            <button type="button" onClick={() => handleRestoreClick(b)} disabled={b.status !== 'completed' || b.expired || !!act}
-              className="inline-flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning hover:bg-warning/20 disabled:opacity-50">
-              <RotateCcw className="h-3 w-3" /> 恢复
-            </button>
-            <button type="button" onClick={() => handleDelete(b.id)} disabled={!!act} className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20 disabled:opacity-50">
-              <Trash2 className="h-3 w-3" /> 删除
-            </button>
+            {canEdit && (
+              <>
+                <button type="button" onClick={() => handleRestoreClick(b)} disabled={b.status !== 'completed' || b.expired || !!act}
+                  className="inline-flex items-center gap-1 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning hover:bg-warning/20 disabled:opacity-50">
+                  <RotateCcw className="h-3 w-3" /> 恢复
+                </button>
+                <button type="button" onClick={() => handleDelete(b.id)} disabled={!!act} className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20 disabled:opacity-50">
+                  <Trash2 className="h-3 w-3" /> 删除
+                </button>
+              </>
+            )}
             {act && act !== 'verify' && <span className="ml-1 text-xs text-muted-foreground">{act === 'download' ? '下载中' : act === 'restore' ? '恢复中' : '删除中'}</span>}
           </div>
         )
@@ -299,12 +307,16 @@ function BackupManagement() {
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">数据备份与恢复</h1>
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setUploadOpen(true)} className="btn-secondary btn-sm">
-            <Upload className="h-3.5 w-3.5" /> 上传备份
-          </button>
-          <button type="button" onClick={() => setCreateOpen(true)} className="btn-primary btn-sm">
-            <Plus className="h-3.5 w-3.5" /> 创建备份
-          </button>
+          {canEdit && (
+            <button type="button" onClick={() => setUploadOpen(true)} className="btn-secondary btn-sm">
+              <Upload className="h-3.5 w-3.5" /> 上传备份
+            </button>
+          )}
+          {canEdit && (
+            <button type="button" onClick={() => setCreateOpen(true)} className="btn-primary btn-sm">
+              <Plus className="h-3.5 w-3.5" /> 创建备份
+            </button>
+          )}
         </div>
       </header>
 
@@ -318,7 +330,7 @@ function BackupManagement() {
         )}
 
         {/* 概览卡片（4 个，两个 tab 都显示） */}
-        <OverviewCards stats={stats} onCleanup={handleCleanup} />
+        <OverviewCards stats={stats} onCleanup={canEdit ? handleCleanup : undefined} />
 
         {activeTab === 'records' && (
           <div className="mt-4 flex flex-col gap-3">
@@ -345,13 +357,13 @@ function BackupManagement() {
             </div>
             <Pagination page={page} pageSize={pageSize} total={filteredRows.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
             <BatchActions selectedCount={selectedKeys.length} onClear={clear}
-              actions={[{ key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting }]}
+              actions={canEdit ? [{ key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting }] : []}
             />
           </div>
         )}
 
         {activeTab === 'strategy' && (
-          <StrategySection strategy={strategy} loading={strategy === null} saving={strategySaving}
+          <StrategySection strategy={strategy} loading={strategy === null} saving={strategySaving} canEdit={canEdit}
             onSave={async (body) => {
               setStrategySaving(true)
               try { await backupApi.setStrategy(body); setStrategy(body); toast.success('备份策略已保存'); await load() }
@@ -493,7 +505,7 @@ function OverviewCards({ stats, onCleanup }) {
 }
 
 // ============ 策略配置区 ============
-function StrategySection({ strategy, loading, saving, onSave }) {
+function StrategySection({ strategy, loading, saving, onSave, canEdit }) {
   const [form, setForm] = useState(null)
   useEffect(() => { if (strategy) setForm({ ...strategy }) }, [strategy])
   if (loading || !form) return <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">加载中...</div>
@@ -563,11 +575,13 @@ function StrategySection({ strategy, loading, saving, onSave }) {
             <Toggle checked={!!form.is_encrypted} onChange={setF('is_encrypted')} />
           </div>
         </div>
-        <div className="mt-4 flex justify-end">
-          <button type="button" onClick={() => onSave(form)} disabled={saving} className="btn-primary btn-sm">
-            {saving ? '保存中...' : '保存策略'}
-          </button>
-        </div>
+        {canEdit && (
+          <div className="mt-4 flex justify-end">
+            <button type="button" onClick={() => onSave(form)} disabled={saving} className="btn-primary btn-sm">
+              {saving ? '保存中...' : '保存策略'}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border border-border bg-card p-6">

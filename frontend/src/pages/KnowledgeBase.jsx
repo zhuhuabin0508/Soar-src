@@ -1285,6 +1285,7 @@ function ResultTable({ columns, rows }) {
 // 知识库管理页：左侧知识库列表 + 右侧文档管理 + 搜索
 function KnowledgeBase() {
   const canCreate = hasPermission('knowledge_base', 'edit')
+  const canExport = hasPermission('knowledge_base', 'export')
   const [kbList, setKbList] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [docs, setDocs] = useState([])
@@ -2369,7 +2370,7 @@ function KnowledgeBase() {
                                     替换文件
                                   </button>
                                 )}
-                                {doc.has_original_file && (
+                                {doc.has_original_file && canExport && (
                                   <button
                                     type="button"
                                     onClick={async () => {

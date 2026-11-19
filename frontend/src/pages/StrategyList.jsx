@@ -47,6 +47,8 @@ export default function StrategyList() {
   const navigate = useNavigate()
   const canEdit = hasPermission('strategy', 'edit')
   const canDelete = hasPermission('strategy', 'delete')
+  const canImport = hasPermission('strategy', 'import')
+  const canExport = hasPermission('strategy', 'export')
 
   const [list, setList] = useState([])
   const [stats, setStats] = useState(null)
@@ -344,14 +346,16 @@ export default function StrategyList() {
           >
             <FlaskConical className="h-3.5 w-3.5" />
           </button>
-          <button
-            type="button"
-            className="btn-secondary btn-sm"
-            title="导出为 JSON 文件"
-            onClick={() => handleExport(r)}
-          >
-            <Download className="h-3.5 w-3.5" />
-          </button>
+          {canExport && (
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              title="导出为 JSON 文件"
+              onClick={() => handleExport(r)}
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
+          )}
           {canEdit && (
             <button
               type="button"
@@ -393,20 +397,20 @@ export default function StrategyList() {
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新模板列表">
             <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
           </button>
+          {canImport && (
+            <button
+              type="button"
+              onClick={() => { setImportOpen(true); setImportParsed(null) }}
+              className="btn-secondary btn-sm"
+              title="从 JSON 文件导入模板"
+            >
+              <Upload className="mr-1 h-3.5 w-3.5" /> 导入模板
+            </button>
+          )}
           {canEdit && (
-            <>
-              <button
-                type="button"
-                onClick={() => { setImportOpen(true); setImportParsed(null) }}
-                className="btn-secondary btn-sm"
-                title="从 JSON 文件导入模板"
-              >
-                <Upload className="mr-1 h-3.5 w-3.5" /> 导入模板
-              </button>
-              <button type="button" onClick={() => navigate('/strategies/new')} className="btn-primary btn-sm">
-                <Plus className="mr-1 h-3.5 w-3.5" /> 新建模板
-              </button>
-            </>
+            <button type="button" onClick={() => navigate('/strategies/new')} className="btn-primary btn-sm">
+              <Plus className="mr-1 h-3.5 w-3.5" /> 新建模板
+            </button>
           )}
         </div>
       </header>

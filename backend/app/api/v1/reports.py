@@ -202,6 +202,33 @@ def _pdf_response(content: bytes, filename: str) -> StreamingResponse:
     )
 
 
+EXPORT_FORMATS = {"docx", "pdf", "html"}
+
+
+def _normalize_export_format(fmt: str) -> str:
+    """归一化导出格式到白名单，非法值回退 docx，保证文件名/媒体类型/内容一致。"""
+    fmt = (fmt or "docx").lower()
+    return fmt if fmt in EXPORT_FORMATS else "docx"
+
+
+def _export_response(content: bytes, filename: str, fmt: str) -> StreamingResponse:
+    """按格式返回产物下载：docx 原样，pdf/html 走转换，均以附件形式下载。"""
+    fmt = _normalize_export_format(fmt)
+    if fmt == "pdf":
+        media_type = "application/pdf"
+    elif fmt == "html":
+        media_type = "text/html"
+    else:
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 模板
 # --------------------------------------------------------------------------- #
@@ -282,6 +309,28 @@ def get_template_manifest(
 
         raise ReportError(TPL_NOT_FOUND, "模板版本不属于该模板")
     return {"version": _template_version_dict(version), "manifest": version.manifest_json or {}}
+
+
+@router.put("/templates/{template_id}/versions/{version_id}/manifest")
+def update_template_manifest(
+    template_id: int,
+    version_id: int,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("report", "edit")),
+):
+    version = service.get_template_version(db, version_id)
+    if version.template_id != template_id:
+        from app.report.errors import ReportError, TPL_NOT_FOUND
+
+        raise ReportError(TPL_NOT_FOUND, "模板版本不属于该模板")
+    updated = service.update_template_manifest(
+        db,
+        version,
+        placeholders=body.get("placeholders"),
+        sections=body.get("sections"),
+    )
+    return {"manifest": updated.manifest_json or {}}
 
 
 @router.post("/templates/{template_id}/versions")
@@ -393,7 +442,7 @@ def download_template_version(
     template_id: int,
     version_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("report", "view")),
+    _: User = Depends(require_permission("report", "export")),
 ):
     version = service.get_template_version(db, version_id)
     if version.template_id != template_id:
@@ -488,6 +537,19 @@ def create_config(
             created_by=current_user.id,
         )
     )
+
+
+@router.post("/configs/{config_id}/clone")
+def clone_config(
+    config_id: int,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("report", "edit")),
+):
+    config = service.clone_config(
+        db, config_id, name=body.get("name") or "", created_by=current_user.id
+    )
+    return _config_dict(config)
 
 
 @router.patch("/configs/{config_id}")
@@ -843,8 +905,9 @@ def get_run_snapshot(
 @router.get("/runs/{run_id}/download")
 def download_run_report(
     run_id: int,
+    format: str = Query("docx"),
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("report", "view")),
+    _: User = Depends(require_permission("report", "export")),
 ):
     run = service.get_run(db, run_id)
     if not run.artifact_id:
@@ -852,10 +915,10 @@ def download_run_report(
 
         raise ReportError(ARTIFACT_NOT_FOUND, "该运行尚未生成报告")
     artifact = service.get_artifact(db, run.artifact_id)
-    return _docx_response(
-        service.load_artifact_bytes(artifact),
-        artifact.file_name or f"report_{run.id}.docx",
-    )
+    fmt = _normalize_export_format(format)
+    base = artifact.file_name or f"report_{run.id}.docx"
+    filename = f"{os.path.splitext(base)[0]}.{fmt}"
+    return _export_response(service.artifact_export_bytes(db, artifact, fmt), filename, fmt)
 
 
 @router.get("/runs/{run_id}/pdf")
@@ -923,14 +986,15 @@ def review_artifact(
 @router.get("/artifacts/{artifact_id}/download")
 def download_artifact(
     artifact_id: int,
+    format: str = Query("docx"),
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("report", "view")),
+    _: User = Depends(require_permission("report", "export")),
 ):
     artifact = service.get_artifact(db, artifact_id)
-    return _docx_response(
-        service.load_artifact_bytes(artifact),
-        artifact.file_name or f"report_{artifact.id}.docx",
-    )
+    fmt = _normalize_export_format(format)
+    base = artifact.file_name or f"report_{artifact.id}.docx"
+    filename = f"{os.path.splitext(base)[0]}.{fmt}"
+    return _export_response(service.artifact_export_bytes(db, artifact, fmt), filename, fmt)
 
 
 @router.get("/artifacts/{artifact_id}/pdf")

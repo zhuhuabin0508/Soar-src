@@ -60,6 +60,8 @@ export const reportApi = {
     detail: (id) => request(`/reports/templates/${id}`),
     manifest: (id, versionId) =>
       request(`/reports/templates/${id}/versions/${versionId}/manifest`),
+    updateManifest: (id, versionId, body) =>
+      request(`/reports/templates/${id}/versions/${versionId}/manifest`, { method: 'PUT', body }),
     uploadVersion: (id, file, changelog = '', source = 'upload') => {
       const fd = new FormData()
       fd.append('file', file)
@@ -91,6 +93,7 @@ export const reportApi = {
   configs: {
     list: (params) => request(`/reports/configs${_qs(params)}`),
     create: (body) => request('/reports/configs', { method: 'POST', body }),
+    clone: (id, body) => request(`/reports/configs/${id}/clone`, { method: 'POST', body }),
     detail: (id) => request(`/reports/configs/${id}`),
     update: (id, body) => request(`/reports/configs/${id}`, { method: 'PATCH', body }),
     version: (id, versionId) => request(`/reports/configs/${id}/versions/${versionId}`),
@@ -134,7 +137,7 @@ export const reportApi = {
     retry: (id) => request(`/reports/runs/${id}/retry`, { method: 'POST' }),
     validation: (id) => request(`/reports/runs/${id}/validation`),
     snapshot: (id) => request(`/reports/runs/${id}/snapshot`),
-    download: (id, filename) => _download(`/reports/runs/${id}/download`, filename),
+    download: (id, filename, format) => _download(`/reports/runs/${id}/download${_qs({ format })}`, filename),
     pdf: (id) => _fetchBlob(`/reports/runs/${id}/pdf`),
   },
 
@@ -143,7 +146,7 @@ export const reportApi = {
     list: (params) => request(`/reports/artifacts${_qs(params)}`),
     review: (id, action, comment = '') =>
       request(`/reports/artifacts/${id}/review`, { method: 'POST', body: { action, comment } }),
-    download: (id, filename) => _download(`/reports/artifacts/${id}/download`, filename),
+    download: (id, filename, format) => _download(`/reports/artifacts/${id}/download${_qs({ format })}`, filename),
     pdf: (id) => _fetchBlob(`/reports/artifacts/${id}/pdf`),
   },
 }

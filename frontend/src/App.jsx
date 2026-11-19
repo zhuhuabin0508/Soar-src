@@ -226,9 +226,9 @@ const router = createBrowserRouter([
           { path: '/strategies/:id/edit', element: <RequirePermission perm={['strategy', 'view']} label="解析模板"><StrategyEdit /></RequirePermission> },
           // 告警接入 - 告警列表 / 告警规则 / 解析入库监控
           { path: '/alerts', element: <RequirePermission perm={['alert', 'view']} label="告警列表"><AlertList /></RequirePermission> },
-          { path: '/alert-rules', element: <RequirePermission perm={['alert', 'view']} label="告警规则"><AlertRules /></RequirePermission> },
-          { path: '/alert-rules/new', element: <RequirePermission perm={['alert', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
-          { path: '/alert-rules/:id/edit', element: <RequirePermission perm={['alert', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
+          { path: '/alert-rules', element: <RequirePermission perm={['alert_rule', 'view']} label="告警规则"><AlertRules /></RequirePermission> },
+          { path: '/alert-rules/new', element: <RequirePermission perm={['alert_rule', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
+          { path: '/alert-rules/:id/edit', element: <RequirePermission perm={['alert_rule', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
           { path: '/ingest-monitor', element: <RequirePermission perm={['monitor', 'view']} label="入库监控"><IngestionMonitor /></RequirePermission> },
           { path: '/lineage', element: <RequirePermission perm={['device', 'view']} label="数据血缘"><LineageView /></RequirePermission> },
           // 告警自动封禁工作流：触发规则独立页面；审批/封禁/历史已合并进工作台 Tab

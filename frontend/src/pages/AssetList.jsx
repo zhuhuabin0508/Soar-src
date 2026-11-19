@@ -18,6 +18,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
 import { validateIPExpression, isIPFieldDef } from '../utils/ipValidation'
+import { hasPermission } from '../utils/permissions'
 
 // ===== 常量映射 =====
 const STATUS_LABELS = { in_use: '在用', idle: '闲置', repair: '维修', retired: '报废', lost: '丢失' }
@@ -1050,6 +1051,8 @@ export default function AssetList() {
 
   const canManage = true // 简化：admin/analyst（后端鉴权）
   const canDelete = true
+  const canImport = hasPermission('asset_list', 'import')
+  const canExport = hasPermission('asset_list', 'export')
 
   const activeTemplate = useMemo(
     () => templates.find((t) => t.code === activeTypeCode) || null,
@@ -1424,9 +1427,11 @@ export default function AssetList() {
         <button type="button" onClick={() => { setEditing(null); setFormOpen(true) }} className="btn-primary btn-sm flex items-center gap-1">
           <Plus className="h-3.5 w-3.5" /> 新增资产
         </button>
-        <button type="button" onClick={() => setImportOpen(true)} className="btn-secondary btn-sm flex items-center gap-1">
-          <Upload className="h-3.5 w-3.5" /> 导入资产
-        </button>
+        {canImport && (
+          <button type="button" onClick={() => setImportOpen(true)} className="btn-secondary btn-sm flex items-center gap-1">
+            <Upload className="h-3.5 w-3.5" /> 导入资产
+          </button>
+        )}
       </div>
     ) : null,
   }
@@ -1444,6 +1449,7 @@ export default function AssetList() {
         actions={
           <>
             {/* 数据操作下拉：导入 / 导出（ref + document 监听点击外部关闭，不用全屏遮罩） */}
+            {(canImport || canExport) && (
             <div className="relative" ref={dataMenuRef}>
               <button
                 type="button"
@@ -1456,6 +1462,7 @@ export default function AssetList() {
               </button>
               {dataMenuOpen && (
                 <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-border bg-popover p-1 shadow-lg">
+                  {canImport && (
                   <button
                     type="button"
                     disabled={!activeTemplate}
@@ -1466,6 +1473,8 @@ export default function AssetList() {
                     <Upload className="h-3.5 w-3.5 text-muted-foreground" />
                     导入资产
                   </button>
+                  )}
+                  {canExport && (
                   <button
                     type="button"
                     onClick={() => { handleExport(); setDataMenuOpen(false) }}
@@ -1474,9 +1483,11 @@ export default function AssetList() {
                     <Download className="h-3.5 w-3.5 text-muted-foreground" />
                     导出资产
                   </button>
+                  )}
                 </div>
               )}
             </div>
+            )}
             <button type="button" onClick={load} className="btn-secondary btn-sm flex items-center gap-1" title="刷新资产列表">
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
             </button>

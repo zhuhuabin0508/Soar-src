@@ -6,6 +6,7 @@ import { ClipboardList, Copy } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { systemMonitorApi } from '../../api/systemMonitor'
 import { CompactSelect, DatePicker, Pagination } from '../ui'
+import { hasPermission } from '../../utils/permissions'
 
 // 资源类型中文映射
 export const RESOURCE_LABELS = {
@@ -181,7 +182,9 @@ export default function AuditLogsPanel() {
           )}
           <button type="button" onClick={handleQuery} className="btn-primary btn-sm">查询</button>
           <button type="button" onClick={handleReset} className="btn-secondary btn-sm">重置</button>
-          <button type="button" onClick={handleExport} className="btn-secondary btn-sm">导出 CSV</button>
+          {hasPermission('audit_log', 'export') && (
+            <button type="button" onClick={handleExport} className="btn-secondary btn-sm">导出 CSV</button>
+          )}
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <input type="checkbox" checked={onlyFailed} onChange={(e) => { setOnlyFailed(e.target.checked); setOffset(0) }} className="h-3.5 w-3.5 accent-destructive" />
             <span className="text-destructive">仅看失败</span>

@@ -1240,7 +1240,7 @@ def get_asset_overview(
     }
 
 
-@router.get("/export", dependencies=[Depends(require_permission("asset_list", "view"))])
+@router.get("/export", dependencies=[Depends(require_permission("asset_list", "export"))])
 def export_assets(
     ids: str = Query("", description="指定资产 ID 列表（逗号分隔，如 '1,2,3'）；非空时只导出这些资产"),
     type_code: str = Query("", description="按资产类型模板代码筛选；传了则按模板字段列导出"),
@@ -1741,7 +1741,7 @@ def import_assets(
     conflict_strategy: str = Query("skip", description="冲突策略：skip跳过/overwrite覆盖/error报错中止"),
     request: Request = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("asset_list", "edit")),
+    user: User = Depends(require_permission("asset_list", "import")),
 ) -> dict:
     """批量导入资产（CSV/Excel）。
 

@@ -51,6 +51,8 @@ function Studio() {
   const cardMenuRef = useRef(null)
   const canCreateAgent = hasPermission('agent', 'edit')
   const canCreateWorkflow = hasPermission('workflow_list', 'edit') || hasPermission('workflow_editor', 'edit')
+  const canDeleteAgent = hasPermission('agent', 'delete')
+  const canDeleteWorkflow = hasPermission('workflow_list', 'delete')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -461,7 +463,7 @@ function Studio() {
                             <Pencil className="h-3.5 w-3.5" />
                             编辑
                           </button>
-                          {it.kind === 'agent' && editable && !it.published && (
+                          {it.kind === 'agent' && editable && canCreateAgent && !it.published && (
                             <button
                               type="button"
                               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground transition hover:bg-accent"
@@ -480,7 +482,7 @@ function Studio() {
                               发布
                             </button>
                           )}
-                          {editable && (
+                          {editable && (it.kind === 'agent' ? canDeleteAgent : canDeleteWorkflow) && (
                             <button
                               type="button"
                               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-destructive transition hover:bg-destructive/10"

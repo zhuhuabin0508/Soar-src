@@ -926,7 +926,7 @@ async def chat_agent(
     agent_id: int,
     body: AgentTestRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("agent", "execute")),
+    current_user=Depends(require_permission("chat", "execute")),
 ):
     """Hermes 引擎 SSE 对话端点。历史、执行记录和错误事件由 AgentRun 统一处理。"""
     logger.info("Agent 对话(SSE): agent_id=%s", agent_id)
@@ -975,7 +975,7 @@ async def list_chat_sessions(
     limit: int = Query(500, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("agent", "execute")),
+    current_user=Depends(require_permission("chat", "view")),
 ):
     """分页列出当前用户在该智能体下未删除的会话（新→旧）。
 
@@ -1005,7 +1005,7 @@ async def get_chat_session_messages(
     limit: int = Query(500, ge=1, le=2000),
     before_id: int | None = Query(None, ge=1, description="只取 id 小于该值的历史消息"),
     db: Session = Depends(get_db),
-    current_user=Depends(require_permission("agent", "execute")),
+    current_user=Depends(require_permission("chat", "view")),
 ):
     """分页拉取指定会话的历史消息（用于跨浏览器恢复正常对话内容）。
 

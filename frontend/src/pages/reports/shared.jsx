@@ -1,5 +1,6 @@
 // 报告中心公共常量与小组件：状态映射 / 时间格式化 / 表单字段包装
 import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Button, StatusBadge } from '../../components/ui'
 
 export const TEMPLATE_STATUS = {
@@ -58,7 +59,7 @@ export function fmtDuration(ms) {
 }
 
 // 表单字段：标题 + 必填星号 + 说明
-export function Field({ label, required, hint, children, className = '' }) {
+export function Field({ label, required, hint, error, children, className = '' }) {
   return (
     <label className={`block ${className}`}>
       <span className="mb-1 flex items-center gap-1 text-xs font-medium text-foreground">
@@ -66,6 +67,7 @@ export function Field({ label, required, hint, children, className = '' }) {
         {required && <span className="text-destructive">*</span>}
       </span>
       {children}
+      {error && <span className="mt-1 block text-xs text-destructive">{error}</span>}
       {hint && <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{hint}</span>}
     </label>
   )
@@ -192,4 +194,126 @@ export function PdfPreviewPanel({ load, filename = 'preview.pdf', autoLoad = fal
       )}
     </div>
   )
+}
+
+// --------------------------------------------------------------------------- //
+// JSON 树：可折叠展示样例数据，点击节点生成 JSONPath（数组元素以 [*] 表示）
+// --------------------------------------------------------------------------- //
+export function JsonTree({ data, onSelect, selectedPath = '' }) {
+  return (
+    <div className="max-h-[60vh] overflow-auto rounded border border-border bg-muted/20 p-2 font-mono text-xs">
+      <JsonTreeNode
+        label="$"
+        value={data}
+        path="$"
+        depth={0}
+        onSelect={onSelect}
+        selectedPath={selectedPath}
+      />
+    </div>
+  )
+}
+
+function JsonTreeNode({ label, value, path, depth, onSelect, selectedPath }) {
+  const isArr = Array.isArray(value)
+  const isObj = value !== null && typeof value === 'object' && !isArr
+  const [open, setOpen] = useState(depth < 3)
+  const selected = selectedPath === path
+
+  const selectCls = `flex min-w-0 flex-1 items-baseline gap-2 rounded px-1.5 py-0.5 text-left hover:bg-primary/10 ${
+    selected ? 'bg-primary/15 ring-1 ring-primary/40' : ''
+  }`
+
+  // 叶子节点：直接点选生成路径
+  if (!isArr && !isObj) {
+    return (
+      <button type="button" className={selectCls} onClick={() => onSelect?.(path)}>
+        {label !== null && <span className="shrink-0 text-sky-600 dark:text-sky-400">{label}:</span>}
+        <span className="truncate text-muted-foreground">{fmtLeaf(value)}</span>
+        <span className="ml-auto shrink-0 pl-3 text-[10px] text-muted-foreground/60">{path}</span>
+      </button>
+    )
+  }
+
+  const isEmpty = isArr ? value.length === 0 : Object.keys(value).length === 0
+  const summary = isArr ? `Array[${value.length}]` : `{${Object.keys(value).length}}`
+
+  return (
+    <div>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          className="shrink-0 p-0.5 text-muted-foreground hover:text-foreground"
+          onClick={() => setOpen(!open)}
+          disabled={isEmpty}
+        >
+          {isEmpty ? (
+            <span className="inline-block w-3.5" />
+          ) : open ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+        <button type="button" className={selectCls} onClick={() => onSelect?.(path)}>
+          {label !== null && <span className="shrink-0 text-sky-600 dark:text-sky-400">{label}:</span>}
+          <span className={isEmpty ? 'text-muted-foreground/60' : 'text-muted-foreground'}>{summary}</span>
+          <span className="ml-auto shrink-0 pl-3 text-[10px] text-muted-foreground/60">{path}</span>
+        </button>
+      </div>
+      {open && !isEmpty && (
+        <div className="ml-2 border-l border-border pl-2">
+          {isArr
+            ? renderArrayItems(value, path, depth, onSelect, selectedPath)
+            : Object.entries(value).map(([k, v]) => (
+                <JsonTreeNode
+                  key={k}
+                  label={k}
+                  value={v}
+                  path={`${path}.${k}`}
+                  depth={depth + 1}
+                  onSelect={onSelect}
+                  selectedPath={selectedPath}
+                />
+              ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 数组节点：元素为对象时用第一个元素展示结构，路径以 [*] 表示"每一项"
+function renderArrayItems(array, path, depth, onSelect, selectedPath) {
+  const sample = array[0]
+  const isObjectSample = sample !== null && typeof sample === 'object' && !Array.isArray(sample)
+  if (!isObjectSample) {
+    return (
+      <div className="space-y-0.5 px-1.5 py-0.5">
+        {array.slice(0, 5).map((item, index) => (
+          <div key={index} className="truncate text-muted-foreground">{fmtLeaf(item)}</div>
+        ))}
+        {array.length > 5 && <div className="text-muted-foreground/60">… 共 {array.length} 项</div>}
+      </div>
+    )
+  }
+  return Object.entries(sample).map(([k, v]) => (
+    <JsonTreeNode
+      key={k}
+      label={k}
+      value={v}
+      path={`${path}[*].${k}`}
+      depth={depth + 1}
+      onSelect={onSelect}
+      selectedPath={selectedPath}
+    />
+  ))
+}
+
+function fmtLeaf(value) {
+  if (value === null) return 'null'
+  if (typeof value === 'string') {
+    const shown = value.length > 80 ? `${value.slice(0, 80)}…` : value
+    return `"${shown}"`
+  }
+  return String(value)
 }

@@ -287,6 +287,7 @@ export default function DeliverableManagement() {
   // 权限
   const canEdit = hasPermission('deliverable', 'edit')
   const canDelete = hasPermission('deliverable', 'delete')
+  const canExport = hasPermission('deliverable', 'export')
 
   // 目录类别状态（扁平列表，前端构建树）
   const [categories, setCategories] = useState([])
@@ -1338,6 +1339,7 @@ export default function DeliverableManagement() {
               >
                 <Move className="h-3 w-3" />
               </button>
+              {canExport && (
               <button
                 type="button"
                 title="导出目录（递归打包 zip）"
@@ -1354,6 +1356,7 @@ export default function DeliverableManagement() {
                   <FolderArchive className="h-3 w-3" />
                 )}
               </button>
+              )}
               {canDelete && (
                 <button
                   type="button"
@@ -1468,7 +1471,8 @@ export default function DeliverableManagement() {
     <PageContainer>
       {/* 页头：标题 + 计数 + 右侧操作区（教程 / 刷新 / 新建目录 / 上传材料） */}
       <PageHeader
-        title="材料管理"
+        title="材料管理"
+
         extra={!catLoading && (
           <span className="text-xs text-muted-foreground">
             共 <span className="text-sm font-medium tabular-nums text-foreground">{totalFiles.toLocaleString()}</span> 个材料
@@ -1747,7 +1751,7 @@ export default function DeliverableManagement() {
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">
-              {selectedIds.size > 0 && (
+              {selectedIds.size > 0 && canExport && (
                 <Button
                   size="sm"
                   variant="secondary"
@@ -2050,6 +2054,7 @@ export default function DeliverableManagement() {
                           <Eye className="h-3 w-3" />
                         </button>
                       )}
+                      {canExport && (
                       <button
                         type="button"
                         title="下载"
@@ -2058,6 +2063,7 @@ export default function DeliverableManagement() {
                       >
                         <Download className="h-3 w-3" />
                       </button>
+                      )}
                       {canEdit && (
                         <button
                           type="button"
@@ -2231,6 +2237,7 @@ export default function DeliverableManagement() {
                                 <Eye className="h-3 w-3" />
                               </button>
                             )}
+                            {canExport && (
                             <button
                               type="button"
                               title="下载"
@@ -2239,6 +2246,7 @@ export default function DeliverableManagement() {
                             >
                               <Download className="h-3 w-3" />
                             </button>
+                            )}
                             {canEdit && (
                               <button
                                 type="button"
@@ -2349,10 +2357,12 @@ export default function DeliverableManagement() {
               ) : previewModal.error ? (
                 <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                   <p className="text-red-500">{previewModal.error}</p>
+                  {canExport && (
                   <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                     <Download className="h-3.5 w-3.5" />
                     下载文件
                   </Button>
+                  )}
                 </div>
               ) : (
                 <AutoGrowTextarea
@@ -2404,10 +2414,12 @@ export default function DeliverableManagement() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
+                {canExport && (
                 <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                   <Download className="h-3.5 w-3.5" />
                   下载
                 </Button>
+                )}
                 <button
                   type="button"
                   className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -2427,10 +2439,12 @@ export default function DeliverableManagement() {
               ) : previewModal.error ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                   <p className="max-w-md text-center text-red-500">{previewModal.error}</p>
+                  {canExport && (
                   <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                     <Download className="h-3.5 w-3.5" />
                     下载文件
                   </Button>
+                  )}
                 </div>
               ) : previewModal.type === 'pdf' && previewModal.blobUrl ? (
                 <iframe
@@ -2460,10 +2474,12 @@ export default function DeliverableManagement() {
                       || `该文件类型（.${previewModal.row.file_ext}）暂不支持在线预览`}
                   </p>
                   <p className="text-xs">支持预览：Word（.docx）/ Excel（.xlsx .xls）/ PDF / TXT / CSV / MD</p>
+                  {canExport && (
                   <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                     <Download className="h-3.5 w-3.5" />
                     下载文件
                   </Button>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -2535,6 +2551,7 @@ export default function DeliverableManagement() {
             <Move className="h-3.5 w-3.5" />
             移动目录
           </button>
+          {canExport && (
           <button
             type="button"
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-muted disabled:opacity-50"
@@ -2552,6 +2569,7 @@ export default function DeliverableManagement() {
             )}
             {exportingCatId === contextMenu.node.id ? '导出中...' : '导出目录'}
           </button>
+          )}
           {canDelete && (
             <button
               type="button"

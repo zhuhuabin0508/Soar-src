@@ -1,7 +1,7 @@
 // 报告配置列表：选择模板创建配置，进入配置向导（采集 + 映射 + 预览发布）
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, Search, Settings2, Trash2 } from 'lucide-react'
+import { Copy, Plus, RefreshCw, Search, Settings2, Trash2 } from 'lucide-react'
 import { reportApi } from '../../api/reports'
 import {
   Button, Card, CompactSelect, DataTable, PageContainer, PageHeader, Pagination, SearchInput,
@@ -28,6 +28,10 @@ export default function ReportConfigs() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ template_id: '', name: '', description: '' })
+  const [cloneOpen, setCloneOpen] = useState(false)
+  const [cloneTarget, setCloneTarget] = useState(null)
+  const [cloneName, setCloneName] = useState('')
+  const [cloning, setCloning] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -85,6 +89,31 @@ export default function ReportConfigs() {
     }
   }
 
+  const openClone = (row) => {
+    setCloneTarget(row)
+    setCloneName(`${row.name} - 副本`)
+    setCloneOpen(true)
+  }
+
+  const submitClone = async () => {
+    if (!cloneName.trim()) {
+      toast.warning('配置名称不能为空')
+      return
+    }
+    setCloning(true)
+    try {
+      const created = await reportApi.configs.clone(cloneTarget.id, { name: cloneName })
+      toast.success('已复制配置')
+      setCloneOpen(false)
+      setCloneTarget(null)
+      navigate(`/reports/configs/${created.id}`)
+    } catch (err) {
+      toast.error(err.message || '复制失败')
+    } finally {
+      setCloning(false)
+    }
+  }
+
   const disable = async (row) => {
     const ok = await confirm({
       title: '停用报告配置',
@@ -111,7 +140,7 @@ export default function ReportConfigs() {
     {
       key: 'name',
       header: '配置名称',
-      width: '28%',
+      width: '22%',
       render: (row) => (
         <div className="min-w-0">
           <div className="truncate font-medium text-foreground">{row.name}</div>
@@ -143,12 +172,17 @@ export default function ReportConfigs() {
     {
       key: 'actions',
       header: '操作',
-      width: '12%',
+      width: '18%',
       render: (row) => (
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <Button size="sm" variant="ghost" onClick={() => navigate(`/reports/configs/${row.id}`)}>
             <Settings2 className="mr-1 h-3.5 w-3.5" />配置
           </Button>
+          {hasPermission('report', 'edit') && (
+            <Button size="sm" variant="ghost" onClick={() => openClone(row)}>
+              <Copy className="mr-1 h-3.5 w-3.5" />复制
+            </Button>
+          )}
           {hasPermission('report', 'delete') && row.status !== 'disabled' && (
             <Button size="sm" variant="ghost" onClick={() => disable(row)}>
               <Trash2 className="h-3.5 w-3.5" />
@@ -251,6 +285,26 @@ export default function ReportConfigs() {
             rows={3}
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
+          />
+        </Field>
+      </Modal>
+
+      <Modal
+        open={cloneOpen}
+        title="复制报告配置"
+        onClose={() => setCloneOpen(false)}
+        footer={(
+          <>
+            <Button onClick={() => setCloneOpen(false)}>取消</Button>
+            <Button variant="primary" loading={cloning} onClick={submitClone}>复制</Button>
+          </>
+        )}
+      >
+        <Field label="新配置名称" required hint={`将复制「${cloneTarget?.name || ''}」的模板、数据源、映射与参数，生成草稿配置`}>
+          <input
+            className={inputCls}
+            value={cloneName}
+            onChange={(e) => setCloneName(e.target.value)}
           />
         </Field>
       </Modal>

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿// 告警规则列表页（XDR 风格重构）：左侧分组树面板（预置分组 + 计数 + 管理）+
+﻿﻿﻿﻿﻿﻿// 告警规则列表页（XDR 风格重构）：左侧分组树面板（预置分组 + 计数 + 管理）+
 // 严格模式提示条（可折叠，本地持久化）+ 统计卡片（可下钻）+ 导入导出 +
 // 空状态模板快速开始（预填全屏编辑页，不直接创建）+ 规则表格
 // （分组/类型文案/统计摘要/聚合标签/草稿徽标/拖拽排序/启停二次确认/
@@ -81,7 +81,9 @@ const todayStart = () => {
 
 export default function AlertRules() {
   const navigate = useNavigate()
-  const canEdit = hasPermission('alert', 'handle')
+  const canEdit = hasPermission('alert_rule', 'edit')
+  const canImport = hasPermission('alert_rule', 'import')
+  const canExport = hasPermission('alert_rule', 'export')
 
   const [list, setList] = useState([])
   const [groups, setGroups] = useState([])
@@ -573,7 +575,7 @@ export default function AlertRules() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
-          {canEdit && (
+          {(canImport || canExport) && (
             <div className="relative" ref={dataMenuRef}>
               <button
                 type="button"
@@ -586,6 +588,7 @@ export default function AlertRules() {
               </button>
               {dataMenuOpen && (
                 <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-border bg-popover p-1 shadow-lg">
+                  {canImport && (
                   <button
                     type="button"
                     disabled={importing}
@@ -595,6 +598,8 @@ export default function AlertRules() {
                     <Upload className="h-3.5 w-3.5 text-muted-foreground" />
                     {importing ? '导入中…' : '导入规则（JSON）'}
                   </button>
+                  )}
+                  {canExport && (
                   <button
                     type="button"
                     onClick={() => { handleExport(); setDataMenuOpen(false) }}
@@ -604,6 +609,7 @@ export default function AlertRules() {
                     <Download className="h-3.5 w-3.5 text-muted-foreground" />
                     {selectedKeys.length ? `导出选中（${selectedKeys.length} 条）` : '导出规则（全量）'}
                   </button>
+                  )}
                 </div>
               )}
             </div>

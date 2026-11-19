@@ -118,7 +118,7 @@ function SuccessRate({ rate }) {
 
 // 行操作下拉菜单：低频操作折叠，点击外部关闭
 // 使用 React Portal 渲染到 body，避免被父容器 overflow-hidden 裁剪
-function RowActions({ row, handlers, canEdit: canEditProp }) {
+function RowActions({ row, handlers, canEdit: canEditProp, canDelete: canDeleteProp }) {
   const [open, setOpen] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
   const btnRef = useRef(null)
@@ -160,6 +160,7 @@ function RowActions({ row, handlers, canEdit: canEditProp }) {
   const { onCopy, onExport, onViewSecret, onViewLogs, onMonitor, onEditTags, onChangeStatus, onDelete } = handlers
   // 资源级 owner 控制：非 owner/admin 不展示删除（canEdit 由调用方传入）
   const canEdit = canEditProp !== false
+  const canDelete = canDeleteProp === true
 
   const items = [
     { icon: Activity, label: '监控', onClick: () => onMonitor(row) },
@@ -167,7 +168,7 @@ function RowActions({ row, handlers, canEdit: canEditProp }) {
     { icon: Download, label: '导出', onClick: () => onExport(row) },
     { icon: Key, label: '查看密钥', onClick: () => onViewSecret(row) },
     { icon: FileText, label: '查看日志', onClick: () => onViewLogs(row) },
-    { icon: Tag, label: '更新标签', onClick: () => onEditTags(row) },
+    ...(canEdit ? [{ icon: Tag, label: '更新标签', onClick: () => onEditTags(row) }] : []),
   ]
   // 状态切换：仅展示与当前状态不同的选项
   const statusItems = []
@@ -206,9 +207,9 @@ function RowActions({ row, handlers, canEdit: canEditProp }) {
           style={{ top: `${menuPos.top}px`, left: `${menuPos.left - 144}px` }}
         >
           {items.map((it) => renderItem(it))}
-          {statusItems.length > 0 && <div className="my-1 border-t border-border" />}
-          {statusItems.map((it) => renderItem(it))}
-          {canEdit && (
+          {canEdit && statusItems.length > 0 && <div className="my-1 border-t border-border" />}
+          {canEdit && statusItems.map((it) => renderItem(it))}
+          {canDelete && (
             <>
               <div className="my-1 border-t border-border" />
               {renderItem({ icon: Trash2, label: '删除', onClick: () => onDelete(row.id, row.name) }, true)}
@@ -225,6 +226,10 @@ function RowActions({ row, handlers, canEdit: canEditProp }) {
 function WorkflowList() {
   const navigate = useNavigate()
   const canCreate = hasPermission('workflow_list', 'edit')
+  const canImport = hasPermission('workflow_list', 'import')
+  const canEditModule = hasPermission('workflow_list', 'edit')
+  const canDeleteModule = hasPermission('workflow_list', 'delete')
+  const canExecute = hasPermission('workflow_list', 'execute')
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -721,7 +726,7 @@ function WorkflowList() {
     {
       key: '__actions', header: '操作', width: '305px',
       render: (r) => {
-        const canEdit = canEditResource(r)
+        const canEdit = canEditResource(r) && canEditModule
         const canShare = canManageShare(r)
         return (
           <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -744,15 +749,17 @@ function WorkflowList() {
                 <Share2 className="h-3.5 w-3.5" />共享
               </button>
             )}
-            <button
-              type="button"
-              disabled={running && testWf?.id === r.id}
-              onClick={() => { setTestWf(r); setTestOpen(true) }}
-              className="btn-secondary btn-sm inline-flex items-center gap-1"
-            >
-              <Play className="h-3.5 w-3.5" />试运行
-            </button>
-            <RowActions row={r} handlers={rowActionHandlers} canEdit={canEdit} />
+            {canExecute && (
+              <button
+                type="button"
+                disabled={running && testWf?.id === r.id}
+                onClick={() => { setTestWf(r); setTestOpen(true) }}
+                className="btn-secondary btn-sm inline-flex items-center gap-1"
+              >
+                <Play className="h-3.5 w-3.5" />试运行
+              </button>
+            )}
+            <RowActions row={r} handlers={rowActionHandlers} canEdit={canEdit} canDelete={canEdit && canDeleteModule} />
           </div>
         )
       },
@@ -783,13 +790,15 @@ function WorkflowList() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm">刷新</button>
-          <button
-            type="button"
-            onClick={() => { setImportErr(''); setImportOpen(true) }}
-            className="btn-secondary btn-sm inline-flex items-center gap-1"
-          >
-            <Upload className="h-3.5 w-3.5" />导入
-          </button>
+          {canImport && (
+            <button
+              type="button"
+              onClick={() => { setImportErr(''); setImportOpen(true) }}
+              className="btn-secondary btn-sm inline-flex items-center gap-1"
+            >
+              <Upload className="h-3.5 w-3.5" />导入
+            </button>
+          )}
           {canCreate && (
             <button
               type="button"

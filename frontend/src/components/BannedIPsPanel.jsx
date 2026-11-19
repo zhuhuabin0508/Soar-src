@@ -30,6 +30,7 @@ import { toast } from '../store/toastStore'
 import { inputCls, inputBaseCls } from '../components/property/FormControls'
 import {CompactSelect, AutoGrowTextarea } from './ui'
 import { validateBanEntry } from '../utils/ipValidation'
+import { hasPermission } from '../utils/permissions'
 
 // 封禁等级中文映射 + 配色
 const LEVEL_META = {
@@ -157,6 +158,8 @@ function DetailModal({ open, record, onClose, onUnban, onHardDelete, canUnban, u
 function BannedIPsPanel() {
   const user = useAuthStore((s) => s.user)
   const canUnban = user?.role === 'admin'
+  const canExport = hasPermission('ban_workflow', 'export')
+  const canImport = hasPermission('ban_workflow', 'import')
 
   const [records, setRecords] = useState([])
   const [stats, setStats] = useState({ total: 0, active: 0, expired: 0, unblocked: 0 })
@@ -418,10 +421,12 @@ function BannedIPsPanel() {
               + 新增封禁
             </button>
           )}
-          <button type="button" onClick={handleExport} disabled={exporting} className="btn-secondary btn-sm">
-            {exporting ? '导出中...' : '导出全部'}
-          </button>
-          {canUnban && (
+          {canExport && (
+            <button type="button" onClick={handleExport} disabled={exporting} className="btn-secondary btn-sm">
+              {exporting ? '导出中...' : '导出全部'}
+            </button>
+          )}
+          {canImport && (
             <div className="relative">
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-secondary px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary">
@@ -459,9 +464,11 @@ function BannedIPsPanel() {
                 <Trash2 className="h-3 w-3" /> 批量删除
               </button>
             )}
-            <button type="button" onClick={handleBatchExport} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground transition hover:bg-secondary">
-              <Download className="h-3 w-3" /> 导出选中
-            </button>
+            {canExport && (
+              <button type="button" onClick={handleBatchExport} disabled={batchBusy} className="flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground transition hover:bg-secondary">
+                <Download className="h-3 w-3" /> 导出选中
+              </button>
+            )}
           </div>
           <button type="button" onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs text-muted-foreground hover:text-foreground">
             取消选择
@@ -482,14 +489,18 @@ function BannedIPsPanel() {
           <div className="flex h-60 flex-col items-center justify-center gap-3 text-muted-foreground">
             <Shield className="h-14 w-14 opacity-40" />
             <div className="text-sm font-medium">{search || statusFilter ? '没有匹配的封禁记录' : '暂无已封禁 IP 记录'}</div>
-            {!search && !statusFilter && canUnban && (
+            {!search && !statusFilter && (canUnban || canImport) && (
               <div className="flex items-center gap-2">
-                <button type="button" onClick={() => { setCreateIpTouched(false); setCreateOpen(true) }} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
-                  + 手动新增封禁
-                </button>
-                <button type="button" onClick={handleImportClick} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
-                  导入 CSV
-                </button>
+                {canUnban && (
+                  <button type="button" onClick={() => { setCreateIpTouched(false); setCreateOpen(true) }} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+                    + 手动新增封禁
+                  </button>
+                )}
+                {canImport && (
+                  <button type="button" onClick={handleImportClick} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition hover:bg-secondary hover:text-foreground">
+                    导入 CSV
+                  </button>
+                )}
               </div>
             )}
           </div>

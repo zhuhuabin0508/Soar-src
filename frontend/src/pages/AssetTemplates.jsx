@@ -13,6 +13,7 @@ import {
   Card, Badge, ErrorState, EmptyState, StatusBadge, CompactSelect, PillTabs,
 } from '../components/ui'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { hasPermission } from '../utils/permissions'
 
 const TEMPLATE_ICONS = { host_asset: Server, network_segment: Network, egress_ip: Globe }
 const FIELD_TYPES = ['text', 'number', 'date', 'select', 'textarea', 'ip', 'cidr']
@@ -460,6 +461,8 @@ function TagManager() {
 
 // ===== 主页面 =====
 export default function AssetTemplates() {
+  const canImport = hasPermission('asset_templates', 'import')
+  const canExport = hasPermission('asset_templates', 'export')
   const [tab, setTab] = useState('templates') // templates | tags
   const [templates, setTemplates] = useState([])
   const [loading, setLoading] = useState(true)
@@ -574,6 +577,7 @@ export default function AssetTemplates() {
           </button>
           {tab === 'templates' && (
             <>
+              {canImport && (
               <button
                 type="button"
                 onClick={() => { setImportOpen(true); setImportParsed(null) }}
@@ -582,6 +586,8 @@ export default function AssetTemplates() {
               >
                 <Upload className="mr-1 h-3.5 w-3.5" /> 导入模板
               </button>
+              )}
+              {canExport && (
               <button
                 type="button"
                 onClick={() => handleExport(null)}
@@ -591,6 +597,7 @@ export default function AssetTemplates() {
               >
                 <Download className={`mr-1 h-3.5 w-3.5 ${exporting === 'all' ? 'animate-pulse' : ''}`} /> 导出全部
               </button>
+              )}
               <button onClick={() => { setEditing(null); setEditorOpen(true) }} className="btn-primary btn-sm">
                 <Plus className="mr-1 h-3.5 w-3.5" /> 新建类型
               </button>
@@ -690,6 +697,7 @@ export default function AssetTemplates() {
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-1 border-t border-border px-3 py-2">
+                    {canExport && (
                     <button
                       onClick={() => handleExport(t)}
                       disabled={exporting === t.code}
@@ -698,6 +706,7 @@ export default function AssetTemplates() {
                     >
                       <Download className={`h-3 w-3 ${exporting === t.code ? 'animate-pulse' : ''}`} />
                     </button>
+                    )}
                     <button onClick={() => { setEditing(t); setEditorOpen(true) }} className="btn-secondary btn-sm" title="编辑模板">
                       <Pencil className="h-3 w-3" />
                     </button>

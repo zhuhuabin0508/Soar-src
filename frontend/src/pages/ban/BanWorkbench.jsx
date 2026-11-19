@@ -168,6 +168,7 @@ export default function BanWorkbench({ embedded = false }) {
   const canEdit = hasPermission('ban_workflow', 'edit')
   const canDelete = hasPermission('ban_workflow', 'delete')
   const canExport = hasPermission('ban_workflow', 'export')
+  const canImport = hasPermission('ban_workflow', 'import')
   const [status, setStatus] = useState('')
   const [ip, setIp] = useState('')
   const [page, setPage] = useState(1)
@@ -808,7 +809,7 @@ export default function BanWorkbench({ embedded = false }) {
               <Plus className="h-3.5 w-3.5" /> 手动封禁
             </Button>
           )}
-          {canEdit && (
+          {canImport && (
             <Button size="sm" variant="ghost" onClick={openImport}>
               <Upload className="h-3.5 w-3.5" /> 导入
             </Button>
@@ -1944,7 +1945,8 @@ export default function BanWorkbench({ embedded = false }) {
   return (
     <PageContainer>
       <PageHeader
-        title="封禁工作台"
+        title="封禁工作台"
+
         actions={(
           <Button size="sm" variant="ghost" onClick={load}>
             <RotateCw className="h-3.5 w-3.5" /> 刷新

@@ -137,7 +137,7 @@ function ImportModal({ open, libraries, onClose, onFinish }) {
   const [error, setError] = useState('')
   const pollRef = useRef(null)
   const pickRef = useRef(null)
-  const canImport = hasPermission('ip_library', 'edit')
+  const canImport = hasPermission('ip_library', 'import')
 
   // 阶段/开关引用：打开弹窗时据此决定是否重置，避免清掉后台导入中的进度
   const stageRef = useRef(stage)
@@ -457,7 +457,8 @@ export default function IpLibrary() {
 
   const [importOpen, setImportOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
-  const canImport = hasPermission('ip_library', 'edit')
+  const canImport = hasPermission('ip_library', 'import')
+  const canExport = hasPermission('ip_library', 'export')
 
   const loadMeta = useCallback(async () => {
     setMetaLoading(true)
@@ -594,9 +595,11 @@ export default function IpLibrary() {
           <Button variant="primary" size="sm" onClick={handleSearch} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} 查询
           </Button>
-          <Button variant="secondary" size="sm" onClick={handleExport} disabled={!searched || loading}>
-            <Download className="h-4 w-4" /> 导出结果
-          </Button>
+          {canExport && (
+            <Button variant="secondary" size="sm" onClick={handleExport} disabled={!searched || loading}>
+              <Download className="h-4 w-4" /> 导出结果
+            </Button>
+          )}
         </div>
 
         {showAdvanced && (

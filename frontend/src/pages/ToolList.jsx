@@ -268,6 +268,10 @@ function ToolTestModal({ open, tool, onClose, onSubmit, running }) {
 function ToolList() {
   const navigate = useNavigate()
   const canCreate = hasPermission('tool', 'edit')
+  const canImport = hasPermission('tool', 'import')
+  const canExport = hasPermission('tool', 'export')
+  const canDelete = hasPermission('tool', 'delete')
+  const canExecute = hasPermission('tool', 'execute')
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -665,7 +669,7 @@ function ToolList() {
                 <Share2 className="h-3 w-3" />
               </button>
             )}
-            {r.tool_type !== 'framework' && (
+            {canExecute && r.tool_type !== 'framework' && (
               <button
                 type="button"
                 disabled={running && testTool?.id === r.id}
@@ -676,7 +680,7 @@ function ToolList() {
                 <Play className="h-3 w-3" />
               </button>
             )}
-            {canEdit && r.tool_type !== 'framework' && !r.is_preset && (
+            {canEdit && canDelete && r.tool_type !== 'framework' && !r.is_preset && (
               <button
                 type="button"
                 onClick={() => handleDelete(r.id, r.name)}
@@ -712,15 +716,17 @@ function ToolList() {
             className="hidden"
             onChange={handleImportFile}
           />
-          <button
-            type="button"
-            onClick={handleExport}
-            className="btn-secondary btn-sm"
-            title="导出工具配置为 JSON（不含内置工具，密钥自动脱敏）"
-          >
-            <Download className="mr-1 h-3.5 w-3.5" /> 导出
-          </button>
-          {canCreate && (
+          {canExport && (
+            <button
+              type="button"
+              onClick={handleExport}
+              className="btn-secondary btn-sm"
+              title="导出工具配置为 JSON（不含内置工具，密钥自动脱敏）"
+            >
+              <Download className="mr-1 h-3.5 w-3.5" /> 导出
+            </button>
+          )}
+          {canImport && (
             <button
               type="button"
               onClick={() => importInputRef.current?.click()}
@@ -914,7 +920,7 @@ function ToolList() {
             { key: 'enable', label: '批量启用', icon: Power, variant: 'default', onClick: () => handleBatchToggle(true), loading: toggling },
             { key: 'disable', label: '批量禁用', icon: Power, variant: 'default', onClick: () => handleBatchToggle(false), loading: toggling },
             { key: 'share', label: '批量授权', icon: Share2, variant: 'default', onClick: () => setBatchShareOpen(true) },
-            { key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting },
+            ...(canDelete ? [{ key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting }] : []),
           ]}
         />
       </div>

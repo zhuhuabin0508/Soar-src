@@ -23,6 +23,7 @@ import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
 import { useSelection } from '../hooks/useSelection'
 import { usePersistedFilters } from '../hooks/usePersistedFilters'
+import { hasPermission } from '../utils/permissions'
 
 // ============ 常量映射 ============
 // 模型类型 → 中文 + 颜色
@@ -524,6 +525,9 @@ function TestHistoryModal({ open, configId, configName, onClose }) {
 
 // ============ 主组件 ============
 function LLMConfig() {
+  const canEdit = hasPermission('llm_config', 'edit')
+  const canDelete = hasPermission('llm_config', 'delete')
+  const canConfigEdit = hasPermission('system_config', 'edit')
   const [activeTab, setActiveTab] = useState('configs') // configs | monitor
   const [rows, setRows] = useState([])
   const [providers, setProviders] = useState({})
@@ -888,9 +892,15 @@ function LLMConfig() {
             {testing === r.id ? '测试中…' : '测试'}
           </button>
           <button type="button" onClick={() => { setHistoryConfig(r); setHistoryOpen(true) }} className="btn-secondary btn-sm" title="测试历史"><History className="h-3 w-3" /></button>
-          <button type="button" onClick={() => handleCopy(r)} className="btn-secondary btn-sm" title="复制配置"><Files className="h-3 w-3" /></button>
-          <button type="button" onClick={() => openEdit(r)} className="btn-secondary btn-sm">编辑</button>
-          <button type="button" onClick={() => handleDelete(r)} className="btn-danger btn-sm">删除</button>
+          {canEdit && (
+            <button type="button" onClick={() => handleCopy(r)} className="btn-secondary btn-sm" title="复制配置"><Files className="h-3 w-3" /></button>
+          )}
+          {canEdit && (
+            <button type="button" onClick={() => openEdit(r)} className="btn-secondary btn-sm">编辑</button>
+          )}
+          {canDelete && (
+            <button type="button" onClick={() => handleDelete(r)} className="btn-danger btn-sm">删除</button>
+          )}
         </div>
       ),
     },
@@ -922,24 +932,30 @@ function LLMConfig() {
                 value={healthIntervalInput}
                 onChange={(e) => setHealthIntervalInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleSaveInterval() }}
-                disabled={!intervalLoaded || savingInterval}
+                disabled={!intervalLoaded || savingInterval || !canConfigEdit}
                 className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-xs text-foreground outline-none focus:border-primary disabled:opacity-50"
               />
               <span className="text-xs text-muted-foreground">秒</span>
-              <button
-                type="button"
-                onClick={handleSaveInterval}
-                disabled={!intervalLoaded || savingInterval || Number(healthIntervalInput) === healthInterval}
-                className="btn-primary btn-sm px-2 py-0.5"
-              >
-                {savingInterval ? '保存中…' : '保存'}
-              </button>
+              {canConfigEdit && (
+                <button
+                  type="button"
+                  onClick={handleSaveInterval}
+                  disabled={!intervalLoaded || savingInterval || Number(healthIntervalInput) === healthInterval}
+                  className="btn-primary btn-sm px-2 py-0.5"
+                >
+                  {savingInterval ? '保存中…' : '保存'}
+                </button>
+              )}
             </div>
-            <button type="button" onClick={handleHealthCheck} disabled={healthChecking} className="btn-secondary btn-sm" title="对所有启用的配置执行一次连通性探测">
-              {healthChecking ? '检查中…' : '健康检查'}
-            </button>
+            {canEdit && (
+              <button type="button" onClick={handleHealthCheck} disabled={healthChecking} className="btn-secondary btn-sm" title="对所有启用的配置执行一次连通性探测">
+                {healthChecking ? '检查中…' : '健康检查'}
+              </button>
+            )}
             <button type="button" onClick={load} className="btn-secondary btn-sm">刷新</button>
-            <button type="button" onClick={openCreate} className="btn-primary btn-sm"><Plus className="mr-1 h-3.5 w-3.5" />新建配置</button>
+            {canEdit && (
+              <button type="button" onClick={openCreate} className="btn-primary btn-sm"><Plus className="mr-1 h-3.5 w-3.5" />新建配置</button>
+            )}
           </div>
         )}
       </header>
@@ -973,18 +989,18 @@ function LLMConfig() {
                 columns={columns}
                 data={paged}
                 loading={loading}
-                selectable
+                selectable={canDelete}
                 selectedKeys={selectedKeys}
                 onSelectChange={setSelectedKeys}
                 rowKey="id"
-                onRowClick={(r) => openEdit(r)}
-                rowClickHint="点击编辑"
+                onRowClick={canEdit ? (r) => openEdit(r) : undefined}
+                rowClickHint={canEdit ? '点击编辑' : ''}
                 emptyText="暂无模型配置"
               />
             </div>
             <Pagination page={page} pageSize={pageSize} total={filteredRows.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
             <BatchActions selectedCount={selectedKeys.length} onClear={clear}
-              actions={[{ key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting }]}
+              actions={canDelete ? [{ key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting }] : []}
             />
           </>
         )}

@@ -12,6 +12,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import HalfDrawer from '../components/HalfDrawer'
 import { Pagination, DataTable, StatusBadge, CompactSelect, SearchInput, PillTabs } from '../components/ui'
+import { hasPermission } from '../utils/permissions'
 
 // ===== 工具函数 =====
 function fmtTime(t) {
@@ -325,6 +326,7 @@ const RETENTION_PRESETS = [
 
 function LogCenter() {
   const navigate = useNavigate()
+  const canExport = hasPermission('execution', 'export')
   const [searchParams] = useSearchParams()
   const initialWorkflowId = searchParams.get('workflow_id') || ''
   const initialUsername = searchParams.get('username') || ''
@@ -795,7 +797,7 @@ function LogCenter() {
             </>
           )}
           {/* 批量导出 */}
-          {selectedKeys.length > 0 && (
+          {canExport && selectedKeys.length > 0 && (
             <button type="button" onClick={handleExport} className="ml-auto btn-secondary btn-sm inline-flex items-center gap-1">
               <Download className="h-3.5 w-3.5" />导出 {selectedKeys.length} 条
             </button>

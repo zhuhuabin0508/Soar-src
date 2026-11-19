@@ -637,6 +637,61 @@ def create_config(
     return config
 
 
+def clone_config(
+    db: Session,
+    config_id: int,
+    *,
+    name: str = "",
+    created_by: int | None = None,
+) -> ReportConfig:
+    """一键复制配置：复制元数据与最新版本内容，生成新的草稿配置。"""
+    src = get_config(db, config_id)
+    src_version = (
+        db.query(ReportConfigVersion)
+        .filter(ReportConfigVersion.config_id == config_id)
+        .order_by(ReportConfigVersion.version_no.desc())
+        .first()
+    )
+    new_name = (name or "").strip() or f"{src.name} - 副本"
+    if len(new_name) > 128:
+        raise ReportError(CONFLICT, "配置名称不能超过 128 字符")
+
+    config = ReportConfig(
+        template_id=src.template_id,
+        name=new_name,
+        description=src.description or "",
+        schedule_cron=src.schedule_cron,
+        timezone=src.timezone or "Asia/Shanghai",
+        output_name_pattern=src.output_name_pattern,
+        notify_channels=src.notify_channels or [],
+        created_by=created_by,
+        status="draft",
+    )
+    db.add(config)
+    db.flush()
+
+    if src_version is not None:
+        db.add(
+            ReportConfigVersion(
+                config_id=config.id,
+                version_no=1,
+                template_version_id=src_version.template_version_id,
+                params_schema_json=src_version.params_schema_json,
+                data_sources_json=src_version.data_sources_json,
+                mapping_json=src_version.mapping_json,
+                transform_json=src_version.transform_json,
+                degradation_policy_json=src_version.degradation_policy_json,
+                changelog=f"复制自配置「{src.name}」",
+                status="draft",
+                created_by=created_by,
+            )
+        )
+
+    db.commit()
+    db.refresh(config)
+    return config
+
+
 def update_config(
     db: Session,
     config_id: int,
@@ -1401,6 +1456,46 @@ def artifact_pdf_bytes(db: Session, artifact: ReportArtifact) -> bytes:
     db.commit()
     db.refresh(artifact)
     return pdf_bytes
+
+
+def artifact_export_bytes(db: Session, artifact: ReportArtifact, fmt: str) -> bytes:
+    """按格式返回产物字节：docx 原样，pdf/html 走 LibreOffice 转换。"""
+    fmt = (fmt or "docx").lower()
+    if fmt == "pdf":
+        return artifact_pdf_bytes(db, artifact)
+    if fmt == "html":
+        return pdf_export.docx_to_html(load_artifact_bytes(artifact))
+    return load_artifact_bytes(artifact)
+
+
+def update_template_manifest(
+    db: Session,
+    version: ReportTemplateVersion,
+    *,
+    placeholders: list | None = None,
+    sections: list | None = None,
+) -> ReportTemplateVersion:
+    """在线更新模板版本 manifest 元数据（占位符/章节），用于修正解析结果。"""
+    manifest = version.manifest_json or {}
+    if placeholders is not None:
+        if not isinstance(placeholders, list):
+            raise ReportError(CONFLICT, "placeholders 必须是数组")
+        for item in placeholders:
+            if not isinstance(item, dict) or not item.get("token"):
+                raise ReportError(CONFLICT, "占位符缺少 token 字段")
+        manifest["placeholders"] = placeholders
+    if sections is not None:
+        if not isinstance(sections, list):
+            raise ReportError(CONFLICT, "sections 必须是数组")
+        for item in sections:
+            if not isinstance(item, dict) or not item.get("title"):
+                raise ReportError(CONFLICT, "章节缺少 title 字段")
+        manifest["sections"] = sections
+    version.manifest_json = manifest
+    version.updated_at = beijing_now()
+    db.commit()
+    db.refresh(version)
+    return version
 
 
 

@@ -127,6 +127,8 @@ function SkillList() {
   const canEdit = hasPermission('skill', 'edit')
   const canCreate = hasPermission('skill', 'edit')
   const canDelete = hasPermission('skill', 'delete')
+  const canImport = hasPermission('skill', 'import')
+  const canExport = hasPermission('skill', 'export')
 
   const load = useCallback(async () => {
     try {
@@ -454,6 +456,7 @@ function SkillList() {
             <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
           </button>
           {/* 数据操作下拉：导出 / 导入（ref + document 监听点击外部关闭，不用全屏遮罩） */}
+          {(canImport || canExport) && (
           <div className="relative" ref={dataMenuRef}>
             <button
               type="button"
@@ -466,6 +469,7 @@ function SkillList() {
             </button>
             {dataMenuOpen && (
               <div className="absolute right-0 top-full z-50 mt-1.5 w-52 overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-xl shadow-black/20">
+                {canExport && (
                 <button
                   type="button"
                   onClick={() => { handleExport(); setDataMenuOpen(false) }}
@@ -474,6 +478,8 @@ function SkillList() {
                   <Download className="h-3.5 w-3.5 text-muted-foreground" />
                   导出全部技能
                 </button>
+                )}
+                {canExport && (
                 <button
                   type="button"
                   disabled={selectedKeys.length === 0}
@@ -483,7 +489,8 @@ function SkillList() {
                   <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
                   导出所选{selectedKeys.length > 0 ? `（${selectedKeys.length} 个）` : ''}
                 </button>
-                {canEdit && (
+                )}
+                {canImport && (
                   <button
                     type="button"
                     onClick={() => { setImportOpen(true); setDataMenuOpen(false) }}
@@ -496,6 +503,7 @@ function SkillList() {
               </div>
             )}
           </div>
+          )}
           {canCreate && (
             <button type="button" onClick={openCreate} className="btn-primary btn-sm">
               <Plus className="mr-1 h-3.5 w-3.5" /> 新建技能

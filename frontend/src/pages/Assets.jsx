@@ -8,6 +8,7 @@ import { toast } from '../store/toastStore'
 import { inputCls } from '../components/property/FormControls'
 import { CompactSelect, AutoGrowTextarea, Pagination, SearchInput } from '../components/ui'
 import { validateIPExpression, looksLikeIPKey } from '../utils/ipValidation'
+import { hasPermission } from '../utils/permissions'
 
 // 重要性配色
 const CRITICALITY_META = {
@@ -260,6 +261,8 @@ function Assets() {
   const user = useAuthStore((s) => s.user)
   const canManage = user?.role === 'admin' || user?.role === 'analyst'
   const canDelete = user?.role === 'admin'
+  const canExport = hasPermission('asset_list', 'export')
+  const canImport = hasPermission('asset_list', 'import')
 
   const [records, setRecords] = useState([])
   const [stats, setStats] = useState({ total: 0, by_source: {}, by_criticality: {}, by_type: {} })
@@ -606,10 +609,12 @@ function Assets() {
               自定义字段
             </button>
           )}
-          <button type="button" onClick={handleExport} disabled={exporting} className="btn-secondary btn-sm">
-            {exporting ? '导出中...' : '导出 CSV'}
-          </button>
-          {canManage && (
+          {canExport && (
+            <button type="button" onClick={handleExport} disabled={exporting} className="btn-secondary btn-sm">
+              {exporting ? '导出中...' : '导出 CSV'}
+            </button>
+          )}
+          {canImport && (
             <button type="button" onClick={openImport} className="btn-secondary btn-sm">
               导入
             </button>

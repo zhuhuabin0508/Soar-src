@@ -23,6 +23,7 @@ export default function ReportRuns() {
   const [loading, setLoading] = useState(false)
   const [detail, setDetail] = useState(null)
   const [pdfTarget, setPdfTarget] = useState(null)
+  const [exportFormat, setExportFormat] = useState('docx')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -83,7 +84,7 @@ export default function ReportRuns() {
       render: (row) => (
         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
           <Button size="sm" variant="ghost" onClick={() => openDetail(row)}>详情</Button>
-          {row.artifact_id && (
+          {row.artifact_id && hasPermission('report', 'export') && (
             <Button
               size="sm"
               variant="ghost"
@@ -164,15 +165,22 @@ export default function ReportRuns() {
                 PDF 预览
               </Button>
             )}
-            {detail?.artifact && (
-              <Button
-                variant="ghost"
-                onClick={() => reportApi.runs
-                  .download(detail.run.id, detail.artifact.file_name)
-                  .catch((e) => toast.error(e.message))}
-              >
-                <Download className="mr-1 h-3.5 w-3.5" />下载报告
-              </Button>
+            {detail?.artifact && hasPermission('report', 'export') && (
+              <div className="flex items-center gap-1">
+                <CompactSelect value={exportFormat} onChange={(e) => setExportFormat(e.target.value)} title="导出格式">
+                  <option value="docx">DOCX</option>
+                  <option value="pdf">PDF</option>
+                  <option value="html">HTML</option>
+                </CompactSelect>
+                <Button
+                  variant="ghost"
+                  onClick={() => reportApi.runs
+                    .download(detail.run.id, detail.artifact.file_name, exportFormat)
+                    .catch((e) => toast.error(e.message))}
+                >
+                  <Download className="mr-1 h-3.5 w-3.5" />下载
+                </Button>
+              </div>
             )}
             {(detail?.run.status === 'failed' || detail?.run.status === 'partial') && hasPermission('report', 'execute') && (
               <Button variant="primary" onClick={() => retry(detail.run)}>

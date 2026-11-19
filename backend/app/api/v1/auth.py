@@ -134,8 +134,9 @@ def _resolve_permissions(db: Session, user: User) -> dict[str, list[str]]:
         if role and role.permissions:
             perms = role.permissions
             if isinstance(perms, dict):
-                # 迁移旧权限键（如 duty）到二级权限矩阵，供前端菜单/按钮显隐
-                migrated = migrate_permissions(perms)
+                # 迁移旧权限键（如 duty）到二级权限矩阵，供前端菜单/按钮显隐；
+                # 运行期不自动补新增的细粒度动作，避免覆盖管理员的显式配置
+                migrated = migrate_permissions(perms, grant_new_actions=False)
                 # 写回角色 JSON，避免侧栏长期读到不含 asset_discovery 的旧矩阵
                 if migrated != perms:
                     role.permissions = migrated

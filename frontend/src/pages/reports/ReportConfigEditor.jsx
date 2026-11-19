@@ -2,8 +2,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, ArrowRightLeft, Beaker, ChevronDown, ChevronRight, Eye, Plus, RefreshCw, Save,
-  Send, ShieldCheck, Sparkles, Trash2, X,
+  ArrowLeft, ArrowRightLeft, Beaker, ChevronDown, ChevronRight, Eye, MousePointerClick, Plus,
+  RefreshCw, Save, Send, ShieldCheck, Sparkles, Trash2, X,
 } from 'lucide-react'
 import { reportApi } from '../../api/reports'
 import { devices, tools } from '../../api/client'
@@ -15,7 +15,7 @@ import { confirm } from '../../components/ConfirmDialog'
 import { toast } from '../../store/toastStore'
 import { hasPermission } from '../../utils/permissions'
 import {
-  Field, IssueList, PdfPreviewPanel, VERSION_STATUS, StatusOf, inputCls, monoCls,
+  Field, IssueList, JsonTree, PdfPreviewPanel, VERSION_STATUS, StatusOf, inputCls, monoCls,
 } from './shared'
 
 const STEPS = ['基础与参数', '数据采集', '数据映射', '预览与发布']
@@ -74,6 +74,8 @@ export default function ReportConfigEditor() {
   const [testIndex, setTestIndex] = useState(null)
   const [testBusy, setTestBusy] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  const [samples, setSamples] = useState({}) // source_key -> 样例 data，供映射点选回填
+  const [pickedPath, setPickedPath] = useState('')
   const [migrationOpen, setMigrationOpen] = useState(false)
   const [aiMappingOpen, setAiMappingOpen] = useState(false)
 
@@ -324,9 +326,14 @@ export default function ReportConfigEditor() {
     setTestBusy(true)
     setTestIndex(index)
     setTestResult(null)
+    setPickedPath('')
     try {
       const res = await reportApi.configs.testSource(id, dataSources[index], sampleParams)
       setTestResult(res)
+      if (res?.ok && res.data != null) {
+        const key = res.source_key || dataSources[index]?.source_key
+        if (key) setSamples((prev) => ({ ...prev, [key]: res.data }))
+      }
     } catch (err) {
       toast.error(err.message || '数据源测试失败')
     } finally {
@@ -509,6 +516,7 @@ export default function ReportConfigEditor() {
           updateBinding={updateBinding}
           unbind={unbind}
           dataSources={dataSources}
+          samples={samples}
           crossChecksText={crossChecksText}
           setCrossChecksText={(value) => { setCrossChecksText(value); markDirty() }}
           onOpenAi={() => setAiMappingOpen(true)}
@@ -553,9 +561,23 @@ export default function ReportConfigEditor() {
                 {testResult.error_code}: {testResult.error_message}
               </p>
             )}
-            <pre className="max-h-80 overflow-auto rounded border border-border bg-muted/40 p-2 font-mono text-xs">
-              {JSON.stringify(testResult.data ?? testResult.data_preview ?? null, null, 2)}
-            </pre>
+            {testResult.data != null ? (
+              <div className="space-y-1.5">
+                <p className="text-muted-foreground">
+                  点击节点生成 JSONPath，复制后可在「数据映射」步骤填入；本样例已缓存，映射步骤可直接点选。
+                </p>
+                <JsonTree
+                  data={testResult.data}
+                  selectedPath={pickedPath}
+                  onSelect={setPickedPath}
+                />
+                <PathBar path={pickedPath} />
+              </div>
+            ) : (
+              <pre className="max-h-80 overflow-auto rounded border border-border bg-muted/40 p-2 font-mono text-xs">
+                {JSON.stringify(testResult.data_preview ?? null, null, 2)}
+              </pre>
+            )}
             {testResult.truncated && <p className="text-warning">响应过大，已截断展示。</p>}
           </div>
         )}
@@ -829,6 +851,7 @@ function AiMappingWizard({ configId, versionId, params, onApply, onClose }) {
   const [loading, setLoading] = useState(true)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  const [selectedTokens, setSelectedTokens] = useState(() => new Set())
 
   useEffect(() => {
     let alive = true
@@ -847,11 +870,34 @@ function AiMappingWizard({ configId, versionId, params, onApply, onClose }) {
   const warnings = result?.warnings || []
   const stats = result?.stats || {}
 
+  // 建议到达后默认全选，供用户逐条取消
+  useEffect(() => {
+    if (result?.suggestions) {
+      setSelectedTokens(new Set(result.suggestions.map((s) => s.token)))
+    }
+  }, [result])
+
+  const selectedSuggestions = suggestions.filter((s) => selectedTokens.has(s.token))
+  const allSelected = suggestions.length > 0 && selectedSuggestions.length === suggestions.length
+
+  const toggle = (token) => {
+    setSelectedTokens((prev) => {
+      const next = new Set(prev)
+      if (next.has(token)) next.delete(token)
+      else next.add(token)
+      return next
+    })
+  }
+
+  const toggleAll = () => {
+    setSelectedTokens(allSelected ? new Set() : new Set(suggestions.map((s) => s.token)))
+  }
+
   return (
     <div className="space-y-3 text-xs">
       <p className="rounded border border-border bg-muted/30 p-2 text-muted-foreground">
         将按当前已保存的配置版本采集一次数据样例，再由 AI 给出绑定建议（不会写入配置）。
-        应用后请核对路径与列映射，再保存草稿。
+        勾选要应用的条目后应用，随后请核对路径与列映射，再保存草稿。
       </p>
 
       {loading && <p className="text-muted-foreground">正在采集样例并生成建议，请稍候...</p>}
@@ -883,6 +929,14 @@ function AiMappingWizard({ configId, versionId, params, onApply, onClose }) {
             <table className="w-full text-xs">
               <thead className="bg-muted/40 text-left text-muted-foreground">
                 <tr>
+                  <th className="w-10 px-2 py-1.5">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                    />
+                  </th>
                   <th className="px-2 py-1.5">占位符</th>
                   <th className="px-2 py-1.5">数据源</th>
                   <th className="px-2 py-1.5">路径 / 列映射</th>
@@ -891,6 +945,14 @@ function AiMappingWizard({ configId, versionId, params, onApply, onClose }) {
               <tbody>
                 {suggestions.map((item) => (
                   <tr key={item.token} className="border-t border-border/60 align-top">
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                        checked={selectedTokens.has(item.token)}
+                        onChange={() => toggle(item.token)}
+                      />
+                    </td>
                     <td className="px-2 py-1.5 font-mono text-foreground">{item.token}</td>
                     <td className="px-2 py-1.5">{item.source_key}</td>
                     <td className="px-2 py-1.5 font-mono text-muted-foreground">
@@ -915,10 +977,10 @@ function AiMappingWizard({ configId, versionId, params, onApply, onClose }) {
         <Button onClick={onClose}>关闭</Button>
         <Button
           variant="primary"
-          disabled={!suggestions.length || loading}
-          onClick={() => onApply(suggestions)}
+          disabled={!selectedSuggestions.length || loading}
+          onClick={() => onApply(selectedSuggestions)}
         >
-          应用全部建议
+          应用选中建议{selectedSuggestions.length ? `（${selectedSuggestions.length}）` : ''}
         </Button>
       </div>
     </div>
@@ -1098,6 +1160,22 @@ function StepSources({ dataSources, setDataSources, onTest, testingIndex }) {
     }
   }
 
+  const handleTest = (index) => {
+    const source = dataSources[index]
+    if (source?.source_type === 'device_action') {
+      const action = source.action_id
+        ? (actionsMap[source.device_id] || []).find((a) => a.id === source.action_id)
+        : null
+      const errors = validateActionParams(parseParamSchema(action?.params_schema), source.params || {})
+      const msgs = Object.entries(errors).map(([k, v]) => `「${k}」${v}`)
+      if (msgs.length) {
+        toast.error(`参数校验未通过：${msgs.join('；')}`)
+        return
+      }
+    }
+    onTest(index)
+  }
+
   const update = (index, patch) => {
     const next = [...dataSources]
     next[index] = { ...next[index], ...patch }
@@ -1131,6 +1209,10 @@ function StepSources({ dataSources, setDataSources, onTest, testingIndex }) {
       <div className="space-y-3">
         {dataSources.map((source, index) => {
           const open = expanded[index] ?? true
+          const currentAction = source.action_id
+            ? (actionsMap[source.device_id] || []).find((a) => a.id === source.action_id)
+            : null
+          const currentActionSchema = parseParamSchema(currentAction?.params_schema)
           return (
             <div key={index} className="rounded-lg border border-border">
               <div className="flex flex-wrap items-center gap-2 bg-muted/30 px-3 py-2">
@@ -1143,7 +1225,7 @@ function StepSources({ dataSources, setDataSources, onTest, testingIndex }) {
                 {source.action_id && <span className="text-xs text-muted-foreground">动作 #{source.action_id}</span>}
                 {source.tool_id && <span className="text-xs text-muted-foreground">工具 #{source.tool_id}</span>}
                 <div className="ml-auto flex gap-1">
-                  <Button size="sm" variant="ghost" onClick={() => onTest(index)} loading={testingIndex === index}>
+                  <Button size="sm" variant="ghost" onClick={() => handleTest(index)} loading={testingIndex === index}>
                     <Beaker className="mr-1 h-3.5 w-3.5" />试跑
                   </Button>
                   <Button
@@ -1231,14 +1313,47 @@ function StepSources({ dataSources, setDataSources, onTest, testingIndex }) {
                     />
                   </Field>
 
-                  <div className="sm:col-span-3">
-                    <Field label={source.source_type === 'static' ? '静态数据（JSON）' : '请求参数（JSON）'} hint="支持 {{params.period}}、{{run.xxx}} 占位；static 使用 payload 字段">
-                      <JsonTextarea
-                        value={source.source_type === 'static' ? (source.payload ?? {}) : (source.params ?? {})}
-                        onCommit={(parsed) => update(index, source.source_type === 'static' ? { payload: parsed } : { params: parsed })}
-                      />
-                    </Field>
-                  </div>
+                  {source.source_type === 'device_action' ? (
+                    <div className="sm:col-span-3">
+                      {currentAction ? (
+                        currentActionSchema.length > 0 ? (
+                          <Field label="动作参数" hint="由动作参数定义自动生成；高级场景可展开直接编辑 JSON（支持 {{params.xxx}} 占位）">
+                            <ActionParamsFields
+                              schema={currentActionSchema}
+                              value={source.params || {}}
+                              onChange={(params) => update(index, { params })}
+                            />
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-xs text-muted-foreground">高级：直接编辑 JSON</summary>
+                              <div className="mt-1">
+                                <JsonTextarea
+                                  value={source.params || {}}
+                                  onCommit={(parsed) => update(index, { params: parsed })}
+                                />
+                              </div>
+                            </details>
+                          </Field>
+                        ) : (
+                          <Field label="动作参数" hint="该动作未定义参数，无需填写">
+                            <p className="text-xs text-muted-foreground">该动作无参数定义。</p>
+                          </Field>
+                        )
+                      ) : (
+                        <Field label="动作参数" hint="选择设备与动作后自动生成参数表单">
+                          <p className="text-xs text-muted-foreground">选择设备与动作后，将自动生成参数表单。</p>
+                        </Field>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="sm:col-span-3">
+                      <Field label={source.source_type === 'static' ? '静态数据（JSON）' : '请求参数（JSON）'} hint="支持 {{params.period}}、{{run.xxx}} 占位；static 使用 payload 字段">
+                        <JsonTextarea
+                          value={source.source_type === 'static' ? (source.payload ?? {}) : (source.params ?? {})}
+                          onCommit={(parsed) => update(index, source.source_type === 'static' ? { payload: parsed } : { params: parsed })}
+                        />
+                      </Field>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1253,11 +1368,34 @@ function StepSources({ dataSources, setDataSources, onTest, testingIndex }) {
 // Step 3 数据映射
 // --------------------------------------------------------------------------- //
 function StepMapping({
-  manifest, loading, bindings, updateBinding, unbind, dataSources,
+  manifest, loading, bindings, updateBinding, unbind, dataSources, samples,
   crossChecksText, setCrossChecksText, onOpenAi, aiDisabled,
 }) {
   const placeholders = manifest?.placeholders || []
   const sourceOptions = dataSources.map((s) => s.source_key).filter(Boolean)
+  // 点选字段路径：picker = { placeholder, target: 'path'|'column', columnKey? }
+  const [picker, setPicker] = useState(null)
+  const pickerSourceKey = picker
+    ? bindingOf(bindings, picker.placeholder.token)?.source_key
+    : ''
+  const pickerData = pickerSourceKey ? samples?.[pickerSourceKey] : null
+
+  const applyPick = (path) => {
+    if (!picker) return
+    const { placeholder, target, columnKey } = picker
+    const current = bindingOf(bindings, placeholder.token)
+    if (target === 'column' && columnKey) {
+      updateBinding(placeholder, {
+        columns: {
+          ...(current?.columns || {}),
+          [columnKey]: { ...(current?.columns?.[columnKey] || {}), path },
+        },
+      })
+    } else {
+      updateBinding(placeholder, { path })
+    }
+    setPicker(null)
+  }
 
   if (loading) return <Card><p className="text-sm text-muted-foreground">正在解析模板占位符...</p></Card>
   if (!placeholders.length) {
@@ -1328,6 +1466,7 @@ function StepMapping({
                                   },
                                 })}
                               />
+                              <PickButton onClick={() => setPicker({ placeholder, target: 'column', columnKey: col.key })} />
                             </div>
                           ))}
                           {(placeholder.columns || []).length === 0 && (
@@ -1335,12 +1474,15 @@ function StepMapping({
                           )}
                         </div>
                       ) : (
-                        <input
-                          className={monoCls}
-                          placeholder="$.data.total"
-                          value={binding?.path || ''}
-                          onChange={(e) => updateBinding(placeholder, { path: e.target.value })}
-                        />
+                        <div className="flex items-center gap-1">
+                          <input
+                            className={monoCls}
+                            placeholder="$.data.total"
+                            value={binding?.path || ''}
+                            onChange={(e) => updateBinding(placeholder, { path: e.target.value })}
+                          />
+                          <PickButton onClick={() => setPicker({ placeholder, target: 'path' })} />
+                        </div>
                       )}
                       {isTable && (
                         <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
@@ -1357,6 +1499,7 @@ function StepMapping({
                             value={binding?.path || ''}
                             onChange={(e) => updateBinding(placeholder, { path: e.target.value })}
                           />
+                          <PickButton onClick={() => setPicker({ placeholder, target: 'path' })} />
                         </div>
                       )}
                     </td>
@@ -1413,6 +1556,32 @@ function StepMapping({
           onChange={(e) => setCrossChecksText(e.target.value)}
         />
       </Card>
+
+      <Modal
+        open={!!picker}
+        title="点选字段路径"
+        size="lg"
+        onClose={() => setPicker(null)}
+        footer={<Button onClick={() => setPicker(null)}>关闭</Button>}
+      >
+        {picker && (
+          <div className="space-y-2 text-xs">
+            <p className="text-muted-foreground">
+              为「<span className="font-mono text-foreground">{picker.placeholder.token}</span>
+              {picker.target === 'column' ? ` · 列 ${picker.columnKey}` : ''}」选择字段，点击节点即回填路径。
+            </p>
+            {pickerData != null ? (
+              <JsonTree data={pickerData} onSelect={applyPick} />
+            ) : (
+              <EmptyState
+                title="该数据源暂无样例"
+                description="请先在「数据采集」步骤对对应数据源点击「试跑」，成功后即可在此点选字段路径。"
+                bordered
+              />
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -1461,6 +1630,7 @@ function StepPreview({
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge color={errors.length ? 'danger' : 'success'} label={errors.length ? `${errors.length} 项错误` : '校验通过'} />
               <span className="text-muted-foreground">配置版本 v{preview.config_version_no}</span>
+              {hasPermission('report', 'export') && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -1468,6 +1638,7 @@ function StepPreview({
               >
                 下载预览 docx
               </Button>
+              )}
             </div>
             <IssueList issues={issues} />
             <div>
@@ -1601,4 +1772,179 @@ function HealthPanel({ health }) {
       )}
     </div>
   )
+}
+
+// 点选按钮：打开样例 JSON 树，点击节点回填路径
+function PickButton({ onClick }) {
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="shrink-0 px-1.5"
+      title="点选字段生成路径"
+      onClick={onClick}
+    >
+      <MousePointerClick className="h-3.5 w-3.5" />
+    </Button>
+  )
+}
+
+// 已选路径展示 + 复制
+function PathBar({ path }) {
+  const copy = async () => {
+    if (!path) return
+    try {
+      await navigator.clipboard.writeText(path)
+      toast.success(`已复制 ${path}`)
+    } catch {
+      toast.error('复制失败，请手动复制')
+    }
+  }
+  if (!path) {
+    return <p className="text-xs text-muted-foreground">点击左侧节点生成 JSONPath</p>
+  }
+  return (
+    <div className="flex items-center gap-2 rounded border border-primary/30 bg-primary/10 px-2 py-1.5">
+      <span className="min-w-0 flex-1 truncate font-mono text-xs text-primary">{path}</span>
+      <Button size="sm" variant="ghost" onClick={copy}>复制</Button>
+    </div>
+  )
+}
+
+// 按动作 params_schema 自动生成参数表单：enum/boolean 用下拉，其余用文本输入
+function ActionParamsFields({ schema, value, onChange }) {
+  const params = value || {}
+  const [errors, setErrors] = useState({})
+
+  const commit = (next) => {
+    onChange(next)
+    setErrors(validateActionParams(schema, next))
+  }
+
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      {schema.map((p) => {
+        const key = p.name
+        const val = params[key] ?? p.default ?? ''
+        const err = errors[key]
+        const errCls = err ? '!border-destructive' : ''
+        if (p.type === 'enum' && Array.isArray(p.options) && p.options.length) {
+          return (
+            <Field key={key} label={key} required={!!p.required} hint={p.description} error={err}>
+              <CompactSelect
+                block
+                className={errCls}
+                value={val}
+                onChange={(e) => {
+                  const next = { ...params }
+                  if (e.target.value === '') delete next[key]
+                  else next[key] = e.target.value
+                  commit(next)
+                }}
+              >
+                <option value="">请选择</option>
+                {p.options.map((o) => <option key={o} value={o}>{o}</option>)}
+              </CompactSelect>
+            </Field>
+          )
+        }
+        if (p.type === 'boolean') {
+          return (
+            <Field key={key} label={key} required={!!p.required} hint={p.description} error={err}>
+              <CompactSelect
+                block
+                className={errCls}
+                value={val === true ? 'true' : val === false ? 'false' : ''}
+                onChange={(e) => {
+                  const next = { ...params }
+                  if (e.target.value === '') delete next[key]
+                  else next[key] = e.target.value === 'true'
+                  commit(next)
+                }}
+              >
+                <option value="">请选择</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </CompactSelect>
+            </Field>
+          )
+        }
+        return (
+          <Field key={key} label={key} required={!!p.required} hint={p.description} error={err}>
+            <input
+              className={`${monoCls} ${errCls}`}
+              placeholder={p.default != null ? String(p.default) : p.type || 'string'}
+              value={val}
+              onChange={(e) => commit({ ...params, [key]: e.target.value })}
+            />
+          </Field>
+        )
+      })}
+    </div>
+  )
+}
+
+// 校验动作参数：返回 { name: 错误信息 }，空对象表示全部通过
+function validateActionParams(schema, params) {
+  const errors = {}
+  const p = params || {}
+  for (const item of schema || []) {
+    const key = item.name
+    if (!key) continue
+    const val = p[key]
+    const isEmpty = val == null || String(val).trim() === ''
+    if (item.required && isEmpty) {
+      errors[key] = '该参数为必填项'
+      continue
+    }
+    if (isEmpty) continue
+    const type = String(item.type || '').toLowerCase()
+    if (type === 'ip' || type === 'cidr') {
+      const err = validateIpExpression(String(val))
+      if (err) errors[key] = err
+    } else if (type === 'integer' || type === 'int') {
+      if (!/^-?\d+$/.test(String(val).trim())) errors[key] = '必须为整数'
+    } else if (type === 'number' || type === 'float') {
+      if (Number.isNaN(Number(val))) errors[key] = '必须为数字'
+    }
+  }
+  return errors
+}
+
+// 校验 IP/CIDR/范围/多值表达式，返回错误信息，空串表示合法
+function validateIpExpression(value) {
+  const tokens = String(value).split(/[,，\s]+/).filter(Boolean)
+  for (const raw of tokens) {
+    const token = raw.trim()
+    if (token.includes('/')) {
+      const [ip, prefix] = token.split('/')
+      if (!isValidIp(ip) || !/^\d{1,3}$/.test(prefix) || Number(prefix) > 128) {
+        return `「${token}」不是有效的 CIDR`
+      }
+    } else if (token.includes('-')) {
+      const [a, b] = token.split('-')
+      if (!isValidIp(a.trim()) || !isValidIp(b.trim())) {
+        return `「${token}」不是有效的 IP 范围`
+      }
+    } else if (!isValidIp(token)) {
+      return `「${token}」不是有效的 IP 地址`
+    }
+  }
+  return ''
+}
+
+function isValidIp(s) {
+  const v4 = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) return v4.slice(1).every((n) => Number(n) >= 0 && Number(n) <= 255)
+  // 宽松 IPv6 校验
+  return s.includes(':') && /^[0-9a-fA-F:.]+$/.test(s) && s.split(':').filter(Boolean).length >= 2
+}
+
+// 解析动作 params_schema：兼容数组与 JSON 字符串
+function parseParamSchema(raw) {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'string' && raw.trim()) {
+    try { return JSON.parse(raw) } catch { return [] }
+  }
+  return []
 }

@@ -61,8 +61,8 @@ def capability() -> dict:
     }
 
 
-def docx_to_pdf(docx: bytes, *, timeout: int = 120) -> bytes:
-    """将 docx 字节转换为 PDF 字节。
+def _convert(docx: bytes, out_format: str, *, timeout: int = 120) -> bytes:
+    """将 docx 字节转换为指定格式（pdf/html/txt），返回转换后字节。
 
     Raises:
         ReportError: ``PDF_UNAVAILABLE``，包含安装提示或转换失败原因。
@@ -71,11 +71,11 @@ def docx_to_pdf(docx: bytes, *, timeout: int = 120) -> bytes:
     if not binary:
         raise ReportError(
             PDF_UNAVAILABLE,
-            "当前环境未安装 LibreOffice，无法生成 PDF 预览",
+            f"当前环境未安装 LibreOffice，无法生成 {out_format.upper()}",
             {"hint": INSTALL_HINT},
         )
 
-    with tempfile.TemporaryDirectory(prefix="report_pdf_") as workdir:
+    with tempfile.TemporaryDirectory(prefix="report_conv_") as workdir:
         source = os.path.join(workdir, "source.docx")
         profile = os.path.join(workdir, "profile")
         os.makedirs(profile, exist_ok=True)
@@ -89,7 +89,7 @@ def docx_to_pdf(docx: bytes, *, timeout: int = 120) -> bytes:
             "--norestore",
             f"-env:UserInstallation={Path(profile).as_uri()}",
             "--convert-to",
-            "pdf",
+            out_format,
             "--outdir",
             workdir,
             source,
@@ -104,23 +104,33 @@ def docx_to_pdf(docx: bytes, *, timeout: int = 120) -> bytes:
         except subprocess.TimeoutExpired as exc:
             raise ReportError(
                 PDF_UNAVAILABLE,
-                f"PDF 转换超时（{timeout} 秒）",
+                f"{out_format.upper()} 转换超时（{timeout} 秒）",
                 {"hint": INSTALL_HINT},
             ) from exc
         except OSError as exc:
             raise ReportError(
                 PDF_UNAVAILABLE,
-                f"PDF 转换失败: {exc}",
+                f"{out_format.upper()} 转换失败: {exc}",
                 {"hint": INSTALL_HINT},
             ) from exc
 
-        target = os.path.join(workdir, "source.pdf")
+        target = os.path.join(workdir, f"source.{out_format}")
         if completed.returncode != 0 or not os.path.isfile(target):
             stderr = (completed.stderr or b"").decode("utf-8", errors="ignore")[-500:]
             raise ReportError(
                 PDF_UNAVAILABLE,
-                "PDF 转换失败，请检查 LibreOffice 安装与模板字体",
+                f"{out_format.upper()} 转换失败，请检查 LibreOffice 安装与模板字体",
                 {"stderr": stderr, "returncode": completed.returncode},
             )
         with open(target, "rb") as handle:
             return handle.read()
+
+
+def docx_to_pdf(docx: bytes, *, timeout: int = 120) -> bytes:
+    """将 docx 字节转换为 PDF 字节。"""
+    return _convert(docx, "pdf", timeout=timeout)
+
+
+def docx_to_html(docx: bytes, *, timeout: int = 120) -> bytes:
+    """将 docx 字节转换为 HTML 字节（LibreOffice HTML 导出）。"""
+    return _convert(docx, "html", timeout=timeout)
