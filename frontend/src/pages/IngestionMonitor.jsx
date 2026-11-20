@@ -12,7 +12,7 @@ import {
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
-import { Button, Card, DataTable, Badge, Pagination, EmptyState, CompactSelect } from '../components/ui'
+import { Button, Card, DataTable, Badge, Pagination, EmptyState, CompactSelect, PillTabs } from '../components/ui'
 import { inputBaseCls } from '../components/property/FormControls'
 import { getChartTheme } from '../utils/chartTheme'
 import { hasPermission, guardNavPermission } from '../utils/permissions'
@@ -43,7 +43,7 @@ function OverviewCard({ icon: Icon, label, value, suffix, delta, trend, tone }) 
           <Icon className={`h-4 w-4 ${tone || 'text-primary'}`} /> {label}
         </div>
         {delta != null && delta !== 0 && (
-          <span className={`text-[11px] tabular-nums ${delta > 0 ? 'text-destructive' : 'text-success'}`}>
+          <span className={`text-xs tabular-nums ${delta > 0 ? 'text-destructive' : 'text-success'}`}>
             {delta > 0 ? '↑' : '↓'} {Math.abs(delta)}%
           </span>
         )}
@@ -329,7 +329,7 @@ function ErrorQueueTab() {
             onChange={(e) => { setKeyword(e.target.value); setPage(1) }}
           />
           <Button size="sm" variant="secondary" onClick={load}>
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
+            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
           </Button>
           {canEdit && selected.length > 0 && (
             <Button size="sm" variant="primary" loading={retrying === -1} onClick={handleBatchRetry}>
@@ -425,7 +425,7 @@ function LogsTab() {
             onChange={(e) => setKeyword(e.target.value)}
           />
           <Button size="sm" variant="secondary" onClick={() => fetchLogs(true)}>
-            <RefreshCw className="h-3.5 w-3.5" /> 刷新
+            <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
           </Button>
           <button
             className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition ${
@@ -735,16 +735,8 @@ export default function IngestionMonitor() {
 
       <div className="flex-1 overflow-y-auto p-6">
       {/* Tab 栏 */}
-      <div className="mb-4 flex items-center gap-1 rounded-lg border border-border bg-muted p-1">
-        {TABS.map(({ key, label }) => (
-          <button
-            key={key}
-            className={`rounded-md px-4 py-1.5 text-sm transition ${tab === key ? 'bg-primary text-white shadow' : 'text-muted-foreground hover:text-foreground'}`}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="mb-4">
+        <PillTabs items={TABS} value={tab} onChange={setTab} />
       </div>
 
       {tab === 'overview' && (
@@ -844,7 +836,7 @@ export default function IngestionMonitor() {
                 <div key={i} className="card p-4">
                   <div className="h-4 w-32 rounded skeleton-shimmer" />
                   <div className="mt-2 h-3 w-48 rounded skeleton-shimmer" />
-                  <div className="mt-5 h-[260px] rounded skeleton-shimmer" />
+                  <div className="mt-4 h-[260px] rounded skeleton-shimmer" />
                 </div>
               ))}
             </div>

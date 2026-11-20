@@ -66,9 +66,15 @@ services:
       - backups:/app/backups
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      HTTP_PROXY: http://172.19.0.1:8999
-      HTTPS_PROXY: http://172.19.0.1:8999
-      NO_PROXY: localhost,127.0.0.1,postgres,redis
+      # 出站代理：默认启用（生产环境无法直连外网，经宿主机 8999 代理出站）。
+      # 使用专用插值变量名（OUTBOUND_*）而非 HTTP_PROXY，避免宿主机/CI 上
+      # 常见的同名变量意外覆盖生产默认；容器内 env key 仍是标准名，供
+      # urllib/httpx 识别。可直连外网的环境在 env 文件置空：
+      #   OUTBOUND_HTTP_PROXY=  OUTBOUND_HTTPS_PROXY=
+      # （compose 的 ${VAR-default} 语法下空值视为已定义，urllib/httpx 均把空值当无代理处理）。
+      HTTP_PROXY: ${OUTBOUND_HTTP_PROXY-http://172.19.0.1:8999}
+      HTTPS_PROXY: ${OUTBOUND_HTTPS_PROXY-http://172.19.0.1:8999}
+      NO_PROXY: ${OUTBOUND_NO_PROXY-localhost,127.0.0.1,postgres,redis}
       PATH: /usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-soar}
       DB_USER: ${POSTGRES_USER:-postgres}
@@ -214,11 +220,17 @@ networks:
           gateway: 172.19.0.1
 
 volumes:
+  # 这些数据卷为历史遗留（项目标签曾为 config），标记 external 后由 Compose 视为
+  # 外部已有资源，不再校验其所属项目，从而消除「created for project config」警告。
+  # 数据卷本身按固定 name 复用，不会重建、不丢数据。
   pgdata:
+    external: true
     name: soaragent_pgdata
   uploads:
+    external: true
     name: soaragent_uploads
   backups:
+    external: true
     name: soaragent_backups
   # frontend node_modules 匿名卷（隔离 Windows/容器两种平台的依赖）
   frontend_node_modules:

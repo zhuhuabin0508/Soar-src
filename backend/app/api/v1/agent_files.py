@@ -1,7 +1,7 @@
 """智能体文件 API：上传 / 列表 / 下载 / 删除。
 
 上传的文件原样存储（不做 RAG 切片/向量化），供智能体通过 ``read_document`` 工具按需读取。
-支持类型：xlsx / xls / docx / pdf / csv / txt / json / md。
+支持类型：xlsx / xls / docx / pdf / csv / txt / json / md / pptx / html。
 
 归属隔离（双层）：
 - 上传时记录 ``created_by``（上传用户）与 ``agent_id``（归属智能体，可选）。
@@ -40,7 +40,7 @@ UPLOAD_DIR = os.path.join(
 
 # 允许的文件扩展名（小写，不含点）
 ALLOWED_EXTENSIONS = {
-    "xlsx", "xls", "docx", "pdf", "csv", "txt", "json", "md",
+    "xlsx", "xls", "docx", "pdf", "csv", "txt", "json", "md", "pptx", "html",
 }
 
 # 文件大小上限：50MB

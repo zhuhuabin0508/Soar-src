@@ -76,7 +76,7 @@ function chartThemeColors() {
 
 function StatCard({ icon: Icon, label, value, color = 'chart-1', sub }) {
   return (
-    <Card className="flex items-center gap-4 p-5" hover>
+    <Card className="flex items-center gap-4 p-4" hover>
       <div
         className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl"
         style={{ background: `var(--${color}, #6366f1)20`, color: `var(--${color}, #6366f1)` }}
@@ -91,7 +91,7 @@ function StatCard({ icon: Icon, label, value, color = 'chart-1', sub }) {
         >
           {value == null ? '--' : value.toLocaleString()}
         </div>
-        {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
+        {sub && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
       </div>
     </Card>
   )
@@ -337,10 +337,10 @@ export default function AssetOverview() {
 
       <div className="flex-1 overflow-y-auto p-6">
       {/* 统计卡片（加载时渲染同结构骨架） */}
-      <div className="card-stagger mb-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="card-stagger mb-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
         {loading
           ? Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-4 rounded-lg border border-border bg-card p-5">
+              <div key={i} className="flex items-center gap-4 rounded-lg border border-border bg-card p-4">
                 <div className="h-12 w-12 shrink-0 rounded-xl skeleton-shimmer" />
                 <div className="min-w-0 flex-1 space-y-2">
                   <div className="h-3 w-20 rounded skeleton-shimmer" />
@@ -359,7 +359,7 @@ export default function AssetOverview() {
       </div>
 
       {/* 模板卡片（可点击进入清单） */}
-      <div className="mb-5">
+      <div className="mb-4">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-foreground">资产类型分布</h2>
           <button
@@ -400,7 +400,7 @@ export default function AssetOverview() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-foreground">{t.name}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">{t.description || t.code}</div>
+                    <div className="truncate text-xs text-muted-foreground">{t.description || t.code}</div>
                   </div>
                   <div className="text-right">
                     <div
@@ -409,7 +409,7 @@ export default function AssetOverview() {
                     >
                       {t.count == null ? '--' : t.count.toLocaleString()}
                     </div>
-                    <div className="text-[10px] text-muted-foreground">条</div>
+                    <div className="text-xs text-muted-foreground">条</div>
                   </div>
                 </button>
               )

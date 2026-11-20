@@ -284,7 +284,7 @@ async def import_users(
     file: UploadFile = File(..., description="xlsx/csv 用户清单"),
     conflict_strategy: str = Query("skip", description="冲突策略：skip 跳过已存在 / overwrite 覆盖更新"),
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission("user", "edit")),
+    current: User = Depends(require_permission("user", "import")),
 ) -> dict:
     """批量导入用户（xlsx/csv）。
 
@@ -486,7 +486,7 @@ async def import_users(
 def export_users(
     ids: str = Query("", description="指定用户 ID 列表（逗号分隔）；为空导出全部"),
     db: Session = Depends(get_db),
-    current: User = Depends(require_permission("user", "view")),
+    current: User = Depends(require_permission("user", "export")),
     request: Request = None,
 ) -> StreamingResponse:
     """导出用户列表为 xlsx（不含密码等敏感字段）。

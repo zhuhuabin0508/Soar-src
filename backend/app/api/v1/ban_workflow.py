@@ -2595,7 +2595,7 @@ def download_banned_ips_template() -> StreamingResponse:
     return _wb_csv_response(content, "ban_workbench_import_template.csv")
 
 
-@router.post("/banned-ips/import/csv", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+@router.post("/banned-ips/import/csv", dependencies=[Depends(require_permission("ban_workflow", "import"))])
 def import_banned_ips_csv(
     file: UploadFile = File(...),
     request: Request = None,

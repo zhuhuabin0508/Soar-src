@@ -333,7 +333,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
           </label>
           <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-secondary p-1.5">
             {form.tags.map((tag, idx) => (
-              <span key={idx} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+              <span key={idx} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs text-primary">
                 {tag}
                 <button type="button" onClick={() => setField('tags')(form.tags.filter((_, i) => i !== idx))}>
                   <X className="h-2.5 w-2.5" />
@@ -355,7 +355,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
                 <button
                   key={t} type="button"
                   onClick={() => setField('tags')(has ? form.tags.filter((x) => x !== t) : [...form.tags, t])}
-                  className={`rounded-full border px-2 py-0.5 text-[10px] transition ${has ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'}`}
+                  className={`rounded-full border px-2 py-0.5 text-xs transition ${has ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'}`}
                 >
                   {has ? '✓ ' : '+ '}{t}
                 </button>
@@ -390,21 +390,21 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
         {/* 工具栏：AI 优化 / 检测 / 全屏 */}
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-secondary px-3 py-2">
           <span className="text-xs font-medium text-muted-foreground">智能助手</span>
-          <button type="button" onClick={handleOptimize} disabled={optimizing} className="flex items-center gap-1 rounded border border-primary/50 px-2 py-1 text-[11px] text-primary transition hover:bg-primary/10 disabled:opacity-50">
+          <button type="button" onClick={handleOptimize} disabled={optimizing} className="flex items-center gap-1 rounded border border-primary/50 px-2 py-1 text-xs text-primary transition hover:bg-primary/10 disabled:opacity-50">
             <Wand2 className="h-3 w-3" /> {optimizing ? '优化中…' : 'AI 优化提示词'}
           </button>
-          <button type="button" onClick={handleCheck} disabled={checking} className="flex items-center gap-1 rounded border border-info/50 px-2 py-1 text-[11px] text-info transition hover:bg-info/10 disabled:opacity-50">
+          <button type="button" onClick={handleCheck} disabled={checking} className="flex items-center gap-1 rounded border border-info/50 px-2 py-1 text-xs text-info transition hover:bg-info/10 disabled:opacity-50">
             <ShieldCheck className="h-3 w-3" /> {checking ? '检测中…' : '检测问题'}
           </button>
           <div className="ml-auto flex items-center gap-2">
             <HoverTip text="字数 / 行数 / 预估 Token / 引用的变量" placement="left">
-              <span className="inline-flex items-center gap-2 text-[10px] text-muted-foreground">
+              <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                 <Lightbulb className="h-3 w-3" />
                 <span>{stats.chars} 字 · {stats.lines} 行 · ≈{stats.tokens} tokens</span>
                 {stats.vars.length > 0 && <span className="text-primary">· {stats.vars.length} 变量</span>}
               </span>
             </HoverTip>
-            <button type="button" onClick={() => setFullscreen((v) => !v)} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-muted-foreground transition hover:text-foreground" title={fullscreen ? '退出全屏' : '全屏编辑'}>
+            <button type="button" onClick={() => setFullscreen((v) => !v)} className="flex items-center gap-1 rounded border border-border px-2 py-1 text-xs text-muted-foreground transition hover:text-foreground" title={fullscreen ? '退出全屏' : '全屏编辑'}>
               {fullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
               {fullscreen ? '退出全屏' : '全屏'}
             </button>
@@ -422,7 +422,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
               {/* 行号 */}
               <div
                 ref={gutterRef}
-                className="select-none overflow-hidden bg-secondary px-2 py-2 text-right font-mono text-[11px] leading-[1.6] text-muted-foreground"
+                className="select-none overflow-hidden bg-secondary px-2 py-2 text-right font-mono text-xs leading-[1.6] text-muted-foreground"
                 style={{ minWidth: '40px' }}
               >
                 {Array.from({ length: Math.max(stats.lines, 1) }, (_, i) => (
@@ -432,7 +432,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
               <AutoGrowTextarea
                 ref={textareaRef}
                 onScroll={handleScroll}
-                className="flex-1 resize-none bg-transparent px-3 py-2 font-mono text-[12px] leading-[1.6] text-foreground outline-none"
+                className="flex-1 resize-none bg-transparent px-3 py-2 font-mono text-xs leading-[1.6] text-foreground outline-none"
                 value={form.content}
                 onChange={(e) => setField('content')(e.target.value)}
                 onInput={handleScroll}
@@ -480,26 +480,26 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
           <div className="rounded-md border border-border bg-secondary p-3">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs font-medium text-foreground">检测报告</span>
-              <span className={`rounded px-2 py-0.5 text-[11px] font-bold ${(checkResult.score ?? 0) >= 80 ? 'bg-success/20 text-success' : (checkResult.score ?? 0) >= 60 ? 'bg-warning/20 text-warning' : 'bg-destructive/20 text-destructive'}`}>
+              <span className={`rounded px-2 py-0.5 text-xs font-bold ${(checkResult.score ?? 0) >= 80 ? 'bg-success/20 text-success' : (checkResult.score ?? 0) >= 60 ? 'bg-warning/20 text-warning' : 'bg-destructive/20 text-destructive'}`}>
                 {checkResult.score ?? '-'} 分
               </span>
             </div>
             {Array.isArray(checkResult.issues) && checkResult.issues.length > 0 ? (
               <ul className="flex flex-col gap-1.5">
                 {checkResult.issues.map((iss, i) => (
-                  <li key={i} className="flex items-start gap-1.5 text-[11px]">
+                  <li key={i} className="flex items-start gap-1.5 text-xs">
                     <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" />
                     <span className="text-muted-foreground"><b className="text-foreground">{iss.type}：</b>{iss.message}</span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <div className="flex items-center gap-1.5 text-[11px] text-success">
+              <div className="flex items-center gap-1.5 text-xs text-success">
                 <CheckCircle2 className="h-3 w-3" /> 未发现明显问题
               </div>
             )}
             {checkResult.suggestions && (
-              <p className="mt-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
+              <p className="mt-2 border-t border-border pt-2 text-xs text-muted-foreground">
                 建议：{checkResult.suggestions}
               </p>
             )}
@@ -511,7 +511,7 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
           <div className="mb-2 flex items-center gap-2">
             <Play className="h-3.5 w-3.5 text-primary" />
             <span className="text-xs font-medium text-foreground">测试运行</span>
-            <span className="text-[10px] text-muted-foreground">注入此技能后，用指定智能体回答测试问题</span>
+            <span className="text-xs text-muted-foreground">注入此技能后，用指定智能体回答测试问题</span>
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <CompactSelect size="lg" block value={testAgentId} onChange={(e) => setTestAgentId(e.target.value)}>
@@ -531,16 +531,16 @@ export default function SkillEditor({ open, initial, onClose, onSubmit, saving }
             placeholder="输入测试问题，如：收到 1.2.3.4 的暴力破解告警，应如何处置？"
           />
           {!form.id && (
-            <p className="mt-1 text-[10px] text-warning">提示：未保存的技能请先保存后再测试（草稿内容会一并注入）。</p>
+            <p className="mt-1 text-xs text-warning">提示：未保存的技能请先保存后再测试（草稿内容会一并注入）。</p>
           )}
           {testResult && (
             <div className="mt-2 rounded-md border border-border bg-background p-3">
-              <div className="mb-1 text-[11px] font-medium text-foreground">智能体回复</div>
-              <pre className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-foreground">{testResult.reply || '(无回复)'}</pre>
+              <div className="mb-1 text-xs font-medium text-foreground">智能体回复</div>
+              <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground">{testResult.reply || '(无回复)'}</pre>
               {testResult.injected_prompt && (
                 <details className="mt-2">
-                  <summary className="cursor-pointer text-[10px] text-primary">查看注入的完整 prompt</summary>
-                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-secondary p-2 text-[10px] text-muted-foreground">{testResult.injected_prompt}</pre>
+                  <summary className="cursor-pointer text-xs text-primary">查看注入的完整 prompt</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-secondary p-2 text-xs text-muted-foreground">{testResult.injected_prompt}</pre>
                 </details>
               )}
             </div>
@@ -558,17 +558,17 @@ function PreviewContent({ content, name, category, tags }) {
   }
   const lines = content.split('\n')
   return (
-    <div className="text-[12px] leading-relaxed text-foreground">
+    <div className="text-xs leading-relaxed text-foreground">
       {/* 头部信息 */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5 border-b border-border pb-2">
         <span className="text-sm font-semibold">{name || '(未命名)'}</span>
         {category && (
-          <span className={`rounded border px-1.5 py-0.5 text-[10px] ${CATEGORY_STYLES[category] || CATEGORY_STYLES['其他']}`}>
+          <span className={`rounded border px-1.5 py-0.5 text-xs ${CATEGORY_STYLES[category] || CATEGORY_STYLES['其他']}`}>
             {category}
           </span>
         )}
         {(tags || []).map((t) => (
-          <span key={t} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{t}</span>
+          <span key={t} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{t}</span>
         ))}
       </div>
       {/* 正文行 */}

@@ -24,6 +24,7 @@ from sqlalchemy import text
 from app.api.v1 import api_router
 from app.config import settings
 from app.core.validation_errors import translate_validation_errors
+from app.report.errors import ReportError
 
 # 统一日志格式（便于调试）
 logging.basicConfig(
@@ -195,10 +196,17 @@ def _sync_role_permission_modules(db) -> None:
     """
     from app.core.permissions import PERMISSION_MODULES, migrate_permissions
     from app.models.role import Role
+    from app.models.system_config import SystemConfig
 
     roles = db.query(Role).all()
     changed = 0
     full = {mod: list(actions) for mod, actions in PERMISSION_MODULES.items()}
+    # 细粒度动作（import/export 等）的兼容补权只在升级后首次启动执行一次，
+    # 之后由管理员显式配置；否则管理员取消勾选后会被每次重启重新补回。
+    grant_key = "permissions.granular_actions_migrated"
+    grant_new_actions = (
+        db.query(SystemConfig).filter(SystemConfig.key == grant_key).first() is None
+    )
     for role in roles:
         if role.name == "admin":
             if role.permissions != full:
@@ -206,12 +214,21 @@ def _sync_role_permission_modules(db) -> None:
                 db.add(role)
                 changed += 1
             continue
+        # 所有非 admin 角色（含系统内置 analyst / viewer）统一走迁移：
+        # 升级后首个启动补新增动作并清理旧键，后续启动保留管理员对系统角色的显式调整
         perms = role.permissions if isinstance(role.permissions, dict) else {}
-        migrated = migrate_permissions(perms)
+        migrated = migrate_permissions(perms, grant_new_actions=grant_new_actions)
         if migrated != perms:
             role.permissions = migrated
             db.add(role)
             changed += 1
+    if grant_new_actions:
+        db.add(SystemConfig(
+            key=grant_key,
+            value="1",
+            description="权限矩阵导入/导出等细粒度动作已完成一次性升级迁移",
+        ))
+        changed += 1
     if changed:
         db.commit()
         logger.info("已同步 %d 个角色的权限模块（含资产发现）", changed)
@@ -292,6 +309,18 @@ async def lifespan(app: FastAPI):
             _db.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("恢复工单研判后台任务失败（忽略）: %s", exc)
+    # 工单安全分析研判智能体幂等初始化（缺失自动创建、规则版本变化刷新提示词）
+    try:
+        from app.core.ticket_analyst.ensure import ensure_ticket_analyst_agent
+        from app.database import SessionLocal
+
+        _db = SessionLocal()
+        try:
+            ensure_ticket_analyst_agent(_db)
+        finally:
+            _db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("工单安全分析研判智能体初始化失败（忽略，首次调用时惰性重试）: %s", exc)
     # 推送系统更新通知（版本变化时广播到通知中心）
     try:
         from app.core.changelog import notify_system_update
@@ -412,6 +441,30 @@ app = FastAPI(title="SOAR Platform API", version=CURRENT_VERSION, lifespan=lifes
 async def _validation_exception_handler(request, exc: RequestValidationError):  # noqa: ARG001
     detail = translate_validation_errors(exc.errors())
     return JSONResponse(status_code=422, content={"detail": detail, "code": "validation_error"})
+
+
+# 报告中心统一错误码 → HTTP 状态码，前端按 code 做精确提示
+_REPORT_ERROR_STATUS = {
+    "TPL_NOT_FOUND": 404,
+    "CFG_NOT_FOUND": 404,
+    "RUN_NOT_FOUND": 404,
+    "ARTIFACT_NOT_FOUND": 404,
+    "PDF_UNAVAILABLE": 503,
+    "CONFLICT": 409,
+    "INVALID_STATE": 409,
+    "FORBIDDEN": 403,
+    "AI_NOT_CONFIGURED": 400,
+    "AI_FAILED": 502,
+    "AI_BAD_OUTPUT": 502,
+}
+
+
+@app.exception_handler(ReportError)
+async def _report_exception_handler(request, exc: ReportError):  # noqa: ARG001
+    return JSONResponse(
+        status_code=_REPORT_ERROR_STATUS.get(exc.code, 400),
+        content={"detail": exc.message, "code": exc.code, "extra": exc.detail},
+    )
 
 
 # ============ 限流器（slowapi）============

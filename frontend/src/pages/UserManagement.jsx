@@ -157,7 +157,7 @@ function PasswordField({ label, value, onChange, placeholder, hint, required, sh
           </button>
         </div>
       </div>
-      {hint && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+      {hint && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hint}</p>}
       {showStrength && value && strength && (
         <div className="mt-2">
           <div className="flex items-center gap-2">
@@ -167,13 +167,13 @@ function PasswordField({ label, value, onChange, placeholder, hint, required, sh
                 style={{ width: strengthWidths[strength.score] }}
               />
             </div>
-            <span className="text-[10px] text-muted-foreground">{strength.label}</span>
+            <span className="text-xs text-muted-foreground">{strength.label}</span>
           </div>
           <div className="mt-2 grid grid-cols-2 gap-1.5">
             {strength.checks.map((c, i) => (
               <span
                 key={i}
-                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] leading-none ${
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs leading-none ${
                   c.pass
                     ? 'bg-success/10 text-success'
                     : 'bg-muted text-muted-foreground'
@@ -202,7 +202,7 @@ function UserDetailDrawer({ open, user, onClose, onEdit, onUnlock }) {
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头部 */}
-        <div className="flex items-center justify-between border-b border-border p-5">
+        <div className="flex items-center justify-between border-b border-border p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/70 text-lg font-bold text-primary-foreground">
               {(user.username || '?')[0].toUpperCase()}
@@ -271,7 +271,7 @@ function UserDetailDrawer({ open, user, onClose, onEdit, onUnlock }) {
         </div>
 
         {/* 操作 */}
-        <div className="mt-auto border-t border-border p-5">
+        <div className="mt-auto border-t border-border p-4">
           {user.is_locked && onUnlock && (
             <button
               type="button"
@@ -484,6 +484,8 @@ function UserManagement() {
   const canView = hasPermission('user', 'view')
   const canEdit = hasPermission('user', 'edit')
   const canDelete = hasPermission('user', 'delete')
+  const canImport = hasPermission('user', 'import')
+  const canExport = hasPermission('user', 'export')
 
   const load = useCallback(async () => {
     if (!canView) {
@@ -919,7 +921,7 @@ function UserManagement() {
           >
             {r.username}
           </button>
-          <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={r.display_name || ''}>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground" title={r.display_name || ''}>
             {r.display_name && r.display_name !== r.username ? r.display_name : '—'}
           </div>
         </div>
@@ -929,7 +931,7 @@ function UserManagement() {
       key: 'email', header: '邮箱',
       render: (r) => r.email
         ? <span className="truncate text-muted-foreground" title={r.email}>{r.email}</span>
-        : <span className="rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">未绑定</span>,
+        : <span className="rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">未绑定</span>,
     },
     {
       key: 'role', header: '角色', width: '96px',
@@ -1009,12 +1011,12 @@ function UserManagement() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex items-center justify-between gap-4 border-b border-border bg-card px-6 py-4">
         <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">用户管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">用户管理</h1>
           <span className="text-xs text-muted-foreground tabular-nums">共 {filteredRows.length} 个用户</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={load} className="btn-secondary btn-sm">刷新</button>
-          {canView && (
+          {canExport && (
             <button
               type="button"
               onClick={handleExport}
@@ -1025,7 +1027,7 @@ function UserManagement() {
               {selectedKeys.length ? `导出选中(${selectedKeys.length})` : '导出'}
             </button>
           )}
-          {canEdit && (
+          {canImport && (
             <button type="button" onClick={openImport} className="btn-secondary btn-sm">
               <Upload className="mr-1 h-3.5 w-3.5" />导入
             </button>
@@ -1188,7 +1190,7 @@ function UserManagement() {
                   <button
                     type="button"
                     onClick={() => setField('password')(generateRandomPassword(pwdPolicy))}
-                    className="flex items-center gap-1 whitespace-nowrap text-[10px] text-primary hover:underline"
+                    className="flex items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline"
                     title="随机生成密码"
                   >
                     <RefreshCw className="h-3 w-3" />
@@ -1205,7 +1207,7 @@ function UserManagement() {
                 />
                 <span className="text-xs text-muted-foreground">首次登录强制修改密码</span>
               </label>
-              {formErrors.password && <p className="mt-1 text-[11px] text-destructive">{formErrors.password}</p>}
+              {formErrors.password && <p className="mt-1 text-xs text-destructive">{formErrors.password}</p>}
             </div>
           )}
         </Section>
@@ -1219,7 +1221,7 @@ function UserManagement() {
               placeholder="请输入邮箱地址"
             />
           </div>
-          {formErrors.email && <p className="mt-1 text-[11px] text-destructive">{formErrors.email}</p>}
+          {formErrors.email && <p className="mt-1 text-xs text-destructive">{formErrors.email}</p>}
         </Section>
 
         <Section title="角色与状态">
@@ -1277,7 +1279,7 @@ function UserManagement() {
                 )
               })}
             </div>
-            <p className="mt-1.5 text-[10px] text-muted-foreground">
+            <p className="mt-1.5 text-xs text-muted-foreground">
               控制该用户可以使用哪些方式登录系统，至少保留一种
             </p>
           </div>
@@ -1310,7 +1312,7 @@ function UserManagement() {
             <button
               type="button"
               onClick={() => setNewPassword(generateRandomPassword(pwdPolicy))}
-              className="flex items-center gap-1 whitespace-nowrap text-[10px] text-primary hover:underline"
+              className="flex items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline"
               title="随机生成密码"
             >
               <RefreshCw className="h-3 w-3" />
@@ -1318,7 +1320,7 @@ function UserManagement() {
             </button>
           }
         />
-        <p className="mt-2 text-[11px] text-muted-foreground">
+        <p className="mt-2 text-xs text-muted-foreground">
           重置后请通知用户尽快登录并修改为自己的密码。若该账户因密码错误次数过多被冻结，重置后将一并解除冻结。
         </p>
       </Modal>
@@ -1349,7 +1351,7 @@ function UserManagement() {
             <button
               type="button"
               onClick={() => setBatchResetPassword(generateRandomPassword(pwdPolicy))}
-              className="flex items-center gap-1 whitespace-nowrap text-[10px] text-primary hover:underline"
+              className="flex items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline"
               title="随机生成密码"
             >
               <RefreshCw className="h-3 w-3" />
@@ -1357,7 +1359,7 @@ function UserManagement() {
             </button>
           }
         />
-        <p className="mt-2 text-[11px] text-muted-foreground">
+        <p className="mt-2 text-xs text-muted-foreground">
           所有选中用户将使用相同的新密码，重置后请通知用户尽快修改。被冻结的账户将一并解除冻结。
         </p>
       </Modal>
@@ -1397,7 +1399,7 @@ function UserManagement() {
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground file:mr-3 file:cursor-pointer file:rounded file:border-0 file:bg-primary/15 file:px-2 file:py-1 file:text-primary"
             />
             {importFile && (
-              <p className="mt-1 text-[11px] text-muted-foreground">已选择：{importFile.name}</p>
+              <p className="mt-1 text-xs text-muted-foreground">已选择：{importFile.name}</p>
             )}
           </div>
           <div>
@@ -1434,7 +1436,7 @@ function UserManagement() {
                 </span>
               </div>
               {importResult.errors?.length > 0 && (
-                <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-[11px] text-destructive">
+                <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs text-destructive">
                   {importResult.errors.map((e, i) => (
                     <li key={i}>
                       第 {e.row} 行{e.username ? `（${e.username}）` : ''}：{e.msg}
@@ -1444,7 +1446,7 @@ function UserManagement() {
               )}
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             新建用户的初始密码需满足密码复杂度策略，且首次登录需修改密码；覆盖导入时填写初始密码会重置密码并一并解除冻结；导出文件不含密码，可编辑后直接导入。
           </p>
         </div>

@@ -165,7 +165,7 @@ function AgentList() {
       <span className="inline-flex min-w-0 items-center gap-1.5">
         <span className="truncate text-foreground">{r.name || '-'}</span>
         {!isAgentPublished(r) && (
-          <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600">草稿</span>
+          <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-600">草稿</span>
         )}
       </span>
     ) },
@@ -224,7 +224,7 @@ function AgentList() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl font-semibold text-foreground">智能体</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">智能体</h1>
           <span className="text-xs text-muted-foreground">共 {filteredRows.length} 个</span>
         </div>
         <div className="flex items-center gap-2">
@@ -393,7 +393,7 @@ function AgentList() {
                     {result.messages.map((m, idx) => (
                       <div key={idx} className="border-b border-border pb-2 last:border-0">
                         <div className="mb-1 flex items-center gap-2">
-                          <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          <span className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                             {m.role || '-'}
                           </span>
                         </div>
@@ -450,7 +450,7 @@ function AgentList() {
         {teamLoading ? (
           <p className="mb-4 text-xs text-muted-foreground">正在加载团队模板…</p>
         ) : teamTemplates.length > 0 && (
-          <div className="mb-5">
+          <div className="mb-4">
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">团队模板</h3>
             <div className="grid gap-3 sm:grid-cols-2">
               {teamTemplates.map((agent) => (
@@ -470,7 +470,7 @@ function AgentList() {
                   {(agent.template_tags || []).length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {agent.template_tags.map((tag) => (
-                        <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
+                        <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>
                       ))}
                     </div>
                   )}
@@ -522,12 +522,12 @@ function AgentList() {
                 </div>
                 <span className="text-xs leading-relaxed text-muted-foreground">{tpl.description}</span>
                 {tpl.scenario && (
-                  <span className="text-[10px] text-muted-foreground">适用：{tpl.scenario}</span>
+                  <span className="text-xs text-muted-foreground">适用：{tpl.scenario}</span>
                 )}
                 {tpl.tags?.length > 0 && (
                   <div className="flex flex-wrap gap-1">
                     {tpl.tags.map((tag) => (
-                      <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
+                      <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>
                     ))}
                   </div>
                 )}

@@ -131,8 +131,10 @@ export async function request(path, options = {}) {
       throw new Error('登录已过期，请重新登录')
     }
     let detail = ''
+    let errorPayload = null
     try {
       const data = await res.json()
+      errorPayload = data
       // FastAPI 422 的 detail 是数组（[{loc,msg,type}]），直接模板拼接会变成 [object Object]
       // 统一处理：字符串原样用，对象/数组则提取可读信息后 JSON 序列化
       const raw = data.detail ?? data.message ?? data
@@ -154,7 +156,11 @@ export async function request(path, options = {}) {
       }
     }
     // 优先展示后端返回的具体原因（如"密码必须包含大写字母"），无具体原因时才回退到状态码
-    throw new Error(detail || `请求失败 ${res.status} ${res.statusText}`.trim())
+    const httpError = new Error(detail || `请求失败 ${res.status} ${res.statusText}`.trim())
+    // 附带后端结构化错误体（如报告配置校验返回的 issues），供页面渲染明细
+    httpError.data = errorPayload
+    httpError.status = res.status
+    throw httpError
   }
 
   // 允许空响应体
@@ -211,6 +217,7 @@ export const tools = {
   test: (id, parameters) =>
     request(`/tools/${id}/test`, { method: 'POST', body: { parameters } }),
   templates: () => request('/tools/templates'),
+  categories: () => request('/tools/categories'),
   // 导出工具配置：ids 逗号分隔，缺省导出全部自定义工具（密钥默认脱敏）
   export: (params = {}) => {
     const qs = new URLSearchParams()
@@ -238,6 +245,11 @@ export const tools = {
   // 模拟对话调试：把工具绑定到 LLM，展示运行链路
   debugChat: (id, message) =>
     request(`/tools/${id}/debug-chat`, { method: 'POST', body: { message } }),
+  // 版本历史（编辑前自动存档，供回滚）
+  versions: (id) => request(`/tools/${id}/versions`),
+  version: (id, version) => request(`/tools/${id}/versions/${version}`),
+  rollback: (id, version) =>
+    request(`/tools/${id}/versions/${version}/rollback`, { method: 'POST' }),
 }
 
 // ============ 智能体 ============
@@ -269,12 +281,13 @@ export const agents = {
   // signal 可选：传入 AbortSignal 以支持中途取消流式
   // sessionId 可选：会话 ID，按 (agentId, sessionId) 持久化多轮对话上下文
   // options 可选：会话级参数覆盖（Playground 调试用）
-  chatStream: async (id, input, signal, sessionId, options = {}) => {
+  chatStream: async (id, input, signal, sessionId, options = {}, skillIds = []) => {
     const token = localStorage.getItem('soar_token')
     const { channel, ...override } = options || {}
     const body = { input, session_id: sessionId || 'default' }
     if (override && Object.keys(override).length > 0) body.override = override
     if (channel) body.channel = channel
+    if (skillIds && skillIds.length > 0) body.skill_ids = skillIds
     const resp = await fetch(`${BASE_URL}/agents/${id}/chat`, {
       method: 'POST',
       headers: {

@@ -79,7 +79,7 @@ function FieldError({ msg }) {
 
 // 字段填写规范提示（弱化灰色，告知用户约束）
 function FieldHint({ children }) {
-  return <p className="mt-1 text-[11px] text-muted-foreground">{children}</p>
+  return <p className="mt-1 text-xs text-muted-foreground">{children}</p>
 }
 
 function FeedbackDrawer({ open, onClose, onSubmitted }) {
@@ -248,14 +248,14 @@ function FeedbackDrawer({ open, onClose, onSubmitted }) {
         {/* 表单滚动区 */}
         <div data-allow-scroll className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">
           {/* 填写须知：进入抽屉即前置告知用户填写规范 */}
-          <div className="mb-5 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+          <div className="mb-4 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
             <span className="font-medium text-primary">填写须知：</span>
             标题与详细描述请填写 <span className="font-medium text-foreground">1 - 5000 字</span>
             ；若类型为 <span className="text-red-400">BUG</span>，复现步骤 / 期望结果 / 实际结果均为必填；附件仅支持图片、PDF、TXT、日志、CSV、ZIP，单文件不超过 10MB。
           </div>
 
           {/* 反馈类型分段控件 */}
-          <div className="mb-5">
+          <div className="mb-4">
             <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
               反馈类型 <span className="text-destructive">*</span>
             </label>

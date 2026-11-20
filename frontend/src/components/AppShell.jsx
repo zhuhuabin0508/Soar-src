@@ -8,6 +8,7 @@ import {
   ChevronsRight, UserRound, PieChart, Boxes, Info, Bug, MessageSquareWarning, Inbox, PackageCheck,
   CalendarClock, CalendarRange, CalendarX, History, Monitor, FileJson, BellRing, Activity, Globe,
   ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset, KeyRound, PauseCircle,
+  FileText,
 } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { hasPermission } from '../utils/permissions'
@@ -68,6 +69,18 @@ export const NAV_GROUPS = [
       },
       { to: '/deliverables', icon: PackageCheck, label: '材料管理', perm: ['deliverable', 'view'] },
       { to: '/ip-library', icon: Globe, label: 'IP地址库', end: true, perm: ['ip_library', 'view'] },
+      {
+        to: '/reports/templates',
+        icon: FileText,
+        label: '报告中心',
+        perm: ['report', 'view'],
+        children: [
+          { to: '/reports/templates', icon: FileText, label: '模板库', end: true, perm: ['report', 'view'] },
+          { to: '/reports/configs', icon: Settings, label: '报告配置', perm: ['report', 'view'] },
+          { to: '/reports/runs', icon: Activity, label: '运行中心', end: true, perm: ['report', 'view'] },
+          { to: '/reports/audits', icon: ClipboardCheck, label: '报告审核', end: true, perm: ['report', 'view'] },
+        ],
+      },
     ],
   },
   {
@@ -116,7 +129,7 @@ export const NAV_GROUPS = [
           { to: '/source-entries', icon: ListTree, label: '数据源条目', end: true, perm: ['device', 'view'] },
           { to: '/strategies', icon: FileJson, label: '解析模板', end: true, perm: ['strategy', 'view'] },
           { to: '/alerts', icon: BellRing, label: '告警列表', end: true, perm: ['alert', 'view'] },
-          { to: '/alert-rules', icon: Filter, label: '告警规则', end: true, perm: ['alert', 'view'] },
+          { to: '/alert-rules', icon: Filter, label: '告警规则', end: true, perm: ['alert_rule', 'view'] },
           { to: '/ingest-monitor', icon: Activity, label: '入库监控', end: true, perm: ['monitor', 'view'] },
           { to: '/lineage', icon: GitGraph, label: '数据血缘', end: true, perm: ['device', 'view'] },
         ],
@@ -138,7 +151,7 @@ export const NAV_GROUPS = [
       { to: '/system-settings', icon: Settings, label: '系统设置', perm: ['system_config', 'view'] },
       { to: '/system-monitor', icon: HeartPulse, label: '系统监控', perm: ['system_monitor', 'view'] },
       { to: '/audit-logs', icon: ScrollText, label: '审计日志', perm: ['audit_log', 'view'] },
-      { to: '/api-open', icon: KeyRound, label: 'API开放平台', perm: ['open_api', 'view'] },
+      { to: '/api-open', icon: KeyRound, label: 'API开放', perm: ['open_api', 'view'] },
       { to: '/backup', icon: DatabaseBackup, label: '备份恢复', perm: ['system_config', 'view'] },
       { to: '/feedbacks/admin', icon: Bug, label: '反馈管理', perm: ['feedback', 'view'] },
       { to: '/about', icon: Info, label: '关于', perm: ['system_config', 'view'] },
@@ -210,6 +223,10 @@ const BREADCRUMB_MAP = {
   '/assets/discovery': ['资源管理', '资产管理', '资产发现'],
   '/assets/legacy': ['资源管理', '资产管理'],
   '/deliverables': ['资源管理', '材料管理'],
+  '/reports/templates': ['资源管理', '报告中心', '模板库'],
+  '/reports/configs': ['资源管理', '报告中心', '报告配置'],
+  '/reports/runs': ['资源管理', '报告中心', '运行中心'],
+  '/reports/audits': ['资源管理', '报告中心', '报告审核'],
   '/ip-library': ['资源管理', 'IP地址库'],
   '/duty/members': ['运营管理', '值班管理', '值班人员'],
   '/duty/schedule': ['运营管理', '值班管理', '值班表'],
@@ -244,7 +261,7 @@ const BREADCRUMB_MAP = {
   '/system-settings': ['系统管理', '系统设置'],
   '/system-monitor': ['系统管理', '系统监控'],
   '/audit-logs': ['系统管理', '审计日志'],
-  '/api-open': ['系统管理', 'API开放平台'],
+  '/api-open': ['系统管理', 'API开放'],
   '/backup': ['系统管理', '备份恢复'],
   '/feedbacks/admin': ['系统管理', '反馈管理'],
   '/about': ['系统管理', '关于'],
@@ -397,6 +414,7 @@ function getBreadcrumbs(pathname) {
   if (pathname.startsWith('/agents/new') || pathname.startsWith('/agents/quick')) return ['工作室', '新建智能体']
   if (pathname.startsWith('/agents/') && pathname.endsWith('/advanced')) return ['工作室', '高级编辑']
   if (pathname.startsWith('/source-entries/')) return ['连接配置', '设备对接', '数据源条目', '详情']
+  if (pathname.startsWith('/reports/configs/')) return ['资源管理', '报告中心', '报告配置', '编辑']
   return []
 }
 
@@ -631,7 +649,7 @@ function AppShell() {
               <div key={gi} className="flex flex-col gap-1">
                 {group.title && !collapsed && (
                   <div
-                    className={`flex items-center gap-2 px-3 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wider transition-colors ${
+                    className={`flex items-center gap-2 px-3 pt-2 pb-1 text-xs font-medium uppercase tracking-wider transition-colors ${
                       groupHasActive ? 'text-primary/80' : 'text-muted-foreground'
                     }`}
                   >
@@ -718,7 +736,7 @@ function AppShell() {
                                 to={child.to}
                                 end={child.end}
                                 title={child.label}
-                                className={`flex items-center rounded-md px-3 py-1.5 text-[13px] transition-all duration-150 ${
+                                className={`flex items-center rounded-md px-3 py-1.5 text-xs transition-all duration-150 ${
                                   selfActive
                                     ? 'bg-primary/10 font-medium text-primary ring-1 ring-primary/25'
                                     : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground hover:translate-x-0.5'
@@ -843,7 +861,7 @@ function AppShell() {
                     <div className="truncate text-sm font-medium text-foreground">
                       {user?.display_name || user?.username || '用户'}
                     </div>
-                    <div className="text-[11px] text-muted-foreground">
+                    <div className="text-xs text-muted-foreground">
                       {ROLE_LABELS[user?.role_name] || user?.role_name || ROLE_LABELS[user?.role] || user?.role || '-'}
                     </div>
                   </div>

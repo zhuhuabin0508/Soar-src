@@ -19,6 +19,8 @@ import logging
 import time
 from typing import Any, Callable, Optional
 
+from sqlalchemy import or_
+
 from app.agent.hermes.budget import BudgetConfig, maybe_persist_tool_result
 from app.agent.hermes.guardrails import (
     ToolCallGuardrailConfig,
@@ -40,6 +42,7 @@ from app.agent.hermes.tool_search import (
     default_tool_search_config,
     dispatch_tool_describe,
     dispatch_tool_search,
+    dispatch_tool_search_async,
     is_bridge_tool,
     resolve_underlying_call,
 )
@@ -220,13 +223,44 @@ class HermesToolEngine:
             list(self._registry.keys()),
         )
 
+    def _load_tools_map(self, names: list) -> dict:
+        """按名称批量加载启用中的工具，返回 ``{name: Tool}``。
+
+        一次性 ``WHERE name IN (...)`` 查询，替代原先每个工具各发一次 DB 查询
+        的 N+1 模式——工具越多收益越大，是注册表构建的主要耗时来源。
+        """
+        from app.models.tool import Tool
+
+        if not names:
+            return {}
+        # 只加载「启用 + 生命周期 active」的工具；draft/disabled/deprecated 不注册。
+        # 历史行 status 可能为 NULL，视为 active 以保持向后兼容。
+        tools = (
+            self.db.query(Tool)
+            .filter(
+                Tool.name.in_(names),
+                Tool.enabled.is_(True),
+                or_(Tool.status.is_(None), Tool.status == "active"),
+            )
+            .all()
+        )
+        return {t.name: t for t in tools}
+
     def _register_db_tools(self) -> None:
-        """注册 DB 中的 code/http 工具（跳过 framework 类型，后者由 executor 注入）。"""
+        """注册 DB 中的 code/http 工具（跳过 framework 类型，后者由 executor 注入）。
+
+        批量加载全部启用工具后逐个注册，避免 N+1 查询。
+        """
         enabled_tools = self.agent.enabled_tools or []
         if not enabled_tools:
             return
+        tool_map = self._load_tools_map(list(enabled_tools))
         for name in enabled_tools:
-            self._register_db_tool(name)
+            tool = tool_map.get(name)
+            if tool is None:
+                logger.warning("DB 工具未找到或未启用: %s", name)
+                continue
+            self._register_db_tool_obj(tool)
 
     def _register_capability_tools(self) -> None:
         """自动挂载通用能力工具（见 ``AUTO_CAPABILITY_TOOL_NAMES``）。
@@ -235,28 +269,26 @@ class HermesToolEngine:
         智能体工具列表"的问题：只要工具在 DB 中存在且启用，就对本智能体可见，
         由 LLM 根据 description 自主判断是否调用。
         """
+        tool_map = self._load_tools_map(list(AUTO_CAPABILITY_TOOL_NAMES))
         for name in AUTO_CAPABILITY_TOOL_NAMES:
-            self._register_db_tool(name, warn_missing=False)
+            tool = tool_map.get(name)
+            if tool is None:
+                # 能力工具自动挂载在种子同步前属正常情况，用 debug 记录
+                logger.debug("DB 工具未找到或未启用（能力工具自动挂载，正常）: %s", name)
+                continue
+            self._register_db_tool_obj(tool)
 
-    def _register_db_tool(self, name: str, *, warn_missing: bool = True) -> bool:
-        """按名称从 DB 加载并注册单个 code/http 工具。
+    def _register_db_tool_obj(self, tool) -> bool:
+        """把一个已加载的 ``Tool`` ORM 对象注册进工具表。
 
-        Args:
-            name: 工具名称。
-            warn_missing: 工具不存在/未启用时是否输出 warning（能力工具自动挂载
-                在种子同步前属正常情况，用 debug 记录）。
+        仅处理 code/http 工具；framework 类型由 executor 注入、search_assets 由
+        ``_register_asset_tools`` 单独注册，均在此跳过。
 
         Returns:
-            是否成功注册（已注册/框架类型/未启用/加载失败均返回 False）。
+            是否成功注册（已注册/框架类型/加载失败均返回 False）。
         """
+        name = tool.name
         if not name or name in self._registry:
-            return False
-        from app.models.tool import Tool
-
-        tool = self.db.query(Tool).filter(Tool.name == name, Tool.enabled.is_(True)).first()
-        if tool is None:
-            log = logger.warning if warn_missing else logger.debug
-            log("DB 工具未找到或未启用: %s", name)
             return False
         # framework 类型工具（delegate_task/clarify 等）由 executor 作为 extra_tool_defs
         # 注入并在 _react_loop 中拦截处理，不走 tool_engine 执行管线
@@ -969,13 +1001,14 @@ class HermesToolEngine:
         """
         args = tc.arguments or {}
 
-        # ── tool_search：BM25 检索延迟工具目录 ──
+        # ── tool_search：BM25 + 向量混合检索延迟工具目录 ──
         if tc.name == "tool_search":
-            content = dispatch_tool_search(
+            content = await dispatch_tool_search_async(
                 args,
                 full_tool_defs=self._full_tool_defs,
                 source_map=self._source_map,
                 config=self.tool_search_config,
+                db=self.db,
             )
             self._log_tool(
                 "info",

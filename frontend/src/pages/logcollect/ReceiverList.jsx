@@ -67,8 +67,8 @@ function AdapterConfigSection({ meta, cfg, onChange }) {
                   onBlur={() => { if (f.type === 'ip') setTouched((p) => ({ ...p, [f.key]: true })) }}
                 />
               )}
-              {touched[f.key] && ipError && <div className="mt-1 text-[11px] text-destructive">{ipError}</div>}
-              {f.hint && f.type !== 'bool' && <div className="mt-1 text-[10px] leading-tight text-muted-foreground">{f.hint}</div>}
+              {touched[f.key] && ipError && <div className="mt-1 text-xs text-destructive">{ipError}</div>}
+              {f.hint && f.type !== 'bool' && <div className="mt-1 text-xs leading-tight text-muted-foreground">{f.hint}</div>}
             </label>
           )
         })}
@@ -241,7 +241,7 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
             <SlidersHorizontal className="h-4 w-4 text-primary" />
             <span className="text-sm font-semibold">{isCreate ? '添加接收器' : `接收器配置 · ${initial?.name}`}</span>
             {!isCreate && (
-              <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${PROTOCOL_TAG_CLS[form.protocol] || 'bg-secondary text-muted-foreground'}`}>
+              <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${PROTOCOL_TAG_CLS[form.protocol] || 'bg-secondary text-muted-foreground'}`}>
                 {SOURCE_TYPE_META[form.protocol]?.label || form.protocol}
               </span>
             )}
@@ -304,9 +304,9 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
                         onBlur={() => setBindTouched(true)}
                         placeholder="0.0.0.0" />
                       {bindTouched && syslogBindError && (
-                        <div className="mt-1 text-[11px] text-destructive">{syslogBindError}</div>
+                        <div className="mt-1 text-xs text-destructive">{syslogBindError}</div>
                       )}
-                      <div className="mt-1 text-[10px] leading-tight text-muted-foreground">0.0.0.0 监听所有接口；填本机不存在的地址会启动失败</div>
+                      <div className="mt-1 text-xs leading-tight text-muted-foreground">0.0.0.0 监听所有接口；填本机不存在的地址会启动失败</div>
                     </label>
                   </div>
                   {/* 条目自动发现（监听型专属，存 adapter_config） */}
@@ -318,7 +318,7 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
                       />
                       <div className="text-xs text-muted-foreground">
                         条目自动发现
-                        <div className="text-[10px] text-muted-foreground">按来源 IP 自动生成数据源条目，未配置的条目跟随接收器默认模板</div>
+                        <div className="text-xs text-muted-foreground">按来源 IP 自动生成数据源条目，未配置的条目跟随接收器默认模板</div>
                       </div>
                     </div>
                     <label>
@@ -329,7 +329,7 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
                         placeholder="1000"
                         onChange={(e) => set('adapter_config', setCfgValue(form.adapter_config, 'entry_max_count', e.target.value === '' ? '' : Number(e.target.value)))}
                       />
-                      <div className="mt-1 text-[10px] text-muted-foreground">超过上限后新来源不再建条目，走接收器默认配置</div>
+                      <div className="mt-1 text-xs text-muted-foreground">超过上限后新来源不再建条目，走接收器默认配置</div>
                     </label>
                   </div>
                 </div>
@@ -367,7 +367,7 @@ function ReceiverConfigDrawer({ open, initial, receivers, devices, strategies, o
                     <option value="">{isListen ? '按数据源条目自动归属（推荐）' : '请选择设备'}</option>
                     {(devices || []).map((d) => (<option key={d.id} value={d.id}>{d.name}</option>))}
                   </CompactSelect>
-                  <div className="mt-1 text-[10px] text-muted-foreground">
+                  <div className="mt-1 text-xs text-muted-foreground">
                     {isListen ? '仅当数据源条目未绑定设备时使用此默认归属' : '拉取型必须绑定设备，接收日志与告警均计入该设备'}
                   </div>
                 </label>
@@ -537,11 +537,11 @@ export default function ReceiverList() {
         <div className="min-w-0">
           <div className="truncate font-medium" title={r.name}>{r.name}</div>
           {r.strategy_id ? (
-            <div className="text-[11px] text-primary" title={`固定模板：${strategyName(r.strategy_id)}`}>
+            <div className="text-xs text-primary" title={`固定模板：${strategyName(r.strategy_id)}`}>
               固定模板：{strategyName(r.strategy_id)}
             </div>
           ) : (
-            <div className="text-[11px] text-muted-foreground">模板自动匹配</div>
+            <div className="text-xs text-muted-foreground">模板自动匹配</div>
           )}
         </div>
       ),
@@ -549,7 +549,7 @@ export default function ReceiverList() {
     {
       key: 'protocol', header: '方式', width: '120px',
       render: (r) => (
-        <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${PROTOCOL_TAG_CLS[r.protocol] || 'bg-secondary text-muted-foreground'}`} title={r.protocol}>
+        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${PROTOCOL_TAG_CLS[r.protocol] || 'bg-secondary text-muted-foreground'}`} title={r.protocol}>
           {SOURCE_TYPE_META[r.protocol]?.label || r.protocol}
         </span>
       ),
@@ -564,12 +564,12 @@ export default function ReceiverList() {
         const st = RECEIVER_STATUS_META[r.status] || { label: r.status, cls: 'bg-secondary text-muted-foreground' }
         return (
           <div>
-            <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${st.cls}`}>
+            <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${st.cls}`}>
               {r.alive && <span className="h-1.5 w-1.5 rounded-full bg-success" />}
               {st.label}
             </span>
             {r.status === 'start_failed' && r.last_error && (
-              <div className="mt-0.5 max-w-[200px] truncate font-mono text-[10px] text-destructive" title={r.last_error}>
+              <div className="mt-0.5 max-w-[200px] truncate font-mono text-xs text-destructive" title={r.last_error}>
                 {r.last_error}
               </div>
             )}
@@ -599,7 +599,7 @@ export default function ReceiverList() {
         return (
           <button
             type="button"
-            className="rounded-full px-1.5 text-[11px] font-medium tabular-nums transition hover:underline"
+            className="rounded-full px-1.5 text-xs font-medium tabular-nums transition hover:underline"
             onClick={(e) => { e.stopPropagation(); navigate(`/source-entries?receiver=${r.id}`) }}
             title={`查看 ${r.name} 的数据源条目`}
           >

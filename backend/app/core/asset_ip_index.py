@@ -566,6 +566,48 @@ def query_asset_ids_by_netv6(db, ns: int, ne: int, limit: int = 500) -> list[int
     return [r[0] for r in rows]
 
 
+def query_nearest_asset_ids_by_ip(db, ti: int, limit: int = 3) -> list[tuple[int, int, int]]:
+    """查询与 IPv4 地址 ``ti`` 数值最接近的资产区间（无精确命中时的相似 IP 兜底）。
+
+    用于 ``search_assets`` 在单个 IP 未命中任何资产时，返回距离最近的若干资产，
+    供研判人员/智能体了解该 IP 周边的相邻主机。返回 ``[(asset_id, closest_ip_int,
+    distance), ...]``，按 distance 升序、最多 ``limit`` 条，且每个资产只取距
+    ``ti`` 最近的一个区间（DISTINCT ON asset_id）。
+
+    - closest_ip_int：该资产区间内距离 ``ti`` 最近的 IP 整数（区间在 ``ti``
+      之上取区间起点、之下取区间终点）。
+    - distance：closest_ip_int 与 ``ti`` 的整数差（≥1，调用方保证无精确命中）。
+    """
+    rows = db.execute(
+        text(
+            """
+            SELECT asset_id, closest_ip, dist
+            FROM (
+                SELECT DISTINCT ON (asset_id)
+                       asset_id,
+                       CASE
+                         WHEN upper(ip_range) <= CAST(:ti AS BIGINT)
+                           THEN upper(ip_range) - 1
+                         ELSE lower(ip_range)
+                       END AS closest_ip,
+                       CASE
+                         WHEN upper(ip_range) <= CAST(:ti AS BIGINT)
+                           THEN CAST(:ti AS BIGINT) - (upper(ip_range) - 1)
+                         ELSE lower(ip_range) - CAST(:ti AS BIGINT)
+                       END AS dist
+                FROM asset_ip_intervals
+                WHERE NOT (ip_range @> CAST(:ti AS BIGINT))
+                ORDER BY asset_id, dist ASC
+            ) t
+            ORDER BY dist ASC
+            LIMIT :lim
+            """
+        ),
+        {"ti": ti, "lim": limit},
+    ).all()
+    return [(int(r[0]), int(r[1]), int(r[2])) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # 存量回填（启动迁移调用）
 # ---------------------------------------------------------------------------

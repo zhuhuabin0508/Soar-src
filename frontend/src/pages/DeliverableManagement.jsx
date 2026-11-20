@@ -10,7 +10,7 @@ import {
 } from 'lucide-react'
 import { deliverablesApi } from '../api/client'
 import { toast } from '../store/toastStore'
-import {PageContainer, Button, EmptyState, Pagination, CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {PageContainer, PageHeader, Button, EmptyState, Pagination, CompactSelect, AutoGrowTextarea, SearchInput } from '../components/ui'
 import { confirm } from '../components/ConfirmDialog'
 import { hasPermission } from '../utils/permissions'
 import { TutorialButton, TutorialDrawer } from '../components/TutorialDrawer'
@@ -231,7 +231,7 @@ function Modal({ title, children, onClose, footer, wide = false }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
       <div
         data-allow-scroll
-        className={`max-h-[90vh] w-full overflow-y-auto overscroll-contain rounded-lg border border-border bg-card p-5 shadow-xl ${wide ? 'max-w-xl' : 'max-w-md'}`}
+        className={`max-h-[90vh] w-full overflow-y-auto overscroll-contain rounded-lg border border-border bg-card p-4 shadow-xl ${wide ? 'max-w-xl' : 'max-w-md'}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
@@ -241,7 +241,7 @@ function Modal({ title, children, onClose, footer, wide = false }) {
           </button>
         </div>
         {children}
-        {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
+        {footer && <div className="mt-4 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
   )
@@ -287,6 +287,7 @@ export default function DeliverableManagement() {
   // 权限
   const canEdit = hasPermission('deliverable', 'edit')
   const canDelete = hasPermission('deliverable', 'delete')
+  const canExport = hasPermission('deliverable', 'export')
 
   // 目录类别状态（扁平列表，前端构建树）
   const [categories, setCategories] = useState([])
@@ -1176,8 +1177,8 @@ export default function DeliverableManagement() {
   // ===== 树形节点递归渲染 =====
   // 层级缩进表：一级 16 → 二级 32 → 三级 52 → 四级 72 → ...每级固定 20px 递进
   const INDENTS = [16, 32, 52, 72, 92, 112, 132, 152, 172, 192]
-  // 层级字号表：0-1 级 text-sm，2 级 text-[13px]，3+ 级 text-xs
-  const FONT_SIZES = ['text-sm', 'text-sm', 'text-[13px]', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs']
+  // 层级字号表：0-1 级 text-sm，2 级 text-xs，3+ 级 text-xs
+  const FONT_SIZES = ['text-sm', 'text-sm', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs', 'text-xs']
 
   const renderTreeNode = (node, depth = 0) => {
     const active = node.id === activeCatId
@@ -1271,7 +1272,7 @@ export default function DeliverableManagement() {
           </span>
           {/* 数字徽章 */}
           <span
-            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${
+            className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs tabular-nums ${
               active
                 ? 'bg-[#00d4aa]/15 text-[#00d4aa]'
                 : isEmpty
@@ -1338,6 +1339,7 @@ export default function DeliverableManagement() {
               >
                 <Move className="h-3 w-3" />
               </button>
+              {canExport && (
               <button
                 type="button"
                 title="导出目录（递归打包 zip）"
@@ -1354,6 +1356,7 @@ export default function DeliverableManagement() {
                   <FolderArchive className="h-3 w-3" />
                 )}
               </button>
+              )}
               {canDelete && (
                 <button
                   type="button"
@@ -1467,53 +1470,51 @@ export default function DeliverableManagement() {
   return (
     <PageContainer>
       {/* 页头：标题 + 计数 + 右侧操作区（教程 / 刷新 / 新建目录 / 上传材料） */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">材料管理</h1>
-          {!catLoading && (
-            <span className="text-xs text-muted-foreground">
-              共 <span className="text-sm font-medium tabular-nums text-foreground">{totalFiles.toLocaleString()}</span> 个材料
-            </span>
-          )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">
-            按树形目录归档管理交付文件，支持最多 10 级子目录
+      <PageHeader
+        title="材料管理"
+
+        extra={!catLoading && (
+          <span className="text-xs text-muted-foreground">
+            共 <span className="text-sm font-medium tabular-nums text-foreground">{totalFiles.toLocaleString()}</span> 个材料
           </span>
-        </div>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          <TutorialButton onClick={() => setTutorialOpen(true)} />
-          <button
-            type="button"
-            onClick={() => { loadCategories(); loadDeliverables() }}
-            className="btn-secondary btn-sm"
-            title="刷新目录与材料列表"
-          >
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${catLoading || loading ? 'animate-spin' : ''}`} />
-            刷新
-          </button>
-          {canEdit && (
+        )}
+        actions={
+          <>
+            <TutorialButton onClick={() => setTutorialOpen(true)} />
             <button
               type="button"
-              onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: 0 })}
+              onClick={() => { loadCategories(); loadDeliverables() }}
               className="btn-secondary btn-sm"
+              title="刷新目录与材料列表"
             >
-              <FolderPlus className="mr-1 h-3.5 w-3.5" />
-              新建目录
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${catLoading || loading ? 'animate-spin' : ''}`} />
+              刷新
             </button>
-          )}
-          {canEdit && (
-            <button
-              type="button"
-              disabled={!activeCatId}
-              onClick={() => setUploadModal({ files: [], version: '', description: '' })}
-              className="btn-primary btn-sm"
-              title={activeCatId ? '上传材料到当前目录' : '请先选择目录'}
-            >
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              上传材料
-            </button>
-          )}
-        </div>
-      </div>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: 0 })}
+                className="btn-secondary btn-sm"
+              >
+                <FolderPlus className="mr-1 h-3.5 w-3.5" />
+                新建目录
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                disabled={!activeCatId}
+                onClick={() => setUploadModal({ files: [], version: '', description: '' })}
+                className="btn-primary btn-sm"
+                title={activeCatId ? '上传材料到当前目录' : '请先选择目录'}
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                上传材料
+              </button>
+            )}
+          </>
+        }
+      />
 
       {/* 状态指标条：材料类型分布 chips（点击筛选当前页 / 再点取消）+ 右侧汇总 */}
       <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-xs">
@@ -1679,7 +1680,7 @@ export default function DeliverableManagement() {
               tree.map((node) => renderTreeNode(node, 0))
             )}
           </div>
-          <div className="flex items-center justify-between border-t border-border px-3 py-2 text-[10px] text-muted-foreground">
+          <div className="flex items-center justify-between border-t border-border px-3 py-2 text-xs text-muted-foreground">
             <span className="tabular-nums">
               共 {categories.length} 个目录
               {expandedIds.size > 0 && (
@@ -1690,7 +1691,7 @@ export default function DeliverableManagement() {
               <button
                 type="button"
                 title="一键收起全部目录"
-                className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-primary/10 hover:text-primary"
                 onClick={() => {
                   setExpandedIds(new Set())
                   localStorage.setItem('soar_dlv_expanded', '[]')
@@ -1750,7 +1751,7 @@ export default function DeliverableManagement() {
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">
-              {selectedIds.size > 0 && (
+              {selectedIds.size > 0 && canExport && (
                 <Button
                   size="sm"
                   variant="secondary"
@@ -1801,18 +1802,16 @@ export default function DeliverableManagement() {
                   <LayoutGrid className="h-3.5 w-3.5" />
                 </button>
               </div>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleSearch()
-                  }}
-                  placeholder="搜索名称 / 文件名 / 版本"
-                  className="w-52 rounded-md border border-border bg-background py-1.5 pl-8 pr-3 text-xs text-foreground outline-none focus:border-primary"
-                />
-              </div>
+              <SearchInput
+                className="w-52"
+                value={searchInput}
+                onChange={setSearchInput}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSearch()
+                }}
+                placeholder="搜索名称 / 文件名 / 版本"
+                onClear={() => setSearchInput('')}
+              />
               <Button size="sm" variant="secondary" onClick={handleSearch}>搜索</Button>
             </div>
           </div>
@@ -1854,7 +1853,7 @@ export default function DeliverableManagement() {
               <div className="grid grid-cols-2 gap-3 p-4 md:grid-cols-3 xl:grid-cols-4">
                 {Array.from({ length: 8 }).map((_, i) => (
                   <div key={i} className="flex min-h-[168px] flex-col rounded-lg border border-border bg-card p-3">
-                    <div className="mx-auto mt-5 h-12 w-12 rounded-lg skeleton-shimmer" />
+                    <div className="mx-auto mt-4 h-12 w-12 rounded-lg skeleton-shimmer" />
                     <div className="mx-auto mt-4 h-3 w-2/3 rounded skeleton-shimmer" />
                     <div className="mt-auto flex items-center justify-between gap-2">
                       <div className="h-2.5 w-1/2 rounded skeleton-shimmer" />
@@ -1985,7 +1984,7 @@ export default function DeliverableManagement() {
                         {cat.name}
                       </span>
                     </div>
-                    <div className="mt-2 text-center text-[10px] text-muted-foreground tabular-nums">
+                    <div className="mt-2 text-center text-xs text-muted-foreground tabular-nums">
                       {(cat.deliverable_count || 0).toLocaleString()} 个材料
                     </div>
                   </div>
@@ -2010,7 +2009,7 @@ export default function DeliverableManagement() {
                       className="absolute left-2 top-2 z-10 h-3.5 w-3.5 cursor-pointer rounded border-border accent-primary"
                     />
                     {r.version && (
-                      <span className="absolute right-2 top-2 z-10 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-foreground">
+                      <span className="absolute right-2 top-2 z-10 rounded-full bg-muted px-1.5 py-0.5 text-xs text-foreground">
                         {r.version}
                       </span>
                     )}
@@ -2032,7 +2031,7 @@ export default function DeliverableManagement() {
                         {r.name}
                       </span>
                     </div>
-                    <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+                    <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
                       <span className="truncate" title={r.filename}>{r.filename}</span>
                       <span
                         className={`shrink-0 tabular-nums ${r.file_size === 0 ? 'text-muted-foreground' : ''}`}
@@ -2055,6 +2054,7 @@ export default function DeliverableManagement() {
                           <Eye className="h-3 w-3" />
                         </button>
                       )}
+                      {canExport && (
                       <button
                         type="button"
                         title="下载"
@@ -2063,6 +2063,7 @@ export default function DeliverableManagement() {
                       >
                         <Download className="h-3 w-3" />
                       </button>
+                      )}
                       {canEdit && (
                         <button
                           type="button"
@@ -2236,6 +2237,7 @@ export default function DeliverableManagement() {
                                 <Eye className="h-3 w-3" />
                               </button>
                             )}
+                            {canExport && (
                             <button
                               type="button"
                               title="下载"
@@ -2244,6 +2246,7 @@ export default function DeliverableManagement() {
                             >
                               <Download className="h-3 w-3" />
                             </button>
+                            )}
                             {canEdit && (
                               <button
                                 type="button"
@@ -2312,11 +2315,11 @@ export default function DeliverableManagement() {
                 <span className="truncate text-sm font-medium text-foreground" title={previewModal.row.filename}>
                   {previewModal.row.filename}
                 </span>
-                <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                   {fmtSize(previewModal.row.file_size)}
                 </span>
                 {previewModal.type === 'text' && previewModal.dirty && (
-                  <span className="shrink-0 text-[10px] text-amber-500">未保存</span>
+                  <span className="shrink-0 text-xs text-amber-500">未保存</span>
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -2354,10 +2357,12 @@ export default function DeliverableManagement() {
               ) : previewModal.error ? (
                 <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                   <p className="text-red-500">{previewModal.error}</p>
+                  {canExport && (
                   <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                     <Download className="h-3.5 w-3.5" />
                     下载文件
                   </Button>
+                  )}
                 </div>
               ) : (
                 <AutoGrowTextarea
@@ -2399,7 +2404,7 @@ export default function DeliverableManagement() {
                   <div className="truncate text-sm font-medium text-foreground" title={previewModal.row.filename}>
                     {previewModal.row.filename}
                   </div>
-                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
                     <span className="rounded bg-muted px-1.5 py-0.5 uppercase">.{previewModal.row.file_ext}</span>
                     <span>{fmtSize(previewModal.row.file_size)}</span>
                     {previewModal.row.name && previewModal.row.name !== previewModal.row.filename && (
@@ -2409,10 +2414,12 @@ export default function DeliverableManagement() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
+                {canExport && (
                 <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                   <Download className="h-3.5 w-3.5" />
                   下载
                 </Button>
+                )}
                 <button
                   type="button"
                   className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -2432,10 +2439,12 @@ export default function DeliverableManagement() {
               ) : previewModal.error ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
                   <p className="max-w-md text-center text-red-500">{previewModal.error}</p>
+                  {canExport && (
                   <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                     <Download className="h-3.5 w-3.5" />
                     下载文件
                   </Button>
+                  )}
                 </div>
               ) : previewModal.type === 'pdf' && previewModal.blobUrl ? (
                 <iframe
@@ -2465,10 +2474,12 @@ export default function DeliverableManagement() {
                       || `该文件类型（.${previewModal.row.file_ext}）暂不支持在线预览`}
                   </p>
                   <p className="text-xs">支持预览：Word（.docx）/ Excel（.xlsx .xls）/ PDF / TXT / CSV / MD</p>
+                  {canExport && (
                   <Button size="sm" variant="secondary" onClick={() => handleDownload(previewModal.row)}>
                     <Download className="h-3.5 w-3.5" />
                     下载文件
                   </Button>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -2540,6 +2551,7 @@ export default function DeliverableManagement() {
             <Move className="h-3.5 w-3.5" />
             移动目录
           </button>
+          {canExport && (
           <button
             type="button"
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-foreground hover:bg-muted disabled:opacity-50"
@@ -2557,6 +2569,7 @@ export default function DeliverableManagement() {
             )}
             {exportingCatId === contextMenu.node.id ? '导出中...' : '导出目录'}
           </button>
+          )}
           {canDelete && (
             <button
               type="button"
@@ -2741,7 +2754,7 @@ export default function DeliverableManagement() {
                 选择文件夹
               </Button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               支持 {ALLOWED_EXTS.length} 种类型，单文件 ≤ 200MB
             </p>
             <input
@@ -2802,12 +2815,12 @@ export default function DeliverableManagement() {
                         : item.file.name}
                     </div>
                     {item.status === 'duplicate' && (
-                      <div className="mt-0.5 truncate text-[11px] text-amber-600" title={item.error}>
+                      <div className="mt-0.5 truncate text-xs text-amber-600" title={item.error}>
                         已跳过：与目录中已有材料「{item.existingName || '同目录已有材料'}」内容相同
                       </div>
                     )}
                   </div>
-                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     {fmtSize(item.file.size)}
                   </span>
                   {/* 状态图标 */}
@@ -2824,7 +2837,7 @@ export default function DeliverableManagement() {
                   )}
                   {item.status === 'duplicate' && (
                     <span
-                      className="shrink-0 whitespace-nowrap rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium leading-none text-amber-700"
+                      className="shrink-0 whitespace-nowrap rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium leading-none text-amber-700"
                       title={item.error}
                     >
                       重复已跳过
@@ -2880,7 +2893,7 @@ export default function DeliverableManagement() {
                 )
                 if (dirs.size === 0) return null
                 return (
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     将创建 {dirs.size} 个文件夹
                   </span>
                 )
@@ -2903,7 +2916,7 @@ export default function DeliverableManagement() {
               <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
                 {activeCat?.name || '—'}
                 {(uploadModal.files || []).some((f) => dirKeyOf(f.relativePath)) && (
-                  <span className="mt-0.5 block text-[11px]">文件夹将按原结构创建到此目录下</span>
+                  <span className="mt-0.5 block text-xs">文件夹将按原结构创建到此目录下</span>
                 )}
               </div>
             </Field>
@@ -2994,7 +3007,7 @@ export default function DeliverableManagement() {
                   : `层级保持 L${moveLevelInfo.currentLevel}（≤ ${MAX_LEVEL}）`
               }
             >
-              <div className="mb-1 flex items-center justify-end gap-1.5 text-[11px]">
+              <div className="mb-1 flex items-center justify-end gap-1.5 text-xs">
                 <button
                   type="button"
                   className="text-primary hover:underline"
@@ -3034,7 +3047,7 @@ export default function DeliverableManagement() {
                   </span>
                   <FolderPlus className="h-3.5 w-3.5 shrink-0 text-primary" />
                   <span className="font-medium">根级（最顶层）</span>
-                  <span className="shrink-0 text-[10px] text-muted-foreground">L1</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">L1</span>
                 </button>
                 {/* 目录树：点箭头逐级展开，点行选中为目标 */}
                 {moveTargetList.length > 0 ? (
@@ -3085,7 +3098,7 @@ export default function DeliverableManagement() {
                             <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500/80" />
                           )}
                           <span className="min-w-0 flex-1 truncate" title={n.name}>{n.name}</span>
-                          <span className="shrink-0 text-[10px] text-muted-foreground">L{n.level}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">L{n.level}</span>
                         </button>
                       </div>
                     )
@@ -3133,7 +3146,7 @@ export default function DeliverableManagement() {
                 : '所选材料将全部移动到该目录下（源目录保持不变，仅重挂目录索引）'
             }
           >
-            <div className="mb-1 flex items-center justify-end gap-1.5 text-[11px]">
+            <div className="mb-1 flex items-center justify-end gap-1.5 text-xs">
               <button
                 type="button"
                 className="text-primary hover:underline"
@@ -3176,7 +3189,7 @@ export default function DeliverableManagement() {
                   </span>
                   <FolderPlus className="h-3.5 w-3.5 shrink-0 text-primary" />
                   <span className="font-medium">根级（最顶层）</span>
-                  <span className="shrink-0 text-[10px] text-muted-foreground">L1</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">L1</span>
                 </button>
               )}
               {batchMoveTargetList.length > 0 ? (
@@ -3227,7 +3240,7 @@ export default function DeliverableManagement() {
                           <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500/80" />
                         )}
                         <span className="min-w-0 flex-1 truncate" title={n.name}>{n.name}</span>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">L{n.level}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">L{n.level}</span>
                       </button>
                     </div>
                   )

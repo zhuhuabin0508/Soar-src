@@ -16,7 +16,7 @@ import { TOOL_TUTORIAL } from '../components/tutorialContent'
 import { CATEGORY_META, UNCATEGORIZED } from '../constants/toolCategories'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import {DataTable, Pagination, CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {DataTable, Pagination, CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 import FilterBar from '../components/FilterBar'
 import BatchActions from '../components/BatchActions'
 import { usePagination } from '../hooks/usePagination'
@@ -102,6 +102,13 @@ const SOURCE_OPTIONS = [
   { value: 'custom', label: '自建' },
   { value: 'framework', label: '框架' },
 ]
+
+// 生命周期状态徽标（仅非 active 状态显示）
+const TOOL_STATUS_BADGE = {
+  draft: { label: '草稿', cls: 'border-border bg-secondary text-muted-foreground', title: '草稿：尚未完成，不会注册给智能体' },
+  disabled: { label: '停用', cls: 'border-destructive/40 bg-destructive/10 text-destructive', title: '停用：不会注册给智能体' },
+  deprecated: { label: '已弃用', cls: 'border-amber-500/40 bg-warning/10 text-warning', title: '已弃用：保留历史数据，不再注册' },
+}
 
 // 格式化时间
 function fmtTime(t) {
@@ -218,7 +225,7 @@ function ToolTestModal({ open, tool, onClose, onSubmit, running }) {
             <div key={p.name}>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 {p.name}
-                <span className="ml-1 text-[10px] text-muted-foreground">({p.type})</span>
+                <span className="ml-1 text-xs text-muted-foreground">({p.type})</span>
                 {p.required && <span className="ml-1 text-destructive">*</span>}
               </label>
               {p.type === 'Boolean' ? (
@@ -254,7 +261,7 @@ function ToolTestModal({ open, tool, onClose, onSubmit, running }) {
                 />
               )}
               {p.description && (
-                <p className="mt-1 text-[11px] text-muted-foreground">{p.description}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{p.description}</p>
               )}
             </div>
           ))}
@@ -268,6 +275,10 @@ function ToolTestModal({ open, tool, onClose, onSubmit, running }) {
 function ToolList() {
   const navigate = useNavigate()
   const canCreate = hasPermission('tool', 'edit')
+  const canImport = hasPermission('tool', 'import')
+  const canExport = hasPermission('tool', 'export')
+  const canDelete = hasPermission('tool', 'delete')
+  const canExecute = hasPermission('tool', 'execute')
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -427,9 +438,15 @@ function ToolList() {
     const _ok = await confirm({ message: `确定删除工具「${name || id}」吗？`, variant: 'danger', confirmText: '确定删除' })
     if (!_ok) return
     try {
-      await toolsApi.remove(id)
+      const res = await toolsApi.remove(id)
       setRows((prev) => prev.filter((r) => r.id !== id))
       setSelectedKeys((prev) => prev.filter((k) => k !== id))
+      const affected = res?.affected_agents || []
+      if (affected.length > 0) {
+        toast.success(`已删除「${name}」，并已从 ${affected.length} 个智能体移除该工具`)
+      } else {
+        toast.success(`已删除「${name}」`)
+      }
     } catch (err) {
       const msg = err?.response?.data?.detail || err.message || String(err)
       toast.error(`删除失败：${msg}`)
@@ -540,7 +557,12 @@ function ToolList() {
       render: (r) => (
         <div className="flex items-center gap-2">
           <span className="inline-block max-w-[180px] align-bottom truncate text-sm font-medium text-foreground" title={r.name || ''}>{r.name || '-'}</span>
-          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">#{r.id}</span>
+          <span className="shrink-0 font-mono text-xs text-muted-foreground">#{r.id}</span>
+          {TOOL_STATUS_BADGE[r.status] && r.status !== 'active' ? (
+            <span className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[11px] font-medium ${TOOL_STATUS_BADGE[r.status].cls}`} title={TOOL_STATUS_BADGE[r.status].title}>
+              {TOOL_STATUS_BADGE[r.status].label}
+            </span>
+          ) : null}
         </div>
       ),
     },
@@ -553,14 +575,14 @@ function ToolList() {
         return (
           <div className="flex flex-wrap items-center gap-1">
             <span
-              className={`inline-flex shrink-0 items-center whitespace-nowrap rounded border px-2 py-0.5 text-[11px] font-medium ${meta.cls}`}
+              className={`inline-flex shrink-0 items-center whitespace-nowrap rounded border px-2 py-0.5 text-xs font-medium ${meta.cls}`}
               title={meta.title}
             >
               <Icon className="h-3 w-3 shrink-0" />
               {meta.label}
             </span>
             <span
-              className={`inline-flex shrink-0 items-center whitespace-nowrap rounded border px-1.5 py-0.5 text-[10px] font-medium ${src.cls}`}
+              className={`inline-flex shrink-0 items-center whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium ${src.cls}`}
               title={src.title}
             >
               {src.label}
@@ -582,16 +604,16 @@ function ToolList() {
         const tags = r.tags || []
         return (
           <div className="flex flex-wrap items-center gap-1">
-            <span className="inline-flex shrink-0 items-center gap-1.5 rounded border border-border bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span className="inline-flex shrink-0 items-center gap-1.5 rounded border border-border bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
               <IconComp className="h-3 w-3 shrink-0 text-primary" />
               {meta.label}
             </span>
             {tags.slice(0, 2).map((tag) => (
-              <span key={tag} className="inline-flex shrink-0 items-center rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary" title={tag}>
+              <span key={tag} className="inline-flex shrink-0 items-center rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs text-primary" title={tag}>
                 {tag}
               </span>
             ))}
-            {tags.length > 2 && <span className="text-[10px] text-muted-foreground">+{tags.length - 2}</span>}
+            {tags.length > 2 && <span className="text-xs text-muted-foreground">+{tags.length - 2}</span>}
           </div>
         )
       },
@@ -614,10 +636,46 @@ function ToolList() {
           : '被引用，但未获取到具体对象'
         return (
           <HoverTip text={tip} placement="right">
-            <span className="inline-flex cursor-help items-center gap-1 text-[11px] text-muted-foreground">
+            <span className="inline-flex cursor-help items-center gap-1 text-xs text-muted-foreground">
               <ListChecks className="h-3 w-3 text-primary" />
               <span className="font-medium tabular-nums text-primary">{count}</span>
               <span className="text-muted-foreground">个</span>
+            </span>
+          </HoverTip>
+        )
+      },
+    },
+    {
+      key: 'health', header: '健康度', width: '130px',
+      render: (r) => {
+        const s = r.stats || {}
+        const total = s.total_calls || 0
+        const failed = s.failed_calls || 0
+        if (total === 0) {
+          return (
+            <HoverTip text="暂无调用记录（僵尸工具）：从未被任何智能体调用过，可评估是否下线">
+              <span className="inline-flex cursor-help items-center gap-1 text-xs text-muted-foreground">
+                <Zap className="h-3 w-3" />
+                无调用
+              </span>
+            </HoverTip>
+          )
+        }
+        const rate = Math.round(((total - failed) / total) * 100)
+        const ok = rate >= 95
+        return (
+          <HoverTip
+            text={
+              <div className="flex flex-col gap-0.5">
+                <span className="font-medium text-foreground">共调用 {total} 次</span>
+                <span className="text-muted-foreground">失败 {failed} 次</span>
+                <span className="text-muted-foreground">最近调用 {fmtTime(s.last_called_at)}</span>
+              </div>
+            }
+            placement="right"
+          >
+            <span className={`inline-flex cursor-help items-center gap-1 text-xs font-medium tabular-nums ${ok ? 'text-success' : 'text-warning'}`}>
+              {rate}% 成功
             </span>
           </HoverTip>
         )
@@ -665,7 +723,7 @@ function ToolList() {
                 <Share2 className="h-3 w-3" />
               </button>
             )}
-            {r.tool_type !== 'framework' && (
+            {canExecute && r.tool_type !== 'framework' && (
               <button
                 type="button"
                 disabled={running && testTool?.id === r.id}
@@ -676,7 +734,7 @@ function ToolList() {
                 <Play className="h-3 w-3" />
               </button>
             )}
-            {canEdit && r.tool_type !== 'framework' && !r.is_preset && (
+            {canEdit && canDelete && r.tool_type !== 'framework' && !r.is_preset && (
               <button
                 type="button"
                 onClick={() => handleDelete(r.id, r.name)}
@@ -712,15 +770,17 @@ function ToolList() {
             className="hidden"
             onChange={handleImportFile}
           />
-          <button
-            type="button"
-            onClick={handleExport}
-            className="btn-secondary btn-sm"
-            title="导出工具配置为 JSON（不含内置工具，密钥自动脱敏）"
-          >
-            <Download className="mr-1 h-3.5 w-3.5" /> 导出
-          </button>
-          {canCreate && (
+          {canExport && (
+            <button
+              type="button"
+              onClick={handleExport}
+              className="btn-secondary btn-sm"
+              title="导出工具配置为 JSON（不含内置工具，密钥自动脱敏）"
+            >
+              <Download className="mr-1 h-3.5 w-3.5" /> 导出
+            </button>
+          )}
+          {canImport && (
             <button
               type="button"
               onClick={() => importInputRef.current?.click()}
@@ -752,34 +812,16 @@ function ToolList() {
         )}
 
         {/* Tab：全部 / 自定义 / 系统内置（带计数） */}
-        <div className="mb-4 flex items-center gap-1 border-b border-border pb-3">
-          <div className="flex shrink-0 rounded-md border border-border bg-card p-0.5">
-            {[
-              { v: 'all', label: '全部工具', count: rows.length },
-              { v: 'custom', label: '自定义工具', count: rows.filter((r) => r.tool_type !== 'framework').length },
-              { v: 'framework', label: '系统内置', count: rows.filter((r) => r.tool_type === 'framework').length },
-            ].map((t) => (
-              <button
-                key={t.v}
-                type="button"
-                onClick={() => { setTabFilter(t.v); setPage(1) }}
-                className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition ${
-                  tabFilter === t.v
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-                }`}
-              >
-                {t.label}
-                <span
-                  className={`rounded-full px-1.5 text-[10px] tabular-nums ${
-                    tabFilter === t.v ? 'bg-primary-foreground' : 'bg-secondary text-muted-foreground'
-                  }`}
-                >
-                  {t.count}
-                </span>
-              </button>
-            ))}
-          </div>
+        <div className="mb-4">
+          <PillTabs
+            items={[
+              { key: 'all', label: '全部工具', count: rows.length },
+              { key: 'custom', label: '自定义工具', count: rows.filter((r) => r.tool_type !== 'framework').length },
+              { key: 'framework', label: '系统内置', count: rows.filter((r) => r.tool_type === 'framework').length },
+            ]}
+            value={tabFilter}
+            onChange={(v) => { setTabFilter(v); setPage(1) }}
+          />
         </div>
 
         <FilterBar
@@ -932,7 +974,7 @@ function ToolList() {
             { key: 'enable', label: '批量启用', icon: Power, variant: 'default', onClick: () => handleBatchToggle(true), loading: toggling },
             { key: 'disable', label: '批量禁用', icon: Power, variant: 'default', onClick: () => handleBatchToggle(false), loading: toggling },
             { key: 'share', label: '批量授权', icon: Share2, variant: 'default', onClick: () => setBatchShareOpen(true) },
-            { key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting },
+            ...(canDelete ? [{ key: 'delete', label: '批量删除', icon: Trash2, variant: 'danger', onClick: handleBatchDelete, loading: deleting }] : []),
           ]}
         />
       </div>

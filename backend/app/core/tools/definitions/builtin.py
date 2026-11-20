@@ -129,7 +129,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "description": (
             "资产检索：按 IP/名称/标识/部门查询资产清单（全部资产类型，含未分类）。"
             "传入单个 IP 会匹配包含该 IP 的 CIDR/范围资产，"
-            "并同时在资产发现（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP，"
+            "并同时在资产发现（云主机/裸金属/网络资源/弹性IP/青藤主机）中精确检索该 IP，"
             "命中以「资产发现」分组返回；「资产发现」是资产发现数据，其余按资产类型分组的是资产清单数据，二者应分开展示；"
             "按名称/部门等文本查询时仅检索资产清单。"
             "支持逗号/分号/空白分隔批量查询（如 '1.2.3.4,5.6.7.8'），"
@@ -141,7 +141,7 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "展示时应以重点字段为前列，再按记录实际拥有的字段补充类型特有字段，不要硬套固定一套字段。"
         ),
         "parameters_schema": [
-            {"name": "keyword", "type": "String", "required": False, "description": "IP/名称/标识/负责人；单个 IP 会做网段包含匹配并同步精确查询资产发现（云主机/裸金属/网络资源/弹性IP）；支持逗号/分号/空白分隔批量查询多个 IP"},
+            {"name": "keyword", "type": "String", "required": False, "description": "IP/名称/标识/负责人；单个 IP 会做网段包含匹配并同步精确查询资产发现（云主机/裸金属/网络资源/弹性IP/青藤主机，青藤主机按连接 IP 等 IP 字段匹配）；支持逗号/分号/空白分隔批量查询多个 IP"},
             {"name": "ip", "type": "String", "required": False, "description": "待查询 IP（与 keyword 二选一，优先 keyword）"},
             {"name": "department", "type": "String", "required": False, "description": "按使用单位/部门精确筛选"},
             {"name": "type_code", "type": "String", "required": False, "description": "忽略；检索覆盖全部资产类型，同一 IP 跨类型全部返回"},
@@ -167,18 +167,20 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_discovered_assets",
         "description": (
-            "查询资产发现数据（综合运管平台爬取的云主机、裸金属、网络资源、弹性IP）。"
+            "查询资产发现数据（综合运管平台爬取的云主机、裸金属、网络资源、弹性IP，"
+            "以及青藤 API 同步的主机资产）。"
             "不查询资产清单。约数十万行，IP 与 CMDB ID 走精确匹配；"
             "实例名、部门走模糊匹配，关键词至少 2 个字。"
             "支持逗号/分号/空白分隔批量查询，一次调用返回每个目标各自的命中。"
-            "resource_type 可空；为空时四类都查。"
+            "resource_type 可空；为空时全部类型都查。"
+            "青藤主机按连接 IP 等 IP 字段精确匹配。"
             "按 IP 查询已由 search_assets 覆盖（其会同时检索资产清单与资产发现），"
             "本工具主要用于按 CMDB ID、实例名、部门或指定资源类型检索资产发现数据。"
         ),
         "parameters_schema": [
             {"name": "keyword", "type": "String", "required": True, "description": "IP、CMDB ID、实例名或部门；支持逗号/分号/空白分隔批量查询"},
             {"name": "ip", "type": "String", "required": False, "description": "待查询 IP（与 keyword 二选一，优先 keyword）"},
-            {"name": "resource_type", "type": "String", "required": False, "description": "cloud_host / bare_metal / e_government_network / elastic_ip；空表示四类都查"},
+            {"name": "resource_type", "type": "String", "required": False, "description": "cloud_host / bare_metal / e_government_network / elastic_ip / qingteng_host；空表示全部类型都查"},
             {"name": "limit", "type": "Number", "required": False, "description": "每一类返回条数上限，默认 10，最大 20"},
         ],
         "code": (
@@ -249,6 +251,8 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "读取用户上传的文件内容（支持 Excel/xlsx、Word/docx、PDF、CSV、TXT、JSON、Markdown）。"
             "用户在对话中上传文件后，可调用此工具按文件名读取文件全部内容。"
             "传入 file_name 参数（用户上传时的原始文件名），返回文件文本或结构化数据。"
+            "按扩展名自动识别格式并返回对应字段（Excel 返回 sheets、Word 返回 paragraphs、"
+            "PDF 返回 pages/page_count，其余返回 content），无需按格式切换其他读取工具。"
         ),
         "parameters_schema": [
             {"name": "file_name", "type": "String", "required": True, "description": "要读取的文件名（用户上传时的原始名，如 报表.xlsx）"},
@@ -265,93 +269,25 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "enabled": True,
     },
     {
-        "name": "read_xlsx",
-        "description": (
-            "读取用户上传的 Excel 文件（.xlsx/.xls），返回所有工作表的数据。"
-            "传入 file_name 参数（用户上传时的原始文件名），返回 {sheets: {sheet_name: [[row], ...]}}。"
-        ),
-        "parameters_schema": [
-            {"name": "file_name", "type": "String", "required": True, "description": "要读取的 Excel 文件名"},
-        ],
-        "code": (
-            "async def run(**kwargs):\n"
-            "    file_name = kwargs.get('file_name') or ''\n"
-            "    if not file_name:\n"
-            "        return {'error': '请提供 file_name 参数'}\n"
-            "    result = read_uploaded_file(file_name)\n"
-            "    if 'error' in result:\n"
-            "        return result\n"
-            "    ft = result.get('file_type', '')\n"
-            "    if ft not in ('xlsx', 'xls'):\n"
-            "        return {'error': f'文件 {file_name} 不是 Excel 文件（类型: {ft}），请使用 read_docx 或 read_pdf'}\n"
-            "    return {'file_name': result['file_name'], 'sheets': result.get('sheets', {})}\n"
-        ),
-        "tool_type": "code",
-        "category": "file_operations",
-        "enabled": True,
-    },
-    {
-        "name": "read_docx",
-        "description": (
-            "读取用户上传的 Word 文档（.docx），返回所有段落文本。"
-            "传入 file_name 参数（用户上传时的原始文件名），返回 {paragraphs: [...], content: '...'}。"
-        ),
-        "parameters_schema": [
-            {"name": "file_name", "type": "String", "required": True, "description": "要读取的 Word 文件名"},
-        ],
-        "code": (
-            "async def run(**kwargs):\n"
-            "    file_name = kwargs.get('file_name') or ''\n"
-            "    if not file_name:\n"
-            "        return {'error': '请提供 file_name 参数'}\n"
-            "    result = read_uploaded_file(file_name)\n"
-            "    if 'error' in result:\n"
-            "        return result\n"
-            "    ft = result.get('file_type', '')\n"
-            "    if ft != 'docx':\n"
-            "        return {'error': f'文件 {file_name} 不是 Word 文档（类型: {ft}）'}\n"
-            "    return {'file_name': result['file_name'], 'paragraphs': result.get('paragraphs', []), 'content': result.get('content', '')}\n"
-        ),
-        "tool_type": "code",
-        "category": "file_operations",
-        "enabled": True,
-    },
-    {
-        "name": "read_pdf",
-        "description": (
-            "读取用户上传的 PDF 文件，提取所有页面的文本内容。"
-            "传入 file_name 参数（用户上传时的原始文件名），返回 {pages: [...], page_count: N, content: '...'}。"
-        ),
-        "parameters_schema": [
-            {"name": "file_name", "type": "String", "required": True, "description": "要读取的 PDF 文件名"},
-        ],
-        "code": (
-            "async def run(**kwargs):\n"
-            "    file_name = kwargs.get('file_name') or ''\n"
-            "    if not file_name:\n"
-            "        return {'error': '请提供 file_name 参数'}\n"
-            "    result = read_uploaded_file(file_name)\n"
-            "    if 'error' in result:\n"
-            "        return result\n"
-            "    ft = result.get('file_type', '')\n"
-            "    if ft != 'pdf':\n"
-            "        return {'error': f'文件 {file_name} 不是 PDF 文件（类型: {ft}）'}\n"
-            "    return {'file_name': result['file_name'], 'pages': result.get('pages', []), 'page_count': result.get('page_count', 0), 'content': result.get('content', '')}\n"
-        ),
-        "tool_type": "code",
-        "category": "file_operations",
-        "enabled": True,
-    },
-    {
         "name": "generate_document",
         "description": (
-            "生成文档文件并保存到智能体文件库，供用户下载。支持 Word(.docx)、Excel(.xlsx)、Markdown(.md) 三种格式。"
-            "正文用 Markdown 语法书写并自动转换为目标格式：#/##/### 标题、- 与 1. 列表、**粗体**、|竖线|表格、```围栏```代码块；"
-            "xlsx 中每个表格转为独立工作表（表头加粗+冻结），文字写入「文档」表。"
-            "当用户要求『生成/导出文档、写一份报告、整理成 Word/Excel/Markdown 文件』时调用本工具，"
+            "生成文档文件并保存到智能体文件库，供用户下载。支持 Word(.docx)、Excel(.xlsx)、"
+            "Markdown(.md)、PPT 演示文稿(.pptx)、PDF(.pdf)、HTML 报告(.html) 六种格式。"
+            "正文统一用 Markdown 语法书写并自动转换为目标格式：#/##/### 标题、- 与 1. 列表、"
+            "**粗体**、|竖线|表格、```围栏```代码块；"
+            "xlsx 中每个表格转为独立工作表（表头加粗+冻结），文字写入「文档」表；"
+            "pptx 按一/二级标题自动分页（首个一级标题作封面），表格超 10 行自动拆页；"
+            "pdf 使用内置中文字体排版，表格跨页自动重复表头；"
+            "html 输出内联样式的单文件报告（含目录、表格斑马纹、A4 打印样式，无外部资源）。"
+            "docx 传 options.style='gb9704' 时按党政机关公文格式（GB/T 9704）排版："
+            "主标题二号方正小标宋居中；一至四级标题「一、」「（一）」「1.」「（1）」自动识别，"
+            "依次用三号黑体、三号楷体_GB2312、三号仿宋_GB2312、三号仿宋_GB2312；"
+            "正文三号仿宋_GB2312；全文 28 磅固定行距、首行缩进 2 字符，A4 页边距上3.7/下3.5/左2.8/右2.6 厘米。"
+            "当用户要求『生成/导出文档、写一份报告、整理成 Word/Excel/PPT/PDF/网页文件』时调用本工具，"
             "把要写入文档的数据、分析结论直接填充到 content 中（支持结合工具查询结果与上下文动态生成）。"
             "调用时必须同时提供 file_name 与 content 两个参数：file_name 为输出文件名（可不含扩展名），"
-            "content 为完整的 Markdown 正文，严禁传空字符串占位；生成 Excel 表格时传 format='xlsx'。"
+            "content 为完整的 Markdown 正文，严禁传空字符串占位；格式由 format 指定"
+            "（如演示稿 format='pptx'、网页报告 format='html'）。"
             "明细行数很多（上百行）时不要试图一次写完：先用本工具写入标题、表头和首批数据行（≤50 行）生成文件，"
             "再用 append_document 工具按返回的 file_id 分批追加剩余行（每批 ≤50 行）。"
             "返回 {ok, file_name, file_id, file_type, file_size, download_url}，用户可在对话工具卡片或智能体文件库下载。"
@@ -360,8 +296,8 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "parameters_schema": [
             {"name": "file_name", "type": "String", "required": True, "description": "输出文件名（必填，可不含扩展名，如 '资产分析报告' 或 '主机清单.xlsx'；非法字符会被自动清洗；缺省时按 options.title 或时间戳自动生成）"},
             {"name": "content", "type": "String", "required": True, "description": "文档正文（Markdown 语法，必填）：把要写入文档的数据、结论、表格直接填充进来；明细很多时先写表头+首批行，剩余行用 append_document 追加"},
-            {"name": "format", "type": "String", "required": False, "description": "目标格式：docx / xlsx / md；不传时按 file_name 扩展名推断，无扩展名默认 docx"},
-            {"name": "options", "type": "Object", "required": False, "description": "可选格式配置对象：{title: 文档大标题, body_font: 正文字体（docx，默认微软雅黑）, font_size: 正文字号（docx，默认11）, header_bold: 表头加粗（xlsx，默认true）, freeze_header: 冻结表头（xlsx，默认true）}"},
+            {"name": "format", "type": "String", "required": False, "description": "目标格式：docx / xlsx / md / pptx / pdf / html；不传时按 file_name 扩展名推断，无扩展名默认 docx"},
+            {"name": "options", "type": "Object", "required": False, "description": "可选格式配置对象：{title: 文档大标题, subtitle: HTML 报告副标题, style: docx 版式（'gb9704' 为党政机关公文格式，默认普通文档）, body_font: 正文字体（docx，默认微软雅黑，gb9704 模式下忽略）, font_size: 正文字号（docx 默认11，pdf 默认10.5）, header_bold: 表头加粗（xlsx，默认true）, freeze_header: 冻结表头（xlsx，默认true）}"},
         ],
         "code": (
             "async def run(**kwargs):\n"
@@ -384,6 +320,12 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
             "            fmt = 'xlsx'\n"
             "        elif lower.endswith('.md') or lower.endswith('.markdown'):\n"
             "            fmt = 'md'\n"
+            "        elif lower.endswith('.pptx') or lower.endswith('.ppt'):\n"
+            "            fmt = 'pptx'\n"
+            "        elif lower.endswith('.pdf'):\n"
+            "            fmt = 'pdf'\n"
+            "        elif lower.endswith('.html') or lower.endswith('.htm'):\n"
+            "            fmt = 'html'\n"
             "        else:\n"
             "            fmt = 'docx'\n"
             "    # 文件名缺失时自动补全：优先 options.title，其次时间戳，避免直接报参数错误\n"

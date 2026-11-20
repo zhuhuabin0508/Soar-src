@@ -5,7 +5,7 @@ import {
   Plus, Pencil, Trash2, RefreshCw, Inbox, ChevronDown, Check, Filter, Layers,
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
-import { Button, PageContainer, Card, DataTable, CompactSelect } from '../../components/ui'
+import { Button, PageContainer, PageHeader, Card, DataTable, CompactSelect } from '../../components/ui'
 import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
@@ -71,7 +71,7 @@ function ConditionSummary({ cond }) {
   if (cond.alert_name_keywords?.length) parts.push(`关键词: ${cond.alert_name_keywords.join('/')}`)
   if (cond.threat_classes?.length) parts.push(`威胁分类: ${cond.threat_classes.join('/')}`)
   if (!parts.length) return <span className="text-muted-foreground">无条件（匹配全部告警）</span>
-  return <span className="text-[13px] text-foreground">{parts.join(' 且 ')}</span>
+  return <span className="text-xs text-foreground">{parts.join(' 且 ')}</span>
 }
 
 const EMPTY_FORM = {
@@ -217,7 +217,7 @@ export default function BanTriggerRules() {
         const v = r.cooldown_minutes
         return (
           <span
-            className={`whitespace-nowrap font-mono text-[13px] tabular-nums ${v ? 'text-foreground' : 'text-muted-foreground'}`}
+            className={`whitespace-nowrap font-mono text-xs tabular-nums ${v ? 'text-foreground' : 'text-muted-foreground'}`}
             title={v == null ? '未统计' : undefined}
           >
             {v == null ? '--' : `${Number(v).toLocaleString()} 分钟`}
@@ -239,7 +239,7 @@ export default function BanTriggerRules() {
         )
       },
     },
-    { key: 'updated_at', header: '更新时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.updated_at)}</span> },
+    { key: 'updated_at', header: '更新时间', width: '150px', render: (r) => <span className="font-mono text-xs text-muted-foreground">{fmtTime(r.updated_at)}</span> },
     ...(canEdit ? [{
       key: 'actions', header: '操作', width: '125px',
       render: (r) => (
@@ -257,27 +257,26 @@ export default function BanTriggerRules() {
 
   return (
     <PageContainer>
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">触发规则配置</h1>
-          {!loading && (
-            <span className="text-xs text-muted-foreground">
-              共 <span className="font-medium tabular-nums text-foreground">{rules.length}</span> 条规则
-            </span>
-          )}
-          <span className="hidden text-xs text-muted-foreground xl:inline">告警入库后按条件（全部 AND）匹配触发；多条命中取优先级最高，修改实时生效</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新规则列表">
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
-          </button>
-          {canEdit && (
-            <button type="button" onClick={openCreate} className="btn-primary btn-sm">
-              <Plus className="mr-1 h-3.5 w-3.5" /> 新建规则
+      <PageHeader
+        title="触发规则配置"
+        extra={!loading && (
+          <span className="text-xs text-muted-foreground">
+            共 <span className="font-medium tabular-nums text-foreground">{rules.length}</span> 条规则
+          </span>
+        )}
+        actions={
+          <>
+            <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新规则列表">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> 刷新
             </button>
-          )}
-        </div>
-      </header>
+            {canEdit && (
+              <button type="button" onClick={openCreate} className="btn-primary btn-sm">
+                <Plus className="mr-1 h-3.5 w-3.5" /> 新建规则
+              </button>
+            )}
+          </>
+        }
+      />
 
       {/* 状态指标条：启用/停用分布（点击筛选）+ 右侧汇总，从现有规则派生 */}
       {!loading && rules.length > 0 && (

@@ -462,7 +462,7 @@ async def test_skill(
 def export_skills(
     ids: str | None = Query(None, description="逗号分隔的技能 id，为空则导出全部"),
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("skill", "view")),
+    _: User = Depends(require_permission("skill", "export")),
 ) -> dict:
     """导出技能为 JSON（单个或批量）。
 
@@ -513,7 +513,7 @@ class SkillImportRequest(BaseModel):
 def import_skills(
     body: SkillImportRequest,
     db: Session = Depends(get_db),
-    _: User = Depends(require_permission("skill", "edit")),
+    _: User = Depends(require_permission("skill", "import")),
 ) -> dict:
     """批量导入技能。
 

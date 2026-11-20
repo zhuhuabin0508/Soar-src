@@ -41,7 +41,7 @@ function StatCard({ label, value, sub, color = 'text-foreground' }) {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`mt-1 text-2xl font-semibold ${color}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
+      {sub && <div className="mt-0.5 text-xs text-muted-foreground">{sub}</div>}
     </div>
   )
 }
@@ -102,14 +102,14 @@ function ToolCallCard({ tc, idx }) {
           )}
         </div>
         {tc.duration_ms != null && (
-          <span className="text-[11px] text-muted-foreground">{fmtDuration(tc.duration_ms)}</span>
+          <span className="text-xs text-muted-foreground">{fmtDuration(tc.duration_ms)}</span>
         )}
       </div>
 
       {argsStr && (
         <div className="mt-2">
           <div className="text-[10px] text-muted-foreground">参数</div>
-          <pre className="mt-1 max-h-24 overflow-auto rounded bg-background p-2 text-[11px] text-muted-foreground ring-1 ring-border">
+          <pre className="mt-1 max-h-24 overflow-auto rounded bg-background p-2 text-xs text-muted-foreground ring-1 ring-border">
             {argsStr}
           </pre>
         </div>
@@ -130,7 +130,7 @@ function ToolCallCard({ tc, idx }) {
             )}
           </div>
           <pre
-            className="mt-1 overflow-auto rounded bg-background p-2 text-[11px] text-muted-foreground ring-1 ring-border"
+            className="mt-1 overflow-auto rounded bg-background p-2 text-xs text-muted-foreground ring-1 ring-border"
             style={{ maxHeight: expanded ? '400px' : '80px' }}
           >
             {resultStr}
@@ -188,7 +188,7 @@ function AgentMonitor() {
           >
             ← 返回
           </button>
-          <h1 className="text-xl font-semibold text-foreground">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
             智能体监控
             {agent && (
               <span className="ml-2 text-sm font-normal text-muted-foreground">
@@ -238,7 +238,7 @@ function AgentMonitor() {
                     {agent.description || '无描述'}
                   </div>
                 </div>
-                <div className="flex gap-2 text-[11px] text-muted-foreground">
+                <div className="flex gap-2 text-xs text-muted-foreground">
                   <span>模型配置 #{agent.model_config_id ?? '-'}</span>
                   <span>·</span>
                   <span>迭代上限 {agent.max_iterations ?? '-'}</span>

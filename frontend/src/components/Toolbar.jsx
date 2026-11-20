@@ -505,7 +505,7 @@ function Toolbar({ isFullscreen = false, onToggleFullscreen }) {
         />
         {statusBadge}
         {workflowId != null && (
-          <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">
+          <span className="hidden shrink-0 font-mono text-xs text-muted-foreground sm:inline">
             #{workflowId}
           </span>
         )}
@@ -583,7 +583,7 @@ function Toolbar({ isFullscreen = false, onToggleFullscreen }) {
 
       <div className="flex shrink-0 items-center gap-1.5">
         {runStatus === 'running' && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+          <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
             运行中
           </span>
@@ -664,7 +664,7 @@ function Toolbar({ isFullscreen = false, onToggleFullscreen }) {
           <>
             <div className="fixed inset-0 z-30" onClick={() => setTemplateOpen(false)} />
             <div className="absolute right-3 top-12 z-40 w-64 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-xl">
-              <div className="px-2.5 py-1 text-[10px] font-medium text-muted-foreground">内置模板</div>
+              <div className="px-2.5 py-1 text-xs font-medium text-muted-foreground">内置模板</div>
               {WORKFLOW_TEMPLATES.map((tpl) => (
                 <button
                   key={tpl.key}
@@ -673,7 +673,7 @@ function Toolbar({ isFullscreen = false, onToggleFullscreen }) {
                   className="flex w-full flex-col items-start gap-0.5 rounded px-2.5 py-1.5 text-left transition hover:bg-accent"
                 >
                   <span className="text-xs font-medium text-foreground">{tpl.name}</span>
-                  <span className="text-[10px] text-muted-foreground">{tpl.description}</span>
+                  <span className="text-xs text-muted-foreground">{tpl.description}</span>
                 </button>
               ))}
             </div>
@@ -801,7 +801,7 @@ function Toolbar({ isFullscreen = false, onToggleFullscreen }) {
             value={publishNote}
             onChange={(e) => setPublishNote(e.target.value)}
           />
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             发布将基于当前画布创建一个新版本快照，并将工作流状态置为「已发布」。发布前会自动保存并校验工作流。
           </p>
         </div>

@@ -1429,7 +1429,6 @@ function Dashboard() {
         <div className="flex items-center gap-5">
           <div className="flex flex-col">
             <h1 className="text-gradient-primary text-3xl font-bold tracking-wide">运营大屏</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground">智能安全运营平台 · 实时监控</p>
           </div>
           {/* Tab 切换 */}
           <div className="flex items-center gap-1 rounded-lg bg-secondary p-1">
@@ -1514,9 +1513,9 @@ function Dashboard() {
             type="button"
             onClick={handleRefresh}
             title="刷新数据"
-            className="flex items-center gap-1.5 rounded-md border border-border bg-secondary px-2.5 py-1.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-primary"
+            className="btn-secondary btn-sm"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
             <span>刷新</span>
           </button>
 

@@ -36,7 +36,7 @@ function NodeStatusBadge({ status }) {
   const cfg = map[st] || map.idle
   const Icon = cfg.icon
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${cfg.cls}`}>
+    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium ${cfg.cls}`}>
       <Icon className={`h-3 w-3 ${cfg.spin ? 'animate-spin' : ''}`} />
       {cfg.text}
     </span>
@@ -60,13 +60,13 @@ function CollapsibleJson({ label, data, accent = 'text-muted-foreground' }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground"
+        className="flex w-full items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
       >
         <ChevronRight className={`h-3 w-3 transition-transform ${open ? 'rotate-90' : ''}`} />
         <span className={accent}>{label}</span>
       </button>
       {open && (
-        <pre className="max-h-40 overflow-auto border-t border-border px-2 py-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground">
+        <pre className="max-h-40 overflow-auto border-t border-border px-2 py-1.5 font-mono text-xs leading-relaxed text-muted-foreground">
           {text || '—'}
         </pre>
       )}
@@ -91,14 +91,14 @@ function NodeCard({ card }) {
             {card.label}
           </span>
           {card.type && (
-            <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
               {card.type}
             </span>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {card.duration != null && (
-            <span className="text-[10px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {card.duration.toFixed(2)}s
             </span>
           )}
@@ -106,7 +106,7 @@ function NodeCard({ card }) {
             <button
               type="button"
               onClick={() => setExpanded((v) => !v)}
-              className="text-[10px] text-destructive hover:underline"
+              className="text-xs text-destructive hover:underline"
             >
               {expanded ? '收起' : '详情'}
             </button>
@@ -125,11 +125,11 @@ function NodeCard({ card }) {
       {/* 失败节点错误堆栈（展开） */}
       {isFailed && expanded && (
         <div className="mt-2 rounded border border-danger-700/40 bg-danger-900/20 p-2">
-          <div className="mb-1 flex items-center gap-1 text-[10px] font-medium text-destructive">
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-destructive">
             <AlertTriangle className="h-3 w-3" />
             错误详情
           </div>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-destructive">
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-destructive">
             {card.error || card.output || '无错误信息'}
           </pre>
         </div>
@@ -458,7 +458,7 @@ function TestRunDrawer({ open, onClose }) {
   const footer = (
     <div className="flex w-full items-center justify-between gap-2">
       {/* 左侧：状态提示 */}
-      <div className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+      <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
         {running ? (
           <span className="inline-flex items-center gap-1.5 text-primary">
             <Loader2 className="h-3 w-3 animate-spin" />
@@ -530,7 +530,7 @@ function TestRunDrawer({ open, onClose }) {
           disabled={running}
         />
         {!workflowId && (
-          <p className="mt-1 text-[11px] text-warning">
+          <p className="mt-1 text-xs text-warning">
             请先保存工作流后再试运行
           </p>
         )}
@@ -539,13 +539,13 @@ function TestRunDrawer({ open, onClose }) {
       {/* 实时日志（运行中显示） */}
       {liveLogs.length > 0 && (
         <div className="mb-3 rounded-md border border-border bg-background p-2">
-          <div className="mb-1 flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
             实时日志（{liveLogs.length}）
           </div>
           <div className="flex max-h-32 flex-col gap-0.5 overflow-y-auto">
             {liveLogs.map((log, idx) => (
-              <div key={idx} className="flex items-start gap-1.5 font-mono text-[10px]">
+              <div key={idx} className="flex items-start gap-1.5 font-mono text-xs">
                 <span
                   className={`shrink-0 rounded px-1 py-0.5 ${
                     (log.level || '').toLowerCase() === 'error'
@@ -575,7 +575,7 @@ function TestRunDrawer({ open, onClose }) {
           执行过程
         </div>
         {cards.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border py-8 text-center text-[11px] text-muted-foreground">
+          <div className="rounded-md border border-dashed border-border py-8 text-center text-xs text-muted-foreground">
             点击「一键运行」或「逐步执行」开始试运行
           </div>
         ) : (

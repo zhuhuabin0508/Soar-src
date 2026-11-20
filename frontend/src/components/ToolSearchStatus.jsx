@@ -134,7 +134,7 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
                 }`}
               >
                 <div className="text-xs font-semibold text-foreground">{m.label}</div>
-                <div className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">{m.desc}</div>
+                <div className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{m.desc}</div>
               </button>
             ))}
           </div>
@@ -156,7 +156,7 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
             className="w-full accent-primary"
             disabled={cfg.enabled !== 'auto'}
           />
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {cfg.enabled === 'auto'
               ? `当可延迟工具的相关度超过 ${cfg.threshold_pct}% 时，工具才会被加载到上下文中`
               : '仅 auto 模式生效'}
@@ -180,7 +180,7 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
           />
         </div>
 
-        <div className="rounded-md border border-border bg-muted p-2 text-[11px] leading-relaxed text-muted-foreground">
+        <div className="rounded-md border border-border bg-muted p-2 text-xs leading-relaxed text-muted-foreground">
           <span className="text-muted-foreground">桥接工具：</span>
           <span className="ml-1 font-mono text-muted-foreground">tool_search</span>（BM25 检索）/
           <span className="font-mono text-muted-foreground"> tool_describe</span>（详情）/
@@ -195,7 +195,7 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
         hint="基于当前 agent 启用的工具实时计算（需保存后刷新）"
       >
         {!agentId && (
-          <div className="flex items-start gap-1.5 rounded-md border border-warning/40 bg-warning/10 p-2 text-[11px] text-warning">
+          <div className="flex items-start gap-1.5 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-warning">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>新建智能体尚未保存，无法获取工具分类预览。请先保存后再查看装配状态。</span>
           </div>
@@ -208,23 +208,23 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
                 type="button"
                 onClick={fetchStatus}
                 disabled={loading}
-                className="rounded border border-border bg-secondary px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary disabled:opacity-50"
+                className="rounded border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground hover:bg-secondary disabled:opacity-50"
               >
                 {loading ? '刷新中…' : '↻ 刷新预览'}
               </button>
               {error && (
-                <span className="text-[11px] text-destructive">加载失败: {error}</span>
+                <span className="text-xs text-destructive">加载失败: {error}</span>
               )}
             </div>
 
             {!supported && (
-              <div className="rounded-md border border-border bg-muted p-2 text-[11px] text-muted-foreground">
+              <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
                 {status?.message || '当前引擎不支持 tool_search'}
               </div>
             )}
 
             {supported && loading && !status && (
-              <div className="rounded-md border border-border bg-muted p-3 text-center text-[11px] text-muted-foreground">
+              <div className="rounded-md border border-border bg-muted p-3 text-center text-xs text-muted-foreground">
                 正在加载工具分类数据…
               </div>
             )}
@@ -282,10 +282,10 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
                 {/* 核心工具列表（按 source 分组） */}
                 <div>
                   <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-emerald-300">
                       核心工具（永不延迟）
                     </span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {stats.visible_count ?? 0} 个 · {stats.visible_tokens ?? 0} token
                     </span>
                   </div>
@@ -303,10 +303,10 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
                 {/* 可延迟工具列表（按 source 分组） */}
                 <div>
                   <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-warning">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-warning">
                       可延迟工具（进入目录，按需检索）
                     </span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-xs text-muted-foreground">
                       {stats.deferrable_count ?? 0} 个 · {stats.deferrable_tokens ?? 0} token
                     </span>
                   </div>
@@ -322,7 +322,7 @@ export default function ToolSearchStatus({ agentId, value, onChange }) {
                 </div>
 
                 {/* source 分类目录 */}
-                <div className="rounded-md border border-border bg-card p-2 text-[10px] text-muted-foreground">
+                <div className="rounded-md border border-border bg-card p-2 text-xs text-muted-foreground">
                   <div className="mb-1 text-muted-foreground">source 分类规则：</div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5">
                     <span>
@@ -359,14 +359,14 @@ function StatCard({ label, value, suffix, sub, color }) {
   }
   return (
     <div className={`rounded-md border p-2 ${colorMap[color] || colorMap.gray}`}>
-      <div className="text-[10px] font-medium uppercase tracking-wider opacity-80">
+      <div className="text-xs font-medium uppercase tracking-wider opacity-80">
         {label}
       </div>
       <div className="mt-0.5 text-base font-semibold">
         {value}
-        <span className="ml-0.5 text-[10px] opacity-70">{suffix}</span>
+        <span className="ml-0.5 text-xs opacity-70">{suffix}</span>
       </div>
-      <div className="text-[10px] opacity-60">{sub}</div>
+      <div className="text-xs opacity-60">{sub}</div>
     </div>
   )
 }
@@ -379,13 +379,13 @@ function SourceGroup({ source, group }) {
   return (
     <div className={`rounded-md border border-border p-2 ${meta.bg}`}>
       <div className="mb-1 flex items-center gap-2">
-        <span className={`text-[10px] font-semibold ${meta.color}`}>
+        <span className={`text-xs font-semibold ${meta.color}`}>
           {meta.label}
         </span>
-        <span className="rounded bg-muted px-1 py-0.5 text-[9px] text-muted-foreground">
+        <span className="rounded bg-muted px-1 py-0.5 text-xs text-muted-foreground">
           {source}
         </span>
-        <span className="text-[10px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {group.count} 个 · {group.tokens} token
         </span>
       </div>
@@ -394,7 +394,7 @@ function SourceGroup({ source, group }) {
           <span
             key={t.name}
             title={t.description || t.name}
-            className="rounded bg-card px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+            className="rounded bg-card px-1.5 py-0.5 font-mono text-xs text-muted-foreground"
           >
             {t.name}
             <span className="ml-1 text-muted-foreground">{t.tokens}t</span>
@@ -407,7 +407,7 @@ function SourceGroup({ source, group }) {
 
 function EmptyHint({ text }) {
   return (
-    <div className="rounded-md border border-dashed border-border p-2 text-center text-[10px] text-muted-foreground">
+    <div className="rounded-md border border-dashed border-border p-2 text-center text-xs text-muted-foreground">
       {text}
     </div>
   )

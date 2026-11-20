@@ -450,6 +450,7 @@ def download_document_file(
     doc_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _export: User = Depends(require_permission("knowledge_base", "export")),
 ):
     doc = (
         db.query(KnowledgeDocument)

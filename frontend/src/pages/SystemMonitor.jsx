@@ -8,7 +8,7 @@ import {
 import { systemMonitorApi } from '../api/systemMonitor'
 import { toast } from '../store/toastStore'
 import AuditLogsPanel, { RESOURCE_LABELS, ActionBadge, ResultBadge } from '../components/audit/AuditLogsPanel'
-import { CompactSelect } from '../components/ui'
+import { CompactSelect, PillTabs } from '../components/ui'
 
 // ============ 常量映射 ============
 // 审计相关常量（RESOURCE_LABELS / ACTION_META / ActionBadge / ResultBadge）抽至 components/audit/AuditLogsPanel.jsx 共享
@@ -139,7 +139,7 @@ function ServiceStatusBadge({ status }) {
   }
   const item = map[status] || map.unknown
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${item.cls}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${item.cls}`}>
       {item.pulse && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current dot-pulse" />}
       {item.label}
     </span>
@@ -153,13 +153,13 @@ function OverallBadge({ overall }) {
 }
 function ContainerStatusBadge({ status, running }) {
   if (running) return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-success/20 px-2 py-0.5 text-[11px] font-medium text-success">
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-success/20 px-2 py-0.5 text-xs font-medium text-success">
       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current dot-pulse" />
       running
     </span>
   )
-  if (status === 'exited' || status === 'dead') return <span className="rounded-full bg-destructive/20 px-2 py-0.5 text-[11px] font-medium text-destructive">{status || 'unknown'}</span>
-  return <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{status || 'unknown'}</span>
+  if (status === 'exited' || status === 'dead') return <span className="rounded-full bg-destructive/20 px-2 py-0.5 text-xs font-medium text-destructive">{status || 'unknown'}</span>
+  return <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{status || 'unknown'}</span>
 }
 // 日志级别彩色行
 function LogLevelBadge({ level }) {
@@ -226,7 +226,7 @@ function OverviewTab({ onNavigate }) {
       {/* 概览卡片 */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* 健康评分 */}
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-muted-foreground">系统健康评分</span>
             <Activity className={`h-4 w-4 ${scoreColor}`} />
@@ -235,31 +235,31 @@ function OverviewTab({ onNavigate }) {
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted"><div className={`h-full rounded-full ${scoreBg}`} style={{ width: `${healthScore}%` }} /></div>
         </div>
         {/* 告警数 */}
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-muted-foreground">服务异常</span>
             <ShieldAlert className={`h-4 w-4 ${unhealthyCount > 0 ? 'text-destructive' : 'text-success'}`} />
           </div>
           <div className={`text-glow text-2xl font-bold tabular-nums ${unhealthyCount > 0 ? 'text-destructive' : 'text-success'}`}>{unhealthyCount}</div>
-          <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">{healthyCount} 正常 / {unhealthyCount} 异常</div>
+          <div className="mt-1 text-xs text-muted-foreground tabular-nums">{healthyCount} 正常 / {unhealthyCount} 异常</div>
         </div>
         {/* CPU 峰值 */}
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-muted-foreground">CPU 使用率</span>
             <Cpu className="h-4 w-4 text-primary" />
           </div>
           <div className={`text-glow text-2xl font-bold tabular-nums ${(perf?.cpu_percent ?? 0) > 80 ? 'text-destructive' : 'text-foreground'}`}>{Math.round(perf?.cpu_percent ?? 0)}<span className="text-sm text-muted-foreground">%</span></div>
-          <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">{perf?.cpu_count ?? '-'} 核</div>
+          <div className="mt-1 text-xs text-muted-foreground tabular-nums">{perf?.cpu_count ?? '-'} 核</div>
         </div>
         {/* 内存 */}
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-muted-foreground">内存使用率</span>
             <HardDrive className="h-4 w-4 text-primary" />
           </div>
           <div className={`text-glow text-2xl font-bold tabular-nums ${(perf?.memory?.percent ?? 0) > 85 ? 'text-destructive' : 'text-foreground'}`}>{Math.round(perf?.memory?.percent ?? 0)}<span className="text-sm text-muted-foreground">%</span></div>
-          <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">{perf?.memory?.used_gb ?? '-'} / {perf?.memory?.total_gb ?? '-'} GB</div>
+          <div className="mt-1 text-xs text-muted-foreground tabular-nums">{perf?.memory?.used_gb ?? '-'} / {perf?.memory?.total_gb ?? '-'} GB</div>
         </div>
       </div>
 
@@ -276,7 +276,7 @@ function OverviewTab({ onNavigate }) {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* 服务状态摘要 */}
-        <div className="rounded-lg border border-border bg-card p-5">
+        <div className="rounded-lg border border-border bg-card p-4">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Server className="h-4 w-4 text-primary" />各服务健康状态</h3>
           <div className="flex flex-col gap-2">
             {services.map((s) => (
@@ -286,7 +286,7 @@ function OverviewTab({ onNavigate }) {
                   <span className="text-sm text-foreground">{s.name}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] tabular-nums text-muted-foreground">{s.latency_ms != null ? `${s.latency_ms}ms` : '-'}</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">{s.latency_ms != null ? `${s.latency_ms}ms` : '-'}</span>
                   <ServiceStatusBadge status={s.status} />
                 </div>
               </div>
@@ -295,7 +295,7 @@ function OverviewTab({ onNavigate }) {
         </div>
 
         {/* 最近审计事件 */}
-        <div className="rounded-lg border border-border bg-card p-5">
+        <div className="rounded-lg border border-border bg-card p-4">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold"><ClipboardList className="h-4 w-4 text-primary" />最近操作记录</h3>
           <div className="flex flex-col gap-1.5">
             {recentLogs.length === 0 ? (
@@ -310,7 +310,7 @@ function OverviewTab({ onNavigate }) {
               </div>
             ))}
           </div>
-          <button onClick={() => onNavigate('audit')} className="mt-2 w-full text-center text-[11px] text-primary hover:underline">查看全部审计日志 →</button>
+          <button onClick={() => onNavigate('audit')} className="mt-2 w-full text-center text-xs text-primary hover:underline">查看全部审计日志 →</button>
         </div>
       </div>
     </div>
@@ -386,7 +386,7 @@ function HealthTab() {
                 <option value={60}>1 分钟</option>
                 <option value={300}>5 分钟</option>
               </CompactSelect>
-              <span className="flex items-center gap-1.5 text-[11px] tabular-nums text-primary">
+              <span className="flex items-center gap-1.5 text-xs tabular-nums text-primary">
                 <span className="h-1.5 w-1.5 rounded-full bg-primary dot-pulse" />
                 {countdown} 秒后刷新
               </span>
@@ -411,7 +411,7 @@ function HealthTab() {
               </h3>
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                 {svcs.map((svc) => (
-                  <div key={svc.name} className={`rounded-lg border p-5 shadow-lg transition-colors hover:border-primary/40 ${svc.status === 'unhealthy' ? 'border-destructive/40 bg-destructive/5' : svc.status === 'degraded' ? 'border-warning/40 bg-warning/5' : 'border-border bg-card'}`}>
+                  <div key={svc.name} className={`rounded-lg border p-4 shadow-lg transition-colors hover:border-primary/40 ${svc.status === 'unhealthy' ? 'border-destructive/40 bg-destructive/5' : svc.status === 'degraded' ? 'border-warning/40 bg-warning/5' : 'border-border bg-card'}`}>
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0 truncate text-sm font-semibold text-foreground">{svc.name}</div>
                       <ServiceStatusBadge status={svc.status} />
@@ -518,7 +518,7 @@ function PerformanceTab() {
 
       {/* 趋势图表 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2"><Cpu className="h-4 w-4 text-primary" /><span className="text-sm font-semibold">CPU 使用率趋势</span></div>
             <span className={`text-glow text-xl font-bold tabular-nums ${cpuPercent > 90 ? 'text-destructive' : cpuPercent > 80 ? 'text-warning' : 'text-foreground'}`}>{Math.round(cpuPercent)}%</span>
@@ -531,7 +531,7 @@ function PerformanceTab() {
           </div>
         </div>
 
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2"><HardDrive className="h-4 w-4 text-primary" /><span className="text-sm font-semibold">内存使用率趋势</span></div>
             <span className={`text-glow text-xl font-bold tabular-nums ${(mem.percent ?? 0) > 90 ? 'text-destructive' : (mem.percent ?? 0) > 85 ? 'text-warning' : 'text-foreground'}`}>{Math.round(mem.percent ?? 0)}%</span>
@@ -540,7 +540,7 @@ function PerformanceTab() {
           <div className="mt-2 text-[10px] text-muted-foreground">{mem.used_gb ?? '-'} GB / {mem.total_gb ?? '-'} GB</div>
         </div>
 
-        <div className="card-accent-top rounded-lg border border-border bg-card p-5">
+        <div className="card-accent-top rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2"><Disc className="h-4 w-4 text-warning" /><span className="text-sm font-semibold">磁盘使用率趋势</span></div>
             <span className={`text-glow text-xl font-bold tabular-nums ${(disk.percent ?? 0) > 90 ? 'text-destructive' : 'text-foreground'}`}>{Math.round(disk.percent ?? 0)}%</span>
@@ -550,7 +550,7 @@ function PerformanceTab() {
         </div>
 
         {/* 运行时长 + 瞬时指标 */}
-        <div className="rounded-lg border border-border bg-card p-5">
+        <div className="rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center gap-2"><Timer className="h-4 w-4 text-success" /><span className="text-sm font-semibold">系统运行信息</span></div>
           <div className="grid grid-cols-2 gap-3 text-xs tabular-nums">
             <div><span className="text-muted-foreground">运行时长：</span><span className="font-medium text-foreground">{fmtUptime(uptime)}</span></div>
@@ -684,19 +684,19 @@ function ServiceLogsTab() {
             <button type="button" onClick={() => setRegexMode((p) => !p)} className={`rounded px-1.5 py-0.5 text-[9px] transition ${regexMode ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:bg-secondary hover:text-foreground'}`} title="正则模式">.*</button>
           </div>
           {/* 实时 Tail */}
-          <button type="button" onClick={() => setLiveTail((p) => !p)} className={`flex items-center gap-1 rounded border px-2 py-1 text-[11px] transition ${liveTail ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40 hover:text-foreground'}`}>
+          <button type="button" onClick={() => setLiveTail((p) => !p)} className={`flex items-center gap-1 rounded border px-2 py-1 text-xs transition ${liveTail ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/40 hover:text-foreground'}`}>
             {liveTail ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />} {liveTail ? '暂停' : '实时跟踪'}
           </button>
         </div>
         <div className="flex items-center gap-2">
-          <label className="flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition hover:text-foreground">
+          <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground">
             <CompactSelect size="lg" value={tail} onChange={(e) => setTail(Number(e.target.value))}>
               <option value={100}>100</option><option value="200">200</option><option value={500}>500</option><option value={1000}>1000</option>
             </CompactSelect> 行
           </label>
-          <label className="flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition hover:text-foreground"><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} className="h-3 w-3 accent-primary" /> 自动滚动</label>
-          <label className="flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition hover:text-foreground"><input type="checkbox" checked={relTime} onChange={(e) => setRelTime(e.target.checked)} className="h-3 w-3 accent-primary" /> 相对时间</label>
-          <label className="flex cursor-pointer items-center gap-1 text-[11px] text-muted-foreground transition hover:text-foreground"><input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} className="h-3 w-3 accent-primary" /> 自动换行</label>
+          <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} className="h-3 w-3 accent-primary" /> 自动滚动</label>
+          <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"><input type="checkbox" checked={relTime} onChange={(e) => setRelTime(e.target.checked)} className="h-3 w-3 accent-primary" /> 相对时间</label>
+          <label className="flex cursor-pointer items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"><input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} className="h-3 w-3 accent-primary" /> 自动换行</label>
           <button type="button" onClick={loadServices} disabled={loadingList} className="btn-secondary btn-sm">{loadingList ? '刷新中...' : '刷新服务'}</button>
           <button type="button" onClick={() => setDownloadOpen(true)} disabled={filteredLogs.length === 0} className="btn-secondary btn-sm">下载</button>
         </div>
@@ -723,7 +723,7 @@ function ServiceLogsTab() {
                   <button key={svc.name} type="button" onClick={() => toggleContainer(svc.name)} className={`flex items-center justify-between gap-2 rounded-md px-3 py-2 text-left transition ${active ? 'bg-primary/15 text-foreground ring-1 ring-primary/40' : 'text-muted-foreground hover:bg-muted'}`}>
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{svc.name}</div>
-                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{svc.image || '-'}</div>
+                      <div className="mt-0.5 truncate text-xs text-muted-foreground">{svc.image || '-'}</div>
                       {svc.mem_pct != null && svc.running && (
                         <div className="mt-0.5 flex items-center gap-2 text-[10px] tabular-nums">
                           <span className={svc.cpu_pct > 80 ? 'text-destructive' : svc.cpu_pct > 50 ? 'text-amber-500' : 'text-emerald-500/80'}>
@@ -748,7 +748,7 @@ function ServiceLogsTab() {
           <div className="flex items-center justify-between border-b border-border px-4 py-2">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-foreground">{selected.join(' + ') || '未选择服务'}</span>
-              <span className="text-[11px] text-muted-foreground">显示 {filteredLogs.length} / {logs.length} 行</span>
+              <span className="text-xs text-muted-foreground">显示 {filteredLogs.length} / {logs.length} 行</span>
             </div>
             <button type="button" onClick={loadLogs} disabled={selected.length === 0 || loadingLogs} className="btn-secondary btn-sm">{loadingLogs ? '拉取中...' : '刷新日志'}</button>
           </div>
@@ -762,7 +762,7 @@ function ServiceLogsTab() {
             ) : filteredLogs.length === 0 ? (
               <div className="flex h-32 flex-col items-center justify-center gap-1 text-muted-foreground"><FileText className="h-8 w-8" /><div className="text-xs">{logs.length === 0 ? '暂无日志输出' : '无匹配日志'}</div></div>
             ) : (
-              <div className="font-mono text-[11px] leading-relaxed">
+              <div className="font-mono text-xs leading-relaxed">
                 {filteredLogs.map((ln, idx) => (
                   <div key={idx} className={`border-b border-border px-2 py-0.5 hover:bg-muted ${wrap ? '' : 'whitespace-nowrap overflow-x-auto'}`} onClick={() => copyText(ln.text)} title="点击复制">
                     {selected.length > 1 && <span className="mr-2 rounded bg-secondary px-1 text-[9px] text-primary">{ln.container}</span>}
@@ -780,12 +780,12 @@ function ServiceLogsTab() {
       {/* 下载弹窗 */}
       {downloadOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setDownloadOpen(false)}>
-          <div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="w-full max-w-sm rounded-lg border border-border bg-card p-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold">下载日志</h3>
               <button onClick={() => setDownloadOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-4 w-4" /></button>
             </div>
-            <p className="mb-3 text-[11px] text-muted-foreground">当前筛选结果共 {filteredLogs.length} 行，请选择下载范围：</p>
+            <p className="mb-3 text-xs text-muted-foreground">当前筛选结果共 {filteredLogs.length} 行，请选择下载范围：</p>
             <div className="flex flex-col gap-2">
               <button onClick={() => handleDownload(1000)} className="btn-secondary btn-sm">下载前 1000 行</button>
               <button onClick={() => handleDownload(10000)} className="btn-secondary btn-sm">下载前 1 万行</button>
@@ -816,14 +816,12 @@ function SystemMonitor() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
         <div className="flex items-center gap-4">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">系统监控</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">系统监控</h1>
         </div>
       </header>
 
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6">
-        {tabs.map((t) => (
-          <button key={t.key} type="button" onClick={() => setActiveTab(t.key)} className={`-mb-px border-b-2 px-3 py-2 text-sm transition ${activeTab === t.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{t.label}</button>
-        ))}
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs items={tabs} value={activeTab} onChange={setActiveTab} />
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">

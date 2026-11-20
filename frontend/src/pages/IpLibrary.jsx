@@ -11,7 +11,7 @@ import {
 import { ipLibraryApi } from '../api/ipLibrary'
 import { toast } from '../store/toastStore'
 import {
-  PageContainer, PageHeader, Button, Card, DataTable, Pagination,
+  PageContainer, PageHeader, Button, Card, DataTable, Pagination, CompactSelect, SearchInput,
 } from '../components/ui'
 import { Modal, Drawer } from '../components/Dialog'
 import { inputCls } from '../components/property/FormControls'
@@ -137,7 +137,7 @@ function ImportModal({ open, libraries, onClose, onFinish }) {
   const [error, setError] = useState('')
   const pollRef = useRef(null)
   const pickRef = useRef(null)
-  const canImport = hasPermission('ip_library', 'edit')
+  const canImport = hasPermission('ip_library', 'import')
 
   // 阶段/开关引用：打开弹窗时据此决定是否重置，避免清掉后台导入中的进度
   const stageRef = useRef(stage)
@@ -457,7 +457,8 @@ export default function IpLibrary() {
 
   const [importOpen, setImportOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
-  const canImport = hasPermission('ip_library', 'edit')
+  const canImport = hasPermission('ip_library', 'import')
+  const canExport = hasPermission('ip_library', 'export')
 
   const loadMeta = useCallback(async () => {
     setMetaLoading(true)
@@ -554,7 +555,6 @@ export default function IpLibrary() {
     <PageContainer>
       <PageHeader
         title="IP地址库"
-        description="中国大陆云服务 / APNIC 运营商地理 / APNIC 注册持有者 / 境外 IPv4 / 香港澳门 IPv4 网段数据：支持 IP 精确归属、网段与关键词查询"
         actions={
           <>
             <Button variant="secondary" size="sm" onClick={loadMeta} disabled={metaLoading}>
@@ -580,16 +580,14 @@ export default function IpLibrary() {
       {/* 查询区 + 结果区 */}
       <Card className="mt-4">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-[280px] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <input
-              className={`${inputCls} pl-9`}
-              placeholder="输入 IP（如 1.2.3.4）/ 网段（如 8.8.8.0/24）/ 关键词（运营商、持有者、国家、省市）"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
-            />
-          </div>
+          <SearchInput
+            className="min-w-[280px] flex-1"
+            value={q}
+            onChange={setQ}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
+            placeholder="输入 IP（如 1.2.3.4）/ 网段（如 8.8.8.0/24）/ 关键词（运营商、持有者、国家、省市）"
+            onClear={() => setQ('')}
+          />
           <Button variant="secondary" size="sm" onClick={() => setShowAdvanced((v) => !v)}>
             <SlidersHorizontal className="h-4 w-4" /> 筛选
             {advancedDirty && <span className="ml-1 h-1.5 w-1.5 rounded-full bg-primary" />}
@@ -597,33 +595,35 @@ export default function IpLibrary() {
           <Button variant="primary" size="sm" onClick={handleSearch} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} 查询
           </Button>
-          <Button variant="secondary" size="sm" onClick={handleExport} disabled={!searched || loading}>
-            <Download className="h-4 w-4" /> 导出结果
-          </Button>
+          {canExport && (
+            <Button variant="secondary" size="sm" onClick={handleExport} disabled={!searched || loading}>
+              <Download className="h-4 w-4" /> 导出结果
+            </Button>
+          )}
         </div>
 
         {showAdvanced && (
           <div className="mt-3 grid grid-cols-2 gap-3 border-t border-border/60 pt-3 md:grid-cols-4">
             <label className="block min-w-0">
               <span className="mb-1.5 block text-xs font-medium text-muted-foreground">库</span>
-              <select className={inputCls} value={libFilter} onChange={(e) => setLibFilter(e.target.value)}>
+              <CompactSelect size="sm" value={libFilter} onChange={(e) => setLibFilter(e.target.value)}>
                 <option value="">全部库</option>
                 {meta.libraries.map((l) => (
                   <option key={l.library_type} value={l.library_type}>{l.label}</option>
                 ))}
-              </select>
+              </CompactSelect>
             </label>
             <label className="block min-w-0">
               <span className="mb-1.5 block text-xs font-medium text-muted-foreground">国家地区</span>
-              <input className={inputCls} placeholder="如：Japan" value={country} onChange={(e) => setCountry(e.target.value)} />
+              <input className={`${inputCls} h-8 text-xs`} placeholder="如：Japan" value={country} onChange={(e) => setCountry(e.target.value)} />
             </label>
             <label className="block min-w-0">
               <span className="mb-1.5 block text-xs font-medium text-muted-foreground">运营商</span>
-              <input className={inputCls} placeholder="如：中国电信" value={isp} onChange={(e) => setIsp(e.target.value)} />
+              <input className={`${inputCls} h-8 text-xs`} placeholder="如：中国电信" value={isp} onChange={(e) => setIsp(e.target.value)} />
             </label>
             <label className="block min-w-0">
               <span className="mb-1.5 block text-xs font-medium text-muted-foreground">省份</span>
-              <input className={inputCls} placeholder="如：福建省" value={province} onChange={(e) => setProvince(e.target.value)} />
+              <input className={`${inputCls} h-8 text-xs`} placeholder="如：福建省" value={province} onChange={(e) => setProvince(e.target.value)} />
             </label>
           </div>
         )}

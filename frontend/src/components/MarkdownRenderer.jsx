@@ -111,7 +111,7 @@ function renderInline(text, keyPrefix = '', ctx = null) {
       placeholders.push(
         <code
           key={`${keyPrefix}-code-${idx}`}
-          className="rounded bg-muted px-1.5 py-0.5 text-[13px] font-mono text-primary"
+          className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono text-primary"
         >
           {code}
         </code>
@@ -300,7 +300,7 @@ function CodeBlock({ code, lang }) {
   return (
     <div className="my-3 overflow-hidden rounded-xl border border-border bg-background/60">
       <div className="flex items-center justify-between gap-2 border-b border-border/70 bg-muted/40 px-3 py-1.5">
-        <span className="truncate text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        <span className="truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {lang || 'code'}
         </span>
         <button
@@ -308,13 +308,13 @@ function CodeBlock({ code, lang }) {
           onClick={handleCopy}
           title="复制代码"
           aria-label="复制代码"
-          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground transition hover:bg-background hover:text-foreground"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition hover:bg-background hover:text-foreground"
         >
           {copied ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
           {copied ? '已复制' : '复制'}
         </button>
       </div>
-      <pre className="overflow-x-auto p-3 text-[12.5px] leading-relaxed">
+      <pre className="overflow-x-auto p-3 text-xs leading-relaxed">
         <code className="font-mono text-foreground">{tokens}</code>
       </pre>
     </div>

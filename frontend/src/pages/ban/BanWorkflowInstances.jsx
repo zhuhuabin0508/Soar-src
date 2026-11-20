@@ -73,7 +73,7 @@ function NodeTimeline({ nodes }) {
                 </Badge>
                 <span className="ml-auto font-mono text-xs text-muted-foreground">{fmtMs(n.duration_ms)}</span>
               </div>
-              <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+              <div className="mt-1 flex items-center gap-2 font-mono text-xs text-muted-foreground">
                 <span>{fmtTime(n.start_time)}</span>
                 {n.end_time && <span>→ {fmtTime(n.end_time)}</span>}
               </div>
@@ -83,7 +83,7 @@ function NodeTimeline({ nodes }) {
               {n.output != null && (
                 <details className="mt-1.5">
                   <summary className="cursor-pointer select-none text-xs text-muted-foreground transition hover:text-foreground">节点输出</summary>
-                  <pre className="mt-1 max-h-52 overflow-auto rounded-md bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground">
+                  <pre className="mt-1 max-h-52 overflow-auto rounded-md bg-background p-2 font-mono text-xs leading-relaxed text-foreground">
                     {typeof n.output === 'string' ? n.output : JSON.stringify(n.output, null, 2)}
                   </pre>
                 </details>
@@ -115,13 +115,13 @@ function AgentInvocations({ invocations }) {
           <div className="mt-2 grid gap-2 lg:grid-cols-2">
             <details open>
               <summary className="cursor-pointer select-none text-xs text-muted-foreground">请求体</summary>
-              <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground">
+              <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-background p-2 font-mono text-xs leading-relaxed text-foreground">
                 {typeof a.request_body === 'string' ? a.request_body : JSON.stringify(a.request_body, null, 2)}
               </pre>
             </details>
             <details open={!a.error_msg}>
               <summary className="cursor-pointer select-none text-xs text-muted-foreground">响应体</summary>
-              <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-background p-2 font-mono text-[11px] leading-relaxed text-foreground">
+              <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-background p-2 font-mono text-xs leading-relaxed text-foreground">
                 {a.response_body ? (typeof a.response_body === 'string' ? a.response_body : JSON.stringify(a.response_body, null, 2)) : '--'}
               </pre>
             </details>
@@ -137,7 +137,7 @@ function JsonBlock({ title, data }) {
   return (
     <div>
       <div className="mb-1.5 text-xs font-medium text-muted-foreground">{title}</div>
-      <pre className="max-h-60 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">
+      <pre className="max-h-60 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs leading-relaxed text-foreground">
         {typeof data === 'string' ? data : JSON.stringify(data, null, 2)}
       </pre>
     </div>
@@ -207,7 +207,7 @@ export default function BanWorkflowInstances({ embedded = false }) {
   }
 
   const columns = [
-    { key: 'id', header: '实例ID', width: '80px', render: (r) => <span className="font-mono text-[13px]">#{r.id}</span> },
+    { key: 'id', header: '实例ID', width: '80px', render: (r) => <span className="font-mono text-xs">#{r.id}</span> },
     {
       key: 'alert_name', header: '触发告警', width: '200px',
       render: (r) => (
@@ -216,7 +216,7 @@ export default function BanWorkflowInstances({ embedded = false }) {
         </button>
       ),
     },
-    { key: 'src_ip', header: '源IP', width: '140px', render: (r) => <span className="font-mono text-[13px]">{r.src_ip || '--'}</span> },
+    { key: 'src_ip', header: '源IP', width: '140px', render: (r) => <span className="font-mono text-xs">{r.src_ip || '--'}</span> },
     {
       key: 'status', header: '状态', width: '100px',
       render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status_label}</Badge>,
@@ -227,8 +227,8 @@ export default function BanWorkflowInstances({ embedded = false }) {
       render: (r) => r.final_result_label ? <Badge variant={r.final_result === 'banned' ? 'danger' : r.final_result === 'monitoring' ? 'info' : 'neutral'}>{r.final_result_label}</Badge> : <span className="text-muted-foreground">--</span>,
     },
     { key: 'trigger_rule', header: '触发规则', width: '130px', render: (r) => <span className="truncate text-muted-foreground">{r.trigger_rule_name || '--'}</span> },
-    { key: 'duration', header: '耗时', width: '80px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtMs(r.duration_ms)}</span> },
-    { key: 'created_at', header: '创建时间', width: '150px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
+    { key: 'duration', header: '耗时', width: '80px', render: (r) => <span className="font-mono text-xs text-muted-foreground">{fmtMs(r.duration_ms)}</span> },
+    { key: 'created_at', header: '创建时间', width: '150px', render: (r) => <span className="font-mono text-xs text-muted-foreground">{fmtTime(r.created_at)}</span> },
     {
       key: 'actions', header: '操作', width: '110px',
       render: (r) => (
@@ -251,18 +251,6 @@ export default function BanWorkflowInstances({ embedded = false }) {
   // 主体内容（embedded 模式下直接渲染，不套页面容器）
   const content = (
     <>
-      {!embedded && (
-        <PageHeader
-          title="封禁工作流实例"
-          description="告警入库自动触发的 IP 风险研判与封禁实例：全链路节点日志、智能体调用与处置结果可审计"
-          actions={(
-            <Button size="sm" variant="ghost" onClick={() => { load(); loadMeta() }}>
-              <RotateCw className="h-3.5 w-3.5" /> 刷新
-            </Button>
-          )}
-        />
-      )}
-
       {/* 统计卡片 */
       }
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -329,6 +317,14 @@ export default function BanWorkflowInstances({ embedded = false }) {
     <>
       {embedded ? content : (
         <PageContainer>
+          <PageHeader
+            title="封禁工作流实例"
+            actions={(
+              <Button size="sm" variant="secondary" onClick={() => { load(); loadMeta() }}>
+                <RotateCw className="h-3.5 w-3.5" /> 刷新
+              </Button>
+            )}
+          />
           {content}
         </PageContainer>
       )}
@@ -338,7 +334,7 @@ export default function BanWorkflowInstances({ embedded = false }) {
         {detailLoading || !t ? (
           <div className="flex items-center justify-center py-16 text-muted-foreground"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…</div>
         ) : (
-          <div className="max-h-[70vh] space-y-5 overflow-y-auto pr-1">
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
             {/* 基础信息 */}
             <div className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-lg border border-border bg-muted p-3 text-sm lg:grid-cols-3">
               <div><span className="text-muted-foreground">源IP：</span><span className="font-mono">{t.src_ip || '--'}</span></div>

@@ -12,9 +12,10 @@
    ``get_threat_互联网``（HTTP 工具，平台工具执行口径 load_tool_function →
    run_http_tool）拉取真实情报，响应归一化为原有 threat 结构；并发批量查
    （信号量限流防打爆情报源），工具缺失/禁用/调用失败按「情报查询失败」降级；
-3. 智能体研判（``auto_agent``，默认关闭）：调用 IP 风险研判智能体
-   （``agent_client.analyze_ip_risk``，输出模式 ban_risk_analyze）。
-   结果仅保留 risk_level / action / monitoring_advice / reasons。
+3. 智能体研判（``auto_agent``，默认关闭）：调用「工单安全分析研判智能体」
+   （``app.core.ticket_analyst``，输出模式 ticket_analyst）。先采集多维上下文
+   （黑名单/白名单/IP 地址库/资产/威胁情报）并跑规则引擎产证据，再由 LLM
+   研判。结果仅保留 risk_level / action / reasons（严格 3 字段契约）。
 
 v2 结构（多 IP，写入 ``Ticket.enrichment_data``，随工单全程流转）::
 
@@ -103,8 +104,10 @@ _BG_EXECUTOR = ThreadPoolExecutor(
     max_workers=BG_EXECUTOR_WORKERS,
     thread_name_prefix="ticket-enrich",
 )
-# 在途任务去重：任务键（kind:ticket_id）→ Future，同一工单同一类任务只跑一个
+# 在途任务去重：任务键（kind:ticket_id）→ Future，同一工单同一类任务串行执行
 _BG_TASKS: dict[str, Future] = {}
+# 同键在途时追加的后续任务（当前任务结束后串行执行，保证请求不丢失）
+_BG_FOLLOWUPS: dict[str, list[tuple]] = {}
 _BG_TASKS_LOCK = threading.Lock()
 
 
@@ -119,22 +122,41 @@ def _safe_rollback(db) -> None:
         pass
 
 
-def _submit_bg_task(key: str, target, *args) -> None:
-    """提交后台研判任务：有界线程池 + 同键去重（已在执行则跳过）。"""
+def _submit_bg_task(key: str, target, *args) -> bool:
+    """提交后台研判任务：有界线程池 + 同键串行去重。
+
+    同键任务在途时不丢弃新请求，而是登记为后续任务，当前任务完成后
+    立即串行执行——否则 requery 已把 ``agent`` 重置为 pending 后，
+    重复提交被跳过会让条目永久停在 pending。
+    """
     with _BG_TASKS_LOCK:
         running = _BG_TASKS.get(key)
         if running is not None and not running.done():
-            logger.info("后台研判任务已在执行，跳过重复提交: %s", key)
-            return
+            _BG_FOLLOWUPS.setdefault(key, []).append((target, args))
+            logger.info("后台研判任务已在执行，追加为后续任务: %s", key)
+            return True
         future = _BG_EXECUTOR.submit(target, *args)
         _BG_TASKS[key] = future
 
     def _cleanup(done: Future) -> None:
+        nxt = None
         with _BG_TASKS_LOCK:
             if _BG_TASKS.get(key) is done:
                 _BG_TASKS.pop(key, None)
+            queued = _BG_FOLLOWUPS.get(key) or []
+            if queued:
+                nxt_target, nxt_args = queued.pop(0)
+                if queued:
+                    _BG_FOLLOWUPS[key] = queued
+                else:
+                    _BG_FOLLOWUPS.pop(key, None)
+                nxt = _BG_EXECUTOR.submit(nxt_target, *nxt_args)
+                _BG_TASKS[key] = nxt
+        if nxt is not None:
+            nxt.add_done_callback(_cleanup)
 
     future.add_done_callback(_cleanup)
+    return True
 
 
 # 合法域名正则（RFC1034/1035 简化）：至少两级标签、总长 ≤253、
@@ -1605,66 +1627,12 @@ def _query_and_build_entries(
 
 
 # ---------------------------------------------------------------------------
-# 智能体研判（仅保留展示字段；处置结果不落库不展示）
+# 智能体研判（工单安全分析研判智能体：多维上下文 + 规则证据 + LLM，
+# 输出严格 3 字段 risk_level/action/reasons，仅展示不入处置流程）
 # ---------------------------------------------------------------------------
 
-_AGENT_FIELDS = ("risk_level", "action", "monitoring_advice", "reasons")
-
-# 未配置 BAN_ANALYST_AGENT_ID 时按名称兜底查找的智能体名
-_TICKET_AGENT_NAME = "IP风险智能研判与封禁决策"
-
-
-def _resolve_agent_id(db) -> Optional[int]:
-    """解析工单智能体研判使用的智能体 ID。
-
-    优先 ``BAN_ANALYST_AGENT_ID``（与封禁工作流一致）；
-    未配置时按名称查找「IP风险智能研判与封禁决策」
-    （published 状态，同名取最新）。找不到返回 None。
-    """
-    from app.config import settings
-    from app.models.agent import Agent
-
-    agent_id = int(getattr(settings, "BAN_ANALYST_AGENT_ID", 0) or 0)
-    if agent_id > 0:
-        return agent_id
-    agent = (
-        db.query(Agent)
-        .filter(Agent.name == _TICKET_AGENT_NAME, Agent.publish_status == "published")
-        .order_by(Agent.id.desc())
-        .first()
-    )
-    return agent.id if agent else None
-
-
-def _run_agent_analysis(db, ip: str, title: str) -> dict:
-    """调用 IP 风险研判智能体（「IP风险智能研判与封禁决策」）并过滤结果。
-
-    复用 ``agent_client.analyze_ip_risk``（输出模式 ban_risk_analyze，
-    含重试与调用审计日志；生产经 ``BAN_ANALYST_AGENT_ID`` 指定智能体，
-    未配置时按名称兜底查找；dev/staging 均不可用时回退 HTTP mock）。
-    失败向上抛出由调用方记入 errors。
-
-    Returns:
-        仅含 ``_AGENT_FIELDS`` 的 dict（处置结果字段已剔除）。
-    """
-    from app.workflow.agent_client import analyze_ip_risk
-
-    agent_id = _resolve_agent_id(db)
-    if agent_id is None:
-        raise ValueError(
-            f"未找到已发布的智能体「{_TICKET_AGENT_NAME}」，"
-            "请在平台创建该智能体或配置 BAN_ANALYST_AGENT_ID"
-        )
-    decision = analyze_ip_risk(
-        ip,
-        {"alert_name": title or ""},
-        instance_id=None,
-        node_key="ticket_enrichment",
-        agent_id=agent_id,
-    )
-    if not isinstance(decision, dict):
-        raise ValueError(f"智能体研判返回结构异常: {type(decision).__name__}")
-    return {f: decision.get(f) for f in _AGENT_FIELDS}
+# LLM 并发上限（工单研判全量数据预注入、单轮无工具循环；后台线程内并发）
+_AGENT_LLM_CONCURRENCY = 4
 
 
 def _writeback_agent_results(session, ticket_id: int, results: dict, errors: list[str]) -> None:
@@ -1698,16 +1666,65 @@ def _writeback_agent_results(session, ticket_id: int, results: dict, errors: lis
 
 
 def _run_agent_analysis_for_ips(session, ticket_id: int, ips: list[str], title: str) -> None:
-    """逐 IP 智能体研判并回写（v2：按 ip 匹配 entries）。"""
+    """批量执行工单智能体研判并回写（v2：按 ip 匹配 entries）。
+
+    链路：``ticket_analyst`` 多维上下文采集（黑名单/白名单/地址库 +
+    enrichment 中的资产/情报）→ 规则引擎证据计算 → 并发调用
+    「工单安全分析研判智能体」（Hermes，output_mode=ticket_analyst，
+    严格 3 字段）→ 回写 ``ips[].agent``。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from app.core.ticket_analyst.client import analyze_ticket_ip
+    from app.core.ticket_analyst.context import gather_contexts
+    from app.core.ticket_analyst.rules import evaluate_rules
+
+    if not ips:
+        return
+    logger.info("工单智能体研判开始: ticket=%s, ip数=%d", ticket_id, len(ips))
+    try:
+        ctx_map = gather_contexts(session, ticket_id, ips, title)
+    except Exception:  # noqa: BLE001
+        _safe_rollback(session)
+        logger.exception("工单智能体研判上下文采集失败: ticket=%s", ticket_id)
+        # 采集失败不得用空上下文研判：空上下文会命中 no_hit_fallback，
+        # 产出「低风险/监控」的伪结论并回写，值班人员可能据此放行真实威胁。
+        _writeback_agent_results(
+            session,
+            ticket_id,
+            {ip: None for ip in ips},
+            [f"智能体研判跳过：安全上下文采集失败（{len(ips)} 个 IP），请重新研判"],
+        )
+        return
+    # gather_contexts 只读查询已结束：立即结束事务释放数据库连接，
+    # 避免 LLM 调用期间（数十秒）持续占用连接。
+    _safe_rollback(session)
+
     results: dict[str, dict | None] = {}
     errors: list[str] = []
+    pending: list[tuple[str, dict]] = []
     for ip in ips:
-        try:
-            results[ip] = _run_agent_analysis(session, ip, title)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("工单智能体研判失败, ip=%s: %s", ip, exc)
+        ctx = ctx_map.get(ip)
+        if not isinstance(ctx, dict):
             results[ip] = None
-            errors.append(f"{ip} 智能体研判失败: {exc}")
+            errors.append(f"{ip} 智能体研判失败: 安全上下文缺失")
+            continue
+        pending.append((ip, ctx))
+
+    with ThreadPoolExecutor(max_workers=_AGENT_LLM_CONCURRENCY) as pool:
+        future_map = {}
+        for ip, ctx in pending:
+            evidence = evaluate_rules(ctx)
+            future = pool.submit(analyze_ticket_ip, ctx, evidence, ticket_id=ticket_id)
+            future_map[future] = ip
+        for future in as_completed(future_map):
+            ip = future_map[future]
+            try:
+                results[ip] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("工单智能体研判失败, ip=%s: %s", ip, exc)
+                results[ip] = None
+                errors.append(f"{ip} 智能体研判失败: {str(exc)[:200]}")
     _writeback_agent_results(session, ticket_id, results, errors)
     logger.info(
         "工单智能体研判回写完成: ticket=%s, ip数=%d, 失败=%d",
@@ -1841,7 +1858,10 @@ def build_ticket_enrichment(
         "enriched_at": beijing_now().isoformat(),
         "errors": errors,
     }
-    agent_ips = [e["ip"] for e in entries if isinstance(e.get("agent"), dict)]
+    agent_ips = [
+        e["ip"] for e in entries
+        if isinstance(e.get("agent"), dict) and _is_entity_ip(e.get("ip") or "")
+    ]
     logger.info(
         "工单自动研判完成(v2): ip数=%d, 资产命中=%d, 情报恶意=%d, 智能体=%d, 错误=%d",
         len(entries),
@@ -1928,10 +1948,13 @@ def requery_ticket_enrichment(db, ticket, ips: list[str]) -> dict:
     - 目标超过 ``SYNC_ENRICH_LIMIT`` 时在条目上打 ``requery_pending``
       标记并提交（本函数内 commit，保证标记对后台线程可见），再由
       ``start_requery_bg`` 后台补全，返回 ``pending=True``；
+    - 目标 IP 已开启智能体研判的，agent 结果一并重置为 pending 并
+      重跑（同步路径由调用方 commit 后触发后台重研判；后台路径由
+      ``_requery_bg_worker`` 链式执行）；
     - 不在工单研判 IP 集合内的请求 IP 记入 ``unknown`` 返回。
 
     Returns:
-        ``{"updated": n, "unknown": [...], "pending": bool}``
+        ``{"updated": n, "unknown": [...], "pending": bool, "agent_ips": [...]}``
     Raises:
         ValueError: 工单无 v2 研判数据（存量 v1 工单不支持）。
     """
@@ -1942,7 +1965,7 @@ def requery_ticket_enrichment(db, ticket, ips: list[str]) -> dict:
     unknown = [ip for ip in ips if ip not in known]
     targets = [ip for ip in ips if ip in known]
     if not targets:
-        return {"updated": 0, "unknown": unknown, "pending": False}
+        return {"updated": 0, "unknown": unknown, "pending": False, "agent_ips": []}
 
     total_original = data.get("stats", {}).get("total_original")
 
@@ -1960,7 +1983,8 @@ def requery_ticket_enrichment(db, ticket, ips: list[str]) -> dict:
         db.commit()
         start_requery_bg(ticket.id, targets)
         logger.info("工单重新研判转后台: ticket=%s, ip数=%d", ticket.id, len(targets))
-        return {"updated": 0, "unknown": unknown, "pending": True}
+        # 该路径由 _requery_bg_worker 内部链式重研判，无需调用方再触发
+        return {"updated": 0, "unknown": unknown, "pending": True, "agent_ips": []}
 
     plan_ips = [
         {
@@ -1998,10 +2022,10 @@ def requery_ticket_enrichment(db, ticket, ips: list[str]) -> dict:
         new = by_ip.get(e.get("ip"))
         if new is None:
             continue
-        # 保留原 roles 与 agent 结果（agent 重研判不在 requery 范围）
+        # 保留原 roles；agent 重置为 pending 由后台重研判（原 agent 可能是旧数据/失败态）
         new["roles"] = e.get("roles") or new.get("roles") or []
         if "agent" in e:
-            new["agent"] = e["agent"]
+            new["agent"] = {"pending": True}
         e.clear()
         e.update(new)
     if errors:
@@ -2009,11 +2033,15 @@ def requery_ticket_enrichment(db, ticket, ips: list[str]) -> dict:
     fresh["stats"] = _compute_stats(_enrichment_entries(fresh), total_original=total_original)
     ticket.enrichment_data = fresh
     flag_modified(ticket, "enrichment_data")
+    agent_ips = [
+        ip for ip in targets
+        if isinstance(known.get(ip), dict) and "agent" in known[ip] and _is_entity_ip(ip)
+    ]
     logger.info(
-        "工单重新研判完成: ticket=%s, ip数=%d, unknown=%d, 错误=%d",
-        ticket.id, len(entries), len(unknown), len(errors),
+        "工单重新研判完成: ticket=%s, ip数=%d, unknown=%d, 错误=%d, 智能体重跑=%d",
+        ticket.id, len(entries), len(unknown), len(errors), len(agent_ips),
     )
-    return {"updated": len(entries), "unknown": unknown, "pending": False}
+    return {"updated": len(entries), "unknown": unknown, "pending": False, "agent_ips": agent_ips}
 
 
 def _requery_bg_worker(ticket_id: int, ips: list[str]) -> None:
@@ -2053,13 +2081,17 @@ def _requery_bg_worker(ticket_id: int, ips: list[str]) -> None:
             return
         fresh = copy.deepcopy(locked.enrichment_data)
         by_ip = {e["ip"]: e for e in entries}
+        agent_ips: list[str] = []
         for e in _enrichment_entries(fresh):
             new = by_ip.get(e.get("ip"))
             if new is None:
                 continue
             new["roles"] = e.get("roles") or new.get("roles") or []
             if "agent" in e:
-                new["agent"] = e["agent"]
+                # 智能体研判重跑：重置 pending 后链式执行
+                new["agent"] = {"pending": True}
+                if e.get("ip") and _is_entity_ip(e["ip"]):
+                    agent_ips.append(e["ip"])
             e.clear()
             e.update(new)
         if errors:
@@ -2072,9 +2104,14 @@ def _requery_bg_worker(ticket_id: int, ips: list[str]) -> None:
         flag_modified(locked, "enrichment_data")
         session.commit()
         logger.info(
-            "工单重新研判后台回写完成: ticket=%s, ip数=%d, 错误=%d",
-            ticket_id, len(entries), len(errors),
+            "工单重新研判后台回写完成: ticket=%s, ip数=%d, 错误=%d, 智能体重跑=%d",
+            ticket_id, len(entries), len(errors), len(agent_ips),
         )
+        # 链式执行智能体重研判（同线程串行：commit 已落库，避免并发覆盖）
+        if agent_ips:
+            _run_agent_analysis_for_ips(
+                session, ticket_id, agent_ips, getattr(locked, "title", "") or ""
+            )
     except Exception:  # noqa: BLE001
         session.rollback()
         logger.exception("工单重新研判后台任务异常: ticket=%s", ticket_id)

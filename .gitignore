@@ -41,3 +41,5 @@ node_modules/
 __pycache__/
 *.pyc
 .env
+.trae/documents/工单安全分析研判智能体开发计划.md
+.trae-html-share-packages/

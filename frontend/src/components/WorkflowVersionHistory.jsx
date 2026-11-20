@@ -20,7 +20,7 @@ import { workflows as workflowsApi } from '../api/client'
 import { useWorkflowStore } from '../store/workflowStore'
 import { toast } from '../store/toastStore'
 import { confirm } from './ConfirmDialog'
-import { CompactSelect } from './ui'
+import { CompactSelect, PillTabs } from './ui'
 
 // 格式化时间
 function fmtTime(t) {
@@ -285,7 +285,7 @@ function WorkflowVersionHistory({ workflowId }) {
               版本管理
             </h2>
             {currentVersionNumber != null && (
-              <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              <span className="rounded bg-primary/20 px-1.5 py-0.5 text-xs font-medium text-primary">
                 当前 v{currentVersionNumber}
               </span>
             )}
@@ -303,31 +303,13 @@ function WorkflowVersionHistory({ workflowId }) {
       </div>
 
       {/* Tab 切换 */}
-      <div className="flex shrink-0 border-b border-border">
-        {TABS.map((t) => {
-          const active = tab === t.key
-          const Icon = t.icon
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={`flex flex-1 items-center justify-center gap-1.5 px-2 py-2 text-[11px] font-medium transition ${
-                active
-                  ? 'border-b-2 border-primary text-primary'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {t.label}
-            </button>
-          )
-        })}
+      <div className="shrink-0 border-b border-border px-3 py-2">
+        <PillTabs items={TABS} value={tab} onChange={setTab} />
       </div>
 
       {/* 错误提示 */}
       {error && (
-        <div className="shrink-0 border-b border-destructive/40 bg-destructive/20 px-3 py-1.5 text-[11px] text-destructive">
+        <div className="shrink-0 border-b border-destructive/40 bg-destructive/20 px-3 py-1.5 text-xs text-destructive">
           {error}
         </div>
       )}
@@ -335,7 +317,7 @@ function WorkflowVersionHistory({ workflowId }) {
       {/* 内容区 */}
       <div className="min-w-0 flex-1 overflow-y-auto">
         {loading && versions.length === 0 ? (
-          <div className="py-8 text-center text-[11px] text-muted-foreground">加载中…</div>
+          <div className="py-8 text-center text-xs text-muted-foreground">加载中…</div>
         ) : tab === 'history' ? (
           <HistoryTab
             versions={versions}
@@ -370,7 +352,7 @@ function HistoryTab({ versions, expandedId, setExpandedId, actingIds, onCreate, 
           <Plus className="h-3.5 w-3.5" />
           {creating ? '创建中…' : '创建第一个版本'}
         </button>
-        <p className="py-4 text-center text-[11px] text-muted-foreground">
+        <p className="py-4 text-center text-xs text-muted-foreground">
           暂无版本记录
         </p>
       </div>
@@ -404,15 +386,15 @@ function HistoryTab({ versions, expandedId, setExpandedId, actingIds, onCreate, 
             <div className="flex flex-col gap-1 px-2.5 py-2">
               {/* 第一行：版本号 + 变更说明 */}
               <div className="flex items-center gap-2">
-                <span className="shrink-0 rounded bg-primary/20 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                <span className="shrink-0 rounded bg-primary/20 px-1.5 py-0.5 text-xs font-medium text-primary">
                   v{v.version_number}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-foreground">
+                <span className="min-w-0 flex-1 truncate text-xs text-foreground">
                   {v.change_note || '（无变更说明）'}
                 </span>
               </div>
               {/* 第二行：修改人 + 修改时间 */}
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-0.5 text-[10px] text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-0.5 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
                   <Clock className="h-3 w-3" />
                   {fmtTime(v.created_at) || '-'}
@@ -428,7 +410,7 @@ function HistoryTab({ versions, expandedId, setExpandedId, actingIds, onCreate, 
                 <button
                   type="button"
                   onClick={() => setExpandedId(expanded ? null : vid)}
-                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition hover:border-primary hover:text-primary"
+                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-xs text-muted-foreground transition hover:border-primary hover:text-primary"
                 >
                   {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                   {expanded ? '收起' : '详情'}
@@ -437,7 +419,7 @@ function HistoryTab({ versions, expandedId, setExpandedId, actingIds, onCreate, 
                   type="button"
                   onClick={() => onRollback(vid, v.version_number)}
                   disabled={!!isActing}
-                  className="inline-flex items-center gap-1 rounded border border-warning/50 px-2 py-0.5 text-[10px] text-warning transition hover:border-red-600 hover:text-destructive disabled:opacity-50"
+                  className="inline-flex items-center gap-1 rounded border border-warning/50 px-2 py-0.5 text-xs text-warning transition hover:border-red-600 hover:text-destructive disabled:opacity-50"
                 >
                   <RotateCcw className="h-3 w-3" />
                   {isActing ? '回滚中…' : '回滚'}
@@ -448,7 +430,7 @@ function HistoryTab({ versions, expandedId, setExpandedId, actingIds, onCreate, 
             {/* 展开内容：快照摘要 */}
             {expanded && (
               <div className="border-t border-border p-2.5">
-                <div className="flex flex-col gap-1.5 text-[11px]">
+                <div className="flex flex-col gap-1.5 text-xs">
                   <div className="flex items-center gap-1.5">
                     <FileText className="h-3 w-3 text-muted-foreground" />
                     <span className="text-muted-foreground">名称：</span>
@@ -469,7 +451,7 @@ function HistoryTab({ versions, expandedId, setExpandedId, actingIds, onCreate, 
                     </div>
                   </div>
                   {snapshot.enabled === false && (
-                    <div className="text-[10px] text-warning">快照状态：已停用</div>
+                    <div className="text-xs text-warning">快照状态：已停用</div>
                   )}
                 </div>
               </div>
@@ -508,7 +490,7 @@ function CompareTab({ versions }) {
 
   if (versions.length === 0) {
     return (
-      <div className="py-8 text-center text-[11px] text-muted-foreground">
+      <div className="py-8 text-center text-xs text-muted-foreground">
         暂无版本可供对比
       </div>
     )
@@ -519,7 +501,7 @@ function CompareTab({ versions }) {
       {/* 版本选择 */}
       <div className="flex items-center gap-1.5">
         <div className="flex-1">
-          <label className="mb-1 block text-[10px] text-muted-foreground">基准版本 A</label>
+          <label className="mb-1 block text-xs text-muted-foreground">基准版本 A</label>
           <CompactSelect
             value={aId ?? ''}
             onChange={(e) => setAId(Number(e.target.value))}
@@ -535,7 +517,7 @@ function CompareTab({ versions }) {
         </div>
         <GitCompare className="mt-4 h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="flex-1">
-          <label className="mb-1 block text-[10px] text-muted-foreground">对比版本 B</label>
+          <label className="mb-1 block text-xs text-muted-foreground">对比版本 B</label>
           <CompactSelect
             value={bId ?? ''}
             onChange={(e) => setBId(Number(e.target.value))}
@@ -556,15 +538,15 @@ function CompareTab({ versions }) {
         <div className="grid grid-cols-3 gap-1.5 text-center">
           <div className="rounded border border-success/30 bg-success/10 px-1 py-1.5">
             <div className="font-mono text-sm text-success">{diff.added.length}</div>
-            <div className="text-[10px] text-muted-foreground">新增节点</div>
+            <div className="text-xs text-muted-foreground">新增节点</div>
           </div>
           <div className="rounded border border-destructive/30 bg-destructive/10 px-1 py-1.5">
             <div className="font-mono text-sm text-destructive">{diff.removed.length}</div>
-            <div className="text-[10px] text-muted-foreground">删除节点</div>
+            <div className="text-xs text-muted-foreground">删除节点</div>
           </div>
           <div className="rounded border border-warning/30 bg-warning/10 px-1 py-1.5">
             <div className="font-mono text-sm text-warning">{diff.modified.length}</div>
-            <div className="text-[10px] text-muted-foreground">修改节点</div>
+            <div className="text-xs text-muted-foreground">修改节点</div>
           </div>
         </div>
       )}
@@ -593,12 +575,12 @@ function CompareTab({ versions }) {
             <DiffGroup title="配置变更" color="warning" count={diff.modified.length}>
               {diff.modified.map(({ node, before, changedKeys }) => (
                 <div key={node.id} className="flex flex-col gap-0.5 py-1">
-                  <div className="text-[11px] text-warning">
+                  <div className="text-xs text-warning">
                     ~ {nodeLabel(node)}
                     <span className="ml-1 text-muted-foreground">({node.id})</span>
                   </div>
                   {changedKeys.map((k) => (
-                    <div key={k} className="flex flex-wrap items-center gap-1 pl-3 text-[10px]">
+                    <div key={k} className="flex flex-wrap items-center gap-1 pl-3 text-xs">
                       <span className="rounded bg-muted px-1 font-mono text-muted-foreground">{k}</span>
                       <span className="text-destructive line-through">{shortVal(before.data?.[k])}</span>
                       <ArrowLeftRight className="h-2.5 w-2.5 text-muted-foreground" />
@@ -630,7 +612,7 @@ function CompareTab({ versions }) {
             diff.modified.length === 0 &&
             diff.addedEdges.length === 0 &&
             diff.removedEdges.length === 0 && (
-              <div className="py-6 text-center text-[11px] text-muted-foreground">
+              <div className="py-6 text-center text-xs text-muted-foreground">
                 两个版本无差异
               </div>
             )}
@@ -650,7 +632,7 @@ function DiffGroup({ title, color, count, children }) {
   }[color] || 'text-muted-foreground'
   return (
     <div className="rounded border border-border bg-card">
-      <div className={`flex items-center justify-between border-b border-border px-2 py-1 text-[10px] font-medium ${colorCls}`}>
+      <div className={`flex items-center justify-between border-b border-border px-2 py-1 text-xs font-medium ${colorCls}`}>
         <span>{title}</span>
         <span className="font-mono">{count}</span>
       </div>
@@ -667,7 +649,7 @@ function DiffLine({ sign, color, text, mono }) {
     warning: 'text-warning',
   }[color] || 'text-foreground'
   return (
-    <div className={`flex items-center gap-1.5 py-0.5 text-[11px] ${colorCls}`}>
+    <div className={`flex items-center gap-1.5 py-0.5 text-xs ${colorCls}`}>
       <span className="w-3 shrink-0 font-mono">{sign}</span>
       <span className={`min-w-0 flex-1 truncate ${mono ? 'font-mono' : ''}`}>{text}</span>
     </div>
@@ -680,7 +662,7 @@ function AuditTab({ versionsAsc }) {
 
   if (audit.length === 0) {
     return (
-      <div className="py-8 text-center text-[11px] text-muted-foreground">
+      <div className="py-8 text-center text-xs text-muted-foreground">
         暂无审计记录
       </div>
     )
@@ -689,7 +671,7 @@ function AuditTab({ versionsAsc }) {
   return (
     <div className="flex flex-col gap-0 p-3">
       {/* 审计说明 */}
-      <div className="mb-2 rounded border border-border bg-muted p-2 text-[10px] leading-relaxed text-muted-foreground">
+      <div className="mb-2 rounded border border-border bg-muted p-2 text-xs leading-relaxed text-muted-foreground">
         审计日志基于版本历史推算：对比相邻版本快照差异得到变更摘要。每个版本对应一次操作记录。
       </div>
       {/* 时间线 */}
@@ -714,26 +696,26 @@ function AuditTab({ versionsAsc }) {
               {/* 内容卡片 */}
               <div className="min-w-0 flex-1 pb-1">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${opCls}`}>
+                  <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${opCls}`}>
                     {entry.operation}
                   </span>
-                  <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                  <span className="rounded bg-secondary px-1.5 py-0.5 text-xs font-mono text-muted-foreground">
                     v{v.version_number}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-xs text-muted-foreground">
                     {fmtTime(v.created_at) || '-'}
                   </span>
                 </div>
-                <div className="mt-0.5 text-[11px] text-foreground">
+                <div className="mt-0.5 text-xs text-foreground">
                   {entry.summary}
                 </div>
                 {v.change_note && (
-                  <div className="mt-0.5 flex items-start gap-1 text-[10px] text-muted-foreground">
+                  <div className="mt-0.5 flex items-start gap-1 text-xs text-muted-foreground">
                     <FileText className="mt-0.5 h-2.5 w-2.5 shrink-0" />
                     <span className="min-w-0 break-words">{v.change_note}</span>
                   </div>
                 )}
-                <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+                <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                   <User className="h-2.5 w-2.5" />
                   <span className="truncate">{v.created_by || '未知'}</span>
                 </div>

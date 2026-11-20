@@ -207,7 +207,7 @@ def _check_matrix_permission(db: Session, user: User, module: str, action: str) 
     if user.role_id:
         role = db.query(Role).filter(Role.id == user.role_id).first()
         if role and role.permissions:
-            return has_permission(migrate_permissions(role.permissions), module, action)
+            return has_permission(migrate_permissions(role.permissions, grant_new_actions=False), module, action)
     for default_role in DEFAULT_ROLES:
         if default_role["name"] == user.role:
             return has_permission(default_role["permissions"], module, action)

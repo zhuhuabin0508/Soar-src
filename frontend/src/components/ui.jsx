@@ -69,24 +69,138 @@ export function Card({ title, description, actions, children, className = '', bo
 }
 
 // ===== PageContainer =====
-// 统一页面外层容器：语义背景 + padding + 最小高度
+// 统一页面外层容器：与「工具」页一致的满高布局
+// - 顶部 PageHeader 固定在内容区之上（不随内容滚动）
+// - 其余内容在独立滚动区渲染，统一 p-6 内边距
 export function PageContainer({ children, className = '' }) {
-  return <div className={`page-container ${className}`}>{children}</div>
+  const items = Children.toArray(children)
+  const header = items.find((c) => c?.type === PageHeader)
+  const body = header ? items.filter((c) => c !== header) : items
+  return (
+    <div className={`flex h-full w-full flex-col overflow-hidden bg-background text-foreground ${className}`}>
+      {header}
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">{body}</div>
+    </div>
+  )
 }
 
 // ===== PageHeader =====
-// 统一页面标题栏：标题 + 描述 + 右侧操作区
-export function PageHeader({ title, description, actions, className = '' }) {
+// 统一页面标题栏：标题 + 右侧操作区
+// 视觉基线对齐「工具」页：卡片底色 + 底边分隔 + text-2xl 标题，右侧操作按钮右对齐
+export function PageHeader({ title, extra, actions, className = '' }) {
   return (
-    <div className={`mb-6 flex items-start justify-between gap-4 ${className}`}>
+    <div className={`flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-card px-6 py-4 ${className}`}>
       <div className="min-w-0">
-        <h1 className="text-[22px] font-bold tracking-tight text-foreground">{title}</h1>
-        {description && (
-          <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>
-        )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+          {extra}
+        </div>
       </div>
-      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
+  )
+}
+
+// ===== PillTabs =====
+// 全站唯一 Tab 入口：胶囊式标签页，视觉规范对齐「工具」页筛选胶囊
+// 选中：主色浅底 + 主色文字 + 主色描边；未选中：次色底 + 边框，hover 主色描边
+// items: [{ key, label, icon?, count?, disabled?, title? }]
+export function PillTabs({ items = [], value, onChange, className = '' }) {
+  return (
+    <div role="tablist" className={`flex items-center gap-2 overflow-x-auto ${className}`}>
+      {items.map((it) => {
+        const Icon = it.icon
+        const active = it.key === value
+        return (
+          <button
+            key={it.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            disabled={it.disabled}
+            title={it.title}
+            onClick={() => onChange?.(it.key)}
+            className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 ${
+              active
+                ? 'border-transparent bg-primary/15 text-primary ring-1 ring-primary/40'
+                : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
+            }`}
+          >
+            {Icon && <Icon className="h-3.5 w-3.5 shrink-0" />}
+            {it.label}
+            {it.count != null && (
+              <span
+                className={`rounded-full px-1.5 text-[10px] tabular-nums ${
+                  active ? 'bg-primary/20 text-primary' : 'bg-card text-muted-foreground'
+                }`}
+              >
+                {it.count}
+              </span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ===== SearchInput =====
+// 统一搜索输入框：与「工作室」页完全一致（h-8 / 次色底 / 左侧搜索图标 / 聚焦主色描边）
+// className 控制外层宽度（默认 w-64）；传入 onClear 时展示清空按钮
+export function SearchInput({
+  value = '',
+  onChange,
+  placeholder = '搜索',
+  className = '',
+  inputClassName = '',
+  onClear,
+  ...props
+}) {
+  const showClear = typeof onClear === 'function' && String(value || '').length > 0
+  return (
+    <div className={`relative w-64 max-w-full shrink-0 ${className}`}>
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange?.(e.target.value)}
+        placeholder={placeholder}
+        className={`h-8 w-full rounded-md border border-border bg-secondary ${
+          showClear ? 'pr-7' : 'pr-2'
+        } pl-8 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none ${inputClassName}`}
+        {...props}
+      />
+      {showClear && (
+        <button
+          type="button"
+          onClick={() => onClear()}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          aria-label="清空搜索"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ===== FilterChip =====
+// 统一筛选胶囊：与「工作室」页筛选项一致（圆角胶囊 / 主色选中态 / hover 主色描边）
+export function FilterChip({ active = false, onClick, children, className = '', ...props }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-all duration-200 ${
+        active
+          ? 'border-transparent bg-primary/15 text-primary ring-1 ring-primary/40'
+          : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
+      } ${className}`}
+      {...props}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -907,7 +1021,7 @@ export function CompactSelect({
             // 提交阶段 insertBefore 锚点失效（NotFoundError）
               <Fragment key={`${opt.group || ''}-${opt.value || '__empty'}-${i}`}>
                 {showGroup && (
-                  <div className="px-3 pb-0.5 pt-2 text-[10px] font-medium tracking-wide text-muted-foreground">{opt.group}</div>
+                  <div className="px-3 pb-0.5 pt-2 text-xs font-medium tracking-wide text-muted-foreground">{opt.group}</div>
                 )}
                 <button
                   type="button"
@@ -1320,7 +1434,7 @@ export function DatePicker({
               {/* 星期行（周一为首） */}
               <div className="grid grid-cols-7">
                 {DATE_WEEKDAYS.map((w) => (
-                  <div key={w} className="flex h-6 items-center justify-center text-[11px] text-muted-foreground">
+                  <div key={w} className="flex h-6 items-center justify-center text-xs text-muted-foreground">
                     {w}
                   </div>
                 ))}

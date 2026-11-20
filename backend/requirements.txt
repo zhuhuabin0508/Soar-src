@@ -23,6 +23,13 @@ pypdf==4.3.1
 python-docx==1.1.2
 openpyxl==3.1.5
 xlrd==2.0.1
+# 文档生成（generate_document 工具）：PPT 生成与 PDF 渲染
+python-pptx==1.0.2
+reportlab==4.2.5
+# 报告中心：Word 模板渲染（Jinja2 沙箱）与 JSONPath 字段抽取
+docxtpl==0.18.0
+jsonpath-ng==1.6.1
+croniter==3.0.3
 aiosmtplib==3.0.2
 jieba==0.42.1
 numpy==1.26.4

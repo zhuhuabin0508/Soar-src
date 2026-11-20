@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { openAdminApi } from '../../api/openApi'
 import { Modal, Drawer } from '../../components/Dialog'
-import { Badge } from '../../components/ui'
+import { Badge, DataTable } from '../../components/ui'
 import {
   Plus, Copy, RefreshCw, Trash2, Pencil, Power, KeyRound, Check,
 } from 'lucide-react'
@@ -44,7 +44,7 @@ function ConfirmDialog({ open, title, description, confirmText, danger, onConfir
   )
 }
 
-export default function AppsTab() {
+export default function AppsTab({ refreshKey = 0 }) {
   const [apps, setApps] = useState([])
   const [resources, setResources] = useState([])
   const [loading, setLoading] = useState(true)
@@ -72,7 +72,7 @@ export default function AppsTab() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, refreshKey])
 
   const resourceName = useMemo(() => {
     const m = {}
@@ -237,13 +237,82 @@ export default function AppsTab() {
     },
   }[confirmState?.kind]
 
+  // 列表列定义：数值/时间列右对齐，资源以标签展示，操作列固定图标按钮
+  const columns = [
+    {
+      key: 'app_name', header: '应用名称', width: '200px',
+      render: (app) => (
+        <div className="min-w-0">
+          <div className="truncate font-medium text-foreground" title={app.app_name}>{app.app_name}</div>
+          <div className="truncate text-xs text-muted-foreground" title={app.description}>{app.description || '-'}</div>
+        </div>
+      ),
+    },
+    {
+      key: 'access_key', header: 'Access Key', width: '230px',
+      render: (app) => (
+        <div className="flex flex-col gap-0.5">
+          <div className="flex items-center gap-1.5">
+            <span className="truncate font-mono text-xs text-primary" title={app.access_key}>{app.access_key}</span>
+            <button type="button" title="复制 Access Key" onClick={() => copyText(app.access_key)} className="shrink-0 text-muted-foreground hover:text-primary">
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          {app.expires_at && (
+            <div className={`text-xs ${new Date(app.expires_at) < new Date() ? 'text-destructive' : 'text-muted-foreground'}`}>
+              {new Date(app.expires_at) < new Date() ? '已过期 ' : '过期至 '}{fmtTime(app.expires_at)}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'status', header: '状态', width: '90px',
+      render: (app) => (
+        <Badge variant={app.status === 'active' ? 'success' : 'neutral'}>
+          {app.status === 'active' ? '启用' : '停用'}
+        </Badge>
+      ),
+    },
+    {
+      key: 'resources', header: '授权资源', width: '230px',
+      render: (app) => (
+        <div className="flex flex-wrap gap-1">
+          {(app.resource_codes || []).length === 0 ? (
+            <span className="text-xs text-destructive">未授权任何资源</span>
+          ) : (
+            app.resource_codes.map((c) => (
+              <span key={c} className="rounded-full border border-primary/40 bg-primary/5 px-2 py-0.5 text-xs text-primary" title={resourceName[c]?.description || ''}>
+                {resourceName[c]?.name || c}
+              </span>
+            ))
+          )}
+        </div>
+      ),
+    },
+    { key: 'rate_limit_per_minute', header: '限流/分', width: '90px', numeric: true },
+    { key: 'total_calls', header: '累计调用', width: '100px', numeric: true, render: (app) => app.total_calls ?? 0 },
+    {
+      key: 'last_call_at', header: '最近调用', width: '150px',
+      render: (app) => <span className="text-xs text-muted-foreground">{fmtTime(app.last_call_at)}</span>,
+    },
+    {
+      key: '__actions', header: '操作', width: '150px',
+      render: (app) => (
+        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          <button type="button" title="编辑" onClick={() => openEditor(app)} className="text-muted-foreground hover:text-primary"><Pencil className="h-4 w-4" /></button>
+          <button type="button" title={app.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(app)} className="text-muted-foreground hover:text-primary"><Power className="h-4 w-4" /></button>
+          <button type="button" title="重置密钥" onClick={() => setConfirmState({ kind: 'rotate', app })} className="text-muted-foreground hover:text-primary"><RefreshCw className="h-4 w-4" /></button>
+          <button type="button" title="删除" onClick={() => setConfirmState({ kind: 'delete', app })} className="text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
+        </div>
+      ),
+    },
+  ]
+
   return (
     <div className="flex flex-col gap-4">
       {/* 顶部操作栏：主操作唯一（新建应用为 Primary） */}
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">
-          共 {apps.length} 个接入应用；密钥采用「仅展示一次」策略，请妥善保存
-        </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <div className="flex items-center gap-2">
           <button type="button" className="btn-secondary btn-sm" onClick={load}>
             <RefreshCw className="h-3.5 w-3.5" /> 刷新
@@ -259,87 +328,23 @@ export default function AppsTab() {
       )}
 
       {/* 应用列表 */}
-      {loading ? (
-        <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">加载中...</div>
-      ) : apps.length === 0 ? (
-        <div className="flex h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border text-muted-foreground">
-          <KeyRound className="h-10 w-10" />
-          <div className="text-sm">暂无接入应用，为第三方系统签发 API Key 后即可开放数据调用</div>
-          <button type="button" className="btn-primary btn-sm" onClick={() => openEditor(null)}>
-            <Plus className="h-3.5 w-3.5" /> 新建应用
-          </button>
-        </div>
-      ) : (
-        <div className="w-full overflow-x-auto rounded-lg border border-border">
-          <table className="w-full min-w-[1080px] table-fixed border-collapse text-sm">
-            <thead className="bg-card text-muted-foreground">
-              <tr>
-                <th className="w-40 px-4 py-3 text-left font-medium">应用名称</th>
-                <th className="w-64 px-4 py-3 text-left font-medium">Access Key</th>
-                <th className="w-20 px-4 py-3 text-left font-medium">状态</th>
-                <th className="w-72 px-4 py-3 text-left font-medium">授权资源（开放的数据）</th>
-                <th className="w-24 px-4 py-3 text-right font-medium">限流/分</th>
-                <th className="w-24 px-4 py-3 text-right font-medium">累计调用</th>
-                <th className="w-36 px-4 py-3 text-right font-medium">最近调用</th>
-                <th className="px-4 py-3 text-left font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apps.map((app, idx) => (
-                <tr key={app.id} className={`border-t border-border ${idx % 2 === 0 ? 'bg-muted' : 'bg-card'}`}>
-                  <td className="px-4 py-3">
-                    <div className="truncate font-medium text-foreground" title={app.app_name}>{app.app_name}</div>
-                    <div className="truncate text-xs text-muted-foreground" title={app.description}>{app.description || '-'}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate font-mono text-xs text-primary" title={app.access_key}>{app.access_key}</span>
-                      <button type="button" title="复制" onClick={() => copyText(app.access_key)} className="text-muted-foreground hover:text-primary">
-                        <Copy className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    {app.expires_at && (
-                      <div className={`text-[11px] ${new Date(app.expires_at) < new Date() ? 'text-destructive' : 'text-muted-foreground'}`}>
-                        {new Date(app.expires_at) < new Date() ? '已过期 ' : '过期至 '}{fmtTime(app.expires_at)}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant={app.status === 'active' ? 'success' : 'neutral'}>
-                      {app.status === 'active' ? '启用' : '停用'}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {(app.resource_codes || []).length === 0 ? (
-                        <span className="text-xs text-destructive">未授权任何资源</span>
-                      ) : (
-                        app.resource_codes.map((c) => (
-                          <span key={c} className="rounded-full border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] text-primary" title={resourceName[c]?.description || ''}>
-                            {resourceName[c]?.name || c}
-                          </span>
-                        ))
-                      )}
-                    </div>
-                  </td>
-                  {/* 数值列右对齐：个十百千精准竖直对齐 */}
-                  <td className="px-4 py-3 text-right tabular-nums text-foreground">{app.rate_limit_per_minute}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-foreground">{app.total_calls ?? 0}</td>
-                  <td className="px-4 py-3 text-right text-xs tabular-nums text-muted-foreground">{fmtTime(app.last_call_at)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <button type="button" title="编辑" onClick={() => openEditor(app)} className="text-muted-foreground hover:text-primary"><Pencil className="h-4 w-4" /></button>
-                      <button type="button" title={app.status === 'active' ? '停用' : '启用'} onClick={() => toggleStatus(app)} className="text-muted-foreground hover:text-primary"><Power className="h-4 w-4" /></button>
-                      <button type="button" title="重置密钥" onClick={() => setConfirmState({ kind: 'rotate', app })} className="text-muted-foreground hover:text-primary"><RefreshCw className="h-4 w-4" /></button>
-                      <button type="button" title="删除" onClick={() => setConfirmState({ kind: 'delete', app })} className="text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <div className="overflow-hidden rounded-lg border border-border">
+        <DataTable
+          className="table-stagger"
+          columns={columns}
+          data={apps}
+          loading={loading}
+          rowKey="id"
+          emptyIcon={KeyRound}
+          emptyText="暂无接入应用"
+          emptyDescription="为第三方系统签发 API Key 后即可开放数据调用"
+          emptyAction={
+            <button type="button" className="btn-primary btn-sm" onClick={() => openEditor(null)}>
+              <Plus className="h-3.5 w-3.5" /> 新建应用
+            </button>
+          }
+        />
+      </div>
 
       {/* 编辑/新建：右侧中抽屉（保留列表上下文；遮罩/ESC 不静默丢弃） */}
       <Drawer
@@ -357,7 +362,7 @@ export default function AppsTab() {
         }
       >
         {editor && (
-          <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-4">
             <label className="block">
               <span className="mb-1 block text-xs text-muted-foreground">应用名称 *</span>
               <input
@@ -508,7 +513,7 @@ export default function AppsTab() {
                 <code className="text-primary"> GET /api/v1/open</code>）。
               </div>
             </div>
-            <div className="mt-5 flex justify-end">
+            <div className="mt-4 flex justify-end">
               <button type="button" onClick={() => setSecretModal(null)} className="btn-primary btn-sm">我已保存，关闭</button>
             </div>
           </div>

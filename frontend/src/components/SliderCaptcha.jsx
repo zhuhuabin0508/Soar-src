@@ -185,7 +185,7 @@ export default function SliderCaptcha({
 
       {/* 预校验失败提示 */}
       {tryError && !verified && (
-        <div className="mt-1.5 flex items-center gap-1 text-[11px] text-destructive">
+        <div className="mt-1.5 flex items-center gap-1 text-xs text-destructive">
           <AlertCircle className="h-3 w-3 shrink-0" />
           <span>{tryError}</span>
         </div>
@@ -196,7 +196,7 @@ export default function SliderCaptcha({
         type="button"
         onClick={onRefresh}
         disabled={disabled || checking}
-        className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground transition hover:text-primary disabled:opacity-50"
+        className="mt-1.5 flex items-center gap-1 text-xs text-muted-foreground transition hover:text-primary disabled:opacity-50"
       >
         <RefreshCw className="h-3 w-3" />
         <span>看不清？点击刷新验证码</span>

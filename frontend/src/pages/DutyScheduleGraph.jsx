@@ -7,7 +7,7 @@ import {
   Sun, Moon, X, Info, RefreshCw, ArrowLeft,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
-import { Button, PageContainer } from '../components/ui'
+import { Button, PageContainer, PageHeader } from '../components/ui'
 import { inputBaseCls } from '../components/property/FormControls'
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
@@ -201,53 +201,52 @@ export default function DutyScheduleGraph() {
   return (
     <PageContainer>
       {/* 标题 + 控制区 */}
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h1 className="text-[22px] font-bold tracking-tight text-foreground whitespace-nowrap">值班表（图形化）</h1>
-            <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${rosterType === 'RESERVE' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}`}>
-              {rosterType === 'RESERVE' ? <ShieldCheck className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
-              {rosterType === 'RESERVE' ? '重保值班' : '日常运营'}
-            </span>
-          </div>
-          <p className="mt-1.5 text-sm text-muted-foreground">从左侧拖拽人员到日历中的白班/晚班区域即可排班；与「值班表」页共用同一份排班数据</p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/duty/schedule')} title="返回值班表">
-            <ArrowLeft className="mr-1 h-3.5 w-3.5" />返回值班表
-          </Button>
-          <div className="flex items-center rounded-md border border-border p-0.5">
-            {ROSTER_TYPES.map((t) => {
-              const Icon = t.icon
-              const active = rosterType === t.value
-              return (
-                <button
-                  key={t.value}
-                  type="button"
-                  onClick={() => setRosterType(t.value)}
-                  className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs whitespace-nowrap transition-colors ${active ? `font-medium ${t.activeCls}` : 'text-muted-foreground hover:text-foreground'}`}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {t.label}
-                </button>
-              )
-            })}
-          </div>
-          <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
-            <button type="button" onClick={() => shiftMonth(-1)} className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground" title="上一月">
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="px-1 text-sm font-medium tabular-nums whitespace-nowrap">{cursor.year} 年 {MONTH_CN[cursor.month - 1]}</span>
-            <button type="button" onClick={() => shiftMonth(1)} className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground" title="下一月">
-              <ChevronRight className="h-4 w-4" />
-            </button>
-            <button type="button" onClick={goToday} className="rounded px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground">本月</button>
-          </div>
-          <Button variant="ghost" size="sm" onClick={() => loadMonth()} title="刷新">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="值班表（图形化）"
+        extra={
+          <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${rosterType === 'RESERVE' ? 'bg-red-500/10 text-red-500' : 'bg-blue-500/10 text-blue-500'}`}>
+            {rosterType === 'RESERVE' ? <ShieldCheck className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
+            {rosterType === 'RESERVE' ? '重保值班' : '日常运营'}
+          </span>
+        }
+        actions={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => navigate('/duty/schedule')} title="返回值班表">
+              <ArrowLeft className="mr-1 h-3.5 w-3.5" />返回值班表
+            </Button>
+            <div className="flex items-center rounded-md border border-border p-0.5">
+              {ROSTER_TYPES.map((t) => {
+                const Icon = t.icon
+                const active = rosterType === t.value
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setRosterType(t.value)}
+                    className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs whitespace-nowrap transition-colors ${active ? `font-medium ${t.activeCls}` : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {t.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex items-center gap-1 rounded-md border border-border p-0.5">
+              <button type="button" onClick={() => shiftMonth(-1)} className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground" title="上一月">
+                <ChevronLeft className="h-4 w-4" />
+              </button>
+              <span className="px-1 text-sm font-medium tabular-nums whitespace-nowrap">{cursor.year} 年 {MONTH_CN[cursor.month - 1]}</span>
+              <button type="button" onClick={() => shiftMonth(1)} className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground" title="下一月">
+                <ChevronRight className="h-4 w-4" />
+              </button>
+              <button type="button" onClick={goToday} className="rounded px-2 py-1 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground">本月</button>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => loadMonth()} title="刷新">
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+          </>
+        }
+      />
 
       {/* 操作提示 */}
       <div className="mb-3 flex items-start gap-2 rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">

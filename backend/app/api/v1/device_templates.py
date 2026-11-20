@@ -20,7 +20,7 @@ from app.core.device_template_library import (
 )
 from app.core.security import validate_outbound_url
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user, require_permission, require_role
 from app.models.audit_log import AuditLog
 from app.models.device import Device
 from app.models.device_template import DeviceTemplate, DeviceTemplateAction
@@ -231,7 +231,7 @@ def _audit(db: Session, user: User, request: Request, action: str, template_id, 
 
 # ============ 模板条目 CRUD ============
 
-@router.get("", dependencies=[Depends(get_current_user)])
+@router.get("", dependencies=[Depends(require_permission("device", "view"))])
 def list_templates(
     search: str = Query("", description="按名称/厂商/描述/版本模糊搜索"),
     type: str = Query("", description="设备类型筛选"),
@@ -283,7 +283,7 @@ def list_templates(
     }
 
 
-@router.get("/{template_id}", dependencies=[Depends(get_current_user)])
+@router.get("/{template_id}", dependencies=[Depends(require_permission("device", "view"))])
 def get_template(template_id: int, db: Session = Depends(get_db)) -> dict:
     """模板详情（含全部固化动作）。"""
     template = _get_template(db, template_id)
@@ -492,7 +492,7 @@ def _apply_action_body(action: DeviceTemplateAction, body: TemplateActionBody) -
     action.example_response = body.example_response
 
 
-@router.get("/{template_id}/actions", dependencies=[Depends(get_current_user)])
+@router.get("/{template_id}/actions", dependencies=[Depends(require_permission("device", "view"))])
 def list_template_actions(template_id: int, db: Session = Depends(get_db)) -> list[dict]:
     """列出模板下全部固化动作。"""
     _get_template(db, template_id)
@@ -577,7 +577,7 @@ def delete_template_action(
 
 # ============ 操作日志 ============
 
-@router.get("/{template_id}/logs", dependencies=[Depends(get_current_user)])
+@router.get("/{template_id}/logs", dependencies=[Depends(require_permission("device", "view"))])
 def list_template_logs(
     template_id: int,
     limit: int = Query(30, ge=1, le=200),

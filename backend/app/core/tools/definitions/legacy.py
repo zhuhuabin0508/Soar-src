@@ -52,6 +52,12 @@ REMOVED_BUILTIN_TOOLS: set[str] = {
     #      （如 get_threat_互联网_知道创宇ip_analysis），工单安全上下文
     #      （ticket_enrichment）与 SOC 智能体均不再允许绑定 mock 数据源 ----
     "get_threat_intel",
+    # ---- 重复的文件读取入口（2026-11 按用户要求退役，定义已从 builtin.py 移除）----
+    # 三者都是 read_uploaded_file 的薄封装，只多做一次 file_type 校验，
+    # 返回字段是 read_document 的子集；保留会让模型在 4 个近似描述间选错
+    "read_xlsx",
+    "read_docx",
+    "read_pdf",
 }
 
 LEGACY_DEPRECATED_TOOL_NAMES: set[str] = {
