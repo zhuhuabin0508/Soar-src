@@ -991,6 +991,9 @@ def run_lightweight_migrations(engine) -> None:
                 "tags": "JSON",
                 # 工具来源：builtin | framework | security | custom
                 "tool_source": "VARCHAR(32)",
+                # 生命周期状态：draft / active / disabled / deprecated
+                # （工具目录同步与 Hermes 工具注册表按该列过滤，缺失会导致工具查询报错）
+                "status": "VARCHAR(32) NOT NULL DEFAULT 'active'",
             },
         )
         # llm_configs 表新增 model_type 列（chat / embedding），区分对话模型与向量化模型
