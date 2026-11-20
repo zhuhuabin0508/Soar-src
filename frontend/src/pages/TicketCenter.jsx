@@ -815,17 +815,22 @@ export default function TicketCenter() {
         if (!active || !r.sla_text) {
           return <span className="text-xs text-muted-foreground" title="按优先级 SLA 目标（响应/解决时限）计算，未配置目标或已完结">--</span>
         }
-        // 暂停中 SLA 冻结：展示暂停时刻的剩余时间，避免误判为仍在倒计时
+        // 超时状态优先于暂停冻结：暂停只停止 SLA 继续累计，不清除暂停前已发生的超时，
+        // 因此已超时工单暂停后仍需保持红色「超时」标识（冻结信息放在 title 中说明）。
+        if (r.sla_overdue) {
+          return <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-1 text-xs font-medium text-red-500"
+            title={r.sla_frozen
+              ? '暂停前已超时；暂停期间 SLA 计时已冻结，不再继续累计'
+              : 'SLA 已超时（按优先级目标：响应=发起→首次提交，解决=创建→关闭）'}>
+            <AlertTriangle className="h-3 w-3" />{r.sla_text}
+          </span>
+        }
+        // 暂停中且未超时：展示暂停时刻的剩余时间，避免误判为仍在倒计时
         if (r.sla_frozen) {
           return <span className="whitespace-nowrap rounded bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-600 dark:text-amber-400"
             title="工单暂停中，SLA 计时已冻结">{r.sla_text}</span>
         }
-        return r.sla_overdue ? (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-1 text-xs font-medium text-red-500"
-            title="SLA 已超时（按优先级目标：响应=发起→首次提交，解决=创建→关闭）">
-            <AlertTriangle className="h-3 w-3" />{r.sla_text}
-          </span>
-        ) : (
+        return (
           <span className="whitespace-nowrap tabular-nums text-xs text-muted-foreground"
             title="SLA 剩余时间（未响应按响应目标，已响应按解决目标）">{r.sla_text}</span>
         )
