@@ -120,6 +120,9 @@ export default function TicketCenter() {
   // 已超时筛选（SLA 目标已到期且未处理），与状态筛选互斥切换、可与其他筛选组合
   const [timeoutOnly, setTimeoutOnly] = useState(() => searchParams.get('timeout') === '1')
   const [priority, setPriority] = useState(() => searchParams.get('priority') || '')
+  // 发起时间范围（datetime-local 值 YYYY-MM-DDTHH:mm；空 = 不限，止时间不含边界）
+  const [startTime, setStartTime] = useState(() => searchParams.get('start_time') || '')
+  const [endTime, setEndTime] = useState(() => searchParams.get('end_time') || '')
   // 筛选：流程模板（与发起弹窗的 flowId/flows 状态无关，独立维护）
   const [filterFlowId, setFilterFlowId] = useState(() => searchParams.get('flow') || '')
   const [filterFlows, setFilterFlows] = useState([])
@@ -176,6 +179,8 @@ export default function TicketCenter() {
       status, priority, q: searchKw, page, size,
       timeout_only: timeoutOnly || undefined,
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
+      start_time: startTime || undefined,
+      end_time: endTime || undefined,
     })
       .then((res) => {
         if (listReqSeq.current !== seq) return
@@ -187,7 +192,7 @@ export default function TicketCenter() {
         toast.error(e.message || '加载工单列表失败')
       })
       .finally(() => { if (listReqSeq.current === seq) setLoading(false) })
-  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly, startTime, endTime])
 
   useEffect(() => { load() }, [load])
 
@@ -205,14 +210,16 @@ export default function TicketCenter() {
     if (filterFlowId) p.flow = filterFlowId
     if (searchKw) p.q = searchKw
     if (timeoutOnly) p.timeout = '1'
+    if (startTime) p.start_time = startTime
+    if (endTime) p.end_time = endTime
     setSearchParams(p, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly])
+  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly, startTime, endTime])
 
   // 视图/筛选/翻页变化时清空多选，避免批量操作误伤不在当前页的工单
   useEffect(() => {
     setSelectedIds([])
-  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly, startTime, endTime])
 
   // 告警一键发起：携带 state.alertPrefill 自动打开发起弹窗并预填
   useEffect(() => {
@@ -739,6 +746,8 @@ export default function TicketCenter() {
       status, priority, q: searchKw,
       timeout_only: timeoutOnly || undefined,
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
+      start_time: startTime || undefined,
+      end_time: endTime || undefined,
     })
       .then(() => toast.success('工单导出已开始下载'))
       .catch((e) => toast.error(e.message || '导出失败'))
@@ -757,9 +766,10 @@ export default function TicketCenter() {
   }, [list])
 
   // 是否存在生效的筛选条件（用于区分空态文案与「清除筛选」引导）
-  const hasActiveFilters = !!(status || priority || searchKw || timeoutOnly)
+  const hasActiveFilters = !!(status || priority || searchKw || timeoutOnly || startTime || endTime)
   const clearFilters = () => {
-    setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setTimeoutOnly(false); setPage(1)
+    setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setTimeoutOnly(false)
+    setStartTime(''); setEndTime(''); setPage(1)
   }
 
   // 右侧相似工单面板：有结果且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
@@ -973,6 +983,14 @@ export default function TicketCenter() {
             <option value="critical">紧急</option>
           </CompactSelect>
         </div>
+        {/* 发起时间范围：起含止不含，与其他筛选可组合 */}
+        <DatePicker type="datetime" placeholder="发起时间起" title="发起时间起（含）"
+          value={startTime}
+          onChange={(e) => { setStartTime(e.target.value); setPage(1) }} />
+        <span className="text-xs text-muted-foreground">至</span>
+        <DatePicker type="datetime" placeholder="发起时间止" title="发起时间止（不含）"
+          value={endTime}
+          onChange={(e) => { setEndTime(e.target.value); setPage(1) }} />
         <div className="relative min-w-52 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input

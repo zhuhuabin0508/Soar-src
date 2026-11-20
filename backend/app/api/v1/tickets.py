@@ -90,7 +90,7 @@ from app.core.ticket_flow import (
 )
 from datetime import datetime, timedelta
 
-from app.core.timezone import beijing_now
+from app.core.timezone import BEIJING_TZ, beijing_now
 from app.database import get_db
 from app.dependencies import (
     get_current_user, has_permission_for_user, is_admin, require_permission,
@@ -475,6 +475,19 @@ def _sla_overdue_conditions(db: Session, config: dict, now) -> list:
     ]
 
 
+def _parse_time_param(raw: str | None) -> datetime | None:
+    """ISO 时间参数 → 北京时间 naive datetime（与库内存储口径一致）；非法值按未传处理。"""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return dt
+
+
 def _apply_ticket_filters(
     db: Session,
     current_user: User,
@@ -485,8 +498,10 @@ def _apply_ticket_filters(
     archived: str,
     q: str | None,
     timeout_only: bool = False,
+    start_time: str | None = None,
+    end_time: str | None = None,
 ):
-    """列表/导出共用的筛选逻辑：视图 + 归档 + 状态/流程/优先级/关键词。"""
+    """列表/导出共用的筛选逻辑：视图 + 归档 + 状态/流程/优先级/关键词 + 发起时间范围。"""
     query = db.query(Ticket)
 
     if view == "my_pending":
@@ -548,6 +563,13 @@ def _apply_ticket_filters(
     if timeout_only:
         # 已超时：SLA 目标已到期且工单仍未被处理（处理中/暂停中）
         query = query.filter(*_sla_overdue_conditions(db, get_sla_config(db), beijing_now()))
+    # 发起时间范围：起含止不含（datetime-local 分钟精度，止时间不含该分钟整点）
+    st = _parse_time_param(start_time)
+    if st is not None:
+        query = query.filter(Ticket.created_at >= st)
+    et = _parse_time_param(end_time)
+    if et is not None:
+        query = query.filter(Ticket.created_at < et)
     return query
 
 
@@ -1335,12 +1357,14 @@ def list_tickets(
     archived: str = Query(default="exclude", pattern="^(exclude|only|include)$"),
     q: str | None = Query(default=None, max_length=100),
     timeout_only: bool = Query(default=False),
+    start_time: str | None = Query(default=None, description="发起时间起（ISO，含）"),
+    end_time: str | None = Query(default=None, description="发起时间止（ISO，不含）"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """工单列表：待我处理 / 我发起 / 我处理过 / 全部 + 状态/流程/优先级/关键词筛选。
+    """工单列表：待我处理 / 我发起 / 我处理过 / 全部 + 状态/流程/优先级/关键词/发起时间范围筛选。
 
     ``archived``：exclude=不含归档（默认）/ only=仅归档 / include=全部。
     每项附 ``sla_text``/``sla_overdue``（处理中工单的 SLA 倒计时，超时标记）
@@ -1348,7 +1372,7 @@ def list_tickets(
     """
     query = _apply_ticket_filters(
         db, current_user, view, status, flow_id, priority, archived, q,
-        timeout_only=timeout_only,
+        timeout_only=timeout_only, start_time=start_time, end_time=end_time,
     )
     if query is None:  # my_pending 且不在任何分组
         return {"items": [], "total": 0, "page": page, "size": size, "pages": 0}
@@ -2719,6 +2743,8 @@ def export_tickets(
     archived: str = Query(default="exclude", pattern="^(exclude|only|include)$"),
     q: str | None = Query(default=None, max_length=100),
     timeout_only: bool = Query(default=False),
+    start_time: str | None = Query(default=None, description="发起时间起（ISO，含）"),
+    end_time: str | None = Query(default=None, description="发起时间止（ISO，不含）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket", "export")),
 ) -> Response:
@@ -2729,7 +2755,7 @@ def export_tickets(
     """
     query = _apply_ticket_filters(
         db, current_user, view, status, flow_id, priority, archived, q,
-        timeout_only=timeout_only,
+        timeout_only=timeout_only, start_time=start_time, end_time=end_time,
     )
     # 筛选结果为 None（view=my_pending 且用户不属于任何分组）时导出空表，
     # 严禁回退为全量导出（越权泄露全部工单）
