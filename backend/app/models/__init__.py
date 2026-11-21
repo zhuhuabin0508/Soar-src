@@ -62,6 +62,7 @@ from app.models.log_receiver import (
 )
 from app.models.qingteng_host import QingtengHostAsset
 from app.models.qingteng_component import QingtengComponentAsset
+from app.models.qingteng_asset_item import QingtengAssetItem
 from app.models.ip_library import (
     IpLibraryImportBatch,
     IpLibCloudCn,
@@ -152,6 +153,7 @@ __all__ = [
     "GovCloudElasticIP",
     "QingtengHostAsset",
     "QingtengComponentAsset",
+    "QingtengAssetItem",
     "IpLibraryImportBatch",
     "IpLibCloudCn",
     "IpLibGeoCn",

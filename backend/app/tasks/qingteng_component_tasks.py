@@ -1,12 +1,10 @@
-"""青藤组件同步 Celery 任务。
+"""青藤资产同步 Celery 任务：组件清单 + 资产明细模块。
 
-由 API ``POST /govcloud/qingteng/component-sync`` 派发：
-- API 先按设备创建 pending 批次，再调用本任务；
-- 任务按设备逐个执行，单设备失败不影响其它设备；
-- 本期不注册 beat，后续可直接在 ``celery_app.beat_schedule`` 挂定时。
+- 组件：pkg / app / dbinfo / jar_pkg / webframe
+- 资产明细：account / accountgroup / webapp / website（后续可扩进程/端口等）
 
-手动补跑示例：
-    sync_qingteng_components.delay([7, 10], user_id=1, mode="full")
+由 API 派发，API 先按设备创建 pending 批次，再调用本任务；
+任务按设备逐个执行，单设备失败不影响其它设备。
 """
 from __future__ import annotations
 
@@ -14,6 +12,7 @@ import logging
 
 from app.core.celery_app import celery_app
 from app.core.qingteng_component_sync import sync_device_components
+from app.core.qingteng_module_sync import sync_device_modules
 from app.database import SessionLocal
 from app.models.device import Device
 from app.models.govcloud_asset import GovCloudImportBatch
@@ -21,12 +20,12 @@ from app.models.govcloud_asset import GovCloudImportBatch
 logger = logging.getLogger(__name__)
 
 
-def _pending_batch(db, device_id: int):
+def _pending_batch(db, device_id: int, prefix: str = "qingteng_component"):
     """取设备最近一个待执行批次（API 派发前已创建）。"""
     return (
         db.query(GovCloudImportBatch)
         .filter(
-            GovCloudImportBatch.resource_type == f"qingteng_component:{device_id}",
+            GovCloudImportBatch.resource_type == f"{prefix}:{device_id}",
             GovCloudImportBatch.status.in_(("pending", "running")),
         )
         .order_by(GovCloudImportBatch.id.desc())
@@ -124,6 +123,73 @@ def sync_qingteng_components(
 
     logger.info(
         "青藤组件同步任务完成 results=%s",
+        [(r.get("device_id"), r.get("status")) for r in results],
+    )
+    return {"results": results}
+
+
+@celery_app.task(name="sync_qingteng_modules", soft_time_limit=3600, time_limit=3900)
+def sync_qingteng_modules(
+    device_ids: list[int],
+    user_id: int = 0,
+    mode: str = "full",
+    modules: list[str] | None = None,
+) -> dict:
+    """按设备同步青藤资产明细模块（账号/用户组/Web 应用/Web 站点）。"""
+    results: list[dict] = []
+    db = SessionLocal()
+    try:
+        devices = (
+            db.query(Device)
+            .filter(
+                Device.id.in_(device_ids or []),
+                Device.auth_type == "qingteng",
+                Device.enabled.is_(True),
+            )
+            .order_by(Device.id)
+            .all()
+        )
+        if not devices:
+            logger.warning("青藤资产同步任务未找到可用设备: %s", device_ids)
+            return {"results": []}
+
+        for device in devices:
+            batch = _pending_batch(db, device.id, "qingteng_asset")
+            if batch is None:
+                results.append({
+                    "device_id": device.id,
+                    "device_name": device.name,
+                    "status": "skipped",
+                    "error": "没有待执行的同步批次",
+                })
+                continue
+            try:
+                results.append(
+                    sync_device_modules(
+                        db,
+                        device,
+                        batch.id,
+                        user_id=user_id,
+                        mode=mode,
+                        modules=modules,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "青藤资产同步失败 device=%s(%d) err=%s", device.name, device.id, exc,
+                )
+                _mark_batch_failed(db, batch.id, str(exc))
+                results.append({
+                    "device_id": device.id,
+                    "device_name": device.name,
+                    "status": "failed",
+                    "error": str(exc),
+                })
+    finally:
+        db.close()
+
+    logger.info(
+        "青藤资产同步任务完成 results=%s",
         [(r.get("device_id"), r.get("status")) for r in results],
     )
     return {"results": results}

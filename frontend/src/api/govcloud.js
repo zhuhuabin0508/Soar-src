@@ -17,11 +17,12 @@ export const govCloudApi = {
   },
   get: (resourceType, id) => request(`/govcloud/assets/${encodeURIComponent(resourceType)}/${id}`),
   consistency: (resource_type) => request(`/govcloud/consistency?resource_type=${encodeURIComponent(resource_type)}`),
-  // 导出 CSV：直接触发浏览器下载（keyword 与列表搜索口径一致，name 用于文件名）
-  exportCsv: async (resourceType, keyword = '', name = '') => {
+  // 导出 CSV：直接触发浏览器下载（keyword/module 与列表搜索口径一致，name 用于文件名）
+  exportCsv: async (resourceType, keyword = '', name = '', module = '') => {
     const qs = new URLSearchParams()
     qs.set('resource_type', resourceType)
     if (keyword) qs.set('keyword', keyword)
+    if (module) qs.set('module', module)
     const resp = await fetch(`/api/v1/govcloud/export?${qs.toString()}`, { headers: { ...authHeader() } })
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`
@@ -68,6 +69,46 @@ export const govCloudApi = {
     if (batchId) qs.set('batch_id', String(batchId))
     if (deviceId) qs.set('device_id', String(deviceId))
     return request(`/govcloud/qingteng/component-sync/status?${qs.toString()}`)
+  },
+  // 青藤资产明细（账号/用户组/Web应用/Web站点）异步同步
+  syncQingtengModules: ({ deviceIds = [], mode = 'full', modules = [] } = {}) => request(
+    '/govcloud/qingteng/module-sync',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        device_ids: deviceIds,
+        mode: mode === 'incremental' ? 'incremental' : 'full',
+        modules,
+      }),
+    },
+  ),
+  moduleSyncStatus: ({ batchId, deviceId } = {}) => {
+    const qs = new URLSearchParams()
+    if (batchId) qs.set('batch_id', String(batchId))
+    if (deviceId) qs.set('device_id', String(deviceId))
+    return request(`/govcloud/qingteng/module-sync/status?${qs.toString()}`)
+  },
+  // 实时查询（不落库）：模块列表 + 按条件查询
+  realtimeModules: (group = '') => {
+    const qs = new URLSearchParams()
+    if (group) qs.set('group', group)
+    return request(`/govcloud/qingteng/realtime-modules?${qs.toString()}`)
+  },
+  realtimeQuery: ({
+    deviceId, module, keyword = '', agentId = '', ip = '', hostname = '',
+    port = '', osType = '', limit = 50,
+  }) => {
+    const qs = new URLSearchParams()
+    qs.set('device_id', String(deviceId))
+    qs.set('module', module)
+    if (keyword) qs.set('keyword', keyword)
+    if (agentId) qs.set('agent_id', agentId)
+    if (ip) qs.set('ip', ip)
+    if (hostname) qs.set('hostname', hostname)
+    if (port) qs.set('port', String(port))
+    if (osType) qs.set('os_type', osType)
+    qs.set('limit', String(limit))
+    return request(`/govcloud/qingteng/realtime-query?${qs.toString()}`)
   },
   // CVE 影响面：按 CVE 实时查询青藤命中的主机与命中证据
   cveHosts: ({ deviceId, cve, refresh = false }) => {

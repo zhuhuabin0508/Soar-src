@@ -236,20 +236,17 @@ def _row_to_values(
     }
 
 
-def _iter_source_rows(
+def iter_paged_rows(
     client: httpx.Client,
     base_url: str,
     comid: str,
     jwt: str,
     signkey: str,
-    source_type: str,
-    os_type: str,
+    path: str,
+    limit: int,
     stats: dict[str, Any],
 ) -> Iterable[dict]:
-    """分页拉取单个来源 + OS 的清单（生成器，避免整体入内存）。"""
-    spec = COMPONENT_SYNC_SPECS[source_type]
-    path = spec["path"].format(os=os_type)
-    limit = MAX_ROWS_PER_SOURCE.get(source_type, 300_000)
+    """通用分页拉取（生成器）：去重、触顶标记、接口忽略分页时提前退出。"""
     seen: set[str] = set()
     emitted = 0
     page = 0
@@ -281,8 +278,7 @@ def _iter_source_rows(
             if emitted >= limit:
                 stats["truncated"] = True
                 logger.warning(
-                    "青藤组件同步触顶 source=%s os=%s limit=%d，保留旧数据",
-                    source_type, os_type, limit,
+                    "青藤资产同步触顶 path=%s limit=%d，保留旧数据", path, limit,
                 )
                 return
 
@@ -292,6 +288,25 @@ def _iter_source_rows(
         page += 1
         if total and emitted >= total:
             break
+
+
+def _iter_source_rows(
+    client: httpx.Client,
+    base_url: str,
+    comid: str,
+    jwt: str,
+    signkey: str,
+    source_type: str,
+    os_type: str,
+    stats: dict[str, Any],
+) -> Iterable[dict]:
+    """分页拉取单个来源 + OS 的组件清单。"""
+    spec = COMPONENT_SYNC_SPECS[source_type]
+    path = spec["path"].format(os=os_type)
+    limit = MAX_ROWS_PER_SOURCE.get(source_type, 300_000)
+    yield from iter_paged_rows(
+        client, base_url, comid, jwt, signkey, path, limit, stats,
+    )
 
 
 def _flush_values(db: Session, values: list[dict], stats: dict[str, Any]) -> None:

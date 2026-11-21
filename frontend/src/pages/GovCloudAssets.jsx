@@ -26,6 +26,7 @@ const SOURCE_ICONS = {
   intranet_mapping: Network,
   qingteng_host: Server,
   qingteng_component: Package,
+  qingteng_asset: Boxes,
   jiaotu_yunsuo: Shield,
   tianqing_endpoint: Monitor,
 }
@@ -38,7 +39,11 @@ function fmtTime(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-const HIDE_COLS = new Set(['extra_excel', 'batch_id'])
+const HIDE_COLS = new Set([
+  'extra_excel', 'batch_id',
+  // 青藤内部字段：归一化值与内部主键不展示，避免表格过宽
+  'source_id', 'qingteng_device_id', 'name_norm', 'version_norm',
+])
 
 function cellText(v) {
   if (v === '' || v == null) return '—'
@@ -455,6 +460,184 @@ function CveImpactModal({ open, deviceId, deviceName, onClose }) {
   )
 }
 
+// 实时查询弹窗：调用青藤接口按条件查询，结果不落库
+function RealtimeQueryModal({ open, deviceId, deviceName, groupCode, initialModule, onClose }) {
+  const [modules, setModules] = useState([])
+  const [module, setModule] = useState('')
+  const [form, setForm] = useState({
+    keyword: '', agentId: '', ip: '', hostname: '', port: '', osType: '',
+  })
+  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setResult(null)
+    setError('')
+    setLoading(false)
+    govCloudApi.realtimeModules(groupCode)
+      .then((res) => {
+        const list = res?.modules || []
+        setModules(list)
+        const preferred = list.find((m) => m.value === initialModule) || list[0]
+        setModule(preferred?.value || '')
+      })
+      .catch((e) => setError(e.message || '加载实时查询模块失败'))
+  }, [open, groupCode, initialModule])
+
+  const setField = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }))
+
+  async function submit(e) {
+    e.preventDefault()
+    if (!module) return
+    const hasFilter = ['keyword', 'agentId', 'ip', 'hostname', 'port']
+      .some((k) => String(form[k] || '').trim())
+    if (!hasFilter) {
+      setError('至少填写一个查询条件：关键词 / Agent ID / IP / 主机名 / 端口')
+      return
+    }
+    setLoading(true)
+    setError('')
+    setResult(null)
+    try {
+      const res = await govCloudApi.realtimeQuery({
+        deviceId,
+        module,
+        keyword: form.keyword.trim(),
+        agentId: form.agentId.trim(),
+        ip: form.ip.trim(),
+        hostname: form.hostname.trim(),
+        port: form.port.trim(),
+        osType: form.osType,
+        limit: 50,
+      })
+      setResult(res)
+    } catch (err) {
+      setError(err.message || '实时查询失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const columns = result?.columns || []
+  const rows = result?.rows || []
+
+  return (
+    <Modal open={open} size="xl" title={`实时查询 · ${deviceName || ''}`} onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
+          实时调用青藤接口，结果不落库；需要入库请在卡片上使用「同步」。
+        </div>
+
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">模块</div>
+              <select className={inputCls} value={module} onChange={(e) => setModule(e.target.value)}>
+                {modules.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">关键词</div>
+              <input className={inputCls} value={form.keyword} onChange={setField('keyword')} placeholder="名称 / 版本 / 路径" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">Agent ID</div>
+              <input className={inputCls} value={form.agentId} onChange={setField('agentId')} placeholder="精确匹配" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">主机 IP</div>
+              <input className={inputCls} value={form.ip} onChange={setField('ip')} placeholder="青藤为模糊匹配" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">主机名</div>
+              <input className={inputCls} value={form.hostname} onChange={setField('hostname')} placeholder="可选" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">端口</div>
+              <input className={inputCls} type="number" min="1" max="65535" value={form.port} onChange={setField('port')} placeholder="站点/端口/数据库" />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">系统类型</div>
+              <select className={inputCls} value={form.osType} onChange={setField('osType')}>
+                <option value="">全部</option>
+                <option value="linux">Linux</option>
+                <option value="win">Windows</option>
+              </select>
+            </div>
+            <div className="flex items-end gap-2">
+              <Button type="submit" variant="primary" size="sm" disabled={loading || !module}>
+                {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                {loading ? '查询中' : '查询'}
+              </Button>
+              <span className="pb-1 text-xs text-muted-foreground">最多 50 条</span>
+            </div>
+          </div>
+        </form>
+
+        {error && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
+
+        {result && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>模块：{result.module_label}</span>
+              <span>命中 <span className="font-medium text-foreground">{result.matched}</span> 条</span>
+              <span>扫描 {result.scanned} 条</span>
+              <span>接口总数 {result.total} 条</span>
+              <span>查询时间：{result.queried_at}</span>
+            </div>
+            {(result.warnings || []).map((w, i) => (
+              <div key={i} className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
+                {w}
+              </div>
+            ))}
+            {rows.length === 0 ? (
+              <EmptyState
+                icon={Search}
+                title="没有匹配结果"
+                description="调整关键词、IP 或端口后重试；也可以改用资产同步全量拉取"
+                bordered
+              />
+            ) : (
+              <div className="max-h-[420px] overflow-auto rounded-lg border border-border">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 z-10 bg-secondary text-muted-foreground">
+                    <tr>
+                      {columns.map((c) => (
+                        <th key={c.key} className="whitespace-nowrap px-3 py-2 text-left font-medium">
+                          {c.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, idx) => (
+                      <tr key={idx} className="border-t border-border/60 hover:bg-secondary/40">
+                        {columns.map((c) => (
+                          <td key={c.key} className="max-w-[320px] truncate whitespace-nowrap px-3 py-1.5" title={String(row[c.key] ?? '')}>
+                            {row[c.key] === '' || row[c.key] == null ? '—' : String(row[c.key])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
 export default function GovCloudAssets() {
   const canView = hasPermission('asset_discovery', 'view')
   const canEdit = hasPermission('asset_discovery', 'edit')
@@ -474,6 +657,9 @@ export default function GovCloudAssets() {
   // 青藤主机 API 同步中（登录青藤平台 → 分页拉取 linux/win 主机 → 入库）
   const [syncing, setSyncing] = useState(false)
   const [syncProgress, setSyncProgress] = useState(null)
+  const [realtimeOpen, setRealtimeOpen] = useState(false)
+  // 资产明细当前模块 tab（空 = 全部）
+  const [assetModule, setAssetModule] = useState('')
   // 组件同步轮询开关：页面卸载后停止继续请求
   const syncPollRef = useRef(false)
   useEffect(() => () => { syncPollRef.current = false }, [])
@@ -495,12 +681,6 @@ export default function GovCloudAssets() {
 
   const tables = currentGroup?.tables || []
   const active = searchParams.get('table') || tables[0]?.code || ''
-  const currentTable = tables.find((t) => t.code === active) || tables[0]
-  const sourceEnabled = Boolean(currentGroup?.enabled && tables.length)
-  // 青藤来源：数据来自设备管理配置的青藤平台 API 同步（不支持 Excel 导入）
-  const isQingteng = currentGroup?.code === 'qingteng_host'
-  const isQingtengComponent = currentGroup?.code === 'qingteng_component'
-  const isQingtengApi = isQingteng || isQingtengComponent
 
   // 对齐状态统计 + 资产总量（从当前来源数据表派生，供指标条与头部计数展示）
   const consStats = useMemo(() => {
@@ -514,6 +694,16 @@ export default function GovCloudAssets() {
     if (consFilter === 'bad') return tables.filter((t) => !t.consistent)
     return tables
   }, [tables, consFilter])
+
+  // 当前卡片：优先 URL 选中；若被「已对齐/未对齐」筛选隐藏，自动落到第一张可见卡片
+  const currentTable = visibleTables.find((t) => t.code === active) || visibleTables[0]
+  const sourceEnabled = Boolean(currentGroup?.enabled && tables.length)
+  // 青藤来源：数据来自设备管理配置的青藤平台 API 同步（不支持 Excel 导入）
+  const isQingteng = currentGroup?.code === 'qingteng_host'
+  const isQingtengComponent = currentGroup?.code === 'qingteng_component'
+  const isQingtengAsset = currentGroup?.code === 'qingteng_asset'
+  const isQingtengApi = isQingteng || isQingtengComponent || isQingtengAsset
+  const currentModuleLabel = currentTable?.modules?.find((m) => m.value === assetModule)?.label || ''
 
   const displayColumns = useMemo(() => {
     const ordered = []
@@ -588,7 +778,13 @@ export default function GovCloudAssets() {
     try {
       const type = currentTable.code
       const [list, c, sum] = await Promise.all([
-        govCloudApi.list({ resource_type: type, keyword, page: targetPage, page_size: pageSize }),
+        govCloudApi.list({
+          resource_type: type,
+          keyword,
+          module: isQingtengAsset ? assetModule : '',
+          page: targetPage,
+          page_size: pageSize,
+        }),
         govCloudApi.consistency(type),
         govCloudApi.summary(),
       ])
@@ -602,7 +798,7 @@ export default function GovCloudAssets() {
     } finally {
       setLoading(false)
     }
-  }, [canView, sourceEnabled, currentTable?.code, keyword, page, pageSize])
+  }, [canView, sourceEnabled, currentTable?.code, keyword, isQingtengAsset, assetModule, page, pageSize])
 
   useEffect(() => { if (canView) load() }, [load, canView])
 
@@ -615,6 +811,7 @@ export default function GovCloudAssets() {
     setPage(1)
     setKeyword('')
     setConsFilter('')
+    setAssetModule('')
   }
 
   function selectTable(code) {
@@ -623,6 +820,7 @@ export default function GovCloudAssets() {
     setSearchParams(params)
     setPage(1)
     setKeyword('')
+    setAssetModule('')
   }
 
   async function handleImport(file, mode) {
@@ -666,8 +864,11 @@ export default function GovCloudAssets() {
     const name = currentTable.excel_name || currentTable.label
     setExporting(true)
     try {
-      await govCloudApi.exportCsv(currentTable.code, keyword, name)
-      toast.success(`已导出「${name}」${keyword ? `（关键词：${keyword}）` : ' 全部数据'}`)
+      const module = isQingtengAsset ? assetModule : ''
+      await govCloudApi.exportCsv(currentTable.code, keyword, name, module)
+      const scope = [keyword ? `关键词：${keyword}` : '', module ? `模块：${module}` : '']
+        .filter(Boolean).join('，')
+      toast.success(`已导出「${name}」${scope ? `（${scope}）` : ' 全部数据'}`)
     } catch (e) {
       toast.error(e.message || '导出失败')
     } finally {
@@ -753,6 +954,58 @@ export default function GovCloudAssets() {
     }
   }
 
+  // 青藤资产明细异步同步：当前模块 tab 有值时只同步该模块，否则同步全部
+  async function handleAssetModuleSync() {
+    const deviceIds = currentTable?.device_id ? [currentTable.device_id] : []
+    const modules = assetModule ? [assetModule] : []
+    setSyncing(true)
+    setSyncProgress({ status: 'pending', phase: '派发任务', percent: 0 })
+    syncPollRef.current = true
+    try {
+      const result = await govCloudApi.syncQingtengModules({ deviceIds, modules })
+      const batches = result?.batches || []
+      if (!batches.length) throw new Error('未创建同步批次')
+      const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
+      const deadline = Date.now() + 70 * 60 * 1000
+      let final = null
+      while (syncPollRef.current && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        if (!syncPollRef.current) break
+        const statuses = await Promise.all(
+          batches.map((b) => govCloudApi.moduleSyncStatus({ batchId: b.batch_id })),
+        )
+        const running = statuses.find((s) => s.status === 'running') || statuses[0]
+        setSyncProgress(running)
+        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
+          final = statuses
+          break
+        }
+      }
+      if (!final) {
+        toast.error('资产同步耗时较长，请稍后刷新查看结果')
+        return
+      }
+      final.forEach((s) => {
+        const name = nameByBatch.get(s.id) || s.resource_type
+        if (s.status === 'failed') {
+          toast.error(`${name} 资产同步失败：${s.note || '未知错误'}`)
+        } else {
+          toast.success(
+            `${name} 资产同步${s.status === 'partial' ? '部分完成' : '完成'}：拉取 ${s.excel_rows} 行 / 库内 ${s.live_count} 条`,
+          )
+        }
+      })
+      setPage(1)
+      await load(1)
+    } catch (e) {
+      toast.error(e.message || '资产同步失败')
+    } finally {
+      syncPollRef.current = false
+      setSyncing(false)
+      setSyncProgress(null)
+    }
+  }
+
   async function openDetail(id) {
     try {
       const rec = await govCloudApi.get(currentTable.code, id)
@@ -787,7 +1040,7 @@ export default function GovCloudAssets() {
             </span>
           )}
           <span className="hidden text-xs text-muted-foreground xl:inline">
-            发现来源同级展示，综合运管平台每周全量爬取，青藤主机/组件按设备 API 同步
+            发现来源同级展示，综合运管平台每周全量爬取，青藤主机/组件/资产明细按设备 API 同步
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -807,6 +1060,18 @@ export default function GovCloudAssets() {
               CVE 影响面
             </Button>
           )}
+          {canView && sourceEnabled && isQingtengApi && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setRealtimeOpen(true)}
+              disabled={!currentTable?.device_id}
+              title="实时查询青藤接口（结果不落库）"
+            >
+              <Search className="h-3.5 w-3.5" />
+              实时查询
+            </Button>
+          )}
           {canView && sourceEnabled && (
             <Button
               variant="secondary"
@@ -816,25 +1081,39 @@ export default function GovCloudAssets() {
               title="导出当前数据表为 CSV（遵循搜索条件，含全部数据）"
             >
               {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              {exporting ? '导出中' : `导出${currentTable?.excel_name || ' CSV'}`}
+              {exporting
+                ? '导出中'
+                : isQingtengAsset
+                  ? `导出${currentModuleLabel || '资产明细'}`
+                  : `导出${currentTable?.excel_name || ' CSV'}`}
             </Button>
           )}
-          {canEdit && sourceEnabled && (isQingteng || isQingtengComponent) ? (
+          {canEdit && sourceEnabled && (isQingteng || isQingtengComponent || isQingtengAsset) ? (
             <Button
               variant="primary"
               size="sm"
               disabled={syncing || loading || importing || !currentTable}
-              onClick={isQingtengComponent ? handleComponentSync : handleSync}
+              onClick={
+                isQingtengAsset
+                  ? handleAssetModuleSync
+                  : isQingtengComponent ? handleComponentSync : handleSync
+              }
               title={
-                isQingtengComponent
-                  ? '异步同步该青藤设备的组件清单（安装包 / 软件应用 / 数据库 / Jar 包 / Web 框架）'
-                  : '登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库'
+                isQingtengAsset
+                  ? '异步同步该设备的资产明细模块（当前 tab 有值时只同步该模块）'
+                  : isQingtengComponent
+                    ? '异步同步该青藤设备的组件清单（安装包 / 软件应用 / 数据库 / Jar 包 / Web 框架）'
+                    : '登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库'
               }
             >
               {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               {syncing
-                ? (isQingtengComponent && syncProgress?.percent != null ? `同步中 ${syncProgress.percent}%` : '同步中')
-                : isQingtengComponent ? '同步组件' : `同步${currentTable?.excel_name || '青藤主机'}`}
+                ? ((isQingtengComponent || isQingtengAsset) && syncProgress?.percent != null
+                  ? `同步中 ${syncProgress.percent}%`
+                  : '同步中')
+                : isQingtengAsset
+                  ? (currentModuleLabel ? `同步${currentModuleLabel}` : '同步资产明细')
+                  : isQingtengComponent ? '同步组件' : `同步${currentTable?.excel_name || '青藤主机'}`}
             </Button>
           ) : canEdit && sourceEnabled ? (
             <Button
@@ -955,7 +1234,9 @@ export default function GovCloudAssets() {
                             ? <Server className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
                             : isQingtengComponent
                               ? <Package className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
-                              : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
+                              : isQingtengAsset
+                                ? <Boxes className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
+                                : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
                           <span className={`truncate text-sm font-medium ${on ? 'text-primary' : 'text-foreground'}`}>
                             {t.excel_name || t.label}
                           </span>
@@ -978,6 +1259,11 @@ export default function GovCloudAssets() {
                       {isQingtengComponent && (
                         <div className="mt-1 text-xs text-muted-foreground">
                           API 同步 · 组件清单
+                        </div>
+                      )}
+                      {isQingtengAsset && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          API 同步 · 账号 / Web / 站点
                         </div>
                       )}
                     </button>
@@ -1011,13 +1297,40 @@ export default function GovCloudAssets() {
                 </div>
               )}
 
+              {/* 青藤资产明细：按模块 tab 浏览（全部 / 系统账号 / 用户组 / Web 应用 / Web 站点） */}
+              {isQingtengAsset && currentTable?.modules?.length > 0 && (
+                <div className="mb-3 flex flex-wrap items-center gap-1.5">
+                  {[{ value: '', label: '全部' }, ...currentTable.modules].map((m) => {
+                    const on = assetModule === m.value
+                    return (
+                      <button
+                        key={m.value || 'all'}
+                        type="button"
+                        onClick={() => { setAssetModule(m.value); setPage(1) }}
+                        className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                          on
+                            ? 'border-primary bg-primary/15 text-primary'
+                            : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
               {/* 单行内联筛选栏（轻量筛选形态）：关键词 + 对齐状态筛选 chips + 汇总统计 */}
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <div className="relative min-w-[220px] max-w-md flex-1">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <input
                     className={`${inputCls} pl-8 pr-8`}
-                    placeholder={`搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`}
+                    placeholder={
+                      isQingtengAsset
+                        ? `搜索${currentModuleLabel ? `「${currentModuleLabel}」` : '「资产明细」'}名称 / IP / 主机名`
+                        : `搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`
+                    }
                     value={keyword}
                     onChange={(e) => { setKeyword(e.target.value); setPage(1) }}
                   />
@@ -1048,7 +1361,13 @@ export default function GovCloudAssets() {
                           ? `border-transparent ring-1 ${chip.active}`
                           : 'border-border bg-secondary text-muted-foreground hover:border-primary/40 hover:text-foreground'
                       }`}
-                      title={chipOn ? '点击取消该筛选' : `点击筛选「${chip.label}」的数据表`}
+                      title={
+                        chipOn
+                          ? '点击取消该筛选'
+                          : chip.key === 'ok'
+                            ? '只看最近一次同步成功且库内数量一致的设备卡片'
+                            : '只看最近一次同步部分完成/失败或库内数量不一致的设备卡片'
+                      }
                     >
                       <span className={`h-1.5 w-1.5 rounded-full ${chip.dot}`} />
                       {chip.label}
@@ -1089,7 +1408,7 @@ export default function GovCloudAssets() {
               ) : items.length === 0 ? (
                 <div className="min-h-0 flex-1 overflow-auto">
                 <EmptyState
-                  icon={isQingteng ? Server : isQingtengComponent ? Package : FileSpreadsheet}
+                  icon={isQingteng ? Server : isQingtengComponent ? Package : isQingtengAsset ? Boxes : FileSpreadsheet}
                   title={keyword ? '未找到匹配的资产' : `${currentTable?.excel_name || '当前表'}暂无数据`}
                   description={
                     keyword
@@ -1098,13 +1417,19 @@ export default function GovCloudAssets() {
                         ? (canEdit ? '点击同步从青藤平台拉取主机清单' : '等待管理员从青藤平台同步主机清单')
                         : isQingtengComponent
                           ? (canEdit ? '点击同步从青藤平台拉取组件清单' : '等待管理员从青藤平台同步组件清单')
-                          : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
+                          : isQingtengAsset
+                            ? (canEdit ? '点击同步从青藤平台拉取资产明细' : '等待管理员从青藤平台同步资产明细')
+                            : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
                   }
                   bordered
                   action={
                     keyword ? (
                       <Button variant="secondary" size="sm" onClick={() => { setKeyword(''); setPage(1) }}>
                         清除筛选
+                      </Button>
+                    ) : canEdit && isQingtengAsset ? (
+                      <Button variant="primary" size="sm" disabled={syncing} onClick={handleAssetModuleSync}>
+                        <RefreshCw className="h-3.5 w-3.5" /> {currentModuleLabel ? `同步${currentModuleLabel}` : '同步资产明细'}
                       </Button>
                     ) : canEdit && isQingtengComponent ? (
                       <Button variant="primary" size="sm" disabled={syncing} onClick={handleComponentSync}>
@@ -1218,6 +1543,19 @@ export default function GovCloudAssets() {
         deviceId={currentTable?.device_id}
         deviceName={currentTable?.label || currentTable?.excel_name}
         onClose={() => setCveOpen(false)}
+      />
+
+      <RealtimeQueryModal
+        open={realtimeOpen}
+        deviceId={currentTable?.device_id}
+        deviceName={currentTable?.label || currentTable?.excel_name}
+        groupCode={currentGroup?.code}
+        initialModule={
+          isQingtengAsset
+            ? (assetModule || 'account')
+            : isQingtengComponent ? 'pkg' : 'process'
+        }
+        onClose={() => setRealtimeOpen(false)}
       />
     </div>
   )
