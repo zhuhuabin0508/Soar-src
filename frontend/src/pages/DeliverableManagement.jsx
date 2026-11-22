@@ -213,6 +213,45 @@ function flattenTree(selectable, expandedSet) {
   return flat
 }
 
+// 父级目录下拉选项：按 parent_id 的真实父子关系做深度优先展开，
+// 同一父级下保持后端返回顺序（sort_order / id），并用真实 depth 生成缩进。
+// 旧实现按 level 全局排序，会把不同父级下的同级目录排在一起、父子不相邻，
+// 看起来就是所有目录无差别堆叠；这里改为严格按层级结构排序。
+function buildParentOptionTree(items) {
+  const idSet = new Set()
+  for (const c of items) idSet.add(c.id)
+  const childrenByParent = new Map()
+  const roots = []
+  for (const c of items) {
+    const pid = c.parent_id != null && idSet.has(c.parent_id) ? c.parent_id : null
+    if (pid === null) {
+      roots.push(c)
+    } else {
+      const arr = childrenByParent.get(pid)
+      if (arr) arr.push(c)
+      else childrenByParent.set(pid, [c])
+    }
+  }
+
+  const out = []
+  const walk = (nodes, depth, guides) => {
+    nodes.forEach((n, i) => {
+      const isLast = i === nodes.length - 1
+      // guides 记录每一级祖先是否还有后续兄弟：有则画竖线，无则留空，
+      // 让下拉里的树形连接线与左侧目录树的层级结构一致。
+      const indent = depth === 0
+        ? ''
+        : guides.map((more) => (more ? '│\u00A0\u00A0 ' : '\u00A0\u00A0\u00A0\u00A0')).join('')
+          + (isLast ? '└─ ' : '├─ ')
+      const kids = childrenByParent.get(n.id)
+      out.push({ id: n.id, name: n.name, depth, indent })
+      if (kids && kids.length > 0) walk(kids, depth + 1, [...guides, !isLast])
+    })
+  }
+  walk(roots, 0, [])
+  return out
+}
+
 // 在 selectable 里「有子级」的节点 id，用于「展开全部」。O(n)。
 function expandableIdsOf(selectable) {
   const idSet = new Set()
@@ -1292,14 +1331,7 @@ export default function DeliverableManagement() {
                   className="rounded p-0.5 text-muted-foreground hover:text-primary"
                   onClick={(e) => {
                     e.stopPropagation()
-                    setCatModal({
-                      mode: 'create',
-                      name: '',
-                      description: '',
-                      parentId: node.id,
-                      parentName: node.name,
-                      parentLevel: node.level,
-                    })
+                    openCreateCatModal(node.id)
                   }}
                 >
                   <FolderPlus className="h-3 w-3" />
@@ -1387,17 +1419,34 @@ export default function DeliverableManagement() {
     )
   }
 
-  // 父级目录下拉选项（带缩进前缀，供新建目录弹窗使用）
+  // 父级目录下拉选项（按真实层级 DFS 排序 + 缩进 + 层级标识，供新建目录弹窗使用）。
+  // 缩进使用不换行空格：普通空格在 HTML 中会被折叠，层级视觉会丢失。
   const parentOptions = useMemo(() => {
-    const opts = [{ id: 0, label: '根级（最顶层）' }]
-    const sorted = [...categories].sort((a, b) => (a.level || 1) - (b.level || 1))
-    sorted.forEach((c) => {
-      const d = Math.max(0, (c.level || 1) - 1)
-      const prefix = '\u00A0\u00A0\u00A0\u00A0'.repeat(d) + (d > 0 ? '└ ' : '')
-      opts.push({ id: c.id, label: prefix + c.name })
+    const opts = [{ id: 0, depth: 0, label: '根级（最顶层）' }]
+    buildParentOptionTree(categories).forEach((c) => {
+      opts.push({
+        id: c.id,
+        depth: c.depth,
+        label: `${c.indent}${c.name}  L${c.depth + 1}`,
+      })
     })
     return opts
   }, [categories])
+
+  // 打开「新建目录」弹窗：默认父级取当前所在目录（0 = 根级）。
+  // 树节点悬浮按钮 / 右键菜单显式传自己的 id，左侧「新建根目录」固定传 0，
+  // 页头「新建目录」则跟随当前目录，避免用户在子目录里还要手动再选一次父级。
+  const openCreateCatModal = useCallback((parentId = 0) => {
+    const parent = parentId ? catIndex.byId.get(parentId) : null
+    setCatModal({
+      mode: 'create',
+      name: '',
+      description: '',
+      parentId: parent ? parent.id : 0,
+      parentName: parent ? parent.name : '',
+      parentLevel: parent ? parent.level : 0,
+    })
+  }, [catIndex])
 
   // 批量移动：可选目标 = 全部目录 - 被选中目录自身及其所有后代
   const batchMoveSelectable = useMemo(() => {
@@ -1493,8 +1542,9 @@ export default function DeliverableManagement() {
             {canEdit && (
               <button
                 type="button"
-                onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: 0 })}
+                onClick={() => openCreateCatModal(activeCatId || 0)}
                 className="btn-secondary btn-sm"
+                title={activeCat ? `在「${activeCat.name}」下新建子目录` : '新建根目录'}
               >
                 <FolderPlus className="mr-1 h-3.5 w-3.5" />
                 新建目录
@@ -1641,7 +1691,7 @@ export default function DeliverableManagement() {
                   type="button"
                   title="新建根目录"
                   className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary"
-                  onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: 0 })}
+                  onClick={() => openCreateCatModal(0)}
                 >
                   <FolderPlus className="h-3.5 w-3.5" />
                 </button>
@@ -1669,7 +1719,7 @@ export default function DeliverableManagement() {
                   <Button
                     size="sm"
                     variant="secondary"
-                    onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: 0 })}
+                    onClick={() => openCreateCatModal(0)}
                   >
                     <FolderPlus className="h-3.5 w-3.5" />
                     新建目录
@@ -1828,7 +1878,7 @@ export default function DeliverableManagement() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: 0 })}
+                      onClick={() => openCreateCatModal(0)}
                     >
                       <FolderPlus className="h-3.5 w-3.5" />
                       新建目录
@@ -1929,7 +1979,7 @@ export default function DeliverableManagement() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => setCatModal({ mode: 'create', name: '', description: '', parentId: activeCatId || 0, parentName: activeCat?.name })}
+                      onClick={() => openCreateCatModal(activeCatId || 0)}
                     >
                       <FolderPlus className="h-3.5 w-3.5" />
                       新建子目录
@@ -2501,14 +2551,7 @@ export default function DeliverableManagement() {
               onClick={() => {
                 const node = contextMenu.node
                 setContextMenu(null)
-                setCatModal({
-                  mode: 'create',
-                  name: '',
-                  description: '',
-                  parentId: node.id,
-                  parentName: node.name,
-                  parentLevel: node.level,
-                })
+                openCreateCatModal(node.id)
               }}
             >
               <FolderPlus className="h-3.5 w-3.5" />
