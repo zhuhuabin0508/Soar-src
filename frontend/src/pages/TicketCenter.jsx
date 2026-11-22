@@ -9,8 +9,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  TicketCheck, Plus, Search, Paperclip, X, Eye, Rocket, ChevronRight, Archive, ArchiveRestore, Monitor, Trash2,
-  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play, Loader2, ShieldCheck,
+  TicketCheck, Plus, Search, Paperclip, X, Eye, Rocket, ChevronRight, ChevronDown, ChevronUp, Archive, ArchiveRestore, Monitor, Trash2,
+  RefreshCw, AlertTriangle, Download, Zap, Lightbulb, Pause, Play, Loader2, ShieldCheck, Gauge, Star,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -23,6 +23,9 @@ import banWorkflowApi from '../api/banWorkflow'
 import { evalRoutes, FIELD_TYPE_LABELS, flatFieldDefs, matchedRuleFields, collectRefOptions, durationToParts, durationFromParts, DURATION_UNITS } from '../utils/ticketFlow'
 import { RichEditable, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
+import TicketExpandedPanel from '../components/TicketExpandedPanel'
+import { gradeBadgeCls, scoreTextCls } from '../utils/ticketScore'
+import ticketScoreApi from '../api/ticketScores'
 import { validateIPExpression, splitIPExpression, validateSingleIP, isBanDomain } from '../utils/ipValidation'
 
 const STATUS_META = {
@@ -142,6 +145,16 @@ export default function TicketCenter() {
   const [batchSubmitting, setBatchSubmitting] = useState(false)
   const [pauseOptions, setPauseOptions] = useState([])
   const [exporting, setExporting] = useState(false)
+  // 价值评分筛选：评分状态/等级/分数区间/评分时间（与列表接口参数一一对应）
+  const [scoreStatus, setScoreStatus] = useState(() => searchParams.get('score_status') || '')
+  const [scoreGrade, setScoreGrade] = useState(() => searchParams.get('score_grade') || '')
+  const [scoreMin, setScoreMin] = useState(() => searchParams.get('score_min') || '')
+  const [scoreMax, setScoreMax] = useState(() => searchParams.get('score_max') || '')
+  const [scoredFrom, setScoredFrom] = useState(() => searchParams.get('scored_from') || '')
+  const [scoredTo, setScoredTo] = useState(() => searchParams.get('scored_to') || '')
+  const [scoreGrades, setScoreGrades] = useState([])
+  // 展开行：已完结工单点击展开完整详情并可直接评分（同一时间可展开多行）
+  const [expandedIds, setExpandedIds] = useState([])
 
   // 发起弹窗
   const [createOpen, setCreateOpen] = useState(false)
@@ -181,6 +194,13 @@ export default function TicketCenter() {
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
       start_time: startTime || undefined,
       end_time: endTime || undefined,
+      score_status: scoreStatus || undefined,
+      score_grade: scoreGrade || undefined,
+      score_min: scoreMin === '' ? undefined : Number(scoreMin),
+      score_max: scoreMax === '' ? undefined : Number(scoreMax),
+      scored_from: scoredFrom || undefined,
+      // 结束日期包含当天：补齐到 23:59:59 再交给后端
+      scored_to: scoredTo ? `${scoredTo}T23:59:59` : undefined,
     })
       .then((res) => {
         if (listReqSeq.current !== seq) return
@@ -192,13 +212,20 @@ export default function TicketCenter() {
         toast.error(e.message || '加载工单列表失败')
       })
       .finally(() => { if (listReqSeq.current === seq) setLoading(false) })
-  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly, startTime, endTime])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly,
+    startTime, endTime,
+    scoreStatus, scoreGrade, scoreMin, scoreMax, scoredFrom, scoredTo])
 
   useEffect(() => { load() }, [load])
 
   // 筛选行流程模板选项：全部已发布流程（与发起权限无关；静默失败不阻塞列表加载）
   useEffect(() => {
     ticketApi.flowOptions().then((res) => setFilterFlows(res.items || [])).catch(() => {})
+  }, [])
+
+  // 评分等级筛选项：跟随当前生效规则（规则调整后自动展示最新分级）
+  useEffect(() => {
+    ticketScoreApi.getOptions().then((res) => setScoreGrades(res.grades || [])).catch(() => {})
   }, [])
 
   // 筛选条件写回 URL（replace 不产生历史记录；分享链接可还原视图与筛选）
@@ -212,14 +239,25 @@ export default function TicketCenter() {
     if (timeoutOnly) p.timeout = '1'
     if (startTime) p.start_time = startTime
     if (endTime) p.end_time = endTime
+    if (scoreStatus) p.score_status = scoreStatus
+    if (scoreGrade) p.score_grade = scoreGrade
+    if (scoreMin !== '') p.score_min = scoreMin
+    if (scoreMax !== '') p.score_max = scoreMax
+    if (scoredFrom) p.scored_from = scoredFrom
+    if (scoredTo) p.scored_to = scoredTo
     setSearchParams(p, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly, startTime, endTime])
+  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly,
+    startTime, endTime,
+    scoreStatus, scoreGrade, scoreMin, scoreMax, scoredFrom, scoredTo])
 
-  // 视图/筛选/翻页变化时清空多选，避免批量操作误伤不在当前页的工单
+  // 视图/筛选/翻页变化时清空多选与展开行，避免操作到不在当前页的工单
   useEffect(() => {
     setSelectedIds([])
-  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly, startTime, endTime])
+    setExpandedIds([])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly,
+    startTime, endTime,
+    scoreStatus, scoreGrade, scoreMin, scoreMax, scoredFrom, scoredTo])
 
   // 告警一键发起：携带 state.alertPrefill 自动打开发起弹窗并预填
   useEffect(() => {
@@ -748,6 +786,12 @@ export default function TicketCenter() {
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
       start_time: startTime || undefined,
       end_time: endTime || undefined,
+      score_status: scoreStatus || undefined,
+      score_grade: scoreGrade || undefined,
+      score_min: scoreMin === '' ? undefined : Number(scoreMin),
+      score_max: scoreMax === '' ? undefined : Number(scoreMax),
+      scored_from: scoredFrom || undefined,
+      scored_to: scoredTo ? `${scoredTo}T23:59:59` : undefined,
     })
       .then(() => toast.success('工单导出已开始下载'))
       .catch((e) => toast.error(e.message || '导出失败'))
@@ -766,11 +810,29 @@ export default function TicketCenter() {
   }, [list])
 
   // 是否存在生效的筛选条件（用于区分空态文案与「清除筛选」引导）
-  const hasActiveFilters = !!(status || priority || searchKw || timeoutOnly || startTime || endTime)
+  const hasActiveFilters = !!(
+    status || priority || searchKw || timeoutOnly || startTime || endTime
+    || scoreStatus || scoreGrade || scoreMin !== '' || scoreMax !== ''
+    || scoredFrom || scoredTo
+  )
   const clearFilters = () => {
     setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setTimeoutOnly(false)
-    setStartTime(''); setEndTime(''); setPage(1)
+    setStartTime(''); setEndTime('')
+    setScoreStatus(''); setScoreGrade(''); setScoreMin(''); setScoreMax('')
+    setScoredFrom(''); setScoredTo('')
+    setPage(1)
   }
+
+  // 展开/收起已完结工单行（展开后展示完整详情与评分入口）
+  const toggleExpand = (id, forceOpen = false) => {
+    setExpandedIds((prev) => {
+      const exists = prev.includes(id)
+      if (forceOpen) return exists ? prev : [...prev, id]
+      return exists ? prev.filter((x) => x !== id) : [...prev, id]
+    })
+  }
+  // 评分入口：展开该行并在展开区直接进入评分表单
+  const openScoreRow = (id) => toggleExpand(id, true)
 
   // 右侧相似工单面板：有结果且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
   const showSimilarPanel = !!(similar && similar.length > 0 && !similarHidden)
@@ -781,6 +843,25 @@ export default function TicketCenter() {
   const showSidePanels = showBanPanel || showWhitelistPanel || showSimilarPanel
 
   const columns = [
+    {
+      // 已完结工单（完成/取消）支持展开查看完整详情；展开区内提供价值评分入口与结果
+      key: 'expand', header: '展开', width: '62px',
+      render: (r) => {
+        const expandable = r.status === 'completed' || r.status === 'cancelled'
+        if (!expandable) return <span className="text-xs text-muted-foreground">--</span>
+        const open = expandedIds.includes(r.id)
+        return (
+          <button
+            type="button"
+            className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            title={open ? '收起工单详情' : '展开查看完整工单详情与评分'}
+            onClick={(e) => { e.stopPropagation(); toggleExpand(r.id) }}
+          >
+            {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+        )
+      },
+    },
     {
       key: 'ticket_no', header: '工单号', width: '150px',
       render: (r) => <span className="font-mono text-xs font-medium text-primary" title={r.ticket_no}>{r.ticket_no}</span>,
@@ -855,6 +936,45 @@ export default function TicketCenter() {
         )
       },
     },
+    {
+      // 价值评分：已评分工单展示分值 + 分级 + 「已完成评分」标记；规则变更时附最新规则折算分
+      key: 'score', header: '价值评分', width: '155px',
+      render: (r) => {
+        if (r.status !== 'completed') {
+          return <span className="text-xs text-muted-foreground" title="仅已完成工单参与价值评分">--</span>
+        }
+        if (r.score_status === 'scored') {
+          const color = r.score_grade_color || 'slate'
+          return (
+            <div
+              className="flex flex-col gap-0.5"
+              title={`已完成评分\n评分人：${r.score_scored_by_name || '--'}\n评分时间：${fmtTime(r.score_scored_at)}\n提交时规则版本：v${r.score_rule_version}${r.score_rule_changed ? `\n规则已更新，按最新规则折算为 ${r.score_current_value} 分` : ''}`}
+            >
+              <span className="flex items-center gap-1.5">
+                <span className={`text-sm font-semibold tabular-nums ${scoreTextCls(color)}`}>{r.score_value}</span>
+                <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 ${gradeBadgeCls(color)}`}>
+                  {r.score_grade_label || r.score_grade}
+                </span>
+                {r.score_rule_changed && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                    <RefreshCw className="h-2.5 w-2.5" />{r.score_current_value}
+                  </span>
+                )}
+              </span>
+              <span className="text-[10px] text-emerald-600 dark:text-emerald-400" title={fmtTime(r.score_scored_at)}>
+                已完成评分 · {fmtTime(r.score_scored_at).slice(5, 16)}
+              </span>
+            </div>
+          )
+        }
+        return (
+          <span className="inline-flex items-center rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400"
+            title="已完成工单可进行价值评分">
+            待评分
+          </span>
+        )
+      },
+    },
     { key: 'created_by_name', header: '发起人', width: '110px', render: (r) => <span title={r.created_by_name || '--'}>{r.created_by_name || '--'}</span> },
     {
       key: 'created_at', header: '发起时间', width: '150px',
@@ -868,6 +988,18 @@ export default function TicketCenter() {
             className="btn-secondary btn-sm" title="查看工单详情">
             <Eye className="h-3 w-3" />详情
           </button>
+          {r.status === 'completed' && r.score_status === 'unscored' && r.can_score && (
+            <button onClick={(e) => { e.stopPropagation(); openScoreRow(r.id) }}
+              className="btn-primary btn-sm" title="对该工单进行价值评分">
+              <Star className="h-3 w-3" />评分
+            </button>
+          )}
+          {r.status === 'completed' && r.score_status === 'scored' && (
+            <button onClick={(e) => { e.stopPropagation(); navigate(`/tickets/${r.id}`, { state: { openScore: true } }) }}
+              className="btn-secondary btn-sm" title={`已完成评分：${r.score_value} 分（${r.score_grade_label || r.score_grade}）`}>
+              <Gauge className="h-3 w-3" />评分结果
+            </button>
+          )}
           {r.status === 'processing' && r.can_urge && (
             <button onClick={(e) => { e.stopPropagation(); handleUrge(r) }} disabled={urgingId === r.id}
               className="btn-secondary btn-sm" title="催办当前节点处理分组（30 分钟内仅可催办一次）">
@@ -990,6 +1122,70 @@ export default function TicketCenter() {
         <DatePicker type="datetime" placeholder="发起时间止" title="发起时间止（不含）"
           value={endTime}
           onChange={(e) => { setEndTime(e.target.value); setPage(1) }} />
+        {/* 价值评分筛选：评分状态（全部/待评分/已评分）；已评分可继续按等级/分数区间/评分时间筛选 */}
+        <div className="w-32 shrink-0">
+          <CompactSelect
+            size="lg"
+            block
+            value={scoreStatus}
+            onChange={(e) => {
+              const v = e.target.value
+              setScoreStatus(v)
+              if (v !== 'scored') {
+                setScoreGrade(''); setScoreMin(''); setScoreMax(''); setScoredFrom(''); setScoredTo('')
+              }
+              setPage(1)
+            }}
+          >
+            <option value="">全部评分</option>
+            <option value="unscored">待评分</option>
+            <option value="scored">已评分</option>
+          </CompactSelect>
+        </div>
+        {scoreStatus === 'scored' && (
+          <>
+            <div className="w-28 shrink-0">
+              <CompactSelect size="lg" block value={scoreGrade}
+                onChange={(e) => { setScoreGrade(e.target.value); setPage(1) }}>
+                <option value="">全部分级</option>
+                {scoreGrades.map((g) => (
+                  <option key={g.key} value={g.key}>{g.label}</option>
+                ))}
+              </CompactSelect>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <input
+                className={`${inputBaseCls} h-9 w-[72px] text-center tabular-nums`}
+                type="number"
+                min={0}
+                max={100}
+                placeholder="最低分"
+                title="评分结果下限（含）"
+                value={scoreMin}
+                onChange={(e) => { setScoreMin(e.target.value); setPage(1) }}
+              />
+              <span className="text-xs text-muted-foreground">-</span>
+              <input
+                className={`${inputBaseCls} h-9 w-[72px] text-center tabular-nums`}
+                type="number"
+                min={0}
+                max={100}
+                placeholder="最高分"
+                title="评分结果上限（含）"
+                value={scoreMax}
+                onChange={(e) => { setScoreMax(e.target.value); setPage(1) }}
+              />
+            </div>
+            <div className="w-32 shrink-0" title="评分时间起始">
+              <DatePicker type="date" value={scoredFrom} placeholder="评分起始"
+                onChange={(e) => { setScoredFrom(e.target.value); setScoredTo(e.target.value && scoredTo && scoredTo < e.target.value ? '' : scoredTo); setPage(1) }} />
+            </div>
+            <div className="w-32 shrink-0" title="评分时间截止（含当天）">
+              <DatePicker type="date" value={scoredTo} placeholder="评分截止"
+                onChange={(e) => { setScoredTo(e.target.value); setScoredFrom(e.target.value && scoredFrom && scoredFrom > e.target.value ? '' : scoredFrom); setPage(1) }} />
+            </div>
+          </>
+        )}
         <SearchInput
           className="min-w-52 flex-1"
           placeholder="搜索工单号 / 标题"
@@ -1086,6 +1282,13 @@ export default function TicketCenter() {
           selectable
           selectedKeys={selectedIds}
           onSelectChange={setSelectedIds}
+          expandedKeys={expandedIds}
+          renderExpandedRow={(r) => (
+            <TicketExpandedPanel
+              ticketId={r.id}
+              onScored={() => load()}
+            />
+          )}
           onRowClick={(r) => navigate(`/tickets/${r.id}`)}
           rowClassName={() => 'h-12 cursor-pointer'}
           emptyIcon={TicketCheck}

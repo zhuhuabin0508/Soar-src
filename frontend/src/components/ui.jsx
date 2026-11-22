@@ -493,6 +493,9 @@ export function DataTable({
   onReorder,
   maxHeight,
   className = '',
+  // 可展开行：expandedKeys 为展开的 rowKey 列表，renderExpandedRow(row) 渲染展开内容
+  expandedKeys = [],
+  renderExpandedRow,
 }) {
   // 数据密度:全局 store,所有 DataTable 共享
   const density = useDensityStore((s) => s.density)
@@ -502,6 +505,7 @@ export function DataTable({
   const [dragOverIndex, setDragOverIndex] = useState(null)
   // 选择状态计算
   const selectedSet = new Set(selectedKeys)
+  const expandedSet = new Set(expandedKeys)
   const pageKeys = data.map((row) => row[rowKey])
   const allSelected = selectable && data.length > 0 && pageKeys.every((k) => selectedSet.has(k))
   const someSelected = selectable && !allSelected && pageKeys.some((k) => selectedSet.has(k))
@@ -626,8 +630,8 @@ export function DataTable({
               const isDragging = draggable && dragIndex === i
               const isDragOver = draggable && dragOverIndex === i && dragIndex !== null && dragIndex !== i
               return (
+                <Fragment key={key}>
                 <tr
-                  key={key}
                   draggable={draggable}
                   onDragStart={(e) => {
                     if (!draggable) return
@@ -681,6 +685,14 @@ export function DataTable({
                     </td>
                   ))}
                 </tr>
+                {renderExpandedRow && expandedSet.has(row[rowKey]) && (
+                  <tr className="border-b border-border bg-muted/20">
+                    <td colSpan={colSpan} className="px-4 py-3">
+                      {renderExpandedRow(row)}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               )
             })
           )}

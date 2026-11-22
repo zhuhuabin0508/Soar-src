@@ -82,6 +82,7 @@ from app.models.ticket import (
     TicketDeviceRun,
     TicketPause,
 )
+from app.models.ticket_score import TicketScore, TicketScoreRuleVersion
 from app.models.knowledge_base import KnowledgeBase, KnowledgeDocument, KnowledgeSegment
 from app.models.llm_config import LLMConfig
 from app.models.model_call_log import ModelCallLog
@@ -212,6 +213,8 @@ __all__ = [
     "TicketNodeRecord",
     "TicketDeviceRun",
     "TicketPause",
+    "TicketScore",
+    "TicketScoreRuleVersion",
     "WorkflowTriggerRule",
     "WorkflowInstance",
     "WorkflowNodeLog",

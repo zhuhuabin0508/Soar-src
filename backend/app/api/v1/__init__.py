@@ -46,6 +46,7 @@ from app.api.v1 import (
     system_monitor,
     ticket_groups,
     ticket_flows,
+    ticket_scores,
     ticket_sla,
     tickets,
     tools,
@@ -149,6 +150,8 @@ if settings.APP_ENV.strip().lower() != "production":
 # 工单中心（发起/流转/取消 + 附件）
 api_router.include_router(tickets.router)
 api_router.include_router(tickets.download_router)
+# 工单价值评分（规则配置 / 版本历史 / 工单评分提交）
+api_router.include_router(ticket_scores.router)
 # 工单配置（处理分组 / 流程模板 / SLA 目标）
 api_router.include_router(ticket_groups.router)
 api_router.include_router(ticket_flows.router)

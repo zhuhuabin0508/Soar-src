@@ -62,6 +62,11 @@ from app.core.ticket_pause import (
     save_pause_config,
 )
 from app.core.ticket_sla import evaluate_ticket_sla, get_sla_config, paused_minutes_between
+from app.core.ticket_score import (
+    build_ticket_score_state,
+    get_score_rule,
+    score_list_fields,
+)
 from app.core.ticket_device_action import (
     annotate_device_form,
     build_device_action_form,
@@ -104,6 +109,7 @@ from app.models.ticket import (
     Ticket, TicketCc, TicketDeviceRun, TicketFlow, TicketGroup, TicketGroupMember,
     TicketNodeRecord, TicketPause,
 )
+from app.models.ticket_score import TicketScore
 from app.models.user import User
 from app.models.workflow_ban import BanRecord
 from app.schemas.ticket import (
@@ -500,8 +506,14 @@ def _apply_ticket_filters(
     timeout_only: bool = False,
     start_time: str | None = None,
     end_time: str | None = None,
+    score_status: str | None = None,
+    score_grade: str | None = None,
+    score_min: int | None = None,
+    score_max: int | None = None,
+    scored_from: datetime | None = None,
+    scored_to: datetime | None = None,
 ):
-    """列表/导出共用的筛选逻辑：视图 + 归档 + 状态/流程/优先级/关键词 + 发起时间范围。"""
+    """列表/导出共用的筛选逻辑：视图 + 归档 + 状态/流程/优先级/关键词 + 发起时间范围 + 价值评分。"""
     query = db.query(Ticket)
 
     if view == "my_pending":
@@ -570,6 +582,26 @@ def _apply_ticket_filters(
     et = _parse_time_param(end_time)
     if et is not None:
         query = query.filter(Ticket.created_at < et)
+    # 价值评分筛选：评分状态/等级/分数区间/评分时间（每单最多一条评分记录，外连接不放大行数）
+    if any((
+        score_status, score_grade, score_min is not None, score_max is not None,
+        scored_from is not None, scored_to is not None,
+    )):
+        query = query.outerjoin(TicketScore, TicketScore.ticket_id == Ticket.id)
+        if score_status == "scored":
+            query = query.filter(TicketScore.id.isnot(None))
+        elif score_status == "unscored":
+            query = query.filter(TicketScore.id.is_(None))
+        if score_grade:
+            query = query.filter(TicketScore.grade == score_grade)
+        if score_min is not None:
+            query = query.filter(TicketScore.final_score >= score_min)
+        if score_max is not None:
+            query = query.filter(TicketScore.final_score <= score_max)
+        if scored_from is not None:
+            query = query.filter(TicketScore.scored_at >= scored_from)
+        if scored_to is not None:
+            query = query.filter(TicketScore.scored_at <= scored_to)
     return query
 
 
@@ -1082,6 +1114,11 @@ def _ticket_detail(db: Session, ticket: Ticket, current_user: User) -> dict:
             ticket.status == "processing"
             and (admin or ticket.created_by_id == current_user.id or can_handle)
         ),
+        # 价值评分：当前规则 + 已提交结果（含提交时规则快照）+ 最新规则折算 + 可评分标记
+        "score": build_ticket_score_state(
+            db, ticket,
+            can_score_action=has_permission_for_user(db, current_user, "ticket", "score"),
+        ),
     })
     return data
 
@@ -1359,6 +1396,12 @@ def list_tickets(
     timeout_only: bool = Query(default=False),
     start_time: str | None = Query(default=None, description="发起时间起（ISO，含）"),
     end_time: str | None = Query(default=None, description="发起时间止（ISO，不含）"),
+    score_status: str | None = Query(default=None, pattern="^(scored|unscored)$"),
+    score_grade: str | None = Query(default=None, max_length=16),
+    score_min: int | None = Query(default=None, ge=0, le=100),
+    score_max: int | None = Query(default=None, ge=0, le=100),
+    scored_from: datetime | None = Query(default=None),
+    scored_to: datetime | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -1369,10 +1412,20 @@ def list_tickets(
     ``archived``：exclude=不含归档（默认）/ only=仅归档 / include=全部。
     每项附 ``sla_text``/``sla_overdue``（处理中工单的 SLA 倒计时，超时标记）
     与 ``can_urge``（发起人/抄送人/admin 可催办）。
+    价值评分筛选：``score_status``（scored/unscored）、``score_grade``、
+    ``score_min``/``score_max``、``scored_from``/``scored_to``；每项附评分摘要字段。
     """
     query = _apply_ticket_filters(
         db, current_user, view, status, flow_id, priority, archived, q,
-        timeout_only=timeout_only, start_time=start_time, end_time=end_time,
+        timeout_only=timeout_only,
+        start_time=start_time,
+        end_time=end_time,
+        score_status=score_status,
+        score_grade=score_grade,
+        score_min=score_min,
+        score_max=score_max,
+        scored_from=scored_from,
+        scored_to=scored_to,
     )
     if query is None:  # my_pending 且不在任何分组
         return {"items": [], "total": 0, "page": page, "size": size, "pages": 0}
@@ -1414,10 +1467,24 @@ def list_tickets(
         p.id: p
         for p in db.query(TicketPause).filter(TicketPause.id.in_(active_pause_ids)).all()
     } if active_pause_ids else {}
+    # 价值评分：本页评分结果一次批量取；规则与评分权限只取一次（规则变更时按最新规则折算）
+    score_map: dict[int, TicketScore] = {}
+    if page_ids:
+        score_map = {
+            s.ticket_id: s
+            for s in db.query(TicketScore).filter(TicketScore.ticket_id.in_(page_ids)).all()
+        }
+    score_rule = get_score_rule(db)
+    can_score = has_permission_for_user(db, current_user, "ticket", "score")
 
     items = []
     for t in tickets:
         item = _ticket_list_item(t, group_names)
+        # 评分摘要：状态/分数/等级/评分人/评分时间；规则变更时附最新规则折算分
+        item.update(score_list_fields(score_map.get(t.id), score_rule))
+        item["can_score"] = bool(
+            t.status == "completed" and can_score and t.id not in score_map
+        )
         if t.status in ("processing", "paused"):
             # 暂停中 SLA 冻结：以暂停时间作为"当前时间"计算剩余
             sla_now = (t.paused_at or now) if t.status == "paused" else now
@@ -2745,6 +2812,12 @@ def export_tickets(
     timeout_only: bool = Query(default=False),
     start_time: str | None = Query(default=None, description="发起时间起（ISO，含）"),
     end_time: str | None = Query(default=None, description="发起时间止（ISO，不含）"),
+    score_status: str | None = Query(default=None, pattern="^(scored|unscored)$"),
+    score_grade: str | None = Query(default=None, max_length=16),
+    score_min: int | None = Query(default=None, ge=0, le=100),
+    score_max: int | None = Query(default=None, ge=0, le=100),
+    scored_from: datetime | None = Query(default=None),
+    scored_to: datetime | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("ticket", "export")),
 ) -> Response:
@@ -2752,10 +2825,19 @@ def export_tickets(
 
     列：工单号/标题/流程/状态/优先级/发起人/当前节点/当前处理分组/发起时间/完结时间/
     处理时长分钟/SLA状态/表单字段内容（按节点·字段 label 汇总）/处置意见汇总。
+    支持与列表一致的评分状态/等级/分数区间/评分时间筛选。
     """
     query = _apply_ticket_filters(
         db, current_user, view, status, flow_id, priority, archived, q,
-        timeout_only=timeout_only, start_time=start_time, end_time=end_time,
+        timeout_only=timeout_only,
+        start_time=start_time,
+        end_time=end_time,
+        score_status=score_status,
+        score_grade=score_grade,
+        score_min=score_min,
+        score_max=score_max,
+        scored_from=scored_from,
+        scored_to=scored_to,
     )
     # 筛选结果为 None（view=my_pending 且用户不属于任何分组）时导出空表，
     # 严禁回退为全量导出（越权泄露全部工单）

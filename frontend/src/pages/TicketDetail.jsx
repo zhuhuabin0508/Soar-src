@@ -9,7 +9,7 @@ import {
   SendHorizonal, Ban, UserRound, ChevronRight, Flag, Link2, Archive, ArchiveRestore,
   ShieldCheck, ShieldBan, Database, AlertTriangle, ClipboardList, Plus, UsersRound, Users,
   Download, CornerUpLeft, Bot, Zap, ArrowRightLeft, UserCheck, MessageSquare, Sparkles, Search, Loader2, Info, Lock,
-  Pause, Play,
+  Pause, Play, Gauge, Star,
 } from 'lucide-react'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
@@ -22,6 +22,8 @@ import { evalRoutes, fieldDefMap, fieldValueText, FIELD_TYPE_LABELS, flatFieldDe
 import { RichEditable, RichTextView, ATTACHMENT_ACCEPT, ATTACHMENT_EXTS, attachmentFileError } from '../components/TicketRichText'
 import { CcChips, CcSelectModal, ccKey } from '../components/CcPicker'
 import TicketEnrichment from '../components/TicketEnrichment'
+import TicketScorePanel from '../components/TicketScorePanel'
+import { gradeBadgeCls } from '../utils/ticketScore'
 import { validateIPExpression } from '../utils/ipValidation'
 
 const STATUS_META = {
@@ -206,8 +208,9 @@ export default function TicketDetail() {
   const [rollbackTarget, setRollbackTarget] = useState('')
   const [rollingBack, setRollingBack] = useState(false)
   const [uploadingKey, setUploadingKey] = useState('')
-  // 详情页 Tab：工单详情（流转历史）/ 安全上下文（自动研判）
-  const [activeTab, setActiveTab] = useState('detail')
+  // 详情页 Tab：工单详情（流转历史）/ 安全上下文（自动研判）/ 价值评分
+  // 从列表「评分结果」进入时直接定位到价值评分 Tab
+  const [activeTab, setActiveTab] = useState(() => (location.state?.openScore ? 'score' : 'detail'))
   // 抄送选择弹窗开关
   const [ccPickerOpen, setCcPickerOpen] = useState(false)
   // 催办（发起人/抄送人/admin 对处理中工单一键提醒当前节点分组）
@@ -1086,6 +1089,25 @@ export default function TicketDetail() {
                 <st.Icon className="h-3.5 w-3.5" />{st.label}
               </span>
               <span className={`inline-flex whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ${pr.cls}`}>{pr.label}</span>
+              {/* 价值评分状态：已评分明确标记「已完成评分」，已完成未评分为「待评分」入口 */}
+              {ticket.score?.already_scored ? (
+                <span
+                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium ring-1 ${gradeBadgeCls(ticket.score.score?.breakdown?.grade?.color || 'slate')}`}
+                  title={`已完成评分：${ticket.score.score?.final_score} 分（${ticket.score.score?.grade_label || ticket.score.score?.grade}）\n评分人：${ticket.score.score?.scored_by_name || '--'}\n评分时间：${ticket.score.score?.scored_at ? new Date(ticket.score.score.scored_at).toLocaleString('zh-CN', { hour12: false }) : '--'}\n提交时规则版本：v${ticket.score.score?.rule_version}`}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  已完成评分 · {ticket.score.score?.final_score} 分
+                </span>
+              ) : ticket.status === 'completed' ? (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('score')}
+                  className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-600 transition hover:bg-amber-500/20 dark:text-amber-400"
+                  title="该工单已完成，点击进入价值评分"
+                >
+                  <Star className="h-3.5 w-3.5" />待评分
+                </button>
+              ) : null}
               {ticket.archived && (
                 <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground"
                   title="已归档：从默认列表隐藏，可在工单中心「已归档」Tab 查看">
@@ -1168,6 +1190,7 @@ export default function TicketDetail() {
           items={[
             { key: 'detail', label: '工单详情', icon: ClipboardList },
             { key: 'enrich', label: '安全上下文', icon: ShieldCheck },
+            { key: 'score', label: '价值评分', icon: Gauge },
           ]}
           value={activeTab}
           onChange={setActiveTab}
@@ -1488,6 +1511,32 @@ export default function TicketDetail() {
             )}
           </div>
           </>
+          )}
+          {activeTab === 'score' && (
+            <div className="rounded-md border border-border bg-card p-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Gauge className="h-4 w-4 text-primary" />
+                <span className="text-sm font-semibold text-foreground">工单价值评分</span>
+                {ticket.score?.already_scored && (
+                  <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3 w-3" />已完成评分
+                  </span>
+                )}
+                {ticket.score?.rule_changed && (
+                  <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+                    规则已更新，按最新规则折算
+                  </span>
+                )}
+              </div>
+              <TicketScorePanel
+                ticketId={ticket.id}
+                initialState={ticket.score}
+                onScored={(res) => {
+                  if (res?.score) setTicket((t) => (t ? { ...t, score: res } : t))
+                  else refreshTicketSilently()
+                }}
+              />
+            </div>
           )}
           {activeTab === 'enrich' && (
             <TicketEnrichment

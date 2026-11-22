@@ -70,8 +70,9 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "duty_log": ["view", "edit", "delete"],
     "duty_dashboard": ["view"],
     # 工单（工单中心 + 工单监控大屏 + 工单配置：分组/流程模板）
-    # pause=暂停/恢复（临时挂起），独立于流转编辑权限；export=工单 CSV 导出
-    "ticket": ["view", "edit", "delete", "execute", "pause", "export"],
+    # pause=暂停/恢复（临时挂起），独立于流转编辑权限；score=工单价值评分
+    # （对已完成工单提交价值评分），export=工单 CSV 导出
+    "ticket": ["view", "edit", "delete", "execute", "pause", "score", "export"],
     "ticket_monitor": ["view"],
     "ticket_config": ["view", "edit"],
 }
@@ -142,6 +143,7 @@ ACTION_LABELS: dict[str, str] = {
     "publish": "发布",
     "handle": "处置",
     "pause": "暂停/恢复",
+    "score": "评分",
 }
 
 # 权限模块迁移映射（旧模块 → 新模块子项）
@@ -221,8 +223,13 @@ def migrate_permissions(
     _inherit_module_actions(result, "ticket_monitor", "ticket")
     # 工单暂停为新增动作：已有编辑权限的角色自动补 pause，避免升级后无法暂停/恢复
     ticket_actions = result.get("ticket")
-    if ticket_actions and "edit" in ticket_actions and "pause" not in ticket_actions:
-        result["ticket"] = [*ticket_actions, "pause"]
+    if ticket_actions and "edit" in ticket_actions:
+        if "pause" not in ticket_actions:
+            ticket_actions = [*ticket_actions, "pause"]
+        # 工单评分为新增动作：具备工单编辑权限的角色默认补评分权限
+        if "score" not in ticket_actions:
+            ticket_actions = [*ticket_actions, "score"]
+        result["ticket"] = ticket_actions
     # 工单导出为独立开关（与 alert:export 一致），不因 view 自动补权，需管理员显式授予
     # 已有系统设置权限的角色自动补 API 开放（动作取交集：view→view，edit→view+edit）
     _inherit_module_actions(result, "open_api", "system_config")
@@ -318,7 +325,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "feedback": ["view"],
             "system_monitor": ["view"],
             "audit_log": ["view", "export"],
-            "ticket": ["view", "edit", "pause", "export"],
+            "ticket": ["view", "edit", "pause", "score", "export"],
             "ticket_monitor": ["view"],
             "ticket_config": ["view", "edit"],
         },
