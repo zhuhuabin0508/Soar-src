@@ -147,7 +147,6 @@ export default function FileReceiveDetailDrawer({
               <Row label="SHA-256" mono>
                 {file?.file_sha256 || (record.status === 'SUCCESS' ? '—' : '待完成计算')}
               </Row>
-              <Row label="存储路径" mono>{file?.storage_path || '—'}</Row>
               <Row label="存储后端">{file?.storage_backend || 'local'}</Row>
               <Row label="压缩包巡检">
                 {file?.archive_check === 'passed' ? '通过' : file?.archive_check === 'skipped' ? '跳过（依赖缺失）' : file?.archive_check === 'failed' ? '未通过' : '不适用'}

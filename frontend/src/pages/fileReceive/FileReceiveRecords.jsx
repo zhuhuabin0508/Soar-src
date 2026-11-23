@@ -385,26 +385,6 @@ export default function FileReceiveRecords() {
       ),
     },
     {
-      key: 'storage_path',
-      header: '存储路径',
-      width: '190px',
-      render: (row) => (
-        row.storage_path ? (
-          <div className="flex min-w-0 items-center gap-1">
-            <span className="truncate font-mono text-[10px] text-muted-foreground" title={row.storage_path}>{row.storage_path}</span>
-            <button
-              type="button"
-              className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={(e) => { e.stopPropagation(); copyText(row.storage_path) }}
-              aria-label="复制存储路径"
-            >
-              <Copy className="h-3 w-3" />
-            </button>
-          </div>
-        ) : <span className="text-xs text-muted-foreground">—</span>
-      ),
-    },
-    {
       key: 'actions',
       header: '操作',
       width: '150px',

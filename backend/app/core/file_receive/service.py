@@ -498,7 +498,12 @@ def complete_receipt(
 
     parts = _parts(db, record_id)
     if not parts:
-        raise FileReceiveError("FR-PART-004", 409, "尚未上传任何分片", retryable=True)
+        # 开放分片模式下服务端事先不知道文件大小，空文件只能在此刻识别；
+        # 补传永远无法凑出分片，按不可重试的空文件错误终止任务，避免对端无限重试。
+        _fail_record(db, record_id, "FR-VAL-010", "文件内容为空，未上传任何分片", retryable=False)
+        raise FileReceiveError(
+            "FR-VAL-010", 400, "文件内容为空，空文件不支持接收，请勿重试"
+        )
     if len(parts) > int(settings.FILE_RECEIVE_MAX_PARTS):
         raise FileReceiveError("FR-PART-001", 400, "分片数量超过上限")
 
@@ -698,13 +703,14 @@ def _fail_record(db: Session, record_id: int, code: str, message: str, *, retrya
     if record.status == "FAILED":
         return
     now = beijing_now()
+    from_status = record.status
     record.status = "FAILED"
     record.error_code = code
     record.error_message = (message or "")[:500]
     record.retryable = retryable
     record.completed_at = now
     record.updated_at = now
-    _add_event(db, record, "FAILED", "MERGING", "FAILED", message)
+    _add_event(db, record, "FAILED", from_status, "FAILED", message)
     try:
         db.commit()
     except Exception:
