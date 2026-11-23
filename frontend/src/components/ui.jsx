@@ -7,6 +7,12 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, ChevronLeft, ChevronRight, Calendar, Clock, Search, X } from 'lucide-react'
 import { useDensityStore, DENSITY_CLASS } from '../store/densityStore'
 import DensitySwitcher from './DensitySwitcher'
+import {
+  toggleSelectedKey,
+  toggleSelectedPage,
+  isPageAllSelected,
+  isPagePartiallySelected,
+} from '../utils/selection'
 
 // ===== Button =====
 // variant: primary | secondary | danger | ghost
@@ -503,28 +509,22 @@ export function DataTable({
   // 拖拽排序状态：dragIndex=被拖起的行下标，dragOverIndex=悬停目标行下标
   const [dragIndex, setDragIndex] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
-  // 选择状态计算
+  // 选择状态计算：selectedKeys 为跨页累计集合，表头全选只针对当前页 pageKeys
   const selectedSet = new Set(selectedKeys)
   const expandedSet = new Set(expandedKeys)
   const pageKeys = data.map((row) => row[rowKey])
-  const allSelected = selectable && data.length > 0 && pageKeys.every((k) => selectedSet.has(k))
-  const someSelected = selectable && !allSelected && pageKeys.some((k) => selectedSet.has(k))
+  const allSelected = selectable && isPageAllSelected(selectedKeys, pageKeys)
+  const someSelected = selectable && isPagePartiallySelected(selectedKeys, pageKeys)
 
   const toggleAll = (checked) => {
     if (!onSelectChange) return
-    if (checked) {
-      // 合并：保留已选 + 当前页全部
-      onSelectChange([...new Set([...selectedKeys, ...pageKeys])])
-    } else {
-      // 取消当前页全部
-      const pageSet = new Set(pageKeys)
-      onSelectChange(selectedKeys.filter((k) => !pageSet.has(k)))
-    }
+    // 跨页同步：勾选=合并当前页，取消=只移除当前页，其它页勾选状态保持不变
+    onSelectChange(toggleSelectedPage(selectedKeys, pageKeys, checked))
   }
 
   const toggleRow = (key, checked) => {
     if (!onSelectChange) return
-    onSelectChange(checked ? [...selectedKeys, key] : selectedKeys.filter((k) => k !== key))
+    onSelectChange(toggleSelectedKey(selectedKeys, key, checked))
   }
 
   // 行点击：仅触发 onRowClick 回调；选中只能通过勾选框操作

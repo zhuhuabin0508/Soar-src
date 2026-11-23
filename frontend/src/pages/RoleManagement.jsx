@@ -22,6 +22,7 @@ const LOCAL_MODULE_FALLBACK = {
   bigscreen2: ['view'],
   ticket_monitor: ['view'],
   open_api: ['view', 'edit'],
+  file_receive: ['view', 'download', 'delete', 'manage'],
 }
 const LOCAL_MODULE_LABELS = {
   asset_discovery: '资产发现',
@@ -29,6 +30,7 @@ const LOCAL_MODULE_LABELS = {
   bigscreen2: '盾立方指挥大屏',
   ticket_monitor: '工单监控大屏',
   open_api: 'API开放',
+  file_receive: '文件接收',
 }
 
 function mergeModuleDef(modData) {
@@ -79,7 +81,7 @@ const MODULE_GROUPS = [
   {
     key: 'operations',
     label: '运营管理',
-    modules: ['duty_member', 'duty_schedule', 'duty_leave', 'duty_log', 'duty_dashboard'],
+    modules: ['duty_member', 'duty_schedule', 'duty_leave', 'duty_log', 'duty_dashboard', 'file_receive'],
   },
   {
     key: 'ticket',
@@ -104,7 +106,7 @@ const MODULE_GROUPS = [
 ]
 
 // 所有动作列表（用于表头）
-const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'import', 'publish', 'handle', 'pause']
+const ALL_ACTIONS = ['view', 'edit', 'delete', 'execute', 'approve', 'export', 'import', 'publish', 'handle', 'pause', 'download', 'manage']
 
 // 检查是否拥有全部权限
 function hasAllPermissions(permissions, moduleDef) {

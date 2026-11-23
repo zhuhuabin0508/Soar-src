@@ -8,7 +8,7 @@ import {
   ChevronsRight, UserRound, PieChart, Boxes, Info, Bug, MessageSquareWarning, Inbox, PackageCheck,
   CalendarClock, CalendarRange, CalendarX, History, Monitor, FileJson, BellRing, Activity, Globe,
   ShieldBan, Filter, Library, Radio, ListTree, GitGraph, ClipboardCheck, TimerReset, KeyRound, PauseCircle,
-  FileText, Gauge,
+  FileText, Gauge, FolderInput,
 } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
 import { hasPermission } from '../utils/permissions'
@@ -112,6 +112,7 @@ export const NAV_GROUPS = [
           { to: '/ticket-config/score', icon: Gauge, label: '评分规则', end: true, perm: ['ticket_config', 'view'] },
         ],
       },
+      { to: '/file-receive/records', icon: FolderInput, label: '文件接收', perm: ['file_receive', 'view'] },
     ],
   },
   {
@@ -243,6 +244,7 @@ const BREADCRUMB_MAP = {
   '/ticket-config/flows': ['运营管理', '工单配置', '流程模板'],
   '/ticket-config/flows/new': ['运营管理', '工单配置', '流程模板', '新建'],
   '/ticket-config/flows/:id/edit': ['运营管理', '工单配置', '流程模板', '编辑'],
+  '/file-receive/records': ['运营管理', '文件接收'],
   '/receivers': ['连接配置', '设备对接', '接收器'],
   '/source-entries': ['连接配置', '设备对接', '数据源条目'],
   '/source-entries/:id': ['连接配置', '设备对接', '数据源条目', '详情'],

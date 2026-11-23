@@ -75,6 +75,8 @@ PERMISSION_MODULES: dict[str, list[str]] = {
     "ticket": ["view", "edit", "delete", "execute", "pause", "score", "export"],
     "ticket_monitor": ["view"],
     "ticket_config": ["view", "edit"],
+    # 跨系统文件接收（来源管理、接收记录、下载）
+    "file_receive": ["view", "download", "delete", "manage"],
 }
 
 # 模块中文标签（前端展示用）
@@ -129,6 +131,7 @@ MODULE_LABELS: dict[str, str] = {
     "ticket": "工单中心",
     "ticket_monitor": "工单监控大屏",
     "ticket_config": "工单配置",
+    "file_receive": "文件接收",
 }
 
 # 动作中文标签
@@ -144,6 +147,8 @@ ACTION_LABELS: dict[str, str] = {
     "handle": "处置",
     "pause": "暂停/恢复",
     "score": "评分",
+    "download": "下载",
+    "manage": "管理",
 }
 
 # 权限模块迁移映射（旧模块 → 新模块子项）
@@ -328,6 +333,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "ticket": ["view", "edit", "pause", "score", "export"],
             "ticket_monitor": ["view"],
             "ticket_config": ["view", "edit"],
+            "file_receive": ["view", "download"],
         },
     },
     {
@@ -368,6 +374,7 @@ DEFAULT_ROLES: list[dict[str, Any]] = [
             "feedback": ["view"],
             "system_monitor": ["view"],
             "audit_log": ["view", "export"],
+            "file_receive": ["view"],
         },
     },
 ]

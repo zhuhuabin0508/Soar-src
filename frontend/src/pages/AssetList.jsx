@@ -19,6 +19,7 @@ import { confirm } from '../components/ConfirmDialog'
 import useLockBackgroundScroll from '../hooks/useLockBackgroundScroll'
 import { validateIPExpression, isIPFieldDef } from '../utils/ipValidation'
 import { hasPermission } from '../utils/permissions'
+import { toggleKeysInSet } from '../utils/selection'
 
 // ===== 常量映射 =====
 const STATUS_LABELS = { in_use: '在用', idle: '闲置', repair: '维修', retired: '报废', lost: '丢失' }
@@ -1172,23 +1173,26 @@ export default function AssetList() {
   }, [items])
 
   // 一键全选：先同步全选本页保证立即反馈；多页时再拉取全量 ID 升级为“全选所有匹配结果”
+  // 跨页约定：勾选只追加本页，取消只移除本页，不会清空其它页已选
   const handleHeaderSelectAll = useCallback(async () => {
     const allSelected = selectAllMode !== false && items.length > 0 && items.every((it) => selected.has(it.id))
+    const pageIds = items.map((it) => it.id)
     if (allSelected) {
-      // 已全选 → 取消全部
-      setSelected(new Set())
+      // 取消当前页，其它页勾选保持不变
+      setSelected((prev) => toggleKeysInSet(prev, pageIds, false))
       setSelectAllMode(false)
       return
     }
     // 1) 先同步全选本页，保证点击立即有反馈（当前页 checkbox 立即勾上）
-    setSelected(new Set(items.map((it) => it.id)))
+    setSelected((prev) => toggleKeysInSet(prev, pageIds, true))
     setSelectAllMode('page')
     // 2) 多页时再拉取全量匹配 ID 升级为“全选所有匹配结果”
     if (total > items.length) {
       try {
         const r = await assetsApi.listIds(currentFilter)
         const ids = (r.ids || []).filter((id) => typeof id !== 'undefined')
-        setSelected(new Set(ids))
+        // 与历史已选合并，避免丢失其它筛选/页面下已勾选的资产
+        setSelected((prev) => toggleKeysInSet(prev, ids, true))
         setSelectAllMode('all')
       } catch {
         // 拉取全量失败时不阻塞，保留“仅当前页”，并提示
@@ -1248,6 +1252,8 @@ export default function AssetList() {
           checked={selected.has(row.id)}
           onClick={(e) => e.stopPropagation()}
           onChange={() => {
+            // 手动改动单行后不再处于“全选所有匹配”语义，批量操作改为按显式勾选集合执行
+            setSelectAllMode(false)
             setSelected((p) => {
               const n = new Set(p)
               if (n.has(row.id)) n.delete(row.id); else n.add(row.id)
@@ -1890,18 +1896,24 @@ export default function AssetList() {
               columns={columns}
               data={items}
               selected={selected}
-              onToggleRow={(id) => setSelected((p) => {
-                const n = new Set(p)
-                if (n.has(id)) n.delete(id); else n.add(id)
-                return n
-              })}
-              onToggleGroup={(groupIds) => setSelected((p) => {
-                const n = new Set(p)
-                const allChecked = groupIds.every((id) => n.has(id))
-                if (allChecked) groupIds.forEach((id) => n.delete(id))
-                else groupIds.forEach((id) => n.add(id))
-                return n
-              })}
+              onToggleRow={(id) => {
+                setSelectAllMode(false)
+                setSelected((p) => {
+                  const n = new Set(p)
+                  if (n.has(id)) n.delete(id); else n.add(id)
+                  return n
+                })
+              }}
+              onToggleGroup={(groupIds) => {
+                setSelectAllMode(false)
+                setSelected((p) => {
+                  const n = new Set(p)
+                  const allChecked = groupIds.every((id) => n.has(id))
+                  if (allChecked) groupIds.forEach((id) => n.delete(id))
+                  else groupIds.forEach((id) => n.add(id))
+                  return n
+                })
+              }}
               onRowClick={(row) => setDetail(row)}
             />
           )

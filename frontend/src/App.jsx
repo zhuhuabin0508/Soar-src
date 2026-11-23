@@ -82,6 +82,7 @@ import ReportConfigs from './pages/reports/ReportConfigs'
 import ReportConfigEditor from './pages/reports/ReportConfigEditor'
 import ReportRuns from './pages/reports/ReportRuns'
 import ReportAudits from './pages/reports/ReportAudits'
+import FileReceiveRecords from './pages/fileReceive/FileReceiveRecords'
 
 // 路由守卫：未登录跳转 /login
 // 作为布局路由使用：通过则渲染 <Outlet />（子路由），否则跳转登录页。
@@ -219,6 +220,8 @@ const router = createBrowserRouter([
           { path: '/ticket-config/flows', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketFlowList /></RequirePermission> },
           { path: '/ticket-config/flows/new', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketFlowEdit /></RequirePermission> },
           { path: '/ticket-config/flows/:id/edit', element: <RequirePermission perm={['ticket_config', 'view']} label="工单配置"><TicketFlowEdit /></RequirePermission> },
+          // 运营管理 - 跨系统文件接收
+          { path: '/file-receive/records', element: <RequirePermission perm={['file_receive', 'view']} label="文件接收"><FileReceiveRecords /></RequirePermission> },
           // 连接配置 - 设备对接（设备列表 / 接收器 / 数据源条目 / 解析模板 / 告警列表 / 入库监控）
           { path: '/receivers', element: <RequirePermission perm={['device', 'view']} label="接收器"><ReceiverList /></RequirePermission> },
           { path: '/source-entries', element: <RequirePermission perm={['device', 'view']} label="数据源条目"><SourceEntryList /></RequirePermission> },

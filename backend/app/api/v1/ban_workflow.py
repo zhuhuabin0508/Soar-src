@@ -9,7 +9,8 @@
   ``POST .../blacklist/unban`` 行内解封（需 ban_workflow:edit）
 - ``GET /ban-workflow/asset-match``：手动封禁弹窗资产匹配预检（资产发现 +
   资产清单双源并行查询，复用工单安全上下文匹配规则，需 ban_workflow:view）
-- ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块）
+- ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块；
+  支持状态/关键词/封禁方式/封禁等级/封堵设备/开始封禁与解封时间范围筛选）
 - ``POST /ban-workflow/banned-ips/batch-delete``：封禁记录批量删除（需 ban_workflow:delete）
 - ``GET /ban-workflow/banned-ips/export/csv`` / ``GET .../import/template`` /
   ``POST .../import/csv``：封禁工作台 CSV/Excel 导入导出（导入仅入库待同步）
@@ -1858,20 +1859,112 @@ def sync_banned_ips_to_device(
     }
 
 
+def _parse_ban_filter_date(value: str, *, end_of_day: bool = False) -> datetime:
+    """解析封禁工作台筛选日期（YYYY-MM-DD）；created_to 包含当天。"""
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"日期格式不合法（应为 YYYY-MM-DD）: {value}")
+    if end_of_day:
+        dt = dt + timedelta(days=1) - timedelta(microseconds=1)
+    return dt
+
+
+def _apply_ban_record_filters(
+    query,
+    *,
+    status: str = "",
+    keyword: str = "",
+    ban_source: str = "",
+    ban_level: str = "",
+    ban_device: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    expire_from: str = "",
+    expire_to: str = "",
+    operator: str = "",
+):
+    """应用封禁工作台筛选（列表与导出共用，保证导出与列表口径一致）。"""
+    if status:
+        query = query.filter(BanRecord.status == status)
+    kw = (keyword or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        # 关键词同时匹配 IP / 封禁工具记录 ID / 原因 / 封堵设备 / 来源工单号
+        query = query.filter(or_(
+            BanRecord.ip.ilike(like),
+            BanRecord.record_id.ilike(like),
+            BanRecord.reason.ilike(like),
+            BanRecord.ban_device.ilike(like),
+            BanRecord.ticket_no.ilike(like),
+        ))
+    if ban_source:
+        query = query.filter(BanRecord.ban_source == ban_source)
+    if ban_level:
+        query = query.filter(BanRecord.ban_level == ban_level)
+    device_kw = (ban_device or "").strip()
+    if device_kw:
+        query = query.filter(BanRecord.ban_device.ilike(f"%{device_kw}%"))
+    # 开始封禁时间（created_at）：只填起始日期时按“当天”过滤，避免误包含之后日期的记录
+    if created_from:
+        query = query.filter(BanRecord.created_at >= _parse_ban_filter_date(created_from))
+    if created_to:
+        query = query.filter(
+            BanRecord.created_at <= _parse_ban_filter_date(created_to, end_of_day=True)
+        )
+    elif created_from:
+        query = query.filter(
+            BanRecord.created_at <= _parse_ban_filter_date(created_from, end_of_day=True)
+        )
+    # 解封时间（expire_time）：与开始封禁时间独立筛选；永久封禁（expire_time 为空）不参与
+    if expire_from:
+        query = query.filter(BanRecord.expire_time >= _parse_ban_filter_date(expire_from))
+    if expire_to:
+        query = query.filter(
+            BanRecord.expire_time <= _parse_ban_filter_date(expire_to, end_of_day=True)
+        )
+    elif expire_from:
+        query = query.filter(
+            BanRecord.expire_time <= _parse_ban_filter_date(expire_from, end_of_day=True)
+        )
+    # 解封操作人（当前台账仅记录解封操作人，封禁发起人未单独落库）
+    op_kw = (operator or "").strip()
+    if op_kw:
+        query = query.filter(BanRecord.unban_operator.ilike(f"%{op_kw}%"))
+    return query
+
+
 @router.get("/banned-ips", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def list_banned_ips(
     status: str = Query("", description="active/pending_sync/syncing/pending_approval/expired/unbanned/cancelled"),
-    ip: str = Query("", description="IP 关键词"),
+    keyword: str = Query("", description="关键词：IP/封禁工具记录/原因/封堵设备/来源工单号"),
+    ip: str = Query("", description="兼容旧参数：IP 关键词"),
+    ban_source: str = Query("", description="封禁方式：auto/approval/manual/chat/ticket/import"),
+    ban_level: str = Query("", description="封禁等级：low/medium/high/critical"),
+    ban_device: str = Query("", description="封堵设备关键词"),
+    created_from: str = Query("", description="开始封禁时间起（YYYY-MM-DD）"),
+    created_to: str = Query("", description="开始封禁时间止（YYYY-MM-DD，含当天）"),
+    expire_from: str = Query("", description="解封时间起（YYYY-MM-DD）"),
+    expire_to: str = Query("", description="解封时间止（YYYY-MM-DD，含当天）"),
+    operator: str = Query("", description="解封操作人关键词"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> dict:
-    """封禁工作台列表（分页 + 状态/IP 筛选）。"""
-    query = db.query(BanRecord)
-    if status:
-        query = query.filter(BanRecord.status == status)
-    if ip:
-        query = query.filter(BanRecord.ip.ilike(f"%{ip}%"))
+    """封禁工作台列表（分页 + 状态/关键词/封禁方式/等级/设备/开始封禁与解封时间筛选）。"""
+    query = _apply_ban_record_filters(
+        db.query(BanRecord),
+        status=status,
+        keyword=keyword or ip,
+        ban_source=ban_source,
+        ban_level=ban_level,
+        ban_device=ban_device,
+        created_from=created_from,
+        created_to=created_to,
+        expire_from=expire_from,
+        expire_to=expire_to,
+        operator=operator,
+    )
     total = query.count()
     rows = (
         query.order_by(BanRecord.id.desc())
@@ -2042,6 +2135,62 @@ def _record_issued_to_device(record: BanRecord) -> bool:
     否则会对不存在的条目发无效请求。
     """
     return bool((record.ban_device or "").strip()) and (record.ban_source or "") in ("import", "manual", "ticket")
+
+
+class BannedIpUpdateBody(BaseModel):
+    """封禁记录可编辑字段（仅元数据，不影响设备侧封禁）。"""
+
+    reason: Optional[str] = Field(None, max_length=2000, description="封禁原因/备注")
+    ban_level: Optional[str] = Field(None, description="封禁等级：low/medium/high/critical")
+
+
+@router.patch("/banned-ips/{record_id}", dependencies=[Depends(require_permission("ban_workflow", "edit"))])
+def update_banned_ip(
+    record_id: int,
+    body: BannedIpUpdateBody,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """编辑封禁记录的原因/等级（仅平台台账元数据，不触发设备重下发）。"""
+    record = db.query(BanRecord).filter(BanRecord.id == record_id).first()
+    if record is None:
+        raise HTTPException(status_code=404, detail="封禁记录不存在")
+
+    # 审计需要记录修改前后的值，先保存旧值
+    before = {"reason": record.reason or "", "ban_level": record.ban_level}
+    changed: list[str] = []
+    if body.ban_level is not None:
+        if body.ban_level not in _LEVEL_LABELS:
+            raise HTTPException(status_code=400, detail=f"不支持的封禁等级: {body.ban_level}")
+        if record.ban_level != body.ban_level:
+            record.ban_level = body.ban_level
+            changed.append("ban_level")
+    if body.reason is not None:
+        reason = body.reason.strip()
+        if (record.reason or "") != reason:
+            record.reason = reason
+            changed.append("reason")
+
+    if not changed:
+        return _record_item(db, record)
+
+    db.commit()
+    after = {"reason": record.reason or "", "ban_level": record.ban_level}
+    write_audit(
+        db, action="update", resource_type="ban_record", resource_id=record_id,
+        detail={
+            "fields": changed,
+            "before": {key: before[key] for key in changed},
+            "after": {key: after[key] for key in changed},
+            "reason": record.reason or "",
+            "ban_level": record.ban_level,
+        },
+        operator=user.username,
+        ip_address=request.client.host if request.client else "",
+        user_id=user.id,
+    )
+    return _record_item(db, record)
 
 
 class UnbanBody(BaseModel):
@@ -2508,7 +2657,16 @@ _WB_EXPORT_DEFAULT_FIELDS = list(_WB_EXPORT_FIELDS.keys())
 def export_banned_ips_csv(
     ids: str = Query("", description="逗号分隔的封禁记录 ID（传了就只导出这些记录）"),
     status: str = Query("", description="按状态筛选导出"),
-    ip: str = Query("", description="按 IP 关键词筛选导出"),
+    keyword: str = Query("", description="关键词：IP/封禁工具记录/原因/封堵设备/来源工单号"),
+    ip: str = Query("", description="兼容旧参数：按 IP 关键词筛选导出"),
+    ban_source: str = Query("", description="按封禁方式筛选导出"),
+    ban_level: str = Query("", description="按封禁等级筛选导出"),
+    ban_device: str = Query("", description="按封堵设备关键词筛选导出"),
+    created_from: str = Query("", description="开始封禁时间起（YYYY-MM-DD）"),
+    created_to: str = Query("", description="开始封禁时间止（YYYY-MM-DD，含当天）"),
+    expire_from: str = Query("", description="解封时间起（YYYY-MM-DD）"),
+    expire_to: str = Query("", description="解封时间止（YYYY-MM-DD，含当天）"),
+    operator: str = Query("", description="解封操作人关键词"),
     fields: str = Query("", description="逗号分隔的导出字段 key；不传导出全部字段"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -2534,10 +2692,19 @@ def export_banned_ips_csv(
                 raise HTTPException(status_code=400, detail=f"记录 ID 不合法: {part}")
         query = query.filter(BanRecord.id.in_(id_values))
     else:
-        if status:
-            query = query.filter(BanRecord.status == status)
-        if ip:
-            query = query.filter(BanRecord.ip.ilike(f"%{ip}%"))
+        query = _apply_ban_record_filters(
+            query,
+            status=status,
+            keyword=keyword or ip,
+            ban_source=ban_source,
+            ban_level=ban_level,
+            ban_device=ban_device,
+            created_from=created_from,
+            created_to=created_to,
+            expire_from=expire_from,
+            expire_to=expire_to,
+            operator=operator,
+        )
     records = query.order_by(BanRecord.id.desc()).all()
 
     selected_fields = [f.strip() for f in fields.split(",") if f.strip()]
@@ -2563,7 +2730,11 @@ def export_banned_ips_csv(
         result="success",
         detail={
             "count": len(records), "ids": id_values[:100],
-            "status": status, "ip": ip, "fields": selected_fields,
+            "status": status, "keyword": keyword or ip,
+            "ban_source": ban_source, "ban_level": ban_level,
+            "ban_device": ban_device, "created_from": created_from,
+            "created_to": created_to, "expire_from": expire_from,
+            "expire_to": expire_to, "operator": operator, "fields": selected_fields,
         },
     )
     db.commit()

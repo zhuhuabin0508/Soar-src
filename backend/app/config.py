@@ -82,6 +82,26 @@ class Settings(BaseSettings):
     # 0 = 按名称「工单安全分析研判智能体」兜底解析，启动时幂等自动创建
     TICKET_ANALYST_AGENT_ID: int = 0
 
+    # ===== 跨系统文件接收服务 =====
+    # 存储根目录：相对路径按 backend 目录解析；生产容器内即 /app/uploads/file_receive
+    FILE_RECEIVE_ROOT: str = "uploads/file_receive"
+    FILE_RECEIVE_MAX_FILE_MB: int = 200
+    FILE_RECEIVE_CHUNK_SIZE_MB: int = 4
+    FILE_RECEIVE_MAX_PARTS: int = 200
+    FILE_RECEIVE_SESSION_TTL_MINUTES: int = 120
+    FILE_RECEIVE_QPS_DEFAULT: int = 20
+    FILE_RECEIVE_BURST_DEFAULT: int = 40
+    FILE_RECEIVE_MAX_SESSIONS_PER_SOURCE: int = 8
+    FILE_RECEIVE_GLOBAL_UPLOAD_CONCURRENCY: int = 64
+    FILE_RECEIVE_MERGE_CONCURRENCY: int = 2
+    FILE_RECEIVE_DISK_WARN_PCT: int = 85
+    FILE_RECEIVE_DISK_REJECT_PCT: int = 92
+    FILE_RECEIVE_RETENTION_DAYS: int = 90
+    FILE_RECEIVE_TEMP_RETENTION_HOURS: int = 24
+    FILE_RECEIVE_SCAN_ENABLED: bool = False
+    CLAMAV_HOST: str = "127.0.0.1"
+    CLAMAV_PORT: int = 3310
+
     # ===== XDR 开放性 OpenAPI（联动码签名调用）=====
     # XDR 平台地址，建议带协议（https://host[:port]）；不带协议时默认 https
     XDR_OPENAPI_HOST: str = ""

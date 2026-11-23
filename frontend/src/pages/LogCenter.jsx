@@ -338,6 +338,8 @@ function LogCenter() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedKeys, setSelectedKeys] = useState([])
+  // 跨页勾选行缓存：翻页后仍能拿到已选日志的完整字段，供批量导出使用
+  const selectedRowCacheRef = useRef(new Map())
 
   // 筛选条件（各 Tab 独立 + 通用时间范围）
   const [timeRange, setTimeRange] = useState('')
@@ -394,7 +396,6 @@ function LogCenter() {
       else if (tab === 'model-calls') res = await logsApi.modelCalls({ ...common, ...modelFilter })
       setItems(res?.items || [])
       setTotal(res?.total ?? 0)
-      setSelectedKeys([])
     } catch (err) {
       setError(err.message || '加载失败')
       setItems([]); setTotal(0)
@@ -402,6 +403,20 @@ function LogCenter() {
   }, [tab, offset, pageSize, startTime, auditFilter, execFilter, execLogFilter, modelFilter])
 
   useEffect(() => { load() }, [load])
+
+  // 缓存已加载日志行并按选中集合裁剪，保证跨页选中项在翻页后仍可导出
+  useEffect(() => {
+    const cache = selectedRowCacheRef.current
+    items.forEach((row) => cache.set(row.id, row))
+    if (selectedKeys.length === 0) return
+    const keep = new Set(selectedKeys)
+    for (const id of cache.keys()) if (!keep.has(id)) cache.delete(id)
+  }, [items, selectedKeys])
+
+  // 仅 Tab/筛选条件变化时清空选择；翻页、每页条数变化及 tail 自动刷新保留跨页勾选
+  useEffect(() => {
+    setSelectedKeys([])
+  }, [tab, startTime, auditFilter, execFilter, execLogFilter, modelFilter])
 
   // 实时 tail 模式：每 5 秒自动刷新
   useEffect(() => {
@@ -451,10 +466,13 @@ function LogCenter() {
     finally { setCleaning(false) }
   }
 
-  // 批量导出 CSV
+  // 批量导出 CSV（跨页选中项从缓存还原，不局限于当前页）
   const handleExport = () => {
     if (selectedKeys.length === 0) { toast.warning('请先勾选要导出的日志'); return }
-    const selected = items.filter((it) => selectedKeys.includes(it.id))
+    const currentById = new Map(items.map((it) => [it.id, it]))
+    const selected = selectedKeys
+      .map((id) => selectedRowCacheRef.current.get(id) || currentById.get(id))
+      .filter(Boolean)
     if (selected.length === 0) return
     const headers = Object.keys(selected[0])
     const csv = [

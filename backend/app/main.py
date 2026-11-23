@@ -467,6 +467,37 @@ async def _report_exception_handler(request, exc: ReportError):  # noqa: ARG001
     )
 
 
+# ============ 跨系统文件接收统一错误响应 ============
+from app.core.file_receive.errors import FileReceiveError  # noqa: E402
+
+
+@app.exception_handler(FileReceiveError)
+async def _file_receive_exception_handler(request, exc: FileReceiveError):
+    """对外接口统一错误信封；管理端复用同一异常时也返回可读消息。"""
+    import uuid
+
+    trace_id = getattr(request.state, "fr_trace_id", None) or uuid.uuid4().hex[:16]
+    request_id = getattr(request.state, "fr_request_id", None)
+    request.state.fr_error_code = exc.code
+    content = {
+        "code": exc.code,
+        "message": exc.message,
+        "request_id": request_id,
+        "trace_id": trace_id,
+        "details": exc.details,
+        "retryable": exc.retryable,
+        "retry_after": exc.retry_after,
+    }
+    headers = {"X-Trace-Id": trace_id, "X-Contract-Version": "2026-11-01"}
+    if exc.retry_after is not None:
+        headers["Retry-After"] = str(exc.retry_after)
+    if exc.http_status >= 500:
+        logger.error("文件接收异常: code=%s path=%s", exc.code, request.url.path)
+    else:
+        logger.info("文件接收拒绝: code=%s path=%s", exc.code, request.url.path)
+    return JSONResponse(status_code=exc.http_status, content=content, headers=headers)
+
+
 # ============ 限流器（slowapi）============
 # 限流器实例在 app.core.limiter 中定义（独立模块避免循环导入），
 # 此处挂到 app.state 并注册异常处理器与中间件。
@@ -506,6 +537,16 @@ from app.core.open_api_auth import open_api_call_middleware  # noqa: E402
 async def _open_api_call_middleware(request, call_next):
     """记录开放 API 网关调用日志（应用/资源/状态码/耗时/IP），含鉴权拒绝。"""
     return await open_api_call_middleware(request, call_next)
+
+
+# ============ 文件接收对外接口访问日志（仅 /file-receive/open/*）============
+from app.core.file_receive.access_log import file_receive_access_middleware  # noqa: E402
+
+
+@app.middleware("http")
+async def _file_receive_access_middleware(request, call_next):
+    """记录文件接收对外接口调用（来源/状态码/错误码/耗时/字节数）。"""
+    return await file_receive_access_middleware(request, call_next)
 
 # 所有业务路由统一前缀 /api/v1
 app.include_router(api_router, prefix="/api/v1")

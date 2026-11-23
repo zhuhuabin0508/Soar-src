@@ -53,6 +53,8 @@ export const banWorkflowApi = {
   // ===== 封禁工作台 =====
   bannedIps: (params = {}) => request(`/ban-workflow/banned-ips${qs(params)}`),
   bannedIp: (id) => request(`/ban-workflow/banned-ips/${id}`),
+  // 编辑封禁记录原因/等级（仅台账元数据，不触发设备重下发）
+  updateBannedIp: (id, data) => request(`/ban-workflow/banned-ips/${id}`, { method: 'PATCH', body: data }),
   unbanIp: (id, reason) => request(`/ban-workflow/banned-ips/${id}/unban`, {
     method: 'POST', body: { reason },
   }),
@@ -110,12 +112,24 @@ export const banWorkflowApi = {
     method: 'POST', body: { ids, device_id: deviceId },
   }),
   // 导出封禁记录 CSV（支持全部/筛选/选中 + 字段选择；时长按天）
-  exportBannedIpsCsv: async ({ ids, status, ip, fields } = {}) => {
+  exportBannedIpsCsv: async ({
+    ids, status, keyword, ip, ban_source, ban_level, ban_device,
+    created_from, created_to, expire_from, expire_to, operator, fields,
+  } = {}) => {
     const params = new URLSearchParams()
     if (Array.isArray(ids) && ids.length) params.set('ids', ids.join(','))
     else {
       if (status) params.set('status', status)
-      if (ip) params.set('ip', ip)
+      if (keyword) params.set('keyword', keyword)
+      else if (ip) params.set('ip', ip)
+      if (ban_source) params.set('ban_source', ban_source)
+      if (ban_level) params.set('ban_level', ban_level)
+      if (ban_device) params.set('ban_device', ban_device)
+      if (created_from) params.set('created_from', created_from)
+      if (created_to) params.set('created_to', created_to)
+      if (expire_from) params.set('expire_from', expire_from)
+      if (expire_to) params.set('expire_to', expire_to)
+      if (operator) params.set('operator', operator)
     }
     if (Array.isArray(fields) && fields.length) params.set('fields', fields.join(','))
     const query = params.toString()

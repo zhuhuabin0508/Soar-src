@@ -136,6 +136,8 @@ export default function TicketCenter() {
   const [resumingId, setResumingId] = useState(null)
   // 批量暂停/恢复：列表多选 + 批量弹窗
   const [selectedIds, setSelectedIds] = useState([])
+  // 跨页勾选行缓存：翻页后仍能还原已选工单的状态/权限，批量操作按全部已选项生效
+  const selectedRowCacheRef = useRef(new Map())
   const [batchPauseOpen, setBatchPauseOpen] = useState(false)
   const [batchType, setBatchType] = useState('')
   const [batchReason, setBatchReason] = useState('')
@@ -251,9 +253,13 @@ export default function TicketCenter() {
     startTime, endTime,
     scoreStatus, scoreGrade, scoreMin, scoreMax, scoredFrom, scoredTo])
 
-  // 视图/筛选/翻页变化时清空多选与展开行，避免操作到不在当前页的工单
+  // 视图/筛选变化时清空多选，避免操作到不同结果集；翻页/每页条数变化保留跨页勾选
   useEffect(() => {
     setSelectedIds([])
+  }, [view, status, priority, searchKw, filterFlowId, timeoutOnly,
+    scoreStatus, scoreGrade, scoreMin, scoreMax, scoredFrom, scoredTo])
+  // 展开行仅在当前页有效：翻页/筛选变化时收起
+  useEffect(() => {
     setExpandedIds([])
   }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly,
     startTime, endTime,
@@ -673,11 +679,22 @@ export default function TicketCenter() {
       .finally(() => setResumingId(null))
   }
 
-  // 批量操作：仅对本页已勾选且当前状态可操作、且有权限的工单生效
-  const selectedRows = useMemo(
-    () => list.filter((r) => selectedIds.includes(r.id)),
-    [list, selectedIds],
-  )
+  // 缓存已加载过的工单并按选中集合裁剪，保证跨页选中项在翻页后仍可取到状态
+  useEffect(() => {
+    const cache = selectedRowCacheRef.current
+    list.forEach((row) => cache.set(row.id, row))
+    if (selectedIds.length === 0) return
+    const keep = new Set(selectedIds)
+    for (const id of cache.keys()) if (!keep.has(id)) cache.delete(id)
+  }, [list, selectedIds])
+
+  // 批量操作：对全部已勾选工单生效（含其它页），当前页选中项直接用列表数据兜底
+  const selectedRows = useMemo(() => {
+    const currentById = new Map(list.map((r) => [r.id, r]))
+    return selectedIds
+      .map((id) => selectedRowCacheRef.current.get(id) || currentById.get(id))
+      .filter(Boolean)
+  }, [list, selectedIds])
   const batchPausable = selectedRows.filter((r) => r.status === 'processing' && r.can_pause)
   const batchResumable = selectedRows.filter((r) => r.status === 'paused' && r.can_resume)
   const currentPauseOption = pauseOptions.find((o) => o.code === batchType)

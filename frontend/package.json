@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:chat": "node --test src/utils/chatConversations.test.js src/utils/chatStorage.test.js src/utils/chatSync.test.js src/utils/docFiles.test.js",
-    "test:ticket": "node --test src/utils/ticketAgentReasons.test.js"
+    "test:ticket": "node --test src/utils/ticketAgentReasons.test.js",
+    "test:selection": "node --test src/utils/selection.test.js"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.26",

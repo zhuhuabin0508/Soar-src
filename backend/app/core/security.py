@@ -1331,6 +1331,26 @@ def run_lightweight_migrations(engine) -> None:
         except Exception as exc:  # noqa: BLE001
             # 中文分词配置可能不存在（如 SQLite 测试环境），降级用 ILIKE
             logger.warning("agent_memories GIN 索引创建失败（降级为 ILIKE 检索）: %s", exc)
+        # ban_records 模糊搜索 GIN trgm 索引：关键词/设备/操作人筛选使用前后通配符 ILIKE，
+        # 普通 btree 索引无法命中，数据量增长后会退化为全表扫描。
+        if engine.dialect.name == "postgresql":
+            try:
+                with engine.begin() as conn:
+                    for index_name, column in (
+                        ("ix_ban_records_ip_trgm", "ip"),
+                        ("ix_ban_records_record_id_trgm", "record_id"),
+                        ("ix_ban_records_reason_trgm", "reason"),
+                        ("ix_ban_records_ban_device_trgm", "ban_device"),
+                        ("ix_ban_records_ticket_no_trgm", "ticket_no"),
+                        ("ix_ban_records_unban_operator_trgm", "unban_operator"),
+                    ):
+                        conn.execute(text(
+                            f"CREATE INDEX IF NOT EXISTS {index_name} "
+                            f"ON ban_records USING gin ({column} gin_trgm_ops)"
+                        ))
+                logger.info("轻量迁移: ban_records 模糊搜索 GIN 索引已确保存在")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ban_records 模糊搜索 GIN 索引创建失败（降级为顺序扫描）: %s", exc)
         # devices 表新增连接状态、心跳、标签、认证方式、连接参数等（设备对接页面增强）
         ensure_columns(
             engine,

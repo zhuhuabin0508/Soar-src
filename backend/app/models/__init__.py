@@ -41,6 +41,15 @@ from app.models.execution import Execution
 from app.models.execution_log import ExecutionLog
 from app.models.execution_trace import ExecutionTrace
 from app.models.feedback import Feedback, FeedbackHistory
+from app.models.file_receive import (
+    FileReceiveSource,
+    FileReceiveObject,
+    FileReceiveBizNoSequence,
+    FileReceiveRecord,
+    FileReceivePart,
+    FileReceiveEvent,
+    FileReceiveAccessLog,
+)
 from app.models.govcloud_asset import (
     GovCloudImportBatch,
     GovCloudCloudHost,
@@ -147,7 +156,8 @@ __all__ = [
     "SystemConfig",
     "AuditLog",
     "BannedIP",
-    "BanHitStat",
+    "BanHitStat",
+
     "ChatMessage",
     "ChatSession",
     "Notification",
@@ -158,6 +168,13 @@ __all__ = [
     "UserNotificationPref",
     "Feedback",
     "FeedbackHistory",
+    "FileReceiveSource",
+    "FileReceiveObject",
+    "FileReceiveBizNoSequence",
+    "FileReceiveRecord",
+    "FileReceivePart",
+    "FileReceiveEvent",
+    "FileReceiveAccessLog",
     "GovCloudImportBatch",
     "GovCloudCloudHost",
     "GovCloudBareMetal",

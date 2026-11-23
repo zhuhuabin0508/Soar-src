@@ -46,6 +46,11 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # 任务失败最大重试次数（0 = 不自动重试，由业务逻辑控制）
     task_default_max_retries=0,
+    # 文件接收清理/告警走独立队列，避免与工单/报告任务互相阻塞
+    task_routes={
+        "cleanup_file_receive": {"queue": "file_receive"},
+        "scan_file_receive_alerts": {"queue": "file_receive"},
+    },
 )
 
 # ============================================================================
@@ -80,6 +85,16 @@ celery_app.conf.beat_schedule = {
     "scan-report-schedules": {
         "task": "scan_report_schedules",
         "schedule": crontab(minute="*"),
+    },
+    # 文件接收：每分钟扫描成功率/磁盘/积压/签名异常并告警
+    "scan-file-receive-alerts": {
+        "task": "scan_file_receive_alerts",
+        "schedule": 60.0,
+    },
+    # 文件接收：每 10 分钟清理过期会话、孤儿临时目录、无引用对象与旧访问日志
+    "cleanup-file-receive": {
+        "task": "cleanup_file_receive",
+        "schedule": 600.0,
     },
 }
 

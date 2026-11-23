@@ -191,14 +191,14 @@ export default function AnbotongWhitelist({ embedded = false }) {
   const gotoPage = (p) => {
     const np = Math.max(1, p)
     setPage(np)
-    setSelected([])
+    // 翻页保留其它页已勾选项，避免跨页选择丢失
     load({ page: np })
   }
   const changePageSize = (value) => {
     const nc = Number(value)
     setPageSize(nc)
     setPage(1)
-    setSelected([])
+    // 仅每页条数变化，不清空已勾选项
     load({ page: 1, pageSize: nc })
   }
   // 批量选择上限与设备批量接口一致（100 条）

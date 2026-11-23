@@ -612,11 +612,11 @@ export default function DeliverableManagement() {
     loadDeliverables()
   }, [loadDeliverables])
 
-  // 切换类别时清空选择
+  // 切换类别/搜索条件时清空选择；翻页、每页条数与排序只改变展示，保留跨页勾选
   useEffect(() => {
     setSelectedIds(new Set())
     setSelectedCatIds(new Set())
-  }, [activeCatId, page, pageSize, search, sortKey, sortDir])
+  }, [activeCatId, search])
 
   // 点击表头排序：同列切换升/降序，换列默认升序，并回到第一页
   const handleSort = useCallback((field) => {

@@ -178,6 +178,14 @@ services:
     mem_limit: 2g
     memswap_limit: 2g
 
+  # 文件接收独立 worker：只消费 file_receive 队列（清理/告警），
+  # 避免大文件相关任务与工单/报告任务互相阻塞。
+  worker-file-receive:
+    extends:
+      service: worker-dev
+    container_name: soar-worker-file-receive
+    command: ["celery", "-A", "app.core.celery_app", "worker", "-l", "info", "-Q", "file_receive", "-c", "2"]
+
   beat-dev:
     image: soar-backend:latest
     container_name: soar-beat-dev

@@ -9,6 +9,7 @@ from app.tasks.ticket_pause_tasks import scan_ticket_pauses
 from app.tasks.dashboard_cache_tasks import refresh_dashboard_cache
 from app.tasks.daily_stats_tasks import rollup_daily_stats
 from app.tasks.report_tasks import execute_report_run, scan_report_schedules
+from app.tasks.file_receive_tasks import cleanup_file_receive, scan_file_receive_alerts
 
 __all__ = [
     "execute_workflow",
@@ -19,4 +20,6 @@ __all__ = [
     "rollup_daily_stats",
     "execute_report_run",
     "scan_report_schedules",
+    "cleanup_file_receive",
+    "scan_file_receive_alerts",
 ]

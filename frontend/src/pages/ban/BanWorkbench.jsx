@@ -5,12 +5,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ShieldBan, ShieldCheck, Search, Inbox, LockOpen, Loader2, RotateCw, ExternalLink, Plus, Trash2,
+  ShieldBan, ShieldCheck, Search, Inbox, LockOpen, Loader2, RotateCw, RotateCcw, ExternalLink, Plus, Trash2,
   Upload, Download, Info, CheckCircle2, AlertTriangle, SkipForward, XCircle, X, Database,
+  ChevronDown, ChevronUp, Pencil,
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect, AutoGrowTextarea, SearchInput } from '../../components/ui'
+import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, CompactSelect, AutoGrowTextarea, SearchInput, DatePicker } from '../../components/ui'
 import { Modal, Drawer } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission, guardNavPermission } from '../../utils/permissions'
@@ -23,6 +24,25 @@ const STATUS_OPTIONS = [
   { v: 'pending_approval', label: '待审批' }, { v: 'expired', label: '已解封' },
   { v: 'unbanned', label: '已解封' }, { v: 'cancelled', label: '已取消' },
 ]
+// 封禁方式（与后端 _BAN_SOURCE_LABELS 对齐）
+const SOURCE_OPTIONS = [
+  { v: 'auto', label: '自动封禁' }, { v: 'approval', label: '审批封禁' },
+  { v: 'manual', label: '手动封禁' }, { v: 'chat', label: '聊天封禁' },
+  { v: 'ticket', label: '工单同步' }, { v: 'import', label: '导入封禁' },
+]
+// 封禁等级（critical 为最高级）
+const LEVEL_OPTIONS = [
+  { v: 'critical', label: '严重' }, { v: 'high', label: '高' },
+  { v: 'medium', label: '中' }, { v: 'low', label: '低' },
+]
+// 筛选草稿/已应用的统一结构（点击「查询」后才写入 filters）
+const EMPTY_FILTERS = {
+  status: '', keyword: '', banSource: '', banLevel: '', banDevice: '',
+  createdFrom: '', createdTo: '', expireFrom: '', expireTo: '', operator: '',
+}
+// 用于生成筛选值签名，避免仅因对象引用变化就清空勾选
+const FILTER_KEYS = Object.keys(EMPTY_FILTERS)
+
 const STATUS_VARIANT = {
   active: 'danger', pending_sync: 'warning', syncing: 'warning', pending_approval: 'warning',
   expired: 'neutral', unbanned: 'neutral', cancelled: 'neutral',
@@ -169,10 +189,31 @@ export default function BanWorkbench({ embedded = false }) {
   const canDelete = hasPermission('ban_workflow', 'delete')
   const canExport = hasPermission('ban_workflow', 'export')
   const canImport = hasPermission('ban_workflow', 'import')
-  const [status, setStatus] = useState('')
-  const [ip, setIp] = useState('')
+  // 筛选：draft 为表单草稿，filters 为点击「查询」后真正应用的条件
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS)
+  const [moreOpen, setMoreOpen] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const hasActiveFilters = Object.values(filters).some(Boolean)
+  const hasDraftFilters = Object.values(draftFilters).some(Boolean)
+  // 仅筛选值真正变化时才清空跨页勾选；重复点击查询（引用变化）不丢勾选
+  const filterSignature = FILTER_KEYS.map((key) => filters[key] || '').join('\u0000')
+  const advancedActiveCount = [
+    filters.banSource, filters.banLevel, filters.banDevice,
+    filters.expireFrom, filters.expireTo, filters.operator,
+  ].filter(Boolean).length
+  const setDraft = (key, value) => setDraftFilters((prev) => ({ ...prev, [key]: value }))
+  const applyFilters = () => {
+    // 每次查询都应用一个新对象，确保重复点击查询也能刷新结果
+    setFilters({ ...draftFilters })
+    setPage(1)
+  }
+  const resetFilters = () => {
+    setDraftFilters(EMPTY_FILTERS)
+    setFilters(EMPTY_FILTERS)
+    setPage(1)
+  }
   const [list, setList] = useState({ total: 0, items: [] })
   const [loading, setLoading] = useState(false)
   const [detail, setDetail] = useState(null)
@@ -180,6 +221,10 @@ export default function BanWorkbench({ embedded = false }) {
   const [unbanTarget, setUnbanTarget] = useState(null)
   const [unbanReason, setUnbanReason] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  // 编辑封禁记录（仅原因/等级元数据）
+  const [editTarget, setEditTarget] = useState(null)
+  const [editForm, setEditForm] = useState({ reason: '', banLevel: 'medium' })
+  const [editSaving, setEditSaving] = useState(false)
   // 手动封禁弹窗
   const [manualOpen, setManualOpen] = useState(false)
   const [manualForm, setManualForm] = useState({
@@ -403,6 +448,8 @@ export default function BanWorkbench({ embedded = false }) {
 
   // 选择（批量同步）
   const [selected, setSelected] = useState([])
+  // 跨页勾选行缓存：翻页后仍可还原已选记录的详情（待同步统计、批量同步等）
+  const selectedRecordCacheRef = useRef(new Map())
   // 批量删除（需 ban_workflow:delete）
   const [batchDeleteBusy, setBatchDeleteBusy] = useState(false)
   const [batchDeleteResult, setBatchDeleteResult] = useState(null)
@@ -431,15 +478,38 @@ export default function BanWorkbench({ embedded = false }) {
 
   const load = useCallback(() => {
     setLoading(true)
-    banWorkflowApi.bannedIps({ status, ip, page, page_size: pageSize })
+    banWorkflowApi.bannedIps({
+      status: filters.status,
+      keyword: filters.keyword,
+      ban_source: filters.banSource,
+      ban_level: filters.banLevel,
+      ban_device: filters.banDevice,
+      created_from: filters.createdFrom,
+      created_to: filters.createdTo,
+      expire_from: filters.expireFrom,
+      expire_to: filters.expireTo,
+      operator: filters.operator,
+      page,
+      page_size: pageSize,
+    })
       .then((res) => setList({ total: res.total || 0, items: res.items || [] }))
       .catch((e) => toast.error(e.message || '封禁列表加载失败'))
       .finally(() => setLoading(false))
-  }, [status, ip, page, pageSize])
+  }, [filters, page, pageSize])
 
   useEffect(() => { load() }, [load])
-  // 筛选/翻页变化后清空选择，避免批量操作误作用于不可见记录
-  useEffect(() => { setSelected([]) }, [status, ip, page, pageSize])
+  // 仅在筛选值真正变化时清空选择；翻页/每页条数变化保留跨页勾选记录
+  useEffect(() => {
+    setSelected([])
+  }, [filterSignature])
+  // 缓存已加载过的记录并按选中集合裁剪，保证跨页选中项在翻页后仍可取到详情
+  useEffect(() => {
+    const cache = selectedRecordCacheRef.current
+    list.items.forEach((row) => cache.set(row.id, row))
+    if (selected.length === 0) return
+    const keep = new Set(selected)
+    for (const id of cache.keys()) if (!keep.has(id)) cache.delete(id)
+  }, [list.items, selected])
 
   const openDetail = (id) => {
     setDetailLoading(true)
@@ -541,6 +611,30 @@ export default function BanWorkbench({ embedded = false }) {
     }
   }
 
+  // 编辑封禁记录：仅修改原因/等级元数据，不触发设备重下发
+  const openEdit = (r) => {
+    setEditTarget(r)
+    setEditForm({ reason: r.reason || '', banLevel: r.ban_level || 'medium' })
+  }
+  const saveEdit = async () => {
+    if (!editTarget) return
+    setEditSaving(true)
+    try {
+      await banWorkflowApi.updateBannedIp(editTarget.id, {
+        reason: editForm.reason,
+        ban_level: editForm.banLevel,
+      })
+      toast.success('封禁记录已更新')
+      setEditTarget(null)
+      load()
+      if (detail && detail.id === editTarget.id) openDetail(editTarget.id)
+    } catch (e) {
+      toast.error(e.message || '更新失败')
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
   // 批量删除封禁记录（需 ban_workflow:delete）：逐条独立处理，结果弹窗展示成功/失败明细
   const doBatchDelete = async () => {
     const ids = Array.from(new Set(selected))
@@ -580,7 +674,21 @@ export default function BanWorkbench({ embedded = false }) {
     try {
       let params = { fields: exportFields }
       if (exportScope === 'selected') params = { ids: selected, fields: exportFields }
-      else if (exportScope === 'filtered') params = { status, ip, fields: exportFields }
+      else if (exportScope === 'filtered') {
+        params = {
+          status: filters.status,
+          keyword: filters.keyword,
+          ban_source: filters.banSource,
+          ban_level: filters.banLevel,
+          ban_device: filters.banDevice,
+          created_from: filters.createdFrom,
+          created_to: filters.createdTo,
+          expire_from: filters.expireFrom,
+          expire_to: filters.expireTo,
+          operator: filters.operator,
+          fields: exportFields,
+        }
+      }
       await banWorkflowApi.exportBannedIpsCsv(params)
       toast.success('封禁记录已导出')
       setExportOpen(false)
@@ -699,7 +807,11 @@ export default function BanWorkbench({ embedded = false }) {
     }
   }
 
-  const selectedRecords = list.items.filter((r) => selected.includes(r.id))
+  // 跨页选中记录：从缓存按 id 还原，当前页选中项直接用列表数据兜底
+  const currentRecordsById = new Map(list.items.map((r) => [r.id, r]))
+  const selectedRecords = selected
+    .map((id) => selectedRecordCacheRef.current.get(id) || currentRecordsById.get(id))
+    .filter(Boolean)
   const pendingSelected = selectedRecords.filter((r) => r.status === 'pending_sync')
 
   const columns = [
@@ -771,6 +883,11 @@ export default function BanWorkbench({ embedded = false }) {
               <LockOpen className="h-4 w-4" />
             </button>
           )}
+          {canEdit && (
+            <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-foreground" title="编辑原因/等级" onClick={() => openEdit(r)}>
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
           {canDelete && (
             <button className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-destructive" title="删除封禁记录" onClick={() => doDelete(r)}>
               <Trash2 className="h-4 w-4" />
@@ -788,22 +905,180 @@ export default function BanWorkbench({ embedded = false }) {
   // 主体内容（embedded 模式下直接渲染，不套页面容器）
   const content = (
     <>
-      {/* 筛选区 */}
+      {/* 筛选区：常用条件常驻，高级条件折叠；查询按钮固定在尾部 */}
       <Card className="mb-4">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <CompactSelect size="sm" className="w-[130px]" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1) }}>
-            <option value="">全部状态</option>
-            {STATUS_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
-          </CompactSelect>
-          {/* IP 搜索框：输入即实时过滤（后端模糊匹配 IP/标识/原因），Enter/清空均可 */}
-          <SearchInput
-            className="w-[220px]"
-            placeholder="搜索 IP / 标识 / 原因"
-            value={ip}
-            onChange={(v) => { setIp(v); setPage(1) }}
-            onClear={() => { setIp(''); setPage(1) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') load() }}
-          />
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-end gap-2.5">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">封禁状态</span>
+              <CompactSelect size="sm" className="w-[130px]" value={draftFilters.status} onChange={(e) => setDraft('status', e.target.value)}>
+                <option value="">全部状态</option>
+                {STATUS_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+              </CompactSelect>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">关键词</span>
+              <SearchInput
+                className="w-[240px]"
+                placeholder="IP / 标识 / 原因 / 工单号"
+                value={draftFilters.keyword}
+                onChange={(v) => setDraft('keyword', v)}
+                onClear={() => setDraft('keyword', '')}
+                onKeyDown={(e) => { if (e.key === 'Enter') applyFilters() }}
+              />
+            </label>
+            {/* 开始封禁时间范围：只选一个日期时按当天过滤；结束日期包含当天 */}
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">开始封禁时间</span>
+              <div className="flex items-center gap-1.5">
+                <DatePicker
+                  value={draftFilters.createdFrom}
+                  placeholder="开始日期"
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setDraftFilters((prev) => ({
+                      ...prev,
+                      createdFrom: v,
+                      createdTo: v && prev.createdTo && prev.createdTo < v ? '' : prev.createdTo,
+                    }))
+                  }}
+                />
+                <span className="text-xs text-muted-foreground">至</span>
+                <DatePicker
+                  value={draftFilters.createdTo}
+                  placeholder="结束日期"
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setDraftFilters((prev) => ({
+                      ...prev,
+                      createdTo: v,
+                      createdFrom: v && prev.createdFrom && prev.createdFrom > v ? '' : prev.createdFrom,
+                    }))
+                  }}
+                />
+              </div>
+            </div>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setMoreOpen((v) => !v)}>
+                {moreOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                更多筛选
+                {advancedActiveCount > 0 && (
+                  <span className="ml-0.5 rounded-full bg-primary/15 px-1.5 text-[11px] font-medium text-primary">
+                    {advancedActiveCount}
+                  </span>
+                )}
+              </Button>
+              {(hasActiveFilters || hasDraftFilters) && (
+                <Button size="sm" variant="ghost" onClick={resetFilters}>
+                  <RotateCcw className="h-3.5 w-3.5" /> 重置
+                </Button>
+              )}
+              <Button size="sm" variant="primary" onClick={applyFilters} loading={loading}>
+                <Search className="h-3.5 w-3.5" /> 查询
+              </Button>
+            </div>
+          </div>
+
+          {moreOpen && (
+            <div className="grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">封禁方式</span>
+                <CompactSelect size="sm" value={draftFilters.banSource} onChange={(e) => setDraft('banSource', e.target.value)}>
+                  <option value="">全部方式</option>
+                  {SOURCE_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </CompactSelect>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">封禁等级</span>
+                <CompactSelect size="sm" value={draftFilters.banLevel} onChange={(e) => setDraft('banLevel', e.target.value)}>
+                  <option value="">全部等级</option>
+                  {LEVEL_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </CompactSelect>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">封堵设备</span>
+                <SearchInput
+                  placeholder="输入设备名称"
+                  value={draftFilters.banDevice}
+                  onChange={(v) => setDraft('banDevice', v)}
+                  onClear={() => setDraft('banDevice', '')}
+                  onKeyDown={(e) => { if (e.key === 'Enter') applyFilters() }}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">解封操作人</span>
+                <SearchInput
+                  placeholder="输入操作人"
+                  value={draftFilters.operator}
+                  onChange={(v) => setDraft('operator', v)}
+                  onClear={() => setDraft('operator', '')}
+                  onKeyDown={(e) => { if (e.key === 'Enter') applyFilters() }}
+                />
+              </label>
+              {/* 解封时间范围：与开始封禁时间独立筛选；永久封禁（无解封时间）不参与 */}
+              <div className="flex flex-col gap-1 sm:col-span-2" title="永久封禁不参与解封时间筛选">
+                <span className="text-xs text-muted-foreground">解封时间</span>
+                <div className="flex items-center gap-1.5">
+                  <DatePicker
+                    value={draftFilters.expireFrom}
+                    placeholder="开始日期"
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setDraftFilters((prev) => ({
+                        ...prev,
+                        expireFrom: v,
+                        expireTo: v && prev.expireTo && prev.expireTo < v ? '' : prev.expireTo,
+                      }))
+                    }}
+                  />
+                  <span className="text-xs text-muted-foreground">至</span>
+                  <DatePicker
+                    value={draftFilters.expireTo}
+                    placeholder="结束日期"
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setDraftFilters((prev) => ({
+                        ...prev,
+                        expireTo: v,
+                        expireFrom: v && prev.expireFrom && prev.expireFrom > v ? '' : prev.expireFrom,
+                      }))
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* 操作栏：总数/批量操作 + 常用操作 */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {selected.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2">
+            <span className="text-xs text-muted-foreground">
+              已选 <span className="font-medium text-primary">{selected.length}</span> 项
+              {pendingSelected.length > 0 && (
+                <>，其中待同步 <span className="font-medium text-warning">{pendingSelected.length}</span> 条</>
+              )}
+            </span>
+            {canEdit && pendingSelected.length > 0 && (
+              <Button size="sm" variant="primary" onClick={() => openSyncPreview(pendingSelected.map((r) => r.id))}>
+                <ShieldCheck className="h-3.5 w-3.5" /> 同步安博通封禁（{pendingSelected.length}）
+              </Button>
+            )}
+            {canDelete && (
+              <Button size="sm" variant="danger" loading={batchDeleteBusy} onClick={doBatchDelete}>
+                <Trash2 className="h-3.5 w-3.5" /> 批量删除（{selected.length}）
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setSelected([])}>取消选择</Button>
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            共 <span className="font-medium tabular-nums text-foreground">{list.total}</span> 条记录
+          </span>
+        )}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {canEdit && (
             <Button size="sm" variant="primary" onClick={openManualBan}>
               <Plus className="h-3.5 w-3.5" /> 手动封禁
@@ -824,33 +1099,8 @@ export default function BanWorkbench({ embedded = false }) {
               <RotateCw className="h-3.5 w-3.5" /> 刷新
             </Button>
           )}
-          {selected.length > 0 ? (
-            <div className="ml-auto flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-2.5 py-1.5">
-              <span className="text-xs text-muted-foreground">
-                已选 {selected.length} 项
-                {pendingSelected.length > 0 && (
-                  <>，其中待同步 <span className="font-medium text-warning">{pendingSelected.length}</span> 条</>
-                )}
-              </span>
-              {canEdit && pendingSelected.length > 0 && (
-                <Button size="sm" variant="primary" onClick={() => openSyncPreview(pendingSelected.map((r) => r.id))}>
-                  <ShieldCheck className="h-3.5 w-3.5" /> 同步安博通封禁（{pendingSelected.length}）
-                </Button>
-              )}
-              {canDelete && (
-                <Button size="sm" variant="danger" loading={batchDeleteBusy} onClick={doBatchDelete}>
-                  <Trash2 className="h-3.5 w-3.5" /> 批量删除（{selected.length}）
-                </Button>
-              )}
-              <Button size="sm" variant="ghost" onClick={() => setSelected([])}>取消选择</Button>
-            </div>
-          ) : (
-            <span className="ml-auto text-xs text-muted-foreground">
-              共 <span className="font-medium tabular-nums text-foreground">{list.total}</span> 条记录
-            </span>
-          )}
         </div>
-      </Card>
+      </div>
 
       {/* 封禁表格 */}
       <Card className="p-0" bodyClassName="p-0">
@@ -866,8 +1116,8 @@ export default function BanWorkbench({ embedded = false }) {
           emptyText="暂无封禁记录"
           emptyDescription="工作流自动封禁、审批通过或导入的 IP 将出现在这里；导入记录需手动同步安博通封禁"
           emptyIcon={Inbox}
-          emptyAction={status || ip ? (
-            <Button size="sm" variant="ghost" onClick={() => { setStatus(''); setIp(''); setPage(1) }}>清除筛选条件</Button>
+          emptyAction={hasActiveFilters ? (
+            <Button size="sm" variant="ghost" onClick={resetFilters}>清除筛选条件</Button>
           ) : canEdit ? (
             <Button size="sm" variant="primary" onClick={openManualBan}>
               <Plus className="h-3.5 w-3.5" /> 手动发起封禁
@@ -1019,6 +1269,43 @@ export default function BanWorkbench({ embedded = false }) {
             value={unbanReason}
             onChange={(e) => setUnbanReason(e.target.value)}
           />
+        </div>
+      </Modal>
+
+      {/* 编辑封禁记录：仅修改原因/等级台账元数据，不影响设备侧封禁 */}
+      <Modal
+        open={!!editTarget}
+        title={`编辑封禁记录 ${editTarget?.ip || ''}`}
+        onClose={() => { if (!editSaving) setEditTarget(null) }}
+        footer={(
+          <>
+            <Button variant="ghost" onClick={() => setEditTarget(null)} disabled={editSaving}>取消</Button>
+            <Button variant="primary" loading={editSaving} onClick={saveEdit}>保存</Button>
+          </>
+        )}
+      >
+        <div className="space-y-3 text-sm">
+          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            仅修改平台台账中的封禁原因与等级，不改变设备侧封禁状态与到期时间。
+          </div>
+          <label className="block">
+            <span className="mb-1 block text-xs text-muted-foreground">封禁等级</span>
+            <CompactSelect
+              value={editForm.banLevel}
+              onChange={(e) => setEditForm((f) => ({ ...f, banLevel: e.target.value }))}
+            >
+              {LEVEL_OPTIONS.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+            </CompactSelect>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-muted-foreground">封禁原因</span>
+            <AutoGrowTextarea
+              className={`${inputBaseCls} min-h-[96px] w-full`}
+              placeholder="填写封禁原因/备注"
+              value={editForm.reason}
+              onChange={(e) => setEditForm((f) => ({ ...f, reason: e.target.value }))}
+            />
+          </label>
         </div>
       </Modal>
 
@@ -1865,7 +2152,7 @@ export default function BanWorkbench({ embedded = false }) {
               {[
                 {
                   v: 'filtered',
-                  label: status || ip ? '当前筛选结果（应用筛选条件）' : '当前筛选结果（未设置筛选，等同全部记录）',
+                  label: hasActiveFilters ? '当前筛选结果（应用筛选条件）' : '当前筛选结果（未设置筛选，等同全部记录）',
                 },
                 {
                   v: 'selected',

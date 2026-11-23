@@ -51,6 +51,8 @@ EVENT_TYPES = [
     {"value": "workflow", "label": "工作流运营通知", "desc": "自动解封 / 持续监控 / 实例异常时通知", "group": "工作流"},
     # 模型类
     {"value": "model_alert", "label": "模型健康异常", "desc": "模型健康检查失败或恢复时通知", "group": "模型"},
+    # 文件接收类
+    {"value": "file_receive_alert", "label": "文件接收告警", "desc": "成功率、磁盘、合并积压或签名异常时通知", "group": "文件接收"},
     # 工单类（工单通知由工单模块精确投递，不经过通知规则，但提醒偏好需要覆盖该类型）
     {"value": "ticket", "label": "工单处置提醒", "desc": "新工单流转待处置 / 催办 / 超时提醒时通知", "group": "工单"},
     # 反馈类
