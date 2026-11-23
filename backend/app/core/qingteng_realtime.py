@@ -30,7 +30,7 @@ PAGE_SIZE = 200
 MAX_PAGES = 5
 MAX_LIMIT = 200
 
-_SENSITIVE = re.compile(r"pass(word|wd)?|secret|token|private.?key|credential", re.IGNORECASE)
+_SENSITIVE = re.compile(r"pass(word|wd)|secret|token|private.?key|credential", re.IGNORECASE)
 
 # 模块配置：接口、OS 支持、关键字匹配字段、端口字段、返回列
 REALTIME_MODULES: dict[str, dict[str, Any]] = {

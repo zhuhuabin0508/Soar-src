@@ -415,7 +415,7 @@ class _RecordingHttpx:
 
     calls = []
 
-    def __init__(self, timeout=None, verify=None):
+    def __init__(self, timeout=None, verify=None, **kwargs):
         _RecordingHttpx.calls = []
 
     def get(self, url, headers=None):

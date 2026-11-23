@@ -317,31 +317,34 @@ def _qt_component_columns() -> list[dict]:
     ]
 
 
+# 青藤资产明细：按模块的列表列定义（模块 tab 切换时复用）
+_QT_ASSET_MODULE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "account": [
+        ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
+        ("name", "账号名"), ("status", "状态"), ("path", "家目录"),
+        ("uid", "UID"), ("gid", "GID"), ("lastLoginTime", "最后登录"),
+        ("biz_group", "业务组"),
+    ],
+    "accountgroup": [
+        ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
+        ("name", "用户组名"), ("gid", "GID"), ("biz_group", "业务组"),
+    ],
+    "webapp": [
+        ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
+        ("name", "Web 应用"), ("version", "版本"), ("path", "应用路径"),
+        ("serverName", "服务名"), ("domainName", "域名"), ("biz_group", "业务组"),
+    ],
+    "website": [
+        ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
+        ("name", "站点"), ("port", "端口"), ("proto", "协议"), ("status", "站点类型"),
+        ("path", "根路径"), ("biz_group", "业务组"),
+    ],
+}
+
+
 def _qt_asset_columns(module: str = "") -> list[dict]:
     """青藤资产明细列表页展示列；指定模块时按模块字段展示。"""
-    module_columns = {
-        "account": [
-            ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
-            ("name", "账号名"), ("status", "状态"), ("path", "家目录"),
-            ("uid", "UID"), ("gid", "GID"), ("lastLoginTime", "最后登录"),
-            ("biz_group", "业务组"),
-        ],
-        "accountgroup": [
-            ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
-            ("name", "用户组名"), ("gid", "GID"), ("biz_group", "业务组"),
-        ],
-        "webapp": [
-            ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
-            ("name", "Web 应用"), ("version", "版本"), ("path", "应用路径"),
-            ("serverName", "服务名"), ("domainName", "域名"), ("biz_group", "业务组"),
-        ],
-        "website": [
-            ("hostname", "主机名"), ("display_ip", "展示 IP"), ("os_type", "系统类型"),
-            ("name", "站点"), ("port", "端口"), ("proto", "协议"), ("status", "站点类型"),
-            ("path", "根路径"), ("biz_group", "业务组"),
-        ],
-    }
-    columns = module_columns.get(module)
+    columns = _QT_ASSET_MODULE_COLUMNS.get(module)
     if columns:
         return [{"key": k, "label": label} for k, label in columns]
     return [
@@ -564,10 +567,11 @@ def _batch_consistent(live: int, batch: GovCloudImportBatch | None) -> bool:
     避免部分同步（失败源保留旧数据）被误判为「已对齐」。
     """
     if batch is None:
-        return live == 0
-    if (batch.status or "success").lower() != "success":
+        # 从未同步过的空表不能算「已对齐」，否则新接入设备会误显示为已对齐
         return False
-    return live == batch.unique_source_ids and batch.skipped == 0
+    if (batch.status or "").lower() != "success":
+        return False
+    return live == int(batch.unique_source_ids or 0) and int(batch.skipped or 0) == 0
 
 
 def _qingteng_group_tables(db: Session, gcode: str, devices: list[Device]) -> list[dict]:

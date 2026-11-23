@@ -50,7 +50,6 @@ MAX_ROWS_PER_MODULE = {
 # 模块 → 接口与字段口径
 ASSET_MODULE_SPECS: dict[str, dict[str, Any]] = {
     "account": {
-        "label": "系统账号",
         "path": "/external/api/assets/account/{os}",
         "os_types": ("linux", "win"),
         "name_field": "name",
@@ -60,7 +59,6 @@ ASSET_MODULE_SPECS: dict[str, dict[str, Any]] = {
         "port_field": None,
     },
     "accountgroup": {
-        "label": "用户组",
         "path": "/external/api/assets/accountgroup/{os}",
         "os_types": ("linux", "win"),
         "name_field": "name",
@@ -70,7 +68,6 @@ ASSET_MODULE_SPECS: dict[str, dict[str, Any]] = {
         "port_field": None,
     },
     "webapp": {
-        "label": "Web 应用",
         "path": "/external/api/assets/webapp/{os}",
         "os_types": ("linux", "win"),
         "name_field": "appName",
@@ -80,7 +77,6 @@ ASSET_MODULE_SPECS: dict[str, dict[str, Any]] = {
         "port_field": None,
     },
     "website": {
-        "label": "Web 站点",
         "path": "/external/api/assets/website/{os}",
         "os_types": ("linux", "win"),
         # 站点接口没有名称字段，用 proto:port 合成
@@ -253,7 +249,7 @@ def sync_device_modules(
                     "rows": 0, "inserted": 0, "updated": 0,
                     "skipped": 0, "deleted": 0, "truncated": False, "error": "",
                 }
-                batch.phase = f"拉取{spec['label']}"
+                batch.phase = f"拉取{ASSET_MODULE_LABELS.get(module, module)}"
                 batch.percent = min(95, 5 + int(90 * idx / len(module_list)))
                 db.commit()
 
@@ -375,7 +371,7 @@ def sync_device_modules(
             action=None,
             source="module_sync",
             user_id=user_id,
-            request_summary=f"GET /external/api/assets/{{{ '|'.join(module_list) }}}/{{os}}",
+            request_summary=f"GET /external/api/assets/{'|'.join(module_list)}/{{os}}",
             response_summary=f"rows={batch.excel_rows} unique={len(unique_ids)} live={live}",
             status="success" if complete else "partial",
             latency_ms=batch.duration_ms,

@@ -88,6 +88,7 @@ export function CallLogsTab() {
   const statusOptions = [
     { value: '', label: '全部状态' },
     { value: 'success', label: '成功' },
+    { value: 'partial', label: '部分成功' },
     { value: 'failed', label: '失败' },
   ]
 
@@ -230,9 +231,11 @@ export function CallLogsTab() {
                   className={`cursor-pointer border-t border-border hover:bg-primary/5 ${
                     l.status === 'failed'
                       ? 'bg-destructive/5'
-                      : idx % 2 === 0
-                      ? 'bg-card'
-                      : ''
+                      : l.status === 'partial'
+                        ? 'bg-warning/5'
+                        : idx % 2 === 0
+                          ? 'bg-card'
+                          : ''
                   }`}
                   onClick={() => openDetail(l)}
                 >
@@ -244,10 +247,14 @@ export function CallLogsTab() {
                       className={`rounded px-1.5 py-0.5 text-xs font-medium ${
                         l.status === 'success'
                           ? 'bg-success/20 text-success'
-                          : 'bg-destructive/20 text-destructive'
+                          : l.status === 'partial'
+                            ? 'bg-warning/20 text-warning'
+                            : 'bg-destructive/20 text-destructive'
                       }`}
                     >
-                      {l.status === 'success' ? '成功' : '失败'}
+                      {l.status === 'success'
+                        ? '成功'
+                        : l.status === 'partial' ? '部分成功' : '失败'}
                     </span>
                   </td>
                   <td className="truncate px-4 py-3 text-foreground">

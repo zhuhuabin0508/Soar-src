@@ -55,7 +55,7 @@ def test_component_columns():
 
 
 def test_batch_consistent_requires_success_status():
-    assert _batch_consistent(0, None) is True
+    assert _batch_consistent(0, None) is False
     assert _batch_consistent(3, None) is False
 
     ok = GovCloudImportBatch(status="success", unique_source_ids=3, skipped=0)
