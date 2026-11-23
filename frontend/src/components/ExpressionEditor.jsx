@@ -169,7 +169,7 @@ export function ExpressionEditor({
           <button
             type="button"
             onClick={() => setShowFns((o) => !o)}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-primary"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-primary"
             title="常用函数"
           >
             <Code2 className="h-3 w-3" />
@@ -218,7 +218,7 @@ export function ExpressionEditor({
               type="button"
               onClick={() => insertFunction(fn.name)}
               title={fn.desc}
-              className="truncate rounded px-1.5 py-1 text-left font-mono text-[11px] text-primary transition hover:bg-primary/10"
+              className="truncate rounded px-1.5 py-1 text-left font-mono text-xs text-primary transition hover:bg-primary/10"
             >
               {fn.name}()
             </button>
@@ -229,14 +229,14 @@ export function ExpressionEditor({
       {/* 校验状态 */}
       <div className="mt-1.5">
         {validation.ok ? (
-          <div className="flex items-center gap-1 text-[11px] text-success">
+          <div className="flex items-center gap-1 text-xs text-success">
             <Check className="h-3 w-3" />
             表达式校验通过
           </div>
         ) : (
           <div className="flex flex-col gap-0.5">
             {validation.errors.map((err, idx) => (
-              <div key={idx} className="flex items-start gap-1 text-[11px] text-destructive">
+              <div key={idx} className="flex items-start gap-1 text-xs text-destructive">
                 <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>{err}</span>
               </div>
@@ -244,7 +244,7 @@ export function ExpressionEditor({
           </div>
         )}
       </div>
-      {hint && <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+      {hint && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
   )
 }

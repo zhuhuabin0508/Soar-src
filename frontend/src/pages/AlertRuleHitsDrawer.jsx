@@ -62,8 +62,8 @@ export default function AlertRuleHitsDrawer({ open, filter, onClose }) {
       {items.length === 0 && !loading ? (
         <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
           <Inbox className="h-10 w-10 opacity-40" />
-          <div className="text-[13px]">近 7 天无命中记录</div>
-          <div className="text-[11.5px] text-muted-foreground">
+          <div className="text-xs">近 7 天无命中记录</div>
+          <div className="text-xs text-muted-foreground">
             命中记录保留最近 7 天；确认规则已启用且条件与到达的日志匹配
           </div>
         </div>
@@ -72,14 +72,14 @@ export default function AlertRuleHitsDrawer({ open, filter, onClose }) {
           {items.map((r) => (
             <div key={r.id} className="rounded-lg border border-border bg-muted px-4 py-3">
               <div className="flex items-center justify-between gap-3">
-                <span className="truncate text-[13px] font-medium" title={r.alert_name || ''}>
+                <span className="truncate text-xs font-medium" title={r.alert_name || ''}>
                   {r.alert_name || '（未命名）'}
                 </span>
-                <span className="shrink-0 text-[11.5px] text-muted-foreground" title={fmtTime(r.matched_at)}>
+                <span className="shrink-0 text-xs text-muted-foreground" title={fmtTime(r.matched_at)}>
                   {fmtTime(r.matched_at)}
                 </span>
               </div>
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span>来源 IP：<span className="font-mono">{r.source_ip || '--'}</span></span>
                 <RiskBadge level={r.risk_level} />
                 <span className={r.parse_status === 'success' ? 'text-success' : 'text-warning'}>

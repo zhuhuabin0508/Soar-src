@@ -15,6 +15,7 @@ import {
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { confirm } from '../components/ConfirmDialog'
 import InfoTip from '../components/InfoTip'
+import { PillTabs } from '../components/ui'
 import { validateIPExpression } from '../utils/ipValidation'
 import {
   Eye, Smartphone, Network, Bell, CheckSquare, Link2,
@@ -112,7 +113,7 @@ function FieldLabel({ label, hint, required, badge }) {
       <label className={labelCls + ' mb-0'}>{label}{requiredMark}</label>
       {hint && <InfoTip text={hint} />}
       {badge && (
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
           {badge}
         </span>
       )}
@@ -126,7 +127,7 @@ function FieldLabel({ label, hint, required, badge }) {
 function SettingsSection({ title, description, icon: Icon, hint, collapsible = false, defaultCollapsed = false, className = '', children }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
   return (
-    <div className={`rounded-lg border border-border bg-card p-5 shadow-sm ${className}`}>
+    <div className={`rounded-lg border border-border bg-card p-4 shadow-sm ${className}`}>
       <div className={`flex items-center gap-2 ${collapsed ? 'mb-0' : 'mb-4'}`}>
         {Icon && <Icon className="h-4 w-4 shrink-0 text-primary" />}
         {collapsible ? (
@@ -150,7 +151,7 @@ function SettingsSection({ title, description, icon: Icon, hint, collapsible = f
         )}
         {hint && <InfoTip text={hint} />}
       </div>
-      {!collapsed && <div className="flex flex-col gap-5">{children}</div>}
+      {!collapsed && <div className="flex flex-col gap-4">{children}</div>}
     </div>
   )
 }
@@ -221,7 +222,7 @@ function ColorPicker({ value, onChange }) {
         >
           {/* 原生取色器 */}
           <div className="mb-3">
-            <span className="mb-1.5 block text-[11px] font-medium text-muted-foreground">取色器</span>
+            <span className="mb-1.5 block text-xs font-medium text-muted-foreground">取色器</span>
             <div className="flex items-center gap-2">
               <input
                 type="color"
@@ -234,7 +235,7 @@ function ColorPicker({ value, onChange }) {
           </div>
           {/* 预设色板 */}
           <div className="mb-3">
-            <span className="mb-1.5 block text-[11px] font-medium text-muted-foreground">预设色板</span>
+            <span className="mb-1.5 block text-xs font-medium text-muted-foreground">预设色板</span>
             <div className="grid grid-cols-8 gap-1.5">
               {PRESET_COLORS.map((c) => (
                 <button
@@ -250,14 +251,14 @@ function ColorPicker({ value, onChange }) {
           </div>
           {/* Hex 输入 */}
           <div>
-            <span className="mb-1.5 block text-[11px] font-medium text-muted-foreground">Hex 值</span>
+            <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Hex 值</span>
             <input
               className={`${inputBaseCls} w-full ${hexInvalid ? 'border-destructive ring-1 ring-destructive' : ''}`}
               value={hexInput}
               onChange={(e) => handleHexChange(e.target.value)}
               placeholder="#6366F1"
             />
-            {hexInvalid && <p className="mt-1 text-[10px] text-destructive">格式无效，需为 #RRGGBB</p>}
+            {hexInvalid && <p className="mt-1 text-xs text-destructive">格式无效，需为 #RRGGBB</p>}
           </div>
         </div>,
         document.body
@@ -648,7 +649,7 @@ function SystemSettings() {
       {/* ===== Header ===== */}
       <header className="flex items-center justify-between border-b border-border bg-card px-6 py-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-[22px] font-bold tracking-tight text-foreground">系统设置</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">系统设置</h1>
           {dirty && (
             <span className="flex items-center gap-1.5 rounded-full bg-warning/15 px-2.5 py-0.5 text-xs font-medium text-warning">
               <span className="h-1.5 w-1.5 rounded-full bg-warning" />
@@ -681,13 +682,8 @@ function SystemSettings() {
       </header>
 
       {/* ===== Tab 栏 ===== */}
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6">
-        {tabs.map((t) => (
-          <button key={t.key} type="button" onClick={() => handleTabChange(t.key)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm transition ${activeTab === t.key ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
-            {t.label}
-          </button>
-        ))}
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs items={tabs} value={activeTab} onChange={handleTabChange} />
       </div>
 
       {/* ===== 内容区 ===== */}
@@ -755,7 +751,7 @@ function SystemSettings() {
                     {corsTesting ? '测试中…' : '测试跨域'}
                   </button>
                   {corsTestResult && (
-                    <span className={`text-[11px] ${corsTestResult.ok ? 'text-success' : 'text-destructive'}`}>{corsTestResult.message}</span>
+                    <span className={`text-xs ${corsTestResult.ok ? 'text-success' : 'text-destructive'}`}>{corsTestResult.message}</span>
                   )}
                 </div>
 
@@ -771,7 +767,7 @@ function SystemSettings() {
                         value={configs.webhook_rate_limit || ''} onChange={(e) => setField('webhook_rate_limit')(e.target.value)} />
                       <span className="whitespace-nowrap text-xs text-muted-foreground">次/分钟</span>
                     </div>
-                    <p className="mt-1 text-[11px] text-muted-foreground">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       {Number(configs.webhook_rate_limit) > 0 ? `每分钟最多 ${configs.webhook_rate_limit} 次调用` : '未设置'}
                     </p>
                   </div>
@@ -781,7 +777,7 @@ function SystemSettings() {
                       {webhookTesting ? '测试中…' : '测试限流配置'}
                     </button>
                     {webhookTestResult && (
-                      <span className={`text-[11px] ${webhookTestResult.ok ? 'text-success' : 'text-destructive'}`}>{webhookTestResult.message}</span>
+                      <span className={`text-xs ${webhookTestResult.ok ? 'text-success' : 'text-destructive'}`}>{webhookTestResult.message}</span>
                     )}
                   </div>
                 </div>
@@ -829,19 +825,19 @@ function SystemSettings() {
                 </div>
                 {/* 顶部导航栏预览 */}
                 <div className="mb-3">
-                  <p className="mb-1 text-[10px] text-muted-foreground">顶部导航栏</p>
+                  <p className="mb-1 text-xs text-muted-foreground">顶部导航栏</p>
                   <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2">
                     {configs.logo_url ? (
                       <img src={configs.logo_url} alt="logo" className="h-5 w-5 rounded object-cover" onError={(e) => { e.target.style.display = 'none' }} />
                     ) : (
-                      <span className="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold" style={{ background: previewColor, color: '#fff' }}>S</span>
+                      <span className="flex h-5 w-5 items-center justify-center rounded text-xs font-bold" style={{ background: previewColor, color: '#fff' }}>S</span>
                     )}
                     <span className="text-sm font-semibold" style={{ color: previewColor }}>{configs.platform_name || 'SOAR 平台'}</span>
                   </div>
                 </div>
                 {/* 登录页标题预览 */}
                 <div className="mb-3">
-                  <p className="mb-1 text-[10px] text-muted-foreground">登录页标题</p>
+                  <p className="mb-1 text-xs text-muted-foreground">登录页标题</p>
                   <div className="rounded-md border border-border bg-gradient-to-br from-secondary to-secondary px-4 py-6 text-center">
                     {configs.logo_url ? (
                       <img src={configs.logo_url} alt="logo" className="mx-auto mb-2 h-10 w-10 rounded object-cover" onError={(e) => { e.target.style.display = 'none' }} />
@@ -849,19 +845,19 @@ function SystemSettings() {
                       <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl text-lg font-bold" style={{ background: previewColor, color: '#fff' }}>S</div>
                     )}
                     <div className="text-lg font-bold" style={{ color: previewColor }}>{configs.platform_name || 'SOAR 平台'}</div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">安全编排自动化与响应平台</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">安全编排自动化与响应平台</div>
                   </div>
                 </div>
                 {/* Favicon 预览 */}
                 <div>
-                  <p className="mb-1 text-[10px] text-muted-foreground">Favicon / Logo</p>
+                  <p className="mb-1 text-xs text-muted-foreground">Favicon / Logo</p>
                   <div className="flex items-center gap-3 rounded-md border border-border bg-background px-3 py-2">
                     {configs.logo_url ? (
                       <img src={configs.logo_url} alt="favicon" className="h-8 w-8 rounded object-cover" onError={(e) => { e.target.style.display = 'none' }} />
                     ) : (
                       <div className="flex h-8 w-8 items-center justify-center rounded text-sm font-bold" style={{ background: previewColor, color: '#fff' }}>S</div>
                     )}
-                    <div className="text-[11px] text-muted-foreground">
+                    <div className="text-xs text-muted-foreground">
                       {configs.logo_url ? '已配置自定义 Logo' : '使用默认文字 Logo'}
                     </div>
                   </div>
@@ -879,12 +875,12 @@ function SystemSettings() {
             ) : (
               <>
                 {/* 安全评分摘要卡片 */}
-                <div className={`grid grid-cols-1 gap-4 rounded-lg border border-border bg-card p-5 shadow-sm sm:grid-cols-[160px_1fr_1fr] ${scoreLevelBgCls}`}>
+                <div className={`grid grid-cols-1 gap-4 rounded-lg border border-border bg-card p-4 shadow-sm sm:grid-cols-[160px_1fr_1fr] ${scoreLevelBgCls}`}>
                   {/* 左：安全等级 */}
                   <div className="flex flex-col items-center justify-center sm:border-r sm:border-border sm:pr-4">
                     <ShieldCheck className={`mb-1 h-8 w-8 ${scoreLevelTextCls}`} />
                     <span className={`text-3xl font-bold ${scoreLevelTextCls}`}>{securityScore.level}</span>
-                    <span className="text-[11px] text-muted-foreground">{securityScore.score} / 100 分</span>
+                    <span className="text-xs text-muted-foreground">{securityScore.score} / 100 分</span>
                   </div>
                   {/* 中：评分进度条 */}
                   <div className="flex flex-col justify-center sm:px-4">
@@ -896,7 +892,7 @@ function SystemSettings() {
                       <div className={`h-full rounded-full transition-all duration-500 ${scoreLevelBarCls}`}
                         style={{ width: `${securityScore.score}%` }} />
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">
+                    <p className="mt-2 text-xs text-muted-foreground">
                       {securityScore.score >= 80 ? '安全配置良好，继续保持' : securityScore.score >= 50 ? '存在安全隐患，建议优化' : '安全风险较高，请立即整改'}
                     </p>
                   </div>
@@ -912,7 +908,7 @@ function SystemSettings() {
                     ) : (
                       <ul className="flex flex-col gap-1">
                         {securityScore.failed.map((item, i) => (
-                          <li key={i} className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                          <li key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
                             <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warning" />
                             <span>{item}</span>
                           </li>
@@ -936,8 +932,8 @@ function SystemSettings() {
                             </span>
                           )}
                           <span className={`text-sm font-semibold ${active ? 'pl-7' : ''}`}>{tmpl.label}</span>
-                          <span className="text-[10px] text-muted-foreground">{tmpl.desc}</span>
-                          <span className="text-[10px] text-muted-foreground">{tmpl.summary}</span>
+                          <span className="text-xs text-muted-foreground">{tmpl.desc}</span>
+                          <span className="text-xs text-muted-foreground">{tmpl.summary}</span>
                         </button>
                       )
                     })}
@@ -992,14 +988,14 @@ function SystemSettings() {
                   <div className="mt-1 rounded-md border border-border bg-secondary p-3">
                     <div className="mb-2 flex items-center justify-between">
                       <span className="text-xs font-medium text-muted-foreground">当前策略强度</span>
-                      <span className={`rounded px-2 py-0.5 text-[11px] font-bold ${passwordStrength.level === '弱' ? 'bg-destructive/20 text-destructive' : passwordStrength.level === '中' ? 'bg-warning/20 text-warning' : 'bg-success/20 text-success'}`}>
+                      <span className={`rounded px-2 py-0.5 text-xs font-bold ${passwordStrength.level === '弱' ? 'bg-destructive/20 text-destructive' : passwordStrength.level === '中' ? 'bg-warning/20 text-warning' : 'bg-success/20 text-success'}`}>
                         {passwordStrength.level}
                       </span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                       <div className={`h-full rounded-full transition-all ${passwordStrength.levelColor}`} style={{ width: `${Math.min(100, passwordStrength.score / 6 * 100)}%` }} />
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">策略说明：{passwordStrength.desc}</p>
+                    <p className="mt-2 text-xs text-muted-foreground">策略说明：{passwordStrength.desc}</p>
                   </div>
                 </SettingsSection>
 
@@ -1011,7 +1007,7 @@ function SystemSettings() {
                       {security['security.mfa_enabled'] && (
                         <div className="mt-2.5 ml-6 rounded-md border border-border bg-background p-3">
                           <p className="mb-2 text-xs font-medium text-foreground">MFA 配置说明</p>
-                          <div className="flex flex-col gap-1.5 text-[11px] text-muted-foreground">
+                          <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
                             <div>• 验证方式：TOTP（Google Authenticator / 微信身份验证器等）</div>
                             <div>• 备用码：每个用户绑定 MFA 时生成 10 个一次性备用码</div>
                             <div>• 强制范围：所有管理员账户必须开启，普通用户可选</div>
@@ -1034,7 +1030,7 @@ function SystemSettings() {
                         validateTag={(v) => validateIPExpression(v, '登录 IP 白名单')}
                       />
                       {validateIPExpression(security['security.login_ip_whitelist'], '登录 IP 白名单') && (
-                        <div className="mt-1 text-[11px] text-destructive">
+                        <div className="mt-1 text-xs text-destructive">
                           {validateIPExpression(security['security.login_ip_whitelist'], '登录 IP 白名单')}
                         </div>
                       )}
@@ -1055,7 +1051,7 @@ function SystemSettings() {
                           <p className="mb-2 text-xs font-medium text-foreground">受保护的敏感操作</p>
                           <div className="flex flex-wrap gap-1.5">
                             {['删除资源', '批量删除', '导出数据', '修改用户角色', '重置密码', '修改安全策略', '删除流程', '清空日志'].map((op) => (
-                              <span key={op} className="rounded bg-primary/10 px-2 py-0.5 text-[11px] text-primary">{op}</span>
+                              <span key={op} className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary">{op}</span>
                             ))}
                           </div>
                         </div>
@@ -1100,7 +1096,7 @@ function SecurityToggleRow({ icon: Icon, label, desc, checked, onChange, childre
           <Icon className="h-3.5 w-3.5 text-primary" />
           <div className="flex flex-col">
             <span className="text-xs font-medium text-foreground">{label}</span>
-            <span className="text-[10px] text-muted-foreground">{desc}</span>
+            <span className="text-xs text-muted-foreground">{desc}</span>
           </div>
         </div>
         <button type="button" onClick={() => onChange(!checked)}

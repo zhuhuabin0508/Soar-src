@@ -69,21 +69,21 @@ export default function MessageEditor({ value = '', onSave, onCancel }) {
         <button
           type="button"
           onClick={onCancel}
-          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-secondary px-2.5 text-[11px] text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-secondary px-2.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
         >
           <X className="h-3 w-3" />
           <span>取消</span>
-          <span className="ml-1 text-[9px] text-muted-foreground">Esc</span>
+          <span className="ml-1 text-xs text-muted-foreground">Esc</span>
         </button>
         <button
           type="button"
           onClick={handleSave}
           disabled={!text.trim()}
-          className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2.5 text-[11px] font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Check className="h-3 w-3" />
           <span>保存并发送</span>
-          <span className="ml-1 text-[9px] text-primary-foreground">Enter</span>
+          <span className="ml-1 text-xs text-primary-foreground">Enter</span>
         </button>
       </div>
     </div>

@@ -40,8 +40,8 @@ def list_roles(
     # 统计每个角色已分配的用户数
     result = []
     for r in roles:
-        # 自动迁移旧权限矩阵（workflow / asset → 细分子模块）
-        perms = migrate_permissions(r.permissions)
+        # 自动迁移旧权限矩阵（workflow / asset → 细分子模块）；不回补新增动作
+        perms = migrate_permissions(r.permissions, grant_new_actions=False)
         if perms != r.permissions:
             r.permissions = perms
             db.add(r)
@@ -128,7 +128,7 @@ def update_role(
 
     update_data = body.model_dump(exclude_unset=True)
     if "permissions" in update_data and update_data["permissions"] is not None:
-        update_data["permissions"] = migrate_permissions(update_data["permissions"])
+        update_data["permissions"] = migrate_permissions(update_data["permissions"], grant_new_actions=False)
     for key, value in update_data.items():
         setattr(role, key, value)
     db.commit()

@@ -7,7 +7,7 @@ import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import HalfDrawer from '../components/HalfDrawer'
 import { inputBaseCls, labelCls } from '../components/property/FormControls'
-import { Button, PageContainer, Badge, EmptyState, DataTable, LoadingState, CompactSelect, DatePicker } from '../components/ui'
+import { Button, PageContainer, PageHeader, Badge, EmptyState, DataTable, LoadingState, CompactSelect, DatePicker, PillTabs } from '../components/ui'
 import { hasPermission } from '../utils/permissions'
 import dutyApi from '../api/duty'
 
@@ -56,6 +56,7 @@ export default function DutySchedule() {
   const navigate = useNavigate()
   const canEdit = hasPermission('duty_schedule', 'edit')
   const canDelete = hasPermission('duty_schedule', 'delete')
+  const canExport = hasPermission('duty_schedule', 'export')
 
   // 视图模式与日期范围
   const today = new Date()
@@ -456,47 +457,49 @@ export default function DutySchedule() {
   }
 
   return (
-    <PageContainer className="flex flex-col">
+    <PageContainer>
       {/* 标题区 */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <h1 className="text-[22px] font-bold tracking-tight text-foreground whitespace-nowrap">值班表</h1>
-            <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${rosterType === 'RESERVE' ? 'bg-red-500/10 text-red-500' : rosterType === 'ALL' ? 'bg-muted text-muted-foreground' : 'bg-blue-500/10 text-blue-500'}`}>
-              {rosterType === 'RESERVE' ? <ShieldCheck className="h-3 w-3" /> : rosterType === 'ALL' ? <Layers className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
-              {rosterLabel(rosterType)}
-            </span>
-          </div>
-          <p className="mt-1.5 text-sm text-muted-foreground">手动编辑每天白班/晚班人员（每班可多人，逗号分隔），支持列表/月视图查看、发布与导出；也可用「值班表（图形化）」拖拽排班</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {/* 值班表类型切换：日常运营 / 重保，切换后列表、月视图、统计、导出均按类型隔离 */}
-          <div className="flex items-center rounded-md border border-border p-0.5">
-            {ROSTER_TYPES.map((t) => {
-              const Icon = t.icon
-              const active = rosterType === t.value
-              return (
-                <button
-                  key={t.value}
-                  type="button"
-                  onClick={() => setRosterType(t.value)}
-                  className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs whitespace-nowrap transition-colors ${active ? `font-medium ${t.activeCls}` : 'text-muted-foreground hover:text-foreground'}`}
-                  title={`查看${t.label}值班表`}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {t.label}
-                </button>
-              )
-            })}
-          </div>
-          <div className="h-6 w-px bg-border" />
-          <Button variant="ghost" size="sm" onClick={openSpecial}><CalendarCog className="mr-1 h-3.5 w-3.5" />特殊日期</Button>
-          <Button variant="ghost" size="sm" onClick={handleExport}><Download className="mr-1 h-3.5 w-3.5" />导出</Button>
-          {canEdit && stats && stats.draft > 0 && <Button variant="secondary" size="sm" className="whitespace-nowrap" onClick={handlePublishRange}><CheckCircle2 className="mr-1 h-3.5 w-3.5" />发布草稿<span className="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-500">{stats.draft}</span></Button>}
-          <Button variant="secondary" size="sm" onClick={() => navigate('/duty/schedule/graph')}><LayoutGrid className="mr-1 h-3.5 w-3.5" />值班表（图形化）</Button>
-          {canEdit && <Button variant="primary" size="sm" onClick={openCreate}><Plus className="mr-1 h-3.5 w-3.5" />新建值班表</Button>}
-        </div>
-      </div>
+      <PageHeader
+        title="值班表"
+        extra={
+          <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${rosterType === 'RESERVE' ? 'bg-red-500/10 text-red-500' : rosterType === 'ALL' ? 'bg-muted text-muted-foreground' : 'bg-blue-500/10 text-blue-500'}`}>
+            {rosterType === 'RESERVE' ? <ShieldCheck className="h-3 w-3" /> : rosterType === 'ALL' ? <Layers className="h-3 w-3" /> : <CalendarDays className="h-3 w-3" />}
+            {rosterLabel(rosterType)}
+          </span>
+        }
+
+        actions={
+          <>
+            {/* 值班表类型切换：日常运营 / 重保，切换后列表、月视图、统计、导出均按类型隔离 */}
+            <div className="flex items-center rounded-md border border-border p-0.5">
+              {ROSTER_TYPES.map((t) => {
+                const Icon = t.icon
+                const active = rosterType === t.value
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setRosterType(t.value)}
+                    className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs whitespace-nowrap transition-colors ${active ? `font-medium ${t.activeCls}` : 'text-muted-foreground hover:text-foreground'}`}
+                    title={`查看${t.label}值班表`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {t.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="h-6 w-px bg-border" />
+            <Button variant="ghost" size="sm" onClick={openSpecial}><CalendarCog className="mr-1 h-3.5 w-3.5" />特殊日期</Button>
+            {canExport && (
+              <Button variant="ghost" size="sm" onClick={handleExport}><Download className="mr-1 h-3.5 w-3.5" />导出</Button>
+            )}
+            {canEdit && stats && stats.draft > 0 && <Button variant="secondary" size="sm" className="whitespace-nowrap" onClick={handlePublishRange}><CheckCircle2 className="mr-1 h-3.5 w-3.5" />发布草稿<span className="ml-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-500">{stats.draft}</span></Button>}
+            <Button variant="secondary" size="sm" onClick={() => navigate('/duty/schedule/graph')}><LayoutGrid className="mr-1 h-3.5 w-3.5" />值班表（图形化）</Button>
+            {canEdit && <Button variant="primary" size="sm" onClick={openCreate}><Plus className="mr-1 h-3.5 w-3.5" />新建值班表</Button>}
+          </>
+        }
+      />
 
       {/* 今日值班条：全部视图下按类型分行展示（日常/重保），单类型视图保持单行 */}
       {todayDuties.length > 0 && (
@@ -523,15 +526,15 @@ export default function DutySchedule() {
                   <div className="flex min-w-0 flex-1 items-center gap-2 rounded border-l-4 border-l-blue-500 bg-blue-500/5 px-2.5 py-1">
                     <Sun className="h-4 w-4 shrink-0 text-blue-500" />
                     <div className="min-w-0">
-                      <div className="truncate text-[16px] font-medium leading-tight text-foreground">{dayNames}</div>
-                      <div className="truncate text-[13px] leading-tight text-muted-foreground">{dayPhones}</div>
+                      <div className="truncate text-base font-medium leading-tight text-foreground">{dayNames}</div>
+                      <div className="truncate text-xs leading-tight text-muted-foreground">{dayPhones}</div>
                     </div>
                   </div>
                   <div className="flex min-w-0 flex-1 items-center gap-2 rounded border-l-4 border-l-purple-500 bg-purple-500/5 px-2.5 py-1">
                     <Moon className="h-4 w-4 shrink-0 text-purple-500" />
                     <div className="min-w-0">
-                      <div className="truncate text-[16px] font-medium leading-tight text-foreground">{nightNames}</div>
-                      <div className="truncate text-[13px] leading-tight text-muted-foreground">{nightPhones}</div>
+                      <div className="truncate text-base font-medium leading-tight text-foreground">{nightNames}</div>
+                      <div className="truncate text-xs leading-tight text-muted-foreground">{nightPhones}</div>
                     </div>
                   </div>
                   {(d.day_needs_adjust || d.night_needs_adjust) && (
@@ -558,10 +561,10 @@ export default function DutySchedule() {
               <c.icon className={`h-5 w-5 shrink-0 ${c.color}`} />
               <div className="min-w-0">
                 <div className="flex items-baseline gap-1">
-                  <span className={`text-[24px] font-bold tabular-nums leading-none ${c.valueColor}`}>{c.value}</span>
-                  {c.sub && <span className="text-[12px] text-muted-foreground whitespace-nowrap">{c.sub}</span>}
+                  <span className={`text-2xl font-bold tabular-nums leading-none ${c.valueColor}`}>{c.value}</span>
+                  {c.sub && <span className="text-xs text-muted-foreground whitespace-nowrap">{c.sub}</span>}
                 </div>
-                <div className="mt-1 text-[13px] text-muted-foreground whitespace-nowrap">{c.label}</div>
+                <div className="mt-1 text-xs text-muted-foreground whitespace-nowrap">{c.label}</div>
               </div>
             </div>
           ))}
@@ -570,9 +573,15 @@ export default function DutySchedule() {
 
       {/* 控制行：视图切换 + 筛选（列表）/ 月份导航（月视图），合并为一行避免垂直堆叠 */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card px-4 py-2.5">
-        <div className="flex shrink-0 items-center rounded-md border border-border p-0.5">
-          <button onClick={() => setView('list')} className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs whitespace-nowrap transition-colors ${view === 'list' ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:text-foreground'}`}><List className="h-3.5 w-3.5" />列表</button>
-          <button onClick={() => setView('month')} className={`flex items-center gap-1 rounded px-2.5 py-1 text-xs whitespace-nowrap transition-colors ${view === 'month' ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:text-foreground'}`}><CalendarDays className="h-3.5 w-3.5" />月视图</button>
+        <div className="flex shrink-0 items-center">
+          <PillTabs
+            items={[
+              { key: 'list', label: '列表', icon: List },
+              { key: 'month', label: '月视图', icon: CalendarDays },
+            ]}
+            value={view}
+            onChange={setView}
+          />
         </div>
         {view === 'month' ? (
           <div className="flex items-center gap-2">
@@ -737,7 +746,7 @@ export default function DutySchedule() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>共 {createDays.length} 天（单次最多 62 天），每天白班/晚班均可多选人员</span>
             <span>{createForm.conflict_strategy === 'fill' ? '已有记录的日期将跳过' : '已有记录将按本次填写覆盖'}</span>
           </div>
@@ -785,7 +794,7 @@ export default function DutySchedule() {
             </table>
           </div>
 
-          <div className="rounded-md border border-border bg-muted p-3 text-[11px] leading-relaxed text-muted-foreground">
+          <div className="rounded-md border border-border bg-muted p-3 text-xs leading-relaxed text-muted-foreground">
             这里替代原来的「自动生成」：为日期范围内每天手动指定白班/晚班人员，可多选；未选择的班次保存为待分配。
             保存后仍可在列表中继续编辑。
           </div>
@@ -822,10 +831,10 @@ export default function DutySchedule() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={labelCls}>白班人员（可多选）<span className="ml-1 text-[11px] text-muted-foreground">已选 {editForm.day_member_ids.length} 人</span></label>
+                <label className={labelCls}>白班人员（可多选）<span className="ml-1 text-xs text-muted-foreground">已选 {editForm.day_member_ids.length} 人</span></label>
                 <div className="max-h-44 overflow-y-auto rounded-md border border-border p-1.5">
                   {editMemberOptions.length === 0 ? (
-                    <div className="px-1 py-2 text-[11px] text-muted-foreground">加载中…</div>
+                    <div className="px-1 py-2 text-xs text-muted-foreground">加载中…</div>
                   ) : editMemberOptions.map((m) => (
                     <label key={m.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent">
                       <input
@@ -842,10 +851,10 @@ export default function DutySchedule() {
                 </div>
               </div>
               <div>
-                <label className={labelCls}>晚班人员（可多选）<span className="ml-1 text-[11px] text-muted-foreground">已选 {editForm.night_member_ids.length} 人</span></label>
+                <label className={labelCls}>晚班人员（可多选）<span className="ml-1 text-xs text-muted-foreground">已选 {editForm.night_member_ids.length} 人</span></label>
                 <div className="max-h-44 overflow-y-auto rounded-md border border-border p-1.5">
                   {editMemberOptions.length === 0 ? (
-                    <div className="px-1 py-2 text-[11px] text-muted-foreground">加载中…</div>
+                    <div className="px-1 py-2 text-xs text-muted-foreground">加载中…</div>
                   ) : editMemberOptions.map((m) => (
                     <label key={m.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent">
                       <input
@@ -869,7 +878,7 @@ export default function DutySchedule() {
                 <option value="published">已发布</option>
               </CompactSelect>
             </div>
-            <div className="rounded-md border border-border bg-muted p-3 text-[11px] leading-relaxed text-muted-foreground">
+            <div className="rounded-md border border-border bg-muted p-3 text-xs leading-relaxed text-muted-foreground">
               编辑直接修改该日记录，不改变轮换顺序、不影响其他日期；草稿与已发布记录均可编辑，已过期记录不可编辑。每次白班/晚班变化会写入调班记录。
             </div>
           </div>

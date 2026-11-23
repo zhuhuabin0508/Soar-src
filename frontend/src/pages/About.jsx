@@ -30,17 +30,16 @@ export default function About() {
   useEffect(() => { load() }, [])
 
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-background p-8 text-foreground">
+    <div className="flex h-full w-full flex-col overflow-y-auto bg-background p-6 text-foreground">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
         {/* 头部：科技网格装饰卡片 */}
-        <div className="flex items-center justify-between rounded-lg border border-border bg-card bg-tech-grid p-5">
+        <div className="flex items-center justify-between rounded-lg border border-border bg-card bg-tech-grid p-4">
           <div className="flex items-center gap-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/70 text-lg font-bold text-primary-foreground shadow-md shadow-primary/20">
               S
             </div>
             <div>
-              <h1 className="text-[22px] font-bold tracking-tight">{platformName}</h1>
-              <p className="mt-1.5 text-sm text-muted-foreground">安全编排自动化与响应平台</p>
+              <h1 className="text-2xl font-semibold tracking-tight">{platformName}</h1>
             </div>
           </div>
           <button type="button" onClick={load} className="btn-secondary btn-sm" title="刷新">
@@ -126,7 +125,7 @@ export default function About() {
         </div>
 
         {/* 底部 */}
-        <div className="flex items-center justify-center gap-2 pb-4 text-[11px] text-muted-foreground">
+        <div className="flex items-center justify-center gap-2 pb-4 text-xs text-muted-foreground">
           <Code className="h-3 w-3" />
           <span>SOAR Platform · 安全编排自动化与响应</span>
         </div>

@@ -1,4 +1,4 @@
-// API 开放平台管理 API（应用/密钥/授权 + 调用统计 + 调用日志）
+// API 开放管理 API（应用/密钥/授权 + 调用统计 + 调用日志）
 import request from './client'
 
 export const openAdminApi = {

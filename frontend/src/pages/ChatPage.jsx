@@ -16,8 +16,9 @@ import {
   MessageSquare, Sparkles, Settings, Pin, MapPin, Brain, ScrollText, Paperclip, Check,
   X, Loader2, AlertTriangle, Sheet, FileText, File, Flag, Wrench, Download,
   ChevronDown, ChevronRight, HelpCircle, ArrowUp, Trash2, MoreHorizontal, Pencil, PinOff,
+  Presentation, Globe,
 } from 'lucide-react'
-import { agents as agentsApi, agentFiles as agentFilesApi, llmConfigs as llmConfigsApi } from '../api/client'
+import { agents as agentsApi, agentFiles as agentFilesApi, llmConfigs as llmConfigsApi, skills as skillsApi } from '../api/client'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { EmptyState, Skeleton } from '../components/ui'
 import { toast } from '../store/toastStore'
@@ -29,6 +30,7 @@ import {
   MAX_MESSAGES_PER_CONVERSATION, SESSION_TITLE_MAX,
   clearAllConversations, createConversation, deriveConversationTitle, findConversation,
   fillConversationMessages, normalizeConversations, renameConversation, startNewConversation,
+  stripFileWrapper,
   sortConversationsByPinned, updateConversationMessages,
 } from '../utils/chatConversations'
 import {
@@ -42,9 +44,11 @@ import {
 import { mergeServerSessions, toDisplayMessages } from '../utils/chatSync'
 import { collectDocFiles } from '../utils/docFiles'
 import { useAuthStore } from '../store/authStore'
+import { hasPermission } from '../utils/permissions'
 import ChatToolbar from '../components/chat/ChatToolbar'
 import ModelSwitcher from '../components/chat/ModelSwitcher'
 import SystemPromptEditor from '../components/chat/SystemPromptEditor'
+import SkillPicker from '../components/chat/SkillPicker'
 import MessageEditor from '../components/chat/MessageEditor'
 import ThinkingPanel from '../components/chat/ThinkingPanel'
 import ToolTimeline from '../components/chat/ToolTimeline'
@@ -55,6 +59,23 @@ import ToolTimeline from '../components/chat/ToolTimeline'
 const SIDEBAR_WIDTH = 280
 const SIDEBAR_MIN = 240
 const INPUT_MAX_HEIGHT = 200
+// 技能面板每次滚动加载的条数（后端一次性返回全部技能，前端分批渲染）
+const SKILL_PAGE_SIZE = 30
+
+/** 模糊匹配：忽略大小写与空白的子序列命中即可，兼顾中英文技能名 / 分类 / 标签 */
+function fuzzyMatch(text, query) {
+  const t = (text || '').toLowerCase()
+  const q = (query || '').toLowerCase().replace(/\s+/g, '')
+  if (!q) return true
+  if (t.replace(/\s+/g, '').includes(q)) return true
+  let i = 0
+  for (const ch of q) {
+    i = t.indexOf(ch, i)
+    if (i === -1) return false
+    i += 1
+  }
+  return true
+}
 // localStorage 持久化防抖：流式 token 期间只累积内存状态，停止更新 400ms 后再落盘，
 // 避免每个 token（60ms 一次）都 JSON.stringify 全量会话导致卡顿与配额超限。
 const PERSIST_DEBOUNCE_MS = 400
@@ -445,7 +466,6 @@ export default function ChatPage() {
 
   // ----- 上传文件（不做 RAG，供 read_document 工具读取） -----
   const [uploadedFiles, setUploadedFiles] = useState([])
-  const [selectedFileIds, setSelectedFileIds] = useState(() => new Set())
   const [uploading, setUploading] = useState(false)
 
   // ----- 会话级参数覆盖（对标 new-api Playground）-----
@@ -1074,11 +1094,6 @@ export default function ChatPage() {
       try {
         await agentFilesApi.remove(fileId)
         setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId))
-        setSelectedFileIds((prev) => {
-          const next = new Set(prev)
-          next.delete(fileId)
-          return next
-        })
       } catch (err) {
         toast.error(`文件删除失败：${err.message || err}`)
       }
@@ -1093,16 +1108,6 @@ export default function ChatPage() {
     } catch (err) {
       toast.error(`文件下载失败：${err.message || err}`)
     }
-  }, [])
-
-  // ----- 切换文件勾选 -----
-  const toggleFileSelect = useCallback((fileId) => {
-    setSelectedFileIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(fileId)) next.delete(fileId)
-      else next.add(fileId)
-      return next
-    })
   }, [])
 
   // ----- 确保 read_document 工具已启用 -----
@@ -1129,10 +1134,10 @@ export default function ChatPage() {
   // ----- 发送消息（核心实现，接收文本参数）-----
   // 抽取为独立函数，供 sendMessage（输入框发送）和 regenerateFromMsg（重新生成）复用，
   // 避免依赖 inputText state 更新时序（setInputText 是异步的，setTimeout 触发不可靠）
-  const sendText = useCallback(async (text) => {
-    // 勾选的文件：自动启用 read_document 工具 + 将文件名注入消息上下文
-    const selectedFiles = uploadedFiles.filter((f) => selectedFileIds.has(f.id))
-    // 允许"仅发送附件"：文本为空但勾选了文件时也可发送；两者皆空才拦截
+  const sendText = useCallback(async (text, skillIds = []) => {
+    // 已上传的文件直接随消息发送，无需额外勾选
+    const selectedFiles = uploadedFiles
+    // 允许"仅发送附件"：文本为空但存在已上传文件时也可发送；两者皆空才拦截
     if ((!text && selectedFiles.length === 0) || !selectedAgentId || streaming) return
 
     const agent = agentList.find((a) => String(a.id) === String(selectedAgentId))
@@ -1152,7 +1157,8 @@ export default function ChatPage() {
     const userMsg = {
       id: genId(),
       role: 'user',
-      content: messageText,
+      // 文件注入前缀仅用于告知模型可读取哪些文件，不进入用户可见的消息内容
+      content: stripFileWrapper(messageText),
       timestamp: Date.now(),
     }
     const aiMsg = {
@@ -1178,19 +1184,20 @@ export default function ChatPage() {
       override: overridePayload,
       messageId: aiMsg.id,
       userMessage: userMsg,
+      skillIds: Array.isArray(skillIds) ? skillIds : [],
     })
     if (!task) {
       // 同一会话已有后台任务在生成：撤回占位气泡与未发出的用户消息，
       // 避免留下一条从未发往后端、永远没有回复的消息并落盘
       updateMessages((prev) => prev.filter((m) => m.id !== aiMsg.id && m.id !== userMsg.id))
-      setInputText(messageText)
+      setInputText(stripFileWrapper(messageText))
       toast.info('该对话正在生成回复，请稍候')
     }
-  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, selectedFileIds, ensureReadDocumentEnabled, overridePayload, activeSid, userScope])
+  }, [selectedAgentId, streaming, agentList, updateMessages, uploadedFiles, ensureReadDocumentEnabled, overridePayload, activeSid, userScope])
 
   // ----- 发送消息（输入框入口，读取 inputText）-----
-  const sendMessage = useCallback(() => {
-    return sendText(inputText.trim())
+  const sendMessage = useCallback((skillIds = []) => {
+    return sendText(inputText.trim(), Array.isArray(skillIds) ? skillIds : [])
   }, [inputText, sendText])
 
   // ----- 回答 clarify 澄清选项：标记已选，并以选项文本作为用户消息发送下一轮 -----
@@ -1386,12 +1393,10 @@ export default function ChatPage() {
         onToggleDelegate={toggleDelegateGroup}
         onAnswerClarify={answerClarify}
         uploadedFiles={uploadedFiles}
-        selectedFileIds={selectedFileIds}
         uploading={uploading}
         onFileUpload={handleFileUpload}
         onFileDelete={handleDeleteFile}
         onFileDownload={handleDownloadFile}
-        onToggleFile={toggleFileSelect}
         overrides={currentOverride}
         updateOverrides={updateOverrides}
         llmConfigs={llmConfigs}
@@ -1878,7 +1883,7 @@ function ChatSidebar({
           删除仍保留二次确认（与工具栏的「清空历史」是两个独立操作）。 */}
       {selectedAgentId && (
         <div className="flex min-h-0 shrink-0 flex-col border-t border-border">
-          <div className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-semibold tracking-wider text-muted-foreground">
+          <div className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold tracking-wider text-muted-foreground">
             <span className="uppercase">对话历史</span>
             <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] tabular-nums">
               {conversations.length}
@@ -1998,7 +2003,7 @@ function AgentGroup({
       <button
         type="button"
         onClick={() => setExpanded((e) => !e)}
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition hover:text-muted-foreground"
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground transition hover:text-muted-foreground"
       >
         <span className="text-[9px]">{expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}</span>
         <span>{title}</span>
@@ -2125,12 +2130,10 @@ function ChatMain({
   onToggleDelegate,
   onAnswerClarify,
   uploadedFiles,
-  selectedFileIds,
   uploading,
   onFileUpload,
   onFileDelete,
   onFileDownload,
-  onToggleFile,
   overrides,
   updateOverrides,
   llmConfigs,
@@ -2276,13 +2279,12 @@ function ChatMain({
       onStop={onStop}
       streaming={streaming}
       agentName={name}
+      resetKey={`${agent.id}:${conversationKey}`}
       uploadedFiles={uploadedFiles}
-      selectedFileIds={selectedFileIds}
       uploading={uploading}
       onFileUpload={onFileUpload}
       onFileDelete={onFileDelete}
       onFileDownload={onFileDownload}
-      onToggleFile={onToggleFile}
       modelValue={overrides?.model_config_id ?? null}
       onModelChange={(id) =>
         updateOverrides((prev) => ({ ...prev, model_config_id: id }))
@@ -2330,7 +2332,7 @@ function ChatMain({
                 </span>
               )}
             </div>
-            <h2 className="text-gradient-primary mb-2 text-[22px] font-bold tracking-tight">{name}</h2>
+            <h2 className="text-gradient-primary mb-2 text-2xl font-bold tracking-tight">{name}</h2>
             <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
               {agent.description ||
                 `你可以向我提问相关问题，我会结合工具与上下文为你解答。`}
@@ -2358,7 +2360,7 @@ function ChatMain({
             ref={scrollContainerRef}
             className="min-h-0 flex-1 overflow-y-auto bg-background scroll-smooth"
           >
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-6 sm:gap-6 sm:px-6 sm:py-8">
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6 sm:gap-6 sm:px-6 sm:py-8">
               {messages.map((msg, index) => {
                 // 仅最后一条用户消息展示发送状态，历史消息无需重复提示
                 const isLastUser = msg.role === 'user' && index === lastUserIndex
@@ -2403,6 +2405,8 @@ function ChatMain({
 // ============================================================================
 function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, onAnswerClarify, isLast, sendState = '' }) {
   const isUser = msg.role === 'user'
+  // 用户消息可能带有「文件注入前缀」（历史缓存/服务端），展示时还原为原始输入
+  const visibleContent = isUser ? stripFileWrapper(msg.content) : msg.content
   const [copied, setCopied] = useState(false)
   const [processOpen, setProcessOpen] = useState(false)
   // 用户消息编辑态
@@ -2434,7 +2438,7 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
   }, [])
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(msg.content || '').then(() => {
+    navigator.clipboard.writeText(visibleContent || '').then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
@@ -2461,13 +2465,7 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
           {/* 气泡（用户消息编辑态时切换为 MessageEditor） */}
           {isUser && editing ? (
             <MessageEditor
-              value={(() => {
-                // 还原原始用户输入（去掉文件注入的前缀包裹）
-                const m = (msg.content || '').match(
-                  /^\[用户上传了以下文件[^\]]*\]\s*\n\n([\s\S]*)$/
-                )
-                return m ? m[1] : msg.content || ''
-              })()}
+              value={visibleContent || ''}
               onSave={(newText) => {
                 setEditing(false)
                 onEdit?.(newText)
@@ -2501,7 +2499,7 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
               ) : (
                 <div className="break-words">
                   {isUser ? (
-                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                    <div className="whitespace-pre-wrap">{visibleContent || '已上传文件'}</div>
                   ) : msg.status === 'streaming' ? (
                     <div className="whitespace-pre-wrap">{msg.content}</div>
                   ) : (
@@ -2584,7 +2582,7 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
                     className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${processOpen ? 'rotate-90' : ''}`}
                   />
                   <ScrollText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="shrink-0 text-[11px] text-muted-foreground">执行过程</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">执行过程</span>
                   <span className="shrink-0 whitespace-nowrap text-[10px] tabular-nums text-muted-foreground">
                     ({(msg.toolCalls?.length || 0) + (msg.statusMsgs?.length || 0)})
                   </span>
@@ -2619,7 +2617,7 @@ function MessageBubble({ msg, onRegenerate, onDelete, onEdit, onToggleDelegate, 
                     )}
                     {msg.statusMsgs && msg.statusMsgs.length > 0 && (
                       <div
-                        className={`max-h-40 overflow-y-auto text-[12px] leading-relaxed text-muted-foreground whitespace-pre-wrap break-words ${
+                        className={`max-h-40 overflow-y-auto text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-words ${
                           msg.toolCalls && msg.toolCalls.length > 0
                             ? 'mt-1.5 border-t border-border pt-1.5'
                             : ''
@@ -2838,13 +2836,12 @@ function ChatInput({
   onStop,
   streaming,
   agentName,
+  resetKey = '',
   uploadedFiles = [],
-  selectedFileIds = new Set(),
   uploading = false,
   onFileUpload,
   onFileDelete,
   onFileDownload,
-  onToggleFile,
   modelValue = null,
   onModelChange,
   llmConfigs = [],
@@ -2852,7 +2849,201 @@ function ChatInput({
 }) {
   const textareaRef = useRef(null)
   const fileInputRef = useRef(null)
-  const [showFileList, setShowFileList] = useState(false)
+  // 只读角色可查看对话历史，但发起对话需要 chat:execute
+  const canChat = hasPermission('chat', 'execute')
+
+  // ===== 技能快捷选择 =====
+  // 手动按钮唤起 / 输入框开头输入 "/" 唤起；技能按分类分组展示，支持模糊过滤与滚动分批加载。
+  const rootRef = useRef(null)
+  const skillSearchRef = useRef(null)
+  const skillFetchRef = useRef(false)
+  const [skills, setSkills] = useState([])
+  const [skillsLoading, setSkillsLoading] = useState(false)
+  const [skillsError, setSkillsError] = useState('')
+  const [skillOpen, setSkillOpen] = useState(false)
+  const [slashMode, setSlashMode] = useState(false)
+  const [skillQuery, setSkillQuery] = useState('')
+  const [visibleCount, setVisibleCount] = useState(SKILL_PAGE_SIZE)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [selectedSkills, setSelectedSkills] = useState([])
+  // 删除动画期间的卡片 id（先淡出，再真正移除卡片）
+  const [removingSkillIds, setRemovingSkillIds] = useState([])
+  const removalTimersRef = useRef(new Map())
+
+  useEffect(
+    () => () => {
+      removalTimersRef.current.forEach((timer) => clearTimeout(timer))
+      removalTimersRef.current.clear()
+    },
+    []
+  )
+
+  // 切换会话/智能体时清空本次对话已选技能，避免技能选择残留到其他会话
+  useEffect(() => {
+    removalTimersRef.current.forEach((timer) => clearTimeout(timer))
+    removalTimersRef.current.clear()
+    setSelectedSkills([])
+    setRemovingSkillIds([])
+    setSkillOpen(false)
+    setSlashMode(false)
+    setSkillQuery('')
+  }, [resetKey])
+
+  // 仅首次打开时拉取启用中的技能；失败后允许下次打开重试
+  const loadSkills = () => {
+    if (skillFetchRef.current) return
+    skillFetchRef.current = true
+    setSkillsLoading(true)
+    setSkillsError('')
+    skillsApi
+      .list({ enabled: true })
+      .then((data) => setSkills(Array.isArray(data) ? data : []))
+      .catch((err) => {
+        skillFetchRef.current = false
+        setSkillsError(err?.message || '技能加载失败，请稍后重试')
+      })
+      .finally(() => setSkillsLoading(false))
+  }
+
+  const closeSkillPanel = () => {
+    setSkillOpen(false)
+    setSlashMode(false)
+    setSkillQuery('')
+  }
+
+  // 手动触发：展开 / 收起（展开时聚焦搜索框，便于直接输入过滤）
+  const toggleSkillPanel = () => {
+    if (skillOpen) {
+      closeSkillPanel()
+      return
+    }
+    setSlashMode(false)
+    setSkillQuery('')
+    setSkillOpen(true)
+    loadSkills()
+    requestAnimationFrame(() => skillSearchRef.current?.focus())
+  }
+
+  // 输入框内容变化：开头输入 "/" 自动展开并同步过滤词；"/xxx" 被破坏时收起
+  const handleValueChange = (e) => {
+    const next = e.target.value
+    onChange(next)
+    const slash = /^\/(\S*)$/.exec(next)
+    if (slash) {
+      if (!skillOpen) loadSkills()
+      setSkillOpen(true)
+      setSlashMode(true)
+      setSkillQuery(slash[1])
+    } else if (slashMode) {
+      closeSkillPanel()
+    }
+  }
+
+  // 模糊过滤：名称 / 分类 / 描述 / 标签
+  const filteredSkills = useMemo(() => {
+    const q = skillQuery.trim()
+    if (!q) return skills
+    return skills.filter((s) =>
+      fuzzyMatch(
+        `${s.name || ''} ${s.category || ''} ${s.description || ''} ${(s.tags || []).join(' ')}`,
+        q
+      )
+    )
+  }, [skills, skillQuery])
+
+  // 按分类分组 + 截断到 visibleCount（滚动到底继续追加）
+  const { skillGroups, flatSkills, hasMoreSkills } = useMemo(() => {
+    const map = new Map()
+    filteredSkills.forEach((s) => {
+      const category = s.category || '未分类'
+      if (!map.has(category)) map.set(category, [])
+      map.get(category).push(s)
+    })
+    const groups = []
+    const flat = []
+    for (const [category, items] of map) {
+      if (flat.length >= visibleCount) break
+      const visible = []
+      for (const skill of items) {
+        if (flat.length >= visibleCount) break
+        visible.push({ skill, index: flat.length })
+        flat.push(skill)
+      }
+      if (visible.length) groups.push({ category, items: visible })
+    }
+    return {
+      skillGroups: groups,
+      flatSkills: flat,
+      hasMoreSkills: flat.length < filteredSkills.length,
+    }
+  }, [filteredSkills, visibleCount])
+
+  // 过滤词 / 开关变化时回到顶部与第一项
+  useEffect(() => {
+    setVisibleCount(SKILL_PAGE_SIZE)
+    setActiveIndex(0)
+  }, [skillQuery, skillOpen])
+
+  // 点击面板外部区域关闭
+  useEffect(() => {
+    if (!skillOpen) return undefined
+    const handlePointerDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) closeSkillPanel()
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePointerDown)
+  }, [skillOpen])
+
+  // 选中技能：仅添加卡片，不向输入框写入 /技能名 文本；斜杠模式同时清掉 "/过滤词"
+  const applySkill = (skill) => {
+    if (!skill) return
+    if (!selectedSkills.some((s) => s.id === skill.id)) {
+      setSelectedSkills((prev) => [...prev, skill])
+    }
+    if (slashMode) onChange('')
+    closeSkillPanel()
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }
+
+  // 删除技能卡片：先播放淡出动画，再移除卡片（不影响输入框内容）
+  const removeSelectedSkill = (skill) => {
+    if (!skill || removalTimersRef.current.has(skill.id)) return
+    setRemovingSkillIds((prev) => [...prev, skill.id])
+    const timer = setTimeout(() => {
+      removalTimersRef.current.delete(skill.id)
+      setSelectedSkills((prev) => prev.filter((s) => s.id !== skill.id))
+      setRemovingSkillIds((prev) => prev.filter((id) => id !== skill.id))
+    }, 180)
+    removalTimersRef.current.set(skill.id, timer)
+  }
+
+  // 面板键盘导航：↑↓ 移动、Enter 确认、Esc 关闭；返回 true 表示已消费该按键
+  const handlePickerKeyDown = (e) => {
+    if (!skillOpen) return false
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (flatSkills.length === 0) return true
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      setActiveIndex((i) => {
+        const cur = Math.min(i, flatSkills.length - 1)
+        return (cur + delta + flatSkills.length) % flatSkills.length
+      })
+      return true
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      const target = flatSkills[Math.min(activeIndex, flatSkills.length - 1)]
+      if (target) applySkill(target)
+      return true
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeSkillPanel()
+      textareaRef.current?.focus()
+      return true
+    }
+    return false
+  }
 
   // 自适应高度
   useEffect(() => {
@@ -2869,19 +3060,20 @@ function ChatInput({
     e.target.value = ''
   }
 
-  // 键盘事件：Enter 发送，Shift+Enter 换行
+  // 键盘事件：技能面板打开时优先处理导航，否则 Enter 发送，Shift+Enter 换行
   const handleKeyDown = (e) => {
+    if (handlePickerKeyDown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      // 文本为空但勾选了文件时同样允许发送（仅发附件）
-      if (!streaming && (value.trim() || selectedFileIds.size > 0)) {
-        onSend()
+      // 文本为空但存在已上传文件时同样允许发送（仅发附件）
+      if (!streaming && canChat && (value.trim() || uploadedFiles.length > 0)) {
+        onSend(selectedSkills.map((s) => s.id))
       }
     }
   }
 
   const handleSendClick = () => {
-    onSend()
+    onSend(selectedSkills.map((s) => s.id))
   }
 
   // 文件类型图标
@@ -2889,9 +3081,24 @@ function ChatInput({
     const icons = {
       xlsx: <Sheet className="h-3.5 w-3.5" />, xls: <Sheet className="h-3.5 w-3.5" />, csv: <Sheet className="h-3.5 w-3.5" />,
       docx: <FileText className="h-3.5 w-3.5" />, pdf: <FileText className="h-3.5 w-3.5" />,
+      pptx: <Presentation className="h-3.5 w-3.5" />, ppt: <Presentation className="h-3.5 w-3.5" />,
+      html: <Globe className="h-3.5 w-3.5" />, htm: <Globe className="h-3.5 w-3.5" />,
       txt: <File className="h-3.5 w-3.5" />, md: <File className="h-3.5 w-3.5" />, json: <File className="h-3.5 w-3.5" />,
     }
     return icons[type] || <Paperclip className="h-3.5 w-3.5" />
+  }
+
+  // 文件类型图标底色（对齐办公软件配色习惯）
+  const fileTileClass = (type) => {
+    const tones = {
+      xlsx: 'bg-emerald-500/10 text-emerald-500', xls: 'bg-emerald-500/10 text-emerald-500', csv: 'bg-emerald-500/10 text-emerald-500',
+      docx: 'bg-blue-500/10 text-blue-500', doc: 'bg-blue-500/10 text-blue-500',
+      pdf: 'bg-red-500/10 text-red-500',
+      pptx: 'bg-orange-500/10 text-orange-500', ppt: 'bg-orange-500/10 text-orange-500',
+      md: 'bg-slate-500/10 text-slate-500', txt: 'bg-slate-500/10 text-slate-500', json: 'bg-amber-500/10 text-amber-500',
+      html: 'bg-cyan-500/10 text-cyan-500', htm: 'bg-cyan-500/10 text-cyan-500',
+    }
+    return tones[type] || 'bg-muted text-muted-foreground'
   }
 
   // 文件大小格式化
@@ -2901,113 +3108,154 @@ function ChatInput({
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   }
 
-  const selectedCount = selectedFileIds.size
-
   return (
-    <div className="shrink-0 px-4 pb-3 pt-1 sm:px-6">
+    <div ref={rootRef} className="shrink-0 px-4 pb-3 pt-1 sm:px-6">
       {/* 与消息区同宽居中（max-w-3xl） */}
       <div className="mx-auto w-full max-w-3xl">
-        {/* 文件列表区（可折叠） */}
+        {/* 已上传文件：上传后直接随消息发送，无需勾选 */}
         {uploadedFiles.length > 0 && (
-          <div className="mb-2 rounded-lg border border-border bg-card">
-            <button
-              type="button"
-              onClick={() => setShowFileList((s) => !s)}
-              className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[11px] text-muted-foreground transition hover:text-foreground"
-            >
-              <span className="text-[9px]">{showFileList ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}</span>
-              <Paperclip className="h-4 w-4" />
-              <span className="tabular-nums">已上传文件 ({uploadedFiles.length})</span>
-              {selectedCount > 0 && (
-                <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-                  已选 {selectedCount} 个
-                </span>
-              )}
-              <span className="ml-auto text-[10px] text-muted-foreground">
-                勾选后发送，智能体将自主读取
-              </span>
-            </button>
-            {showFileList && (
-              <div className="max-h-40 overflow-y-auto border-t border-border p-1.5">
-                {uploadedFiles.map((f) => {
-                  const checked = selectedFileIds.has(f.id)
-                  return (
-                    <div
-                      key={f.id}
-                      className={`flex items-center gap-2 rounded px-2 py-1.5 text-xs transition ${
-                        checked ? 'bg-muted' : 'hover:bg-muted'
-                      }`}
+          <div className="mb-2 flex flex-wrap gap-2">
+            {uploadedFiles.map((f) => {
+              const ext = (f.file_type || '').toLowerCase()
+              return (
+                <div
+                  key={f.id}
+                  className="group flex w-[240px] max-w-full items-center gap-2.5 rounded-xl border border-primary/20 bg-primary/[0.04] py-2 pl-2.5 pr-1.5 text-left shadow-sm transition-all duration-200 hover:border-primary/35"
+                >
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg [&>svg]:h-4 [&>svg]:w-4 ${fileTileClass(ext)}`}>
+                    {fileIcon(ext)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-medium text-foreground" title={f.original_name}>
+                      {f.original_name}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] tabular-nums text-muted-foreground">
+                      {(ext || 'file').toUpperCase()} · {formatSize(f.file_size)}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => onFileDownload?.(f)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                      title="下载文件"
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => onToggleFile?.(f.id)}
-                        className="h-3.5 w-3.5 rounded border-border bg-secondary text-primary focus:ring-primary"
-                      />
-                      <span className="shrink-0">{fileIcon(f.file_type)}</span>
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground" title={f.original_name}>
-                        {f.original_name}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-muted-foreground">{formatSize(f.file_size)}</span>
-                      <button
-                        type="button"
-                        onClick={() => onFileDownload?.(f)}
-                        className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                        title="下载文件"
-                      >
-                        <Download className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onFileDelete?.(f.id)}
-                        className="shrink-0 rounded p-0.5 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
-                        title="删除文件"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+                      <Download className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onFileDelete?.(f.id)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                      title="删除文件"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                </div>
+              )
+            })}
           </div>
         )}
 
         {/* 上传中提示（呼吸点动画） */}
         {uploading && (
-          <div className="mb-2 flex items-center gap-2 whitespace-nowrap text-[11px] text-muted-foreground">
+          <div className="mb-2 flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
             <span className="dot-pulse h-2 w-2 rounded-full bg-primary" />
             正在上传文件…
           </div>
         )}
 
+        {/* 已选技能卡片：仅展示名称，右侧固定删除按钮；多卡片自动换行 */}
+        {selectedSkills.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {selectedSkills.map((skill) => {
+              const removing = removingSkillIds.includes(skill.id)
+              return (
+                <span
+                  key={skill.id}
+                  className={`expand-in inline-flex max-w-full items-center gap-1 rounded-lg border border-primary/30 bg-primary/10 py-1 pl-2 pr-0.5 text-xs font-medium text-primary transition-all duration-200 ${
+                    removing ? 'scale-95 opacity-0' : 'opacity-100'
+                  }`}
+                  title={skill.description || skill.name}
+                >
+                  <span className="max-w-[12rem] truncate whitespace-nowrap">{skill.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeSelectedSkill(skill)}
+                    disabled={removing}
+                    className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-primary/70 transition hover:bg-primary/20 hover:text-primary active:scale-90 disabled:pointer-events-none disabled:opacity-40"
+                    title={`移除技能 ${skill.name}`}
+                    aria-label={`移除技能 ${skill.name}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              )
+            })}
+          </div>
+        )}
+
         {/* 悬浮输入卡片：上方文本域，底部一行分左右两组
-            （左：附件按钮；右：模型选择 + 发送按钮）。
+            （左：技能 + 附件按钮；右：模型选择 + 发送按钮）。
             悬停/聚焦主色边框 + 光环反馈（对齐 .input-base 交互） */}
-        <div className="rounded-2xl border border-border bg-card p-2.5 shadow-sm transition hover:border-primary/45 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
+        <div className="relative rounded-2xl border border-border bg-card p-2.5 shadow-sm transition hover:border-primary/45 focus-within:border-primary focus-within:ring-1 focus-within:ring-primary">
+          {/* 技能面板：绝对定位于输入卡片上方，不遮挡输入区 */}
+          <SkillPicker
+            open={skillOpen}
+            loading={skillsLoading}
+            error={skillsError}
+            total={filteredSkills.length}
+            groups={skillGroups}
+            hasMore={hasMoreSkills}
+            activeIndex={Math.min(activeIndex, Math.max(flatSkills.length - 1, 0))}
+            onHover={setActiveIndex}
+            onSelect={applySkill}
+            onQueryChange={setSkillQuery}
+            onLoadMore={() => setVisibleCount((c) => c + SKILL_PAGE_SIZE)}
+            onKeyDown={handlePickerKeyDown}
+            query={skillQuery}
+            searchRef={skillSearchRef}
+          />
           <textarea
             ref={textareaRef}
             value={value}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={handleValueChange}
             onKeyDown={handleKeyDown}
             placeholder={
-              streaming
-                ? '正在生成回复，可点击右侧停止…'
-                : `和 ${agentName || '智能体'} 对话中…`
+              !canChat
+                ? '当前角色仅可查看对话，无对话执行权限'
+                : streaming
+                  ? '正在生成回复，可点击右侧停止…'
+                  : `和 ${agentName || '智能体'} 对话中…`
             }
             rows={1}
             aria-label="消息输入框"
             className="w-full resize-none bg-transparent px-2 pb-2 pt-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
             style={{ maxHeight: `${INPUT_MAX_HEIGHT}px`, minHeight: '44px' }}
-            disabled={streaming}
+            disabled={streaming || !canChat}
           />
           <div className="flex items-center justify-between gap-2">
-            {/* 左：附件按钮 + 隐藏的文件选择 input */}
+            {/* 左：技能选择 + 附件按钮 + 隐藏的文件选择 input */}
             <div className="flex items-center gap-1">
               <button
                 type="button"
+                onClick={toggleSkillPanel}
+                disabled={streaming || !canChat}
+                aria-expanded={skillOpen}
+                className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition disabled:opacity-40 ${
+                  skillOpen
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+                title="选择技能（也可在输入框开头输入 / 唤起）"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span className="whitespace-nowrap">技能</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={streaming || uploading}
+                disabled={streaming || uploading || !canChat}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
                 title="上传文件（Excel/Word/PDF 等，不做 RAG）"
               >
@@ -3044,8 +3292,8 @@ function ChatInput({
                 <button
                   type="button"
                   onClick={handleSendClick}
-                  // 文本为空但勾选了文件时同样可发送（仅发附件）
-                  disabled={!(value.trim() || selectedFileIds.size > 0)}
+                  // 文本为空但存在已上传文件时同样可发送（仅发附件）
+                  disabled={!canChat || !(value.trim() || uploadedFiles.length > 0)}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition hover:opacity-90 hover:shadow-[0_0_14px_oklch(var(--primary)/0.4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:opacity-40 disabled:hover:shadow-none"
                   title="发送"
                 >

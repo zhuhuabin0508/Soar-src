@@ -264,7 +264,7 @@ export function ActionFormModal({ open, initial, onClose, onSubmit, saving }) {
                 请求体模板（支持 {`{{参数名}}`} 占位符）
               </span>
               {bodyPlaceholders.length > 0 && (
-                <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <span>检测到变量：</span>
                   {bodyPlaceholders.map((p) => (
                     <code
@@ -318,7 +318,7 @@ export function ActionFormModal({ open, initial, onClose, onSubmit, saving }) {
             <span className="text-sm text-muted-foreground">启用此动作</span>
           </label>
           {initial && (
-            <div className="mt-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 text-xs text-muted-foreground">
               当前版本：v{initial.version || 1}（保存后将升级为 v{(initial.version || 1) + 1}）
             </div>
           )}
@@ -367,17 +367,17 @@ export function TemplateModal({ open, templates, onClose, onSelect }) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold text-foreground">{tpl.name}</div>
-                  <div className="truncate text-[11px] text-muted-foreground">
+                  <div className="truncate text-xs text-muted-foreground">
                     {tpl.vendor || '未知厂商'} · {DEVICE_TYPE_LABELS[tpl.type] || tpl.type}
                   </div>
                 </div>
               </div>
               {tpl.description && (
-                <div className="line-clamp-2 text-[11px] text-muted-foreground">
+                <div className="line-clamp-2 text-xs text-muted-foreground">
                   {tpl.description}
                 </div>
               )}
-              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="rounded bg-primary/15 px-1.5 py-0.5 text-primary">
                   预置 {tpl.action_count ?? tpl.actions?.length ?? 0} 个动作
                 </span>
@@ -498,10 +498,10 @@ export function TemplateCreateModal({ open, template, onClose, onSubmit, saving 
             placeholder="如：192.168.1.10"
           />
           {ipTouched && ipError && (
-            <div className="mt-1 text-[11px] text-destructive">{ipError}</div>
+            <div className="mt-1 text-xs text-destructive">{ipError}</div>
           )}
         </label>
-        <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-[11px] text-primary/80">
+        <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary/80">
           将自动创建设备和预置的 {template.action_count ?? template.actions?.length ?? 0} 个动作。
         </div>
       </div>
@@ -605,7 +605,7 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
           placeholder={placeholderOf(p)}
           title={p.description || ''}
         />
-        {touched && err && <div className="mt-1 text-[11px] text-destructive">{err}</div>}
+        {touched && err && <div className="mt-1 text-xs text-destructive">{err}</div>}
       </div>
     )
   }
@@ -663,7 +663,7 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
                     <label key={p.name} title={p.description || undefined}>
                       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                         <span>{p.name}</span>
-                        <code className="rounded bg-secondary px-1 text-[10px] text-muted-foreground">
+                        <code className="rounded bg-secondary px-1 text-xs text-muted-foreground">
                           {p.type}
                         </code>
                         {p.required && <span className="text-destructive">*</span>}
@@ -680,7 +680,7 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 请求预览
               </h3>
-              <pre className="overflow-auto rounded-md bg-card p-3 font-mono text-[11px] text-foreground ring-1 ring-border">
+              <pre className="overflow-auto rounded-md bg-card p-3 font-mono text-xs text-foreground ring-1 ring-border">
                 {action.http_method} {action.api_path}
                 {'\n'}
                 {(() => {
@@ -731,7 +731,7 @@ export function ActionTestDrawer({ open, action, onClose, onRun, running, result
                     {result.error}
                   </div>
                 )}
-                <pre className="max-h-72 overflow-auto rounded-md bg-card p-3 font-mono text-[11px] text-foreground ring-1 ring-border">
+                <pre className="max-h-72 overflow-auto rounded-md bg-card p-3 font-mono text-xs text-foreground ring-1 ring-border">
                   {result.response_body == null
                     ? '(空)'
                     : typeof result.response_body === 'string'
@@ -836,12 +836,12 @@ export function ActionHistoryModal({ open, deviceId, actionId, actionName, onClo
                       : ''
                   }`}
                 >
-                  <td className="px-3 py-2 text-[11px] text-muted-foreground" title={fmtTime(h.created_at)}>
+                  <td className="px-3 py-2 text-xs text-muted-foreground" title={fmtTime(h.created_at)}>
                     {fmtRelative(h.created_at)}
                   </td>
                   <td className="px-3 py-2">
                     <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
                         h.status === 'success' || h.success === true
                           ? 'bg-success/20 text-success'
                           : 'bg-destructive/20 text-destructive'
@@ -850,10 +850,10 @@ export function ActionHistoryModal({ open, deviceId, actionId, actionName, onClo
                       {h.status === 'success' || h.success === true ? '成功' : '失败'}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-[11px] text-muted-foreground">
+                  <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">
                     {h.latency_ms != null ? `${h.latency_ms}ms` : '-'}
                   </td>
-                  <td className="truncate px-3 py-2 text-[11px] text-muted-foreground" title={h.error_message || h.source || ''}>
+                  <td className="truncate px-3 py-2 text-xs text-muted-foreground" title={h.error_message || h.source || ''}>
                     {h.source && <span className="mr-2 text-primary">{h.source}</span>}
                     {h.error_message ? (
                       <span className="text-destructive">{truncate(h.error_message, 60)}</span>

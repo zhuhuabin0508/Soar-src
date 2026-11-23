@@ -34,7 +34,7 @@ function ZoomBar({ scale, onFit, onChange }) {
       >
         <Minus className="h-3.5 w-3.5" />
       </button>
-      <span className="w-11 text-center text-[11px] tabular-nums text-muted-foreground">{pct}%</span>
+      <span className="w-11 text-center text-xs tabular-nums text-muted-foreground">{pct}%</span>
       <button
         type="button"
         className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
@@ -46,7 +46,7 @@ function ZoomBar({ scale, onFit, onChange }) {
       </button>
       <button
         type="button"
-        className="ml-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        className="ml-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
         onClick={onFit}
         title="适应宽度"
       >
@@ -117,13 +117,13 @@ function DocxView({ buffer }) {
   }, [ready, mode])
 
   if (error) {
-    return <p className="p-8 text-center text-sm text-red-500">{error}</p>
+    return <p className="p-6 text-center text-sm text-red-500">{error}</p>
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted px-3 py-1.5">
-        <span className="text-[11px] text-muted-foreground">Word 预览</span>
+        <span className="text-xs text-muted-foreground">Word 预览</span>
         <ZoomBar
           scale={scale}
           onFit={() => {
@@ -189,16 +189,16 @@ function ExcelView({ buffer }) {
   }, [parsed, idx])
 
   if (parsed.error) {
-    return <p className="p-8 text-center text-sm text-red-500">{parsed.error}</p>
+    return <p className="p-6 text-center text-sm text-red-500">{parsed.error}</p>
   }
   if (!parsed.names.length) {
-    return <p className="p-8 text-center text-sm text-muted-foreground">该工作簿没有工作表</p>
+    return <p className="p-6 text-center text-sm text-muted-foreground">该工作簿没有工作表</p>
   }
 
   return (
     <div className="excel-preview-root flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted px-3 py-1.5">
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {grid.totalRows} 行 · {grid.totalCols} 列
           {grid.truncated ? `（预览最多 ${EXCEL_MAX_ROWS} 行 / ${EXCEL_MAX_COLS} 列）` : ''}
         </span>
@@ -251,5 +251,5 @@ function ExcelView({ buffer }) {
 export default function OfficePreview({ buffer, ext }) {
   if (ext === 'docx') return <DocxView buffer={buffer} />
   if (ext === 'xlsx' || ext === 'xls') return <ExcelView buffer={buffer} />
-  return <p className="p-8 text-center text-sm text-muted-foreground">不支持的办公文档类型</p>
+  return <p className="p-6 text-center text-sm text-muted-foreground">不支持的办公文档类型</p>
 }

@@ -76,6 +76,11 @@ import TicketSlaConfig from './pages/TicketSlaConfig'
 import TicketPauseConfig from './pages/TicketPauseConfig'
 import TicketFlowEdit from './pages/TicketFlowEdit'
 import TicketMonitorScreen from './pages/TicketMonitorScreen'
+import ReportTemplates from './pages/reports/ReportTemplates'
+import ReportConfigs from './pages/reports/ReportConfigs'
+import ReportConfigEditor from './pages/reports/ReportConfigEditor'
+import ReportRuns from './pages/reports/ReportRuns'
+import ReportAudits from './pages/reports/ReportAudits'
 
 // 路由守卫：未登录跳转 /login
 // 作为布局路由使用：通过则渲染 <Outlet />（子路由），否则跳转登录页。
@@ -179,7 +184,7 @@ const router = createBrowserRouter([
           { path: '/system-settings', element: <RequirePermission perm={['system_config', 'view']} label="系统设置"><SystemSettings /></RequirePermission> },
           { path: '/system-monitor', element: <RequirePermission perm={['system_monitor', 'view']} label="系统监控"><SystemMonitor /></RequirePermission> },
           { path: '/audit-logs', element: <RequirePermission perm={['audit_log', 'view']} label="审计日志"><AuditLogs /></RequirePermission> },
-          { path: '/api-open', element: <RequirePermission perm={['open_api', 'view']} label="API开放平台"><ApiOpenManage /></RequirePermission> },
+          { path: '/api-open', element: <RequirePermission perm={['open_api', 'view']} label="API开放"><ApiOpenManage /></RequirePermission> },
           { path: '/notifications', element: <RequirePermission perm={['notification', 'view']} label="通知中心"><NotificationCenter /></RequirePermission> },
           { path: '/backup', element: <RequirePermission perm={['system_config', 'view']} label="备份恢复"><BackupManagement /></RequirePermission> },
           { path: '/about', element: <RequirePermission perm={['system_config', 'view']} label="关于"><About /></RequirePermission> },
@@ -189,6 +194,13 @@ const router = createBrowserRouter([
           { path: '/feedbacks/mine', element: <MyFeedback /> },
           { path: '/feedbacks/admin', element: <RequirePermission perm={['feedback', 'view']} label="反馈管理"><FeedbackAdmin /></RequirePermission> },
           { path: '/deliverables', element: <RequirePermission perm={['deliverable', 'view']} label="材料管理"><DeliverableManagement /></RequirePermission> },
+          // 报告中心：模板库 / 配置向导 / 运行中心 / 审核
+          { path: '/reports', element: <Navigate to="/reports/templates" replace /> },
+          { path: '/reports/templates', element: <RequirePermission perm={['report', 'view']} label="报告模板库"><ReportTemplates /></RequirePermission> },
+          { path: '/reports/configs', element: <RequirePermission perm={['report', 'view']} label="报告配置"><ReportConfigs /></RequirePermission> },
+          { path: '/reports/configs/:configId', element: <RequirePermission perm={['report', 'view']} label="报告配置"><ReportConfigEditor /></RequirePermission> },
+          { path: '/reports/runs', element: <RequirePermission perm={['report', 'view']} label="运行中心"><ReportRuns /></RequirePermission> },
+          { path: '/reports/audits', element: <RequirePermission perm={['report', 'view']} label="报告审核"><ReportAudits /></RequirePermission> },
           { path: '/govcloud', element: <Navigate to="/assets/discovery" replace /> },
           // 运营管理 - 值班
           { path: '/duty/members', element: <RequirePermission perm={['duty_member', 'view']} label="值班人员"><DutyMemberManagement /></RequirePermission> },
@@ -214,9 +226,9 @@ const router = createBrowserRouter([
           { path: '/strategies/:id/edit', element: <RequirePermission perm={['strategy', 'view']} label="解析模板"><StrategyEdit /></RequirePermission> },
           // 告警接入 - 告警列表 / 告警规则 / 解析入库监控
           { path: '/alerts', element: <RequirePermission perm={['alert', 'view']} label="告警列表"><AlertList /></RequirePermission> },
-          { path: '/alert-rules', element: <RequirePermission perm={['alert', 'view']} label="告警规则"><AlertRules /></RequirePermission> },
-          { path: '/alert-rules/new', element: <RequirePermission perm={['alert', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
-          { path: '/alert-rules/:id/edit', element: <RequirePermission perm={['alert', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
+          { path: '/alert-rules', element: <RequirePermission perm={['alert_rule', 'view']} label="告警规则"><AlertRules /></RequirePermission> },
+          { path: '/alert-rules/new', element: <RequirePermission perm={['alert_rule', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
+          { path: '/alert-rules/:id/edit', element: <RequirePermission perm={['alert_rule', 'view']} label="告警规则"><AlertRuleEditPage /></RequirePermission> },
           { path: '/ingest-monitor', element: <RequirePermission perm={['monitor', 'view']} label="入库监控"><IngestionMonitor /></RequirePermission> },
           { path: '/lineage', element: <RequirePermission perm={['device', 'view']} label="数据血缘"><LineageView /></RequirePermission> },
           // 告警自动封禁工作流：触发规则独立页面；审批/封禁/历史已合并进工作台 Tab

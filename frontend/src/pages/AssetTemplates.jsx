@@ -10,9 +10,10 @@ import { confirm } from '../components/ConfirmDialog'
 import { toast } from '../store/toastStore'
 import { inputCls, labelCls } from '../components/property/FormControls'
 import {
-  Card, Badge, ErrorState, EmptyState, StatusBadge, CompactSelect,
+  Card, Badge, ErrorState, EmptyState, StatusBadge, CompactSelect, PillTabs,
 } from '../components/ui'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { hasPermission } from '../utils/permissions'
 
 const TEMPLATE_ICONS = { host_asset: Server, network_segment: Network, egress_ip: Globe }
 const FIELD_TYPES = ['text', 'number', 'date', 'select', 'textarea', 'ip', 'cidr']
@@ -265,7 +266,7 @@ function TemplateEditor({ open, template, onClose, onSaved }) {
       </div>
 
       {/* 字段定义 */}
-      <div className="mt-5 border-t border-border pt-4">
+      <div className="mt-4 border-t border-border pt-4">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground">字段定义（{form.fields.length}）</h3>
           <button onClick={addField} className="btn-secondary btn-sm flex items-center gap-1">
@@ -277,21 +278,21 @@ function TemplateEditor({ open, template, onClose, onSaved }) {
             <div key={idx} className="rounded-lg border border-border bg-muted p-3">
               <div className="grid grid-cols-12 items-end gap-2">
                 <div className="col-span-3">
-                  <label className="text-[10px] text-muted-foreground">字段 key</label>
+                  <label className="text-xs text-muted-foreground">字段 key</label>
                   <input className={inputCls} value={f.key} onChange={(e) => updateField(idx, { key: e.target.value })} placeholder="ip" />
                 </div>
                 <div className="col-span-3">
-                  <label className="text-[10px] text-muted-foreground">显示标签</label>
+                  <label className="text-xs text-muted-foreground">显示标签</label>
                   <input className={inputCls} value={f.label} onChange={(e) => updateField(idx, { label: e.target.value })} placeholder="IP 地址" />
                 </div>
                 <div className="col-span-2">
-                  <label className="text-[10px] text-muted-foreground">类型</label>
+                  <label className="text-xs text-muted-foreground">类型</label>
                   <CompactSelect value={f.type} onChange={(e) => updateField(idx, { type: e.target.value })} size="lg" block>
                     {FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                   </CompactSelect>
                 </div>
                 <div className="col-span-3">
-                  <label className="text-[10px] text-muted-foreground">映射目标</label>
+                  <label className="text-xs text-muted-foreground">映射目标</label>
                   <CompactSelect value={f.mapped_to} onChange={(e) => updateField(idx, { mapped_to: e.target.value })} size="lg" block>
                     <option value="extra">extra（扩展字段）</option>
                     {STANDARD_COLS.map((c) => <option key={c} value={`standard:${c}`}>standard:{c}</option>)}
@@ -440,7 +441,7 @@ function TagManager() {
                   {list.map((t) => (
                     <div key={t.id} className="group flex items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-3 pr-1.5">
                       <Badge variant={t.color || 'brand'}>{t.name}</Badge>
-                      <span className={`text-[10px] tabular-nums ${t.asset_count > 0 ? 'text-muted-foreground' : 'text-muted-foreground'}`} title={t.asset_count == null ? '未统计' : `关联 ${t.asset_count} 项资产`}>
+                      <span className={`text-xs tabular-nums ${t.asset_count > 0 ? 'text-muted-foreground' : 'text-muted-foreground'}`} title={t.asset_count == null ? '未统计' : `关联 ${t.asset_count} 项资产`}>
                         {(t.asset_count ?? 0).toLocaleString()}
                       </span>
                       <button onClick={() => handleDelete(t)} className="rounded-full p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100" title="删除">
@@ -460,6 +461,8 @@ function TagManager() {
 
 // ===== 主页面 =====
 export default function AssetTemplates() {
+  const canImport = hasPermission('asset_templates', 'import')
+  const canExport = hasPermission('asset_templates', 'export')
   const [tab, setTab] = useState('templates') // templates | tags
   const [templates, setTemplates] = useState([])
   const [loading, setLoading] = useState(true)
@@ -574,6 +577,7 @@ export default function AssetTemplates() {
           </button>
           {tab === 'templates' && (
             <>
+              {canImport && (
               <button
                 type="button"
                 onClick={() => { setImportOpen(true); setImportParsed(null) }}
@@ -582,6 +586,8 @@ export default function AssetTemplates() {
               >
                 <Upload className="mr-1 h-3.5 w-3.5" /> 导入模板
               </button>
+              )}
+              {canExport && (
               <button
                 type="button"
                 onClick={() => handleExport(null)}
@@ -591,6 +597,7 @@ export default function AssetTemplates() {
               >
                 <Download className={`mr-1 h-3.5 w-3.5 ${exporting === 'all' ? 'animate-pulse' : ''}`} /> 导出全部
               </button>
+              )}
               <button onClick={() => { setEditing(null); setEditorOpen(true) }} className="btn-primary btn-sm">
                 <Plus className="mr-1 h-3.5 w-3.5" /> 新建类型
               </button>
@@ -602,15 +609,15 @@ export default function AssetTemplates() {
       <div className="flex-1 overflow-y-auto p-6">
 
       {/* Tab 切换 */}
-      <div className="mb-4 flex items-center gap-1.5 border-b border-border pb-px">
-        <button onClick={() => setTab('templates')} className={`relative rounded-t-md px-3 py-2 text-sm ${tab === 'templates' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}>
-          类型模板
-          {tab === 'templates' && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded bg-primary" />}
-        </button>
-        <button onClick={() => setTab('tags')} className={`relative rounded-t-md px-3 py-2 text-sm ${tab === 'tags' ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}>
-          标签管理
-          {tab === 'tags' && <span className="absolute inset-x-2 -bottom-px h-0.5 rounded bg-primary" />}
-        </button>
+      <div className="mb-4">
+        <PillTabs
+          items={[
+            { key: 'templates', label: '类型模板' },
+            { key: 'tags', label: '标签管理' },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
       </div>
 
       {tab === 'templates' ? (
@@ -658,10 +665,10 @@ export default function AssetTemplates() {
                           <Badge variant="neutral">自定义</Badge>
                         )}
                       </div>
-                      <div className="truncate text-[11px] text-muted-foreground">
+                      <div className="truncate text-xs text-muted-foreground">
                         {t.code} · 标识：{t.identifier_field}
                         {t.allow_aggregate && (
-                          <span className="ml-1 inline-flex items-center rounded border border-primary/40 bg-primary/10 px-1 text-[10px] text-primary">
+                          <span className="ml-1 inline-flex items-center rounded border border-primary/40 bg-primary/10 px-1 text-xs text-primary">
                             聚合
                           </span>
                         )}
@@ -670,12 +677,12 @@ export default function AssetTemplates() {
                   </div>
                   <div className="min-h-0 flex-1 p-4">
                     {t.description && <p className="mb-3 text-xs text-muted-foreground">{t.description}</p>}
-                    <div className="mb-2 text-[11px] font-medium tabular-nums uppercase tracking-wider text-muted-foreground">
+                    <div className="mb-2 text-xs font-medium tabular-nums uppercase tracking-wider text-muted-foreground">
                       字段（{(t.fields || []).length}）
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {(t.fields || []).slice(0, 12).map((f) => (
-                        <span key={f.key} className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                        <span key={f.key} className={`rounded border px-1.5 py-0.5 text-xs ${
                           f.key === t.identifier_field
                             ? 'border-primary/40 bg-primary/10 text-primary'
                             : 'border-border text-muted-foreground'
@@ -685,11 +692,12 @@ export default function AssetTemplates() {
                         </span>
                       ))}
                       {(t.fields || []).length > 12 && (
-                        <span className="text-[10px] text-muted-foreground">+{(t.fields || []).length - 12}</span>
+                        <span className="text-xs text-muted-foreground">+{(t.fields || []).length - 12}</span>
                       )}
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-1 border-t border-border px-3 py-2">
+                    {canExport && (
                     <button
                       onClick={() => handleExport(t)}
                       disabled={exporting === t.code}
@@ -698,6 +706,7 @@ export default function AssetTemplates() {
                     >
                       <Download className={`h-3 w-3 ${exporting === t.code ? 'animate-pulse' : ''}`} />
                     </button>
+                    )}
                     <button onClick={() => { setEditing(t); setEditorOpen(true) }} className="btn-secondary btn-sm" title="编辑模板">
                       <Pencil className="h-3 w-3" />
                     </button>

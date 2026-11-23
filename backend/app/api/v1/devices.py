@@ -687,7 +687,7 @@ def create_device_from_template(
     return {"device": to_dict(device, exclude={"api_key", "username", "password"}), "actions_created": created_actions}
 
 
-@router.get("/export", dependencies=[Depends(require_permission("device", "edit"))])
+@router.get("/export", dependencies=[Depends(require_permission("device", "export"))])
 def export_devices(
     ids: str = Query("", description="逗号分隔的设备 ID，为空则导出全部"),
     db: Session = Depends(get_db),
@@ -726,7 +726,7 @@ def import_devices(
     body: ImportDevicesRequest,
     request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("device", "edit")),
+    user: User = Depends(require_permission("device", "import")),
 ) -> dict:
     """导入设备配置（JSON，含动作）。"""
     created_devices = 0

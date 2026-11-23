@@ -1,6 +1,7 @@
 """工具入参与知识库、资产检索工具构造。"""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -17,13 +18,27 @@ _TYPE_MAP = {
     "Array": list,
 }
 
+# 进程级缓存：工具入参 pydantic 模型。
+# key = (tool_name, schema 指纹)，value = 模型类。create_model 有反射开销，
+# 而同一工具在每次对话重建注册表时都会重新构造；缓存后跨请求复用，只留
+# 首次构造成本。模型类创建后不可变，缓存安全。
+_args_model_cache: dict[tuple[str, str], Any] = {}
+
+
 def _build_args_model(tool_name: str, parameters_schema: list[dict] | None):
     """根据 parameters_schema 动态构造 pydantic 入参模型。
 
     schema 元素结构：``{name, type, required, description}``。
     """
+    schema = parameters_schema or []
+    fingerprint = json.dumps(schema, sort_keys=True, ensure_ascii=False)
+    key = (tool_name, fingerprint)
+    cached = _args_model_cache.get(key)
+    if cached is not None:
+        return cached
+
     fields: dict[str, Any] = {}
-    for param in parameters_schema or []:
+    for param in schema:
         name = param.get("name")
         if not name:
             continue
@@ -36,7 +51,9 @@ def _build_args_model(tool_name: str, parameters_schema: list[dict] | None):
         else:
             fields[name] = (Optional[py_type], Field(None, description=desc))
     safe_name = "".join(c if c.isalnum() else "_" for c in tool_name) or "Tool"
-    return create_model(f"{safe_name}Args", **fields)
+    model = create_model(f"{safe_name}Args", **fields)
+    _args_model_cache[key] = model
+    return model
 
 
 def _build_db_tools(db, enabled_tools: list[str]) -> list:
@@ -237,6 +254,7 @@ from app.core.asset_ip_index import (  # noqa: F401
     query_asset_ids_by_ipv6,
     query_asset_ids_by_net,
     query_asset_ids_by_netv6,
+    query_nearest_asset_ids_by_ip,
 )
 
 
@@ -384,7 +402,9 @@ def _build_asset_tool(enabled_asset_types: list[str] | None = None):
             "",
             description="按 IP/名称/标识/负责人模糊搜索。传入单个 IP（如 198.51.100.1）"
             "会自动匹配包含该 IP 的网段/CIDR/范围资产，并同时在资产发现"
-            "（云主机/裸金属/网络资源/弹性IP）中精确检索该 IP。"
+            "（云主机/裸金属/网络资源/弹性IP/青藤主机，青藤主机按连接 IP 等 IP 字段匹配）中精确检索该 IP。"
+            "单个 IP 未命中任何资产时，会返回距离该 IP 数值最近的 3 个 IP 地址记录"
+            "（similar_ips，含资产信息与 closest_ip/distance 字段）。"
             "支持逗号/分号/空白分隔批量查询（如 '198.51.100.1,203.0.113.5'），"
             "一次调用返回每个 IP 各自的命中，批量研判 IP 时务必合并为一次调用。",
         )
@@ -442,6 +462,36 @@ def _build_asset_tool(enabled_asset_types: list[str] | None = None):
             result[label] = grouped.get(code, [])
         return result
 
+    def _similar_assets(db, ti: int, serialize, limit: int = 3) -> list[dict]:
+        """单 IP 未命中资产时的相似 IP 兜底：返回距离最近的若干资产记录。
+
+        与资产发现查询一样是「尽力而为」的补充信息——索引表未就绪或查询异常时
+        只记日志、返回空列表，不影响资产清单主结果。
+        """
+        import ipaddress
+
+        from app.models.asset import Asset
+
+        try:
+            nearest = query_nearest_asset_ids_by_ip(db, ti, limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("search_assets 相似 IP 查询失败（忽略）: %s", exc)
+            return []
+        if not nearest:
+            return []
+        rows = db.query(Asset).filter(Asset.id.in_([a for a, _, _ in nearest])).all()
+        by_id = {r.id: r for r in rows}
+        out: list[dict] = []
+        for aid, closest_ip, dist in nearest:
+            r = by_id.get(aid)
+            if r is None:
+                continue
+            item = serialize(r)
+            item["closest_ip"] = str(ipaddress.IPv4Address(closest_ip))
+            item["distance"] = dist
+            out.append(item)
+        return out
+
     def _run_query_sync(keyword: str, department: str, limit: int):
         """同步执行检索（由 ``asyncio.to_thread`` 调度到线程池，不阻塞事件循环）。
 
@@ -489,6 +539,7 @@ def _build_asset_tool(enabled_asset_types: list[str] | None = None):
                 )
 
             per_token: list[tuple[str, list]] = []  # (token 展示值, 命中行)
+            similar_map: dict[str, list[dict]] = {}  # 单 IP 无命中时的相似 IP 兜底
             if ip_toks or net_toks:
                 # 持久化区间索引（asset_ip_intervals，GiST）：点查 @> / 网段重叠 &&，
                 # 替代旧的全表扫描 + 内存缓存（冷查询 2.2s → 索引查找 ~1ms 级）。
@@ -507,7 +558,11 @@ def _build_asset_tool(enabled_asset_types: list[str] | None = None):
                         hit_ids = query_asset_ids_by_ipv6(db, int(ip), limit=ip_hit_cap)
                     else:
                         hit_ids = query_asset_ids_by_ip(db, int(ip), limit=ip_hit_cap)
-                    per_token.append((str(ip), _load_rows(hit_ids)))
+                    rows = _load_rows(hit_ids)
+                    per_token.append((str(ip), rows))
+                    # 单 IP 未命中资产：返回数值最接近的 3 个 IP 地址记录（相似 IP）
+                    if not rows and ip.version == 4:
+                        similar_map[str(ip)] = _similar_assets(db, int(ip), _serialize)
                 for net in net_toks:
                     ns = int(net.network_address)
                     ne = int(net.broadcast_address)
@@ -524,7 +579,15 @@ def _build_asset_tool(enabled_asset_types: list[str] | None = None):
                 return _pack([])
             if len(per_token) == 1:
                 # 单一查询目标：保持原有按类型分组的返回结构
-                return _pack(per_token[0][1])
+                result = _pack(per_token[0][1])
+                tok = per_token[0][0]
+                similar = similar_map.get(tok)
+                if similar:
+                    result["query"] = tok
+                    result["matched"] = False
+                    result["similar_ips"] = similar
+                    result["similar_ips_count"] = len(similar)
+                return result
 
             # 批量：按查询目标分组返回，方便 LLM 逐 IP 对应命中结果
             seen_ids: set = set()
@@ -581,8 +644,11 @@ def _build_asset_tool(enabled_asset_types: list[str] | None = None):
             "支持逗号/分号/空白分隔的批量查询（如 '1.2.3.4,5.6.7.8'），"
             "一次调用返回每个查询目标各自的命中——批量研判多个 IP 时必须合并为一次调用，不要逐个查询。"
             "传入单个 IP 会匹配包含该 IP 的网段/CIDR/范围/EIP，并同时在资产发现"
-            "（云主机/裸金属/网络资源/弹性IP/青藤主机）中精确检索该 IP，命中以「资产发现」分组返回；"
+            "（云主机/裸金属/网络资源/弹性IP/青藤主机）中精确检索该 IP"
+            "（青藤主机按连接 IP 等 IP 字段匹配），命中以「资产发现」分组返回；"
             "返回结构中「资产发现」是资产发现数据，其余按资产类型分组的是资产清单数据，二者应分开展示。"
+            "单个 IP 未命中任何资产时，会返回距离该 IP 数值最近的 3 个 IP 地址记录"
+            "（similar_ips，含资产信息与 closest_ip/distance 字段），供了解周边相邻主机。"
             "传入 CIDR 会匹配重叠网段。"
             "按名称/部门等文本查询时仅检索资产清单。"
             "不同资产类型的字段集不同：资产清单记录的 extra_fields 携带该类型模板的自定义字段，"

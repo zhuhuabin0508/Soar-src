@@ -202,11 +202,11 @@ export default function BatchShareDialog({
             <Users className="h-3.5 w-3.5 text-primary" />
             已选资源（{resCount}）
           </span>
-          <span className="text-[11px] font-normal text-muted-foreground">点击展开</span>
+          <span className="text-xs font-normal text-muted-foreground">点击展开</span>
         </summary>
         <ul className="mt-2 max-h-40 overflow-auto border-t border-border pt-2">
           {(resources || []).map((r, idx) => (
-            <li key={r.id ?? idx} className="truncate py-0.5 text-[11px] text-muted-foreground">
+            <li key={r.id ?? idx} className="truncate py-0.5 text-xs text-muted-foreground">
               {idx + 1}. {r.name || `资源#${r.id}`}
             </li>
           ))}
@@ -220,7 +220,7 @@ export default function BatchShareDialog({
             <UserPlus className="h-3.5 w-3.5 text-primary" />
             选择授权用户
             {availableUsers.length > 0 && (
-              <span className="text-[11px] font-normal text-muted-foreground">
+              <span className="text-xs font-normal text-muted-foreground">
                 （已选 {userCount} / 可选 {availableUsers.length}）
               </span>
             )}
@@ -240,7 +240,7 @@ export default function BatchShareDialog({
         ) : (
           <>
             {/* 全选 / 反选 / 清空 工具条 */}
-            <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+            <div className="mb-1.5 flex items-center justify-between text-xs text-muted-foreground">
               <label className="inline-flex cursor-pointer items-center gap-1.5 hover:text-foreground">
                 <input
                   type="checkbox"
@@ -310,12 +310,12 @@ export default function BatchShareDialog({
                         {u.display_name || u.username}
                       </span>
                       {u.display_name && (
-                        <span className="truncate text-[11px] text-muted-foreground">
+                        <span className="truncate text-xs text-muted-foreground">
                           （{u.username}）
                         </span>
                       )}
                       {u.role && (
-                        <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                           {u.role}
                         </span>
                       )}
@@ -352,7 +352,7 @@ export default function BatchShareDialog({
         </div>
 
         {/* 权限说明随选择切换 */}
-        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-muted-foreground">
+        <div className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
           {selectedPermission === 'edit' ? (
             <>
               <Pencil className="mt-0.5 h-3 w-3 shrink-0 text-primary" />

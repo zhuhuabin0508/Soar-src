@@ -179,7 +179,7 @@ export function Lightbox({ images, index, onIndex, onClose }) {
 
   if (!cur) return null
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex select-none flex-col items-center justify-center gap-3 bg-black/85 p-8"
+    <div className="fixed inset-0 z-[200] flex select-none flex-col items-center justify-center gap-3 bg-black/85 p-6"
       onPointerDown={handleOverlayPointerDown}
       onClick={handleOverlayClick}>
       <div className="max-w-[85vw] truncate text-sm text-white/85">{cur.name || '图片'}</div>

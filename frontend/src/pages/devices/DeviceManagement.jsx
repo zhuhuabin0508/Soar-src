@@ -11,8 +11,10 @@ import { confirm } from '../../components/ConfirmDialog'
 import { toast } from '../../store/toastStore'
 import { TutorialButton, TutorialDrawer } from '../../components/TutorialDrawer'
 import { DEVICE_TUTORIAL } from '../../components/tutorialContent'
+import { PillTabs } from '../../components/ui'
 import { usePersistedFilters } from '../../hooks/usePersistedFilters'
 import FilterBar from '../../components/FilterBar'
+import { hasPermission } from '../../utils/permissions'
 import {
   VIEW_MODES,
   DEVICE_TYPES,
@@ -40,6 +42,8 @@ import { DeviceFormModal } from './DeviceModal'
 
 function DeviceManagement() {
   const navigate = useNavigate()
+  const canImport = hasPermission('device', 'import')
+  const canExport = hasPermission('device', 'export')
   const [activeTab, setActiveTab] = useState('devices') // devices | logs
   const [devices, setDevices] = useState([])
   const [loading, setLoading] = useState(true)
@@ -773,6 +777,7 @@ function DeviceManagement() {
               <Files className="mr-1 h-3.5 w-3.5" /> 从模板
             </button>
             {/* 数据操作下拉：全选 / 导入 / 导出（点击外部自动关闭） */}
+            {(canImport || canExport) && (
             <div className="relative" ref={dataMenuRef}>
               <button
                 type="button"
@@ -796,6 +801,7 @@ function DeviceManagement() {
                       <CheckSquare className="h-3.5 w-3.5 text-muted-foreground" />
                       {checkIds.length ? `取消全选（已选 ${checkIds.length}）` : '全选当前列表'}
                     </button>
+                    {canExport && (
                     <button
                       type="button"
                       onClick={() => {
@@ -807,6 +813,8 @@ function DeviceManagement() {
                       <Download className="h-3.5 w-3.5 text-muted-foreground" />
                       导出所选{checkIds.length ? `（${checkIds.length} 台）` : ''}
                     </button>
+                    )}
+                    {canExport && (
                     <button
                       type="button"
                       onClick={() => {
@@ -818,6 +826,9 @@ function DeviceManagement() {
                       <Download className="h-3.5 w-3.5 text-muted-foreground" />
                       导出全部设备
                     </button>
+                    )}
+                    {canImport && (
+                    <>
                     <div className="my-1 border-t border-border" />
                     <button
                       type="button"
@@ -830,9 +841,12 @@ function DeviceManagement() {
                       <Upload className="h-3.5 w-3.5 text-muted-foreground" />
                       导入 JSON
                     </button>
+                    </>
+                    )}
                   </div>
               )}
             </div>
+            )}
             <input
               ref={importInputRef}
               type="file"
@@ -852,29 +866,15 @@ function DeviceManagement() {
       </header>
 
       {/* Tab 切换 */}
-      <div className="flex items-center gap-1 border-b border-border bg-card px-6">
-        <button
-          type="button"
-          onClick={() => setActiveTab('devices')}
-          className={`-mb-px border-b-2 px-4 py-3 text-sm transition ${
-            activeTab === 'devices'
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          设备管理
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('logs')}
-          className={`-mb-px border-b-2 px-4 py-3 text-sm transition ${
-            activeTab === 'logs'
-              ? 'border-primary text-foreground'
-              : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          调用日志
-        </button>
+      <div className="border-b border-border bg-card px-6 py-3">
+        <PillTabs
+          items={[
+            { key: 'devices', label: '设备管理' },
+            { key: 'logs', label: '调用日志' },
+          ]}
+          value={activeTab}
+          onChange={setActiveTab}
+        />
       </div>
 
       <div className="flex-1 overflow-hidden">
@@ -1318,7 +1318,7 @@ function DeviceManagement() {
                               <NumCell value={dev.today_call_count} title="今日暂无调用" />
                             </td>
                             <td
-                              className="px-4 py-3 text-[11px] text-muted-foreground"
+                              className="px-4 py-3 text-xs text-muted-foreground"
                               title={fmtTime(dev.last_heartbeat)}
                             >
                               {fmtRelative(dev.last_heartbeat)}

@@ -258,7 +258,7 @@ def list_templates(
     return [_template_to_dict(t) for t in templates]
 
 
-@router.get("/export", dependencies=[Depends(require_permission("asset_templates", "view"))])
+@router.get("/export", dependencies=[Depends(require_permission("asset_templates", "export"))])
 def export_templates(
     codes: str = Query("", description="要导出的模板 code，逗号分隔；为空则导出全部"),
     db: Session = Depends(get_db),
@@ -312,7 +312,7 @@ def export_templates(
     )
 
 
-@router.post("/import", status_code=201, dependencies=[Depends(require_permission("asset_templates", "edit"))])
+@router.post("/import", status_code=201, dependencies=[Depends(require_permission("asset_templates", "import"))])
 def import_templates(
     body: TemplateImportRequest,
     db: Session = Depends(get_db),

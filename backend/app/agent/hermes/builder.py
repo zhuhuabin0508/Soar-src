@@ -73,7 +73,7 @@ def _check_permission(db, user, module: str, action: str) -> None:
         return
     if getattr(user, "role_id", None):
         role = db.query(Role).filter(Role.id == user.role_id).first()
-        if role and has_permission(migrate_permissions(role.permissions), module, action):
+        if role and has_permission(migrate_permissions(role.permissions, grant_new_actions=False), module, action):
             return
     for default_role in DEFAULT_ROLES:
         if default_role["name"] == user.role:

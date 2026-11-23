@@ -948,7 +948,7 @@ CATEGORY_EXPORT_MAX_FILES = 500
 def export_category(
     category_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("deliverable", "view")),
+    current_user: User = Depends(require_permission("deliverable", "export")),
 ):
     """导出目录：将该目录及其所有子目录递归打包为 zip，保留目录结构。
 
@@ -1265,7 +1265,7 @@ async def upload_deliverable(
 def batch_download(
     payload: dict,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("deliverable", "view")),
+    current_user: User = Depends(require_permission("deliverable", "export")),
 ):
     """批量下载材料：将多个文件打包为 zip 流式返回。
 
@@ -1587,7 +1587,7 @@ def batch_move(
 def download_deliverable(
     deliverable_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("deliverable", "view")),
+    current_user: User = Depends(require_permission("deliverable", "export")),
 ):
     """下载材料文件（以原始文件名返回，RFC 5987 UTF-8 编码支持中文）。"""
     deliverable = _get_deliverable_or_404(db, deliverable_id)

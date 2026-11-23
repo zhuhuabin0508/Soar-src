@@ -232,7 +232,7 @@ function MonitorDashboard() {
     <div className="flex h-full w-full flex-col overflow-hidden bg-gray-950 text-gray-100">
       {/* 顶部标题栏 */}
       <header className="flex items-center justify-between border-b border-gray-800 bg-gray-900/60 px-6 py-4">
-        <h1 className="text-xl font-semibold">执行监测看板</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">执行监测看板</h1>
         <div className="flex flex-wrap items-center gap-4">
           {/* 工作流筛选 */}
           <div className="flex items-center gap-1.5">

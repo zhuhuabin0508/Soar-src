@@ -760,7 +760,7 @@ def export_govcloud_assets(
     keyword: str = Query("", description="与列表一致的搜索条件（可选）"),
     module: str = Query("", description="青藤资产明细模块筛选（可选）"),
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("asset_discovery", "view")),
+    user: User = Depends(require_permission("asset_discovery", "export")),
     request: Request = None,
 ) -> StreamingResponse:
     """导出指定资源类型为 CSV（UTF-8 BOM，Excel 可直接打开）。
@@ -984,7 +984,7 @@ def import_govcloud_excel(
     mode: str = Query("full", description="导入模式：full 全量对齐 / incremental 增量 upsert 不删除"),
     request: Request = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_permission("asset_discovery", "edit")),
+    user: User = Depends(require_permission("asset_discovery", "import")),
 ) -> dict:
     """导入爬虫产出的 xlsx / csv（同步 def：走 FastAPI 线程池，防止大文件
     同步解析阻塞事件循环导致全站 502，与 assets.import_assets 同口径）。"""

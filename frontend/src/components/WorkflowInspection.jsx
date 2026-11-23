@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { ChevronRight } from 'lucide-react'
 import { getExecutions, getExecutionDetail, getStatsOverview } from '../api/executions'
+import { PillTabs } from './ui'
 
 // 格式化时间
 function fmtTime(t) {
@@ -92,10 +93,10 @@ function logLevelClass(level) {
 function StatCard({ label, value, suffix, accent }) {
   return (
     <div className="rounded-lg border border-border bg-card p-2.5">
-      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 flex items-baseline gap-0.5">
         <span className={`text-lg font-bold ${accent || 'text-foreground'}`}>{value}</span>
-        {suffix && <span className="text-[10px] text-muted-foreground">{suffix}</span>}
+        {suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
       </div>
     </div>
   )
@@ -174,10 +175,10 @@ function PerformanceAnalysis({ nodeBottleneck, totalAvgDuration }) {
   if (sorted.length === 0) {
     return (
       <div className="rounded-lg border border-border bg-card p-2">
-        <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+        <div className="mb-1 text-xs font-medium text-muted-foreground">
           性能分析
         </div>
-        <div className="py-6 text-center text-[11px] text-muted-foreground">
+        <div className="py-6 text-center text-xs text-muted-foreground">
           暂无节点性能数据
         </div>
       </div>
@@ -188,8 +189,8 @@ function PerformanceAnalysis({ nodeBottleneck, totalAvgDuration }) {
     <div className="rounded-lg border border-border bg-card p-2">
       {/* 顶部：总平均耗时 + 最慢节点 */}
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-[11px] font-medium text-muted-foreground">性能分析</div>
-        <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+        <div className="text-xs font-medium text-muted-foreground">性能分析</div>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span>
             总平均耗时：
             <span className="font-semibold text-primary">
@@ -227,7 +228,7 @@ function PerformanceAnalysis({ nodeBottleneck, totalAvgDuration }) {
             return (
               <div
                 key={idx}
-                className={`flex items-center gap-2 rounded px-1.5 py-1 text-[10px] ${
+                className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${
                   failed ? 'bg-danger-900/15 text-destructive' : 'text-muted-foreground'
                 }`}
               >
@@ -320,9 +321,9 @@ function MonitorTab({ executions, nodeBottleneck, totalAvgDuration }) {
 
       {/* 按天趋势折线图 */}
       <div className="rounded-lg border border-border bg-card p-2">
-        <div className="mb-1 text-[11px] font-medium text-muted-foreground">按天执行趋势</div>
+        <div className="mb-1 text-xs font-medium text-muted-foreground">按天执行趋势</div>
         {stats.byDay.length === 0 ? (
-          <div className="py-6 text-center text-[11px] text-muted-foreground">暂无数据</div>
+          <div className="py-6 text-center text-xs text-muted-foreground">暂无数据</div>
         ) : (
           <ReactECharts option={trendOption} style={{ height: 180, width: '100%' }} />
         )}
@@ -378,7 +379,7 @@ function LogsTab({ executions, loading }) {
 
   if (executions.length === 0) {
     return (
-      <div className="py-8 text-center text-[11px] text-muted-foreground">
+      <div className="py-8 text-center text-xs text-muted-foreground">
         {loading ? '加载中…' : '暂无执行记录'}
       </div>
     )
@@ -406,21 +407,21 @@ function LogsTab({ executions, loading }) {
                   }`}
                 />
                 <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${execStatusClass(
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${execStatusClass(
                     ex.status
                   )}`}
                 >
                   {ex.status || '-'}
                 </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
                   #{ex.id}
                 </span>
-                <span className="shrink-0 text-[10px] text-muted-foreground">
+                <span className="shrink-0 text-xs text-muted-foreground">
                   {durationSeconds(ex).toFixed(1)}s
                 </span>
               </div>
               {/* 第二行：触发类型 + 创建时间 */}
-              <div className="flex items-center gap-2 pl-4 text-[10px] text-muted-foreground">
+              <div className="flex items-center gap-2 pl-4 text-xs text-muted-foreground">
                 <span>触发：{ex.trigger_type || '-'}</span>
                 <span className="text-muted-foreground">·</span>
                 <span className="truncate">{fmtTime(ex.created_at)}</span>
@@ -431,10 +432,10 @@ function LogsTab({ executions, loading }) {
             {expanded && (
               <div className="border-t border-border p-2.5">
                 {isLoading && (
-                  <div className="py-3 text-center text-[11px] text-muted-foreground">加载详情…</div>
+                  <div className="py-3 text-center text-xs text-muted-foreground">加载详情…</div>
                 )}
                 {err && (
-                  <div className="rounded border border-danger-700/40 bg-danger-900/20 p-2 text-[11px] text-destructive">
+                  <div className="rounded border border-danger-700/40 bg-danger-900/20 p-2 text-xs text-destructive">
                     {err}
                   </div>
                 )}
@@ -442,11 +443,11 @@ function LogsTab({ executions, loading }) {
                   <>
                     {/* 节点轨迹列表 */}
                     <div className="mb-2">
-                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">
                         节点轨迹（{detail.traces.length}）
                       </div>
                       {detail.traces.length === 0 ? (
-                        <div className="text-[11px] text-muted-foreground">暂无轨迹</div>
+                        <div className="text-xs text-muted-foreground">暂无轨迹</div>
                       ) : (
                         <div className="flex flex-col gap-1">
                           {detail.traces.map((tr, idx) => {
@@ -462,7 +463,7 @@ function LogsTab({ executions, loading }) {
                             return (
                               <div
                                 key={idx}
-                                className="flex items-center gap-1.5 rounded bg-background px-1.5 py-1 text-[10px]"
+                                className="flex items-center gap-1.5 rounded bg-background px-1.5 py-1 text-xs"
                               >
                                 <span
                                   className={`shrink-0 rounded px-1 py-0.5 ${traceStatusClass(
@@ -491,17 +492,17 @@ function LogsTab({ executions, loading }) {
 
                     {/* 日志列表 */}
                     <div>
-                      <div className="mb-1 text-[11px] font-medium text-muted-foreground">
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">
                         日志（{detail.logs.length}）
                       </div>
                       {detail.logs.length === 0 ? (
-                        <div className="text-[11px] text-muted-foreground">暂无日志</div>
+                        <div className="text-xs text-muted-foreground">暂无日志</div>
                       ) : (
                         <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
                           {detail.logs.map((log, idx) => (
                             <div
                               key={idx}
-                              className="flex items-start gap-1.5 font-mono text-[10px]"
+                              className="flex items-start gap-1.5 font-mono text-xs"
                             >
                               <span
                                 className={`shrink-0 rounded px-1 py-0.5 ${logLevelClass(
@@ -613,37 +614,27 @@ function WorkflowInspection({ workflowId, initialTab = 'monitor' }) {
             type="button"
             onClick={refreshAll}
             disabled={loading}
-            className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-50"
+            className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:border-primary hover:text-primary disabled:opacity-50"
           >
             {loading ? '刷新中…' : '刷新'}
           </button>
         </div>
         {/* Tab 切换 */}
-        <div className="mt-2 flex items-center gap-1 rounded-md bg-muted p-0.5 text-[11px]">
-          <button
-            type="button"
-            onClick={() => setTab('monitor')}
-            className={`flex-1 rounded px-2 py-1 ${
-              tab === 'monitor' ? 'bg-primary text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            监测
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab('logs')}
-            className={`flex-1 rounded px-2 py-1 ${
-              tab === 'logs' ? 'bg-primary text-foreground' : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            日志
-          </button>
+        <div className="mt-2">
+          <PillTabs
+            items={[
+              { key: 'monitor', label: '监测' },
+              { key: 'logs', label: '日志' },
+            ]}
+            value={tab}
+            onChange={setTab}
+          />
         </div>
       </div>
 
       {/* 错误提示 */}
       {error && (
-        <div className="shrink-0 border-b border-danger-700/40 bg-danger-900/20 px-3 py-1.5 text-[11px] text-destructive">
+        <div className="shrink-0 border-b border-danger-700/40 bg-danger-900/20 px-3 py-1.5 text-xs text-destructive">
           {error}
         </div>
       )}

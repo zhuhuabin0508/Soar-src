@@ -8,8 +8,7 @@ export default function AuditLogs() {
   return (
     <PageContainer>
       <PageHeader
-        title="审计日志"
-        description="记录设备、接收器、数据源条目、解析模板等配置的增删改与登录操作：操作人、对象、变更内容、来源 IP 全量留痕（只读，满足等保审计要求）"
+        title="审计日志"
         actions={
           <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
             <ClipboardList className="h-3.5 w-3.5" />

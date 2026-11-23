@@ -285,7 +285,7 @@ export default function NotificationRulesPanel() {
           {rules.map((rule) => (
             <div
               key={rule.id}
-              className={`rounded-lg border p-5 transition-colors ${
+              className={`rounded-lg border p-4 transition-colors ${
                 rule.enabled
                   ? 'border-border bg-card'
                   : 'border-border bg-secondary opacity-70'
@@ -295,11 +295,11 @@ export default function NotificationRulesPanel() {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-semibold text-foreground">{rule.name}</span>
-                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
                       {eventTypeLabel(rule.event_type)}
                     </span>
                     <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
                         rule.enabled
                           ? 'bg-success/15 text-success'
                           : 'bg-muted text-muted-foreground'
@@ -314,10 +314,10 @@ export default function NotificationRulesPanel() {
                   {/* 目标用户 */}
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     <Users className="h-3 w-3 text-muted-foreground" />
-                    <span className="text-[11px] text-muted-foreground">目标用户：</span>
+                    <span className="text-xs text-muted-foreground">目标用户：</span>
                     {rule.target_roles && rule.target_roles.length > 0 ? (
                       rule.target_roles.map((r) => (
-                        <span key={r} className="inline-flex items-center gap-0.5 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] text-warning">
+                        <span key={r} className="inline-flex items-center gap-0.5 rounded bg-warning/15 px-1.5 py-0.5 text-xs text-warning">
                           <Tag className="h-2.5 w-2.5" />
                           {roleLabelMap.get(r) || r}
                         </span>
@@ -325,17 +325,17 @@ export default function NotificationRulesPanel() {
                     ) : null}
                     {rule.target_user_ids && rule.target_user_ids.length > 0 ? (
                       rule.target_user_ids.map((uid) => (
-                        <span key={uid} className="rounded bg-info/15 px-1.5 py-0.5 text-[10px] text-info">
+                        <span key={uid} className="rounded bg-info/15 px-1.5 py-0.5 text-xs text-info">
                           {userNameMap.get(uid) || `用户#${uid}`}
                         </span>
                       ))
                     ) : null}
                     {(!rule.target_roles || rule.target_roles.length === 0) &&
                       (!rule.target_user_ids || rule.target_user_ids.length === 0) && (
-                        <span className="text-[11px] text-muted-foreground">（无目标，回退广播）</span>
+                        <span className="text-xs text-muted-foreground">（无目标，回退广播）</span>
                       )}
                   </div>
-                  <div className="mt-1.5 text-[11px] text-muted-foreground">
+                  <div className="mt-1.5 text-xs text-muted-foreground">
                     创建于 {fmtTime(rule.created_at)} · 由 {rule.created_by || '系统'} 创建
                   </div>
                 </div>
@@ -400,7 +400,7 @@ export default function NotificationRulesPanel() {
               </button>
             </div>
             {/* 表单：分区排版，分区标题统一 text-sm font-semibold */}
-            <div className="space-y-5 p-5">
+            <div className="space-y-4 p-4">
               {/* 分区：基础信息 */}
               <section className="space-y-4">
                 <div className="text-sm font-semibold text-foreground">基础信息</div>
@@ -460,7 +460,7 @@ export default function NotificationRulesPanel() {
                     <option value={form.event_type}>{form.event_type}</option>
                   )}
                 </CompactSelect>
-                <div className="mt-1 text-[11px] text-muted-foreground">
+                <div className="mt-1 text-xs text-muted-foreground">
                   选择「*」匹配所有事件类型
                 </div>
               </div>
@@ -505,7 +505,7 @@ export default function NotificationRulesPanel() {
                     })}
                   </div>
                 )}
-                <div className="mt-1 text-[11px] text-muted-foreground">
+                <div className="mt-1 text-xs text-muted-foreground">
                   选中角色的所有启用用户都会收到通知
                 </div>
               </div>

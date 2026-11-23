@@ -11,7 +11,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import check_resource_ownership, get_current_user, require_permission
+from app.dependencies import check_resource_ownership, get_current_user, require_any_permission
 from app.models import Workflow
 from app.models.user import User
 from app.models.workflow_version import WorkflowVersion
@@ -29,6 +29,10 @@ router = APIRouter(
     tags=["workflow-versions"],
     dependencies=[Depends(get_current_user)],
 )
+
+# 版本写/读允许「列表」或「编排」对应权限（与 workflows.py 口径一致）
+_WF_EDIT = require_any_permission(("workflow_list", "edit"), ("workflow_editor", "edit"))
+_WF_VIEW = require_any_permission(("workflow_list", "view"), ("workflow_editor", "view"))
 
 
 def _build_snapshot(workflow: Workflow) -> dict[str, Any]:
@@ -85,7 +89,7 @@ def create_workflow_version(
     workflow_id: int,
     body: WorkflowVersionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("workflow_list", "edit")),
+    current_user: User = Depends(_WF_EDIT),
 ) -> WorkflowVersion:
     """为工作流创建一个版本快照。
 
@@ -132,7 +136,7 @@ def create_workflow_version(
 def list_workflow_versions(
     workflow_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("workflow_list", "view")),
+    current_user: User = Depends(_WF_VIEW),
 ) -> list[WorkflowVersion]:
     """列出指定工作流的所有版本（按 version_number 降序）。
 
@@ -158,7 +162,7 @@ def get_workflow_version(
     workflow_id: int,
     version_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("workflow_list", "view")),
+    current_user: User = Depends(_WF_VIEW),
 ) -> WorkflowVersion:
     """获取指定版本详情。
 
@@ -179,7 +183,7 @@ def rollback_workflow_version(
     workflow_id: int,
     version_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("workflow_list", "edit")),
+    current_user: User = Depends(_WF_EDIT),
 ) -> RollbackResponse:
     """回滚到指定版本。
 

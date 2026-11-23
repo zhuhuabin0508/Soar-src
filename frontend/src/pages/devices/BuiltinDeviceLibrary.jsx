@@ -16,9 +16,10 @@ import {
 } from 'lucide-react'
 import { devices as devicesApi } from '../../api/client'
 import { Modal } from '../../components/Dialog'
-import { CompactSelect, PageContainer, PageHeader } from '../../components/ui'
+import { CompactSelect, PageContainer, PageHeader, SearchInput } from '../../components/ui'
 import { inputCls } from '../../components/property/FormControls'
 import { toast } from '../../store/toastStore'
+import { isAdmin } from '../../utils/permissions'
 import { ActionFormModal } from './ActionModal'
 import { CategoryBadge, DeviceTypeIcon, MethodBadge, RiskBadge, Section, Switch } from './Badges'
 import {
@@ -501,7 +502,7 @@ function LogsModal({ open, template, logs, loading, onClose }) {
                   <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted-foreground">
                     {lg.ip_address || '-'}
                   </td>
-                  <td className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
+                  <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                     <span className="line-clamp-2 break-all" title={lg.detail || ''}>
                       {lg.detail || '-'}
                     </span>
@@ -518,6 +519,8 @@ function LogsModal({ open, template, logs, loading, onClose }) {
 
 // ============ 主页面 ============
 export default function BuiltinDeviceLibrary() {
+  // 内置模板的写操作仅管理员可用（后端 require_role("admin")）
+  const canManage = isAdmin()
   const [items, setItems] = useState([])
   const [facets, setFacets] = useState({ types: [], vendors: [] })
   const [loading, setLoading] = useState(true)
@@ -805,43 +808,45 @@ export default function BuiltinDeviceLibrary() {
     <PageContainer>
       <PageHeader
         title="内置设备库"
-        description="系统内置设备模板与固化动作，可直接复用创建设备，无需重复配置"
+
         actions={
           <>
-            <button type="button" onClick={loadTemplates} className="btn-secondary" title="刷新">
-              <RefreshCw className={`mr-1.5 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            <button type="button" onClick={loadTemplates} className="btn-secondary btn-sm" title="刷新">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
               刷新
             </button>
-            <button type="button" onClick={openImport} className="btn-secondary">
-              <Inbox className="mr-1.5 h-4 w-4" />
-              从现有设备入库
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditingTemplate(null)
-                setFormOpen(true)
-              }}
-              className="btn-primary"
-            >
-              <Plus className="mr-1.5 h-4 w-4" />
-              新增内置条目
-            </button>
+            {canManage && (
+              <button type="button" onClick={openImport} className="btn-secondary btn-sm">
+                <Inbox className="mr-1 h-3.5 w-3.5" />
+                从现有设备入库
+              </button>
+            )}
+            {canManage && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTemplate(null)
+                  setFormOpen(true)
+                }}
+                className="btn-primary btn-sm"
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                新增内置条目
+              </button>
+            )}
           </>
         }
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[260px] flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className={`${inputCls} pl-9`}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索模板名称 / 厂商 / 协议版本 / 描述"
-          />
-        </div>
-        <CompactSelect value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} size="lg">
+        <SearchInput
+          className="min-w-[260px] flex-1"
+          value={search}
+          onChange={setSearch}
+          placeholder="搜索模板名称 / 厂商 / 协议版本 / 描述"
+          onClear={() => setSearch('')}
+        />
+        <CompactSelect value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} size="sm">
           <option value="">全部设备类别</option>
           {DEVICE_TYPES.map((t) => (
             <option key={t.value} value={t.value}>
@@ -849,7 +854,7 @@ export default function BuiltinDeviceLibrary() {
             </option>
           ))}
         </CompactSelect>
-        <CompactSelect value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} size="lg">
+        <CompactSelect value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} size="sm">
           <option value="">全部厂商</option>
           {facets.vendors
             .filter((v) => v.value && !isDeviceCategory(v.value))
@@ -859,7 +864,7 @@ export default function BuiltinDeviceLibrary() {
               </option>
             ))}
         </CompactSelect>
-        <CompactSelect value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} size="lg">
+        <CompactSelect value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} size="sm">
           {SOURCE_OPTIONS.map((s) => (
             <option key={s.value} value={s.value}>
               {s.label}
@@ -909,16 +914,16 @@ export default function BuiltinDeviceLibrary() {
                   <span className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/15 text-primary">
                     <DeviceTypeIcon type={group.type} className="h-4 w-4" />
                   </span>
-                  <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                     设备类别
                   </span>
                   <span className="text-sm font-semibold text-foreground">
                     {DEVICE_TYPE_LABELS[group.type] || group.type}
                   </span>
-                  <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
                     {group.count}
                   </span>
-                  <span className="ml-auto text-[11px] text-muted-foreground">
+                  <span className="ml-auto text-xs text-muted-foreground">
                     {group.vendors.length} 个厂商
                   </span>
                 </button>
@@ -928,14 +933,14 @@ export default function BuiltinDeviceLibrary() {
                     {group.vendors.map(({ vendor, list }) => (
                       <div key={`${group.type}-${vendor}`}>
                         <div className="mb-2 flex items-center gap-2 px-1">
-                          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                             厂商
                           </span>
-                          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                             {vendor}
                           </span>
                           <span className="h-px flex-1 bg-border" />
-                          <span className="text-[10px] text-muted-foreground">{list.length} 个模板</span>
+                          <span className="text-xs text-muted-foreground">{list.length} 个模板</span>
                         </div>
                         <div className="flex flex-col gap-2">
                           {list.map((tpl) => {
@@ -965,16 +970,16 @@ export default function BuiltinDeviceLibrary() {
                                         <span className="truncate text-sm font-semibold text-foreground">
                                           {tpl.name}
                                         </span>
-                                        <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${source.cls}`}>
+                                        <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${source.cls}`}>
                                           {source.label}
                                         </span>
                                         {tpl.code && (
-                                          <span className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                                          <span className="whitespace-nowrap rounded bg-secondary px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
                                             {tpl.code}
                                           </span>
                                         )}
                                       </div>
-                                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                                         <span>类别 {DEVICE_TYPE_LABELS[tpl.type] || tpl.type}</span>
                                         <span>·</span>
                                         <span>厂商 {vendorText(tpl.vendor)}</span>
@@ -994,25 +999,27 @@ export default function BuiltinDeviceLibrary() {
                                         )}
                                       </div>
                                       {tpl.description && (
-                                        <div className="mt-1 truncate text-[11px] text-muted-foreground" title={tpl.description}>
+                                        <div className="mt-1 truncate text-xs text-muted-foreground" title={tpl.description}>
                                           {tpl.description}
                                         </div>
                                       )}
                                     </div>
                                   </button>
                                   <div className="flex shrink-0 items-center gap-1.5">
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setInstantiateTemplate(tpl)
-                                        setInstantiateOpen(true)
-                                      }}
-                                      className="btn-primary btn-sm"
-                                      title="复用该模板创建设备"
-                                    >
-                                      <Copy className="mr-1 h-3 w-3" />
-                                      复用创建
-                                    </button>
+                                    {canManage && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setInstantiateTemplate(tpl)
+                                          setInstantiateOpen(true)
+                                        }}
+                                        className="btn-primary btn-sm"
+                                        title="复用该模板创建设备"
+                                      >
+                                        <Copy className="mr-1 h-3 w-3" />
+                                        复用创建
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() => openLogs(tpl)}
@@ -1021,25 +1028,29 @@ export default function BuiltinDeviceLibrary() {
                                     >
                                       <FileClock className="h-3.5 w-3.5" />
                                     </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setEditingTemplate(tpl)
-                                        setFormOpen(true)
-                                      }}
-                                      className="btn-secondary btn-sm"
-                                    >
-                                      <Pencil className="mr-1 h-3 w-3" />
-                                      编辑
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteTemplate(tpl)}
-                                      className="btn-danger btn-sm"
-                                    >
-                                      <Trash2 className="mr-1 h-3 w-3" />
-                                      删除
-                                    </button>
+                                    {canManage && (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingTemplate(tpl)
+                                            setFormOpen(true)
+                                          }}
+                                          className="btn-secondary btn-sm"
+                                        >
+                                          <Pencil className="mr-1 h-3 w-3" />
+                                          编辑
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDeleteTemplate(tpl)}
+                                          className="btn-danger btn-sm"
+                                        >
+                                          <Trash2 className="mr-1 h-3 w-3" />
+                                          删除
+                                        </button>
+                                      </>
+                                    )}
                                     <button
                                       type="button"
                                       onClick={() => toggleExpand(tpl)}
@@ -1061,14 +1072,16 @@ export default function BuiltinDeviceLibrary() {
                                       <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                                         固化动作（{actionsLoading[tpl.id] ? '...' : actions.length} 个）
                                       </h3>
-                                      <button
-                                        type="button"
-                                        onClick={() => openCreateAction(tpl.id)}
-                                        className="btn-primary btn-sm"
-                                      >
-                                        <Plus className="mr-1 h-3 w-3" />
-                                        新增动作
-                                      </button>
+                                      {canManage && (
+                                        <button
+                                          type="button"
+                                          onClick={() => openCreateAction(tpl.id)}
+                                          className="btn-primary btn-sm"
+                                        >
+                                          <Plus className="mr-1 h-3 w-3" />
+                                          新增动作
+                                        </button>
+                                      )}
                                     </div>
                                     {actionsLoading[tpl.id] ? (
                                       <div className="h-20 w-full rounded skeleton-shimmer" />
@@ -1095,7 +1108,7 @@ export default function BuiltinDeviceLibrary() {
                                           <tbody>
                                             {actions.map((a) => (
                                               <tr key={a.id} className="border-t border-border hover:bg-accent">
-                                                <td className="px-3 py-2.5 font-mono text-[11px] text-primary">#{a.id}</td>
+                                                <td className="px-3 py-2.5 font-mono text-xs text-primary">#{a.id}</td>
                                                 <td className="truncate px-3 py-2.5 text-foreground" title={a.name}>
                                                   {a.name}
                                                 </td>
@@ -1105,10 +1118,10 @@ export default function BuiltinDeviceLibrary() {
                                                 <td className="px-3 py-2.5">
                                                   <MethodBadge method={a.http_method} />
                                                 </td>
-                                                <td className="truncate px-3 py-2.5 font-mono text-[11px] text-muted-foreground" title={a.api_path}>
+                                                <td className="truncate px-3 py-2.5 font-mono text-xs text-muted-foreground" title={a.api_path}>
                                                   {a.api_path || '-'}
                                                 </td>
-                                                <td className="px-3 py-2.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                                                <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums text-muted-foreground">
                                                   {actionParamCount(a)}
                                                 </td>
                                                 <td className="px-3 py-2.5 text-center">
@@ -1124,20 +1137,24 @@ export default function BuiltinDeviceLibrary() {
                                                 </td>
                                                 <td className="px-3 py-2.5">
                                                   <div className="flex items-center gap-1 whitespace-nowrap">
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => openEditAction(tpl.id, a)}
-                                                      className="btn-secondary btn-sm"
-                                                    >
-                                                      编辑
-                                                    </button>
-                                                    <button
-                                                      type="button"
-                                                      onClick={() => handleDeleteAction(tpl.id, a)}
-                                                      className="btn-danger btn-sm"
-                                                    >
-                                                      删除
-                                                    </button>
+                                                    {canManage && (
+                                                      <>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => openEditAction(tpl.id, a)}
+                                                          className="btn-secondary btn-sm"
+                                                        >
+                                                          编辑
+                                                        </button>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => handleDeleteAction(tpl.id, a)}
+                                                          className="btn-danger btn-sm"
+                                                        >
+                                                          删除
+                                                        </button>
+                                                      </>
+                                                    )}
                                                   </div>
                                                 </td>
                                               </tr>

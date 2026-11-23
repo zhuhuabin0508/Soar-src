@@ -38,6 +38,7 @@ from app.api.v1 import (
     notifications,
     open_api,
     open_api_admin,
+    reports,
     resource_shares,
     roles,
     skills,
@@ -68,6 +69,8 @@ api_router.include_router(executions.router)
 # 审批与大屏
 api_router.include_router(approvals.router)
 api_router.include_router(dashboard.router)
+# 报告中心：模板库 / 配置 / 运行 / 审核
+api_router.include_router(reports.router)
 api_router.include_router(bigscreen.router)
 api_router.include_router(bigscreen.router2)
 # 工具能力（IP 综合查询 / 封禁）
@@ -150,6 +153,6 @@ api_router.include_router(tickets.download_router)
 api_router.include_router(ticket_groups.router)
 api_router.include_router(ticket_flows.router)
 api_router.include_router(ticket_sla.router)
-# API 开放平台（网关统一数据端点 /open/* + 管理端 /open-admin/*）
+# API 开放（网关统一数据端点 /open/* + 管理端 /open-admin/*）
 api_router.include_router(open_api.router)
 api_router.include_router(open_api_admin.router)

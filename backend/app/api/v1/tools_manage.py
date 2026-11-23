@@ -9,6 +9,7 @@
 - ``code``：用户编写 ``async def run(**kwargs)`` Python 代码，沙箱执行。
 - ``http``：声明式 HTTP 接口配置（http_config），由 tool_http_runner 发起请求。
 """
+import copy
 import json
 import logging
 import re
@@ -16,17 +17,20 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from typing import Any
 
 from app.core.tool_runner import clear_tool_cache, run_tool
 from app.core.tool_schema_infer import infer_tool_io
 from app.core.tool_templates import TOOL_TEMPLATES
+from app.core.tool_categories import CATEGORY_TREE, is_leaf_category
 from app.core.tools.catalog import ToolCatalog
 from app.core.tools.types import TOOL_SOURCE_CUSTOM
 from app.database import get_db
 from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, is_admin, require_permission, require_role, resource_can_edit
 from app.models.tool import Tool
+from app.models.tool_version import ToolVersion
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.common import to_dict, to_dict_list
@@ -48,6 +52,7 @@ class ToolBase(BaseModel):
     parameters_schema: list[dict[str, Any]] | None = Field(None, description="参数 schema 列表")
     code: str = Field("", description="工具代码，需定义 async def run(**kwargs)（code 类型）")
     enabled: bool = Field(True, description="是否启用")
+    status: str = Field("active", description="生命周期状态：draft | active | disabled | deprecated")
     tool_type: str = Field("code", description="工具类型：code | http | framework")
     category: str | None = Field(None, description="工具集分类")
     http_config: dict[str, Any] | None = Field(None, description="HTTP 工具配置（http 类型）")
@@ -86,6 +91,37 @@ class DebugChatRequest(BaseModel):
     """工具对话调试请求体。"""
 
     message: str = Field(..., description="用户自然语言输入")
+
+
+# 工具生命周期状态白名单。只有 active 会注册进智能体工具表；
+# draft（草稿）/ disabled（停用）/ deprecated（弃用）均不注册。
+TOOL_STATUSES = ("draft", "active", "disabled", "deprecated")
+
+
+def _normalize_status(status: str) -> str:
+    """校验并返回合法的工具状态，非法值回退到 active。"""
+    status = (status or "active").strip().lower()
+    return status if status in TOOL_STATUSES else "active"
+
+
+def _normalize_category(category: str | None) -> str | None:
+    """校验工具分类并返回落库值。
+
+    - 空 / None → None（不分类）
+    - 合法叶子分类 → 原值
+    - 顶层分组 value（非叶子）→ 抛 400（工具必须挂叶子）
+    - 其他未知值 → 原值（兼容自定义分类与历史数据）
+    """
+    if not category:
+        return None
+    value = category.strip()
+    if is_leaf_category(value):
+        return value
+    # 命中顶层分组 value（非叶子）：引导用户选择叶子
+    if any(g["value"] == value for g in CATEGORY_TREE):
+        raise HTTPException(status_code=400, detail=f"分类 '{value}' 是分组，请选择其下的叶子分类")
+    return value
+
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +212,105 @@ def _strip_redacted(value: Any) -> Any:
     return value
 
 
+def _propagate_tool_rename(db: Session, old_name: str, new_name: str) -> list[str]:
+    """工具改名后同步更新智能体里的名称引用，返回受影响的智能体名列表。
+
+    ``enabled_tools`` 存工具名数组、``tool_configs`` 以工具名为 key，二者都
+    需同步；否则改名会留下悬挂引用，导致智能体静默少一个工具。
+    """
+    affected: list[str] = []
+    for agent in db.query(Agent).all():
+        changed = False
+        tools = agent.enabled_tools or []
+        if old_name in tools:
+            agent.enabled_tools = [new_name if t == old_name else t for t in tools]
+            changed = True
+        configs = dict(agent.tool_configs or {})
+        if old_name in configs:
+            configs[new_name] = configs.pop(old_name)
+            agent.tool_configs = configs
+            changed = True
+        if changed:
+            affected.append(agent.name or f"#{agent.id}")
+    return affected
+
+
+def _remove_tool_refs(db: Session, name: str) -> list[str]:
+    """删除工具后从智能体中移除名称引用，返回受影响的智能体名列表。"""
+    affected: list[str] = []
+    for agent in db.query(Agent).all():
+        changed = False
+        tools = agent.enabled_tools or []
+        if name in tools:
+            agent.enabled_tools = [t for t in tools if t != name]
+            changed = True
+        configs = dict(agent.tool_configs or {})
+        if name in configs:
+            configs.pop(name, None)
+            agent.tool_configs = configs
+            changed = True
+        if changed:
+            affected.append(agent.name or f"#{agent.id}")
+    return affected
+
+
+# ---------------------------------------------------------------------------
+# 工具版本快照（编辑前存档 + 一键回滚）
+# ---------------------------------------------------------------------------
+# 快照保存工具全部可编辑字段。回滚时用这些字段覆盖当前工具，
+# 若含改名则复用 _propagate_tool_rename 同步智能体引用。
+_TOOL_VERSION_FIELDS = (
+    "name", "description", "parameters_schema", "code",
+    "enabled", "tool_type", "category", "tags", "http_config", "status",
+)
+
+# 触发版本快照的「内容」字段：enabled 是运行开关，频繁切换不应产生快照。
+_CONTENT_FIELDS = (
+    "name", "description", "parameters_schema", "code",
+    "tool_type", "category", "tags", "http_config", "status",
+)
+
+
+def _snapshot_tool(tool: Tool) -> dict:
+    """深拷贝工具可编辑字段，避免 JSON 列原位修改反向污染存档。"""
+    return {field: copy.deepcopy(getattr(tool, field)) for field in _TOOL_VERSION_FIELDS}
+
+
+def _save_tool_version(db: Session, tool: Tool, created_by: str | None) -> ToolVersion:
+    """为工具的「当前状态」落一条版本快照，版本号取现有最大版本 +1。
+
+    在 ``update_tool`` 覆盖字段前调用，保证每次编辑都能回退到上一次内容。
+    """
+    max_row = (
+        db.query(func.max(ToolVersion.version))
+        .filter(ToolVersion.tool_id == tool.id)
+        .scalar()
+    )
+    version = (max_row or 0) + 1
+    snap = ToolVersion(
+        tool_id=tool.id,
+        version=version,
+        snapshot=_snapshot_tool(tool),
+        created_by=created_by,
+    )
+    db.add(snap)
+    return snap
+
+
+def _tool_version_payload(v: ToolVersion, with_snapshot: bool = False) -> dict:
+    """序列化版本存档。列表页默认不带 snapshot（瘦身），详情页带上。"""
+    payload = {
+        "id": v.id,
+        "tool_id": v.tool_id,
+        "version": v.version,
+        "created_by": v.created_by,
+        "created_at": v.created_at.isoformat() if v.created_at is not None else None,
+    }
+    if with_snapshot:
+        payload["snapshot"] = v.snapshot
+    return payload
+
+
 @router.get("", dependencies=[Depends(require_permission("tool", "view"))])
 def list_tools(
     db: Session = Depends(get_db),
@@ -196,6 +331,35 @@ def list_tools(
     for agent in agents:
         for tool_name in (agent.enabled_tools or []):
             tool_name_to_agents.setdefault(tool_name, []).append(agent.name or f"#{agent.id}")
+    # 批量聚合各工具的调用统计（来自 chat_messages 的 tool 消息），用于健康度展示：
+    # total_calls=0 为僵尸工具、failed_calls 占比高为疑似坏工具。
+    from app.models.chat_message import ChatMessage
+
+    # 健康度只统计最近 90 天：既让「健康度」反映近期状态，也避免对 content 做
+    # 全历史 LIKE 前导通配扫描（该模式无法走 B-tree 索引，量大时是列表页瓶颈）。
+    # 用 DB 侧 func.now() 计算窗口，避免应用与数据库时钟不一致。
+    health_since = func.now() - text("interval '90 days'")
+
+    call_rows = (
+        db.query(ChatMessage.name, func.count(ChatMessage.id), func.max(ChatMessage.created_at))
+        .filter(ChatMessage.role == "tool", ChatMessage.name != "", ChatMessage.created_at >= health_since)
+        .group_by(ChatMessage.name)
+        .all()
+    )
+    # 失败判定为启发式：工具失败时结果为 {"error": ...} 序列化文本，按 "error" 子串匹配
+    fail_rows = (
+        db.query(ChatMessage.name, func.count(ChatMessage.id))
+        .filter(
+            ChatMessage.role == "tool",
+            ChatMessage.name != "",
+            ChatMessage.created_at >= health_since,
+            ChatMessage.content.like('%"error"%'),
+        )
+        .group_by(ChatMessage.name)
+        .all()
+    )
+    calls_map = {name: {"total": total, "last_called_at": last} for name, total, last in call_rows}
+    fails_map = {name: cnt for name, cnt in fail_rows}
     # 资源级 owner 控制：批量查共享授权集合，admin 在调用处直接判 True
     shared_ids = compute_can_edit_ids(db, current_user, "tool", [t.id for t in tools])
     for item, tool in zip(result, tools):
@@ -204,6 +368,13 @@ def list_tools(
         item["reference_count"] = len(refs)
         item["referenced_by"] = refs
         item["can_edit"] = resource_can_edit(current_user, db, tool, shared_ids)
+        stats = calls_map.get(name, {})
+        last = stats.get("last_called_at")
+        item["stats"] = {
+            "total_calls": stats.get("total", 0),
+            "failed_calls": fails_map.get(name, 0),
+            "last_called_at": last.isoformat() if last is not None else None,
+        }
     return result
 
 
@@ -212,6 +383,12 @@ def list_tool_templates() -> list[dict]:
     """返回内置工具模板（供新建参考）。"""
     logger.info("查询工具模板")
     return [dict(tpl) for tpl in TOOL_TEMPLATES]
+
+
+@router.get("/categories", dependencies=[Depends(require_permission("tool", "view"))])
+def list_tool_categories() -> list[dict]:
+    """返回工具分类树（顶层分组 + 叶子分类），供前端 optgroup 展示。"""
+    return CATEGORY_TREE
 
 
 @router.get("/catalog", dependencies=[Depends(require_permission("tool", "view"))])
@@ -239,7 +416,7 @@ def list_tool_catalog() -> dict:
     }
 
 
-@router.get("/export", dependencies=[Depends(require_permission("tool", "view"))])
+@router.get("/export", dependencies=[Depends(require_permission("tool", "export"))])
 def export_tools(
     ids: str | None = None,
     include_preset: bool = False,
@@ -283,7 +460,7 @@ def export_tools(
     }
 
 
-@router.post("/import", dependencies=[Depends(require_permission("tool", "edit"))])
+@router.post("/import", dependencies=[Depends(require_permission("tool", "import"))])
 def import_tools(
     body: ToolImportRequest,
     db: Session = Depends(get_db),
@@ -399,8 +576,9 @@ def create_tool(
         parameters_schema=body.parameters_schema,
         code=body.code,
         enabled=body.enabled,
+        status=_normalize_status(body.status),
         tool_type=body.tool_type or "code",
-        category=body.category,
+        category=_normalize_category(body.category),
         http_config=body.http_config,
         tags=body.tags,
         tool_source=TOOL_SOURCE_CUSTOM,
@@ -440,24 +618,50 @@ def update_tool(
     if getattr(tool, "is_preset", False) and (body.tool_type or "code") == "framework":
         if (tool.tool_type or "code") != (body.tool_type or "code"):
             raise HTTPException(status_code=400, detail="预置 framework 工具类型不可修改")
+    old_name = tool.name
+    new_status = _normalize_status(body.status)
+    new_category = _normalize_category(body.category)
+    # 内容是否变化（不含 enabled 开关，避免频繁 toggle 产生无意义快照）
+    content_changed = (
+        tool.name != body.name
+        or (tool.description or "") != (body.description or "")
+        or tool.parameters_schema != body.parameters_schema
+        or (tool.code or "") != (body.code or "")
+        or (tool.tool_type or "code") != (body.tool_type or "code")
+        or tool.category != new_category
+        or tool.http_config != body.http_config
+        or tool.tags != body.tags
+        or tool.status != new_status
+    )
+    # 仅在内容真正变化时存档，保证误改后可一键回退；toggle 开关不产生快照
+    if content_changed:
+        _save_tool_version(db, tool, getattr(current_user, "username", None))
     tool.name = body.name
     tool.description = body.description
     tool.parameters_schema = body.parameters_schema
     tool.code = body.code
     tool.enabled = body.enabled
+    tool.status = new_status
     tool.tool_type = body.tool_type or "code"
-    tool.category = body.category
+    tool.category = new_category
     tool.http_config = body.http_config
     tool.tags = body.tags
+    # 改名时同步更新智能体里的名称引用（enabled_tools / tool_configs），
+    # 避免改名后智能体出现悬挂引用、静默丢失该工具
+    affected = _propagate_tool_rename(db, old_name, body.name) if old_name != body.name else []
     db.commit()
     db.refresh(tool)
-    # 清除该工具的运行时缓存，确保下次加载新代码/配置
+    # 清除该工具的运行时缓存，确保下次加载新代码/配置（旧名缓存一并清除）
     clear_tool_cache(tool.name)
-    logger.info("工具已更新: id=%s", tool.id)
-    return to_dict(tool)
+    if old_name != body.name:
+        clear_tool_cache(old_name)
+    logger.info("工具已更新: id=%s, affected_agents=%d", tool.id, len(affected))
+    result = to_dict(tool)
+    result["affected_agents"] = affected
+    return result
 
 
-@router.delete("/{tool_id:int}", dependencies=[Depends(require_permission("tool", "edit"))])
+@router.delete("/{tool_id:int}", dependencies=[Depends(require_permission("tool", "delete"))])
 def delete_tool(
     tool_id: int,
     db: Session = Depends(get_db),
@@ -480,11 +684,92 @@ def delete_tool(
             detail="内置工具不可删除，请使用「禁用」功能（编辑工具将启用状态设为关）",
         )
     name = tool.name
+    # 删除前先从智能体中移除名称引用（enabled_tools / tool_configs），
+    # 返回受影响智能体列表供前端提示「已从 N 个智能体移除该工具」
+    affected = _remove_tool_refs(db, name)
     db.delete(tool)
     db.commit()
     clear_tool_cache(name)
-    logger.info("工具已删除: id=%s", tool_id)
-    return {"ok": True}
+    logger.info("工具已删除: id=%s, affected_agents=%d", tool_id, len(affected))
+    return {"ok": True, "affected_agents": affected}
+
+
+# ============ 工具版本管理（快照 + 一键回滚） ============
+
+@router.get("/{tool_id:int}/versions", dependencies=[Depends(require_permission("tool", "view"))])
+def list_tool_versions(tool_id: int, db: Session = Depends(get_db)) -> dict:
+    """版本存档列表（摘要，不含 snapshot 主体），按版本号倒序。"""
+    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    rows = (
+        db.query(ToolVersion)
+        .filter(ToolVersion.tool_id == tool_id)
+        .order_by(ToolVersion.version.desc())
+        .all()
+    )
+    return {"items": [_tool_version_payload(v) for v in rows]}
+
+
+@router.get("/{tool_id:int}/versions/{version:int}", dependencies=[Depends(require_permission("tool", "view"))])
+def get_tool_version(tool_id: int, version: int, db: Session = Depends(get_db)) -> dict:
+    """版本存档详情（含完整 snapshot，供前端对比）。"""
+    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    snap = (
+        db.query(ToolVersion)
+        .filter(ToolVersion.tool_id == tool_id, ToolVersion.version == version)
+        .first()
+    )
+    if snap is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    return _tool_version_payload(snap, with_snapshot=True)
+
+
+@router.post("/{tool_id:int}/versions/{version:int}/rollback", dependencies=[Depends(require_permission("tool", "edit"))])
+def rollback_tool_version(
+    tool_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """回滚到指定历史版本：用存档内容覆盖当前工具的可编辑字段。
+
+    若存档中的工具名与当前名不同，复用改名同步逻辑，保证智能体引用不悬挂。
+    """
+    logger.info("回滚工具版本: id=%s → v%s", tool_id, version)
+    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    check_resource_ownership(current_user, db, "tool", tool_id, tool)
+    snap = (
+        db.query(ToolVersion)
+        .filter(ToolVersion.tool_id == tool_id, ToolVersion.version == version)
+        .first()
+    )
+    if snap is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+
+    old_name = tool.name
+    data = snap.snapshot or {}
+    # 覆盖可编辑字段；缺失字段保留当前值（与导入覆盖策略一致，避免旧快照清空新字段）
+    for field in _TOOL_VERSION_FIELDS:
+        if field in data:
+            setattr(tool, field, copy.deepcopy(data[field]))
+
+    # 改名时同步智能体引用
+    affected = _propagate_tool_rename(db, old_name, tool.name) if old_name != tool.name else []
+    db.commit()
+    db.refresh(tool)
+    clear_tool_cache(tool.name)
+    if old_name != tool.name:
+        clear_tool_cache(old_name)
+    logger.info("工具已回滚: id=%s → v%s, affected_agents=%d", tool.id, version, len(affected))
+    result = to_dict(tool)
+    result["affected_agents"] = affected
+    result["rolled_back_from"] = version
+    return result
 
 
 @router.post("/{tool_id:int}/test")
@@ -635,7 +920,7 @@ def _operations_from_spec(spec: dict) -> list[dict]:
     return operations
 
 
-@router.post("/import-openapi")
+@router.post("/import-openapi", dependencies=[Depends(require_permission("tool", "import"))])
 async def import_openapi(body: OpenAPIImportRequest) -> dict:
     """解析 OpenAPI/Swagger JSON（或从 URL 拉取），返回操作列表供前端选择。
 

@@ -40,7 +40,7 @@ export function CcChips({ targets, onRemove, showSource, emptyText, max = 0 }) {
           {t.type === 'group' ? <UsersRound className="h-3 w-3" /> : <UserRound className="h-3 w-3" />}
           {t.name || `${CC_TYPE_META[t.type]?.label || t.type}${t.id}`}
           {showSource && t.source === 'template' && (
-            <span className="rounded bg-muted px-1 text-[10px] leading-none text-muted-foreground">模板</span>
+            <span className="rounded bg-muted px-1 text-xs leading-none text-muted-foreground">模板</span>
           )}
           {onRemove && (
             <button

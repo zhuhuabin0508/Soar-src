@@ -147,12 +147,12 @@ function LogsSection({ logs }) {
             >
               <span className="shrink-0 text-muted-foreground">{fmtTime(log.timestamp)}</span>
               <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${logLevelBadgeClass(log.level)}`}
+                className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium uppercase ${logLevelBadgeClass(log.level)}`}
               >
                 {log.level || '-'}
               </span>
               {log.node_id && (
-                <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                   {log.node_id}
                 </span>
               )}
@@ -229,7 +229,7 @@ function ExecutionDetail() {
           >
             ← 返回列表
           </button>
-          <h1 className="text-xl font-semibold">执行详情 #{id}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">执行详情 #{id}</h1>
         </div>
         <button
           type="button"
@@ -260,7 +260,7 @@ function ExecutionDetail() {
         ) : (
           <>
             {/* 执行概要 */}
-            <div className="mb-6 w-full rounded-lg border border-border bg-card p-5">
+            <div className="mb-6 w-full rounded-lg border border-border bg-card p-4">
               <div className="grid w-full grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
                 <InfoCell label="执行 ID" value={`#${execution.id}`} />
                 <InfoCell label="工作流 ID" value={execution.workflow_id} />
@@ -290,9 +290,9 @@ function ExecutionDetail() {
                 <div className="relative w-full">
                   {/* 时间轴左侧轴线 */}
                   <div className="absolute bottom-0 left-[11px] top-2 w-px bg-secondary" />
-                  <div className="flex flex-col gap-5">
+                  <div className="flex flex-col gap-4">
                     {traces.map((tr) => (
-                      <div key={tr.id} className="relative flex w-full gap-5">
+                      <div key={tr.id} className="relative flex w-full gap-4">
                         {/* 圆点 */}
                         <div
                           className={`relative z-dropdown mt-1 h-5 w-5 shrink-0 rounded-full ring-4 ${dotColor(tr.status)}`}
@@ -304,7 +304,7 @@ function ExecutionDetail() {
                               <span className="text-sm font-medium text-foreground">
                                 {tr.node_label || tr.node_type || `节点 ${tr.node_id}`}
                               </span>
-                              <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              <span className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                                 {tr.node_type}
                               </span>
                             </div>
@@ -317,7 +317,7 @@ function ExecutionDetail() {
                             <span>结束：{fmtTime(tr.finished_at)}</span>
                             <span className="inline-flex items-center gap-1">
                               耗时：
-                              <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                              <span className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                                 {duration(tr.started_at, tr.finished_at)}
                               </span>
                             </span>

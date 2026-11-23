@@ -53,7 +53,7 @@ export default function DensitySwitcher({ className = '' }) {
       </button>
       {open && (
         <div className="absolute bottom-full left-0 z-dropdown mb-1 w-44 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-xl">
-          <div className="border-b border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="border-b border-border px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             数据密度
           </div>
           {OPTIONS.map((opt) => {
@@ -74,7 +74,7 @@ export default function DensitySwitcher({ className = '' }) {
                 <Icon className="h-4 w-4" />
                 <div className="flex-1">
                   <div className="text-xs font-medium">{opt.label}</div>
-                  <div className="text-[10px] text-muted-foreground">{opt.desc}</div>
+                  <div className="text-xs text-muted-foreground">{opt.desc}</div>
                 </div>
                 {active && <span className="text-xs text-primary">✓</span>}
               </button>

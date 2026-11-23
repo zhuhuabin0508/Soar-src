@@ -16,7 +16,7 @@ import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
 import { Modal } from '../components/Dialog'
 import { inputCls, inputBaseCls, labelCls, hintCls } from '../components/property/FormControls'
-import { Button, PageContainer, DataTable, Pagination, CompactSelect, ComboInput, DatePicker, Badge } from '../components/ui'
+import { Button, PageContainer, PageHeader, DataTable, Pagination, CompactSelect, ComboInput, DatePicker, Badge, SearchInput, PillTabs } from '../components/ui'
 import { hasPermission, isAdmin } from '../utils/permissions'
 import ticketApi, { attachmentUrl } from '../api/tickets'
 import banWorkflowApi from '../api/banWorkflow'
@@ -120,6 +120,9 @@ export default function TicketCenter() {
   // 已超时筛选（SLA 目标已到期且未处理），与状态筛选互斥切换、可与其他筛选组合
   const [timeoutOnly, setTimeoutOnly] = useState(() => searchParams.get('timeout') === '1')
   const [priority, setPriority] = useState(() => searchParams.get('priority') || '')
+  // 发起时间范围（datetime-local 值 YYYY-MM-DDTHH:mm；空 = 不限，止时间不含边界）
+  const [startTime, setStartTime] = useState(() => searchParams.get('start_time') || '')
+  const [endTime, setEndTime] = useState(() => searchParams.get('end_time') || '')
   // 筛选：流程模板（与发起弹窗的 flowId/flows 状态无关，独立维护）
   const [filterFlowId, setFilterFlowId] = useState(() => searchParams.get('flow') || '')
   const [filterFlows, setFilterFlows] = useState([])
@@ -176,6 +179,8 @@ export default function TicketCenter() {
       status, priority, q: searchKw, page, size,
       timeout_only: timeoutOnly || undefined,
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
+      start_time: startTime || undefined,
+      end_time: endTime || undefined,
     })
       .then((res) => {
         if (listReqSeq.current !== seq) return
@@ -187,7 +192,7 @@ export default function TicketCenter() {
         toast.error(e.message || '加载工单列表失败')
       })
       .finally(() => { if (listReqSeq.current === seq) setLoading(false) })
-  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly, startTime, endTime])
 
   useEffect(() => { load() }, [load])
 
@@ -205,14 +210,16 @@ export default function TicketCenter() {
     if (filterFlowId) p.flow = filterFlowId
     if (searchKw) p.q = searchKw
     if (timeoutOnly) p.timeout = '1'
+    if (startTime) p.start_time = startTime
+    if (endTime) p.end_time = endTime
     setSearchParams(p, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly])
+  }, [view, status, priority, filterFlowId, searchKw, timeoutOnly, startTime, endTime])
 
   // 视图/筛选/翻页变化时清空多选，避免批量操作误伤不在当前页的工单
   useEffect(() => {
     setSelectedIds([])
-  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly])
+  }, [view, status, priority, searchKw, page, size, filterFlowId, timeoutOnly, startTime, endTime])
 
   // 告警一键发起：携带 state.alertPrefill 自动打开发起弹窗并预填
   useEffect(() => {
@@ -739,6 +746,8 @@ export default function TicketCenter() {
       status, priority, q: searchKw,
       timeout_only: timeoutOnly || undefined,
       flow_id: filterFlowId ? Number(filterFlowId) : undefined,
+      start_time: startTime || undefined,
+      end_time: endTime || undefined,
     })
       .then(() => toast.success('工单导出已开始下载'))
       .catch((e) => toast.error(e.message || '导出失败'))
@@ -757,9 +766,10 @@ export default function TicketCenter() {
   }, [list])
 
   // 是否存在生效的筛选条件（用于区分空态文案与「清除筛选」引导）
-  const hasActiveFilters = !!(status || priority || searchKw || timeoutOnly)
+  const hasActiveFilters = !!(status || priority || searchKw || timeoutOnly || startTime || endTime)
   const clearFilters = () => {
-    setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setTimeoutOnly(false); setPage(1)
+    setStatus(''); setPriority(''); setSearchKw(''); setKeyword(''); setTimeoutOnly(false)
+    setStartTime(''); setEndTime(''); setPage(1)
   }
 
   // 右侧相似工单面板：有结果且未被用户收起时展示（发起弹窗同步加宽为 xl 容纳面板）
@@ -773,7 +783,7 @@ export default function TicketCenter() {
   const columns = [
     {
       key: 'ticket_no', header: '工单号', width: '150px',
-      render: (r) => <span className="font-mono text-[13px] font-medium text-primary" title={r.ticket_no}>{r.ticket_no}</span>,
+      render: (r) => <span className="font-mono text-xs font-medium text-primary" title={r.ticket_no}>{r.ticket_no}</span>,
     },
     {
       key: 'title', header: '标题',
@@ -805,17 +815,22 @@ export default function TicketCenter() {
         if (!active || !r.sla_text) {
           return <span className="text-xs text-muted-foreground" title="按优先级 SLA 目标（响应/解决时限）计算，未配置目标或已完结">--</span>
         }
-        // 暂停中 SLA 冻结：展示暂停时刻的剩余时间，避免误判为仍在倒计时
+        // 超时状态优先于暂停冻结：暂停只停止 SLA 继续累计，不清除暂停前已发生的超时，
+        // 因此已超时工单暂停后仍需保持红色「超时」标识（冻结信息放在 title 中说明）。
+        if (r.sla_overdue) {
+          return <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-1 text-xs font-medium text-red-500"
+            title={r.sla_frozen
+              ? '暂停前已超时；暂停期间 SLA 计时已冻结，不再继续累计'
+              : 'SLA 已超时（按优先级目标：响应=发起→首次提交，解决=创建→关闭）'}>
+            <AlertTriangle className="h-3 w-3" />{r.sla_text}
+          </span>
+        }
+        // 暂停中且未超时：展示暂停时刻的剩余时间，避免误判为仍在倒计时
         if (r.sla_frozen) {
           return <span className="whitespace-nowrap rounded bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-600 dark:text-amber-400"
             title="工单暂停中，SLA 计时已冻结">{r.sla_text}</span>
         }
-        return r.sla_overdue ? (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-red-500/10 px-2 py-1 text-xs font-medium text-red-500"
-            title="SLA 已超时（按优先级目标：响应=发起→首次提交，解决=创建→关闭）">
-            <AlertTriangle className="h-3 w-3" />{r.sla_text}
-          </span>
-        ) : (
+        return (
           <span className="whitespace-nowrap tabular-nums text-xs text-muted-foreground"
             title="SLA 剩余时间（未响应按响应目标，已响应按解决目标）">{r.sla_text}</span>
         )
@@ -896,52 +911,46 @@ export default function TicketCenter() {
 
   return (
     <PageContainer>
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">工单中心</h1>
-          {!loading && (
-            <span className="text-sm font-medium tabular-nums text-foreground">
-              共 {total.toLocaleString()} 个工单
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {canMonitor && (
-            <Button variant="secondary" size="sm" onClick={() => window.open('/ticket-monitor', '_blank')}>
-              <Monitor className="mr-1 h-3.5 w-3.5" />监控大屏
+      <PageHeader
+        title="工单中心"
+        extra={!loading && (
+          <span className="text-sm font-medium tabular-nums text-foreground">
+            共 {total.toLocaleString()} 个工单
+          </span>
+        )}
+        actions={
+          <>
+            {canMonitor && (
+              <Button variant="secondary" size="sm" onClick={() => window.open('/ticket-monitor', '_blank')}>
+                <Monitor className="mr-1 h-3.5 w-3.5" />监控大屏
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={load} title="刷新工单列表">
+              <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
             </Button>
-          )}
-          <Button variant="secondary" size="sm" onClick={load} title="刷新工单列表">
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
-          </Button>
-          {canExport && (
-            <Button variant="secondary" size="sm" onClick={handleExport} disabled={exporting || loading}
-              title="按当前视图与筛选条件导出 CSV（UTF-8 BOM，Excel 可直接打开）">
-              <Download className="mr-1 h-3.5 w-3.5" />{exporting ? '导出中' : '导出'}
-            </Button>
-          )}
-          {canEdit && (
-            <Button variant="primary" size="sm" onClick={openCreate}>
-              <Plus className="mr-1 h-3.5 w-3.5" />发起工单
-            </Button>
-          )}
-        </div>
-      </div>
+            {canExport && (
+              <Button variant="secondary" size="sm" onClick={handleExport} disabled={exporting || loading}
+                title="按当前视图与筛选条件导出 CSV（UTF-8 BOM，Excel 可直接打开）">
+                <Download className="mr-1 h-3.5 w-3.5" />{exporting ? '导出中' : '导出'}
+              </Button>
+            )}
+            {canEdit && (
+              <Button variant="primary" size="sm" onClick={openCreate}>
+                <Plus className="mr-1 h-3.5 w-3.5" />发起工单
+              </Button>
+            )}
+          </>
+        }
+      />
 
-      {/* 视图 Tab 单独一行（下划线式） */}
-      <nav className="flex flex-wrap items-center border-b border-border">
-        {VIEWS.map((v) => (
-          <button key={v.key} type="button"
-            onClick={() => { setView(v.key); setPage(1) }}
-            className={`-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium transition ${
-              view === v.key
-                ? 'border-primary text-foreground'
-                : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}>
-            {v.label}
-          </button>
-        ))}
-      </nav>
+      {/* 视图 Tab 单独一行（胶囊式） */}
+      <div className="px-6 py-3">
+        <PillTabs
+          items={VIEWS}
+          value={view}
+          onChange={(v) => { setView(v); setPage(1) }}
+        />
+      </div>
 
       {/* 筛选行：流程模板 / 状态 / 优先级 / 关键词 + 查询，同一行。
           定宽 wrapper 包 block 下拉：block 时组件自带 w-full，若直接拼 w-XX 类
@@ -973,17 +982,23 @@ export default function TicketCenter() {
             <option value="critical">紧急</option>
           </CompactSelect>
         </div>
-        <div className="relative min-w-52 flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className={`${inputBaseCls} h-9 w-full pl-9`}
-            placeholder="搜索工单号 / 标题"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') { setSearchKw(keyword.trim()); setPage(1) } }}
-          />
-        </div>
-        <Button variant="primary" size="sm" className="h-9 whitespace-nowrap" onClick={() => { setSearchKw(keyword.trim()); setPage(1) }}>查询</Button>
+        {/* 发起时间范围：起含止不含，与其他筛选可组合 */}
+        <DatePicker type="datetime" placeholder="发起时间起" title="发起时间起（含）"
+          value={startTime}
+          onChange={(e) => { setStartTime(e.target.value); setPage(1) }} />
+        <span className="text-xs text-muted-foreground">至</span>
+        <DatePicker type="datetime" placeholder="发起时间止" title="发起时间止（不含）"
+          value={endTime}
+          onChange={(e) => { setEndTime(e.target.value); setPage(1) }} />
+        <SearchInput
+          className="min-w-52 flex-1"
+          placeholder="搜索工单号 / 标题"
+          value={keyword}
+          onChange={setKeyword}
+          onClear={() => setKeyword('')}
+          onKeyDown={(e) => { if (e.key === 'Enter') { setSearchKw(keyword.trim()); setPage(1) } }}
+        />
+        <Button variant="primary" size="sm" className="whitespace-nowrap" onClick={() => { setSearchKw(keyword.trim()); setPage(1) }}>查询</Button>
       </div>
 
       {/* 状态指标条：当前页状态分布统计 + 快捷筛选（与筛选行状态下拉联动，点击可取消）；
@@ -1206,7 +1221,7 @@ export default function TicketCenter() {
           {/* IP 字段黑名单预检弱提示（与手动封禁弹窗同文案）：查询中 / 命中但面板被收起
               （点击展开）/ 命中详情见右侧 / 均未命中不打开展板 */}
           {canCheckBan && banCheck.loading && (
-            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> 正在查询设备黑名单…
             </div>
           )}
@@ -1219,19 +1234,19 @@ export default function TicketCenter() {
             </button>
           )}
           {canCheckBan && !banCheck.loading && banFound.length > 0 && !banHidden && (
-            <div className="flex items-center gap-1 text-[11px] text-amber-600">
+            <div className="flex items-center gap-1 text-xs text-amber-600">
               <AlertTriangle className="h-3 w-3 shrink-0" />
               {banFound.length} 个 IP 已在设备黑名单中，详情见右侧
             </div>
           )}
           {canCheckBan && !banCheck.loading && banCheck.results.length > 0 && banFound.length === 0 && banQueryErrors.length === 0 && (
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               已查询 {banCheck.results.length} 个 IP，均不在设备黑名单中{banCheck.truncated > 0 && `（另有 ${banCheck.truncated} 个目标超出单次预检上限未查询）`}
             </div>
           )}
           {/* 安博通白名单匹配弱提示：查询中 / 命中但面板被收起（点击展开）/ 命中详情见右侧 / 均未命中不打开展板 */}
           {canCheckWhitelist && whitelistCheck.loading && (
-            <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" /> 正在匹配安博通白名单…
             </div>
           )}
@@ -1244,20 +1259,20 @@ export default function TicketCenter() {
             </button>
           )}
           {canCheckWhitelist && !whitelistCheck.loading && whitelistFound.length > 0 && !whitelistHidden && (
-            <div className="flex items-center gap-1 text-[11px] text-emerald-600">
+            <div className="flex items-center gap-1 text-xs text-emerald-600">
               <ShieldCheck className="h-3 w-3 shrink-0" />
               {whitelistFound.length} 个目标命中安博通白名单，详情见右侧
             </div>
           )}
           {canCheckWhitelist && !whitelistCheck.loading && whitelistCheck.items.length > 0
             && whitelistFound.length === 0 && !whitelistCheck.error && (
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               已匹配 {whitelistCheck.items.length} 个目标，均未命中安博通白名单
               {whitelistCheck.truncated > 0 && `（另有 ${whitelistCheck.truncated} 个目标超出单次匹配上限未校验）`}
             </div>
           )}
           {canCheckWhitelist && !whitelistCheck.loading && whitelistCheck.error && (
-            <div className="flex flex-wrap items-center gap-1 text-[11px] text-amber-600">
+            <div className="flex flex-wrap items-center gap-1 text-xs text-amber-600">
               <AlertTriangle className="h-3 w-3 shrink-0" />
               白名单匹配失败：{whitelistCheck.error}
               <button type="button" onClick={() => setWhitelistRetry((n) => n + 1)}
@@ -1307,7 +1322,7 @@ export default function TicketCenter() {
           {/* 首节点字段 */}
           {currentFlow && (
             <div className="rounded-md border border-border">
-              <div className="flex items-center gap-2 border-b border-border bg-muted px-4 py-2 text-[13px] font-medium text-foreground">
+              <div className="flex items-center gap-2 border-b border-border bg-muted px-4 py-2 text-xs font-medium text-foreground">
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
                 {currentFlow.first_node?.name || '发起节点'} · 填写字段
               </div>
@@ -1389,7 +1404,7 @@ export default function TicketCenter() {
                           }}
                         />
                         {ipErrors[f.key] && (
-                          <div className="mt-1 text-[11px] text-destructive">{ipErrors[f.key]}</div>
+                          <div className="mt-1 text-xs text-destructive">{ipErrors[f.key]}</div>
                         )}
                       </>
                     )}
@@ -1483,9 +1498,9 @@ export default function TicketCenter() {
                   return (
                     <button key={r.to} type="button" disabled={locked && !isSug}
                       onClick={() => { if (!locked) setRouteTo(r.to) }}
-                      className={`rounded-md border px-3 py-1.5 text-[13px] font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'} ${locked && !isSug ? 'cursor-not-allowed opacity-40' : ''}`}>
+                      className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${routeTo === r.to ? 'border-primary bg-primary/10 text-primary' : 'border-border text-foreground hover:border-primary/50'} ${locked && !isSug ? 'cursor-not-allowed opacity-40' : ''}`}>
                       {r.label || r.to}
-                      {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] text-emerald-500">{locked ? '条件命中·锁定' : '条件建议'}</span>}
+                      {isSug && <span className="ml-1.5 rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-500">{locked ? '条件命中·锁定' : '条件建议'}</span>}
                     </button>
                   )
                 })}
@@ -1537,8 +1552,8 @@ export default function TicketCenter() {
               <aside className="panel-enter-soft h-fit overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
                 <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                  <span className="text-[13px] font-medium text-foreground">IP 封禁状态预检</span>
-                  <span className="text-[11px] tabular-nums text-muted-foreground">命中 {banFound.length}/{banCheck.results.length}</span>
+                  <span className="text-xs font-medium text-foreground">IP 封禁状态预检</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">命中 {banFound.length}/{banCheck.results.length}</span>
                   <button type="button" onClick={() => setBanHidden(true)}
                     className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                     title="收起 IP 封禁状态预检面板（IP 变化后有新命中会重新滑出）">
@@ -1549,7 +1564,7 @@ export default function TicketCenter() {
                   {banFound.map((r) => (
                     <div key={r.ip} className="rounded-md border border-border bg-card p-2.5">
                       <div className="mb-1.5 flex items-center gap-1.5">
-                        <span className="font-mono text-[13px] font-semibold text-foreground">{r.ip}</span>
+                        <span className="font-mono text-xs font-semibold text-foreground">{r.ip}</span>
                         <span className="ml-auto"><Badge variant="danger">已在封禁中</Badge></span>
                       </div>
                       <dl className="space-y-1">
@@ -1564,28 +1579,28 @@ export default function TicketCenter() {
                           ['命中次数', r.entry?.hit_num],
                         ].map(([label, value]) => (
                           <div key={label} className="flex items-center justify-between gap-2">
-                            <dt className="shrink-0 text-[11px] text-muted-foreground">{label}</dt>
-                            <dd className="min-w-0 truncate font-mono text-[12px] text-foreground" title={String(value ?? '')}>
+                            <dt className="shrink-0 text-xs text-muted-foreground">{label}</dt>
+                            <dd className="min-w-0 truncate font-mono text-xs text-foreground" title={String(value ?? '')}>
                               {value == null || value === '' ? '--' : String(value)}
                             </dd>
                           </div>
                         ))}
                       </dl>
                       {r.device?.name && (
-                        <div className="mt-1.5 border-t border-border pt-1.5 text-[11px] text-muted-foreground">封堵设备：{r.device.name}</div>
+                        <div className="mt-1.5 border-t border-border pt-1.5 text-xs text-muted-foreground">封堵设备：{r.device.name}</div>
                       )}
                     </div>
                   ))}
                   {banQueryErrors.length > 0 && (
-                    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
                       {banQueryErrors.map((r) => `${r.ip}：${r.error}`).join('；')}
                     </div>
                   )}
                   {banMissed.length > 0 && (
-                    <div className="px-0.5 text-[11px] text-muted-foreground">未在黑名单中：{banMissed.join('、')}</div>
+                    <div className="px-0.5 text-xs text-muted-foreground">未在黑名单中：{banMissed.join('、')}</div>
                   )}
                 </div>
-                <div className="border-t border-amber-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                <div className="border-t border-amber-500/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
                   预检仅对单 IP / 域名精确查询设备黑名单，CIDR / 范围不做预检{banCheck.truncated > 0 && `；单次最多查询 20 个目标，另有 ${banCheck.truncated} 个未预检`}{banCheck.fetchedAt && `；更新于 ${fmtTime(banCheck.fetchedAt)}`}
                 </div>
               </aside>
@@ -1594,8 +1609,8 @@ export default function TicketCenter() {
               <aside className="panel-enter-soft h-fit overflow-hidden rounded-md border border-emerald-500/30 bg-emerald-500/[0.04]">
                 <div className="flex items-center gap-1.5 border-b border-emerald-500/20 px-3 py-2">
                   <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
-                  <span className="text-[13px] font-medium text-foreground">安博通白名单匹配</span>
-                  <span className="text-[11px] tabular-nums text-muted-foreground">命中 {whitelistFound.length}/{whitelistCheck.items.length}</span>
+                  <span className="text-xs font-medium text-foreground">安博通白名单匹配</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">命中 {whitelistFound.length}/{whitelistCheck.items.length}</span>
                   <button type="button" onClick={() => setWhitelistHidden(true)}
                     className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                     title="收起白名单匹配面板（IP 变化后有新命中会重新滑出）">
@@ -1606,7 +1621,7 @@ export default function TicketCenter() {
                   {whitelistFound.map((it) => (
                     <div key={it.target} className="rounded-md border border-border bg-card p-2.5">
                       <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                        <span className="break-all font-mono text-[13px] font-semibold text-foreground">{it.target}</span>
+                        <span className="break-all font-mono text-xs font-semibold text-foreground">{it.target}</span>
                         <span className="ml-auto">
                           <Badge variant="success">
                             {it.match_type === 'contained' ? '包含匹配' : '精确匹配'}
@@ -1616,37 +1631,37 @@ export default function TicketCenter() {
                       <div className="space-y-1.5">
                         {(it.entries || []).slice(0, 5).map((en, i) => (
                           <div key={`${en.wlist || i}`} className="rounded border border-border bg-secondary/40 p-2">
-                            <div className="mb-1 break-all font-mono text-[12px] text-foreground">{en.wlist || '--'}</div>
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                            <div className="mb-1 break-all font-mono text-xs text-foreground">{en.wlist || '--'}</div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                               <span>{(en.enable === 1 || en.enable === '1') ? '启用' : '停用'}</span>
                               <span>剩余 {fmtDeviceDuration(en.leftTime)}</span>
                               <span>命中 {en.hit_num ?? '--'} 次</span>
                             </div>
                             {en.reason && (
-                              <div className="mt-0.5 break-all text-[11px] text-muted-foreground" title={en.reason}>
+                              <div className="mt-0.5 break-all text-xs text-muted-foreground" title={en.reason}>
                                 原因：{en.reason}
                               </div>
                             )}
                           </div>
                         ))}
                         {(it.entries || []).length > 5 && (
-                          <div className="text-[11px] text-muted-foreground">
+                          <div className="text-xs text-muted-foreground">
                             另有 {(it.entries || []).length - 5} 条命中条目未展示
                           </div>
                         )}
                         {(it.entries || []).length === 0 && (
-                          <div className="text-[11px] text-muted-foreground">命中白名单，但未返回条目详情</div>
+                          <div className="text-xs text-muted-foreground">命中白名单，但未返回条目详情</div>
                         )}
                       </div>
                     </div>
                   ))}
                   {whitelistCheck.truncated > 0 && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-700">
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700">
                       单次最多匹配 100 个目标，另有 {whitelistCheck.truncated} 个目标未校验
                     </div>
                   )}
                 </div>
-                <div className="border-t border-emerald-500/20 px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+                <div className="border-t border-emerald-500/20 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
                   白名单为全局豁免规则，命中后请确认处置方式
                 </div>
               </aside>
@@ -1655,8 +1670,8 @@ export default function TicketCenter() {
             <aside className="drawer-enter h-fit overflow-hidden rounded-md border border-amber-500/30 bg-amber-500/[0.04]">
               <div className="flex items-center gap-1.5 border-b border-amber-500/20 px-3 py-2">
                 <Lightbulb className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                <span className="text-[13px] font-medium text-foreground">相似工单推荐</span>
-                <span className="text-[11px] tabular-nums text-muted-foreground">{similar.length} 条</span>
+                <span className="text-xs font-medium text-foreground">相似工单推荐</span>
+                <span className="text-xs tabular-nums text-muted-foreground">{similar.length} 条</span>
                 <button type="button" onClick={() => setSimilarHidden(true)}
                   className="ml-auto rounded p-0.5 text-muted-foreground transition hover:bg-secondary hover:text-foreground"
                   title="收起相似工单推荐（IP 变化后有新结果会重新滑出）">
@@ -1667,11 +1682,11 @@ export default function TicketCenter() {
                 {similar.map((s) => (
                   <div key={s.id} className="rounded-md border border-border bg-card p-2.5 transition hover:border-primary/50">
                     <div className="mb-1.5 flex items-center gap-1.5">
-                      <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${MATCH_META[s.match_level] || MATCH_META[1]}`}
+                      <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${MATCH_META[s.match_level] || MATCH_META[1]}`}
                         title="与本工单源/目的 IP 的匹配等级">
                         {s.match_label}
                       </span>
-                      <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground"
+                      <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground"
                         title={s.closed_at ? `完结时间：${new Date(s.closed_at).toLocaleString('zh-CN', { hour12: false })}` : ''}>
                         {s.closed_at ? new Date(s.closed_at).toLocaleDateString('zh-CN') : '--'}
                       </span>
@@ -1679,20 +1694,20 @@ export default function TicketCenter() {
                     <button type="button"
                       onClick={() => { setCreateOpen(false); navigate(`/tickets/${s.id}`) }}
                       className="block w-full text-left" title="点击查看该工单详情">
-                      <span className="block font-mono text-[13px] font-medium text-primary">{s.ticket_no}</span>
-                      <span className="mt-0.5 line-clamp-2 break-all text-[13px] font-medium text-foreground">{s.title}</span>
+                      <span className="block font-mono text-xs font-medium text-primary">{s.ticket_no}</span>
+                      <span className="mt-0.5 line-clamp-2 break-all text-xs font-medium text-foreground">{s.title}</span>
                     </button>
                     {(s.matched || []).length > 0 && (
                       <div className="mt-1.5 space-y-0.5">
                         {s.matched.map((m, i) => (
-                          <div key={i} className="flex items-center gap-1.5 text-[11px]">
+                          <div key={i} className="flex items-center gap-1.5 text-xs">
                             <span className="shrink-0 text-muted-foreground">{m.label}</span>
                             <span className="truncate font-mono text-foreground/80" title={m.value}>{m.value}</span>
                           </div>
                         ))}
                       </div>
                     )}
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                       {(() => {
                         const sm = STATUS_META[s.status]
                         return sm
@@ -1711,7 +1726,7 @@ export default function TicketCenter() {
                       </span>
                     </div>
                     {s.summary && (
-                      <p className="mt-1.5 line-clamp-3 break-all text-[11px] leading-relaxed text-muted-foreground" title={s.summary}>
+                      <p className="mt-1.5 line-clamp-3 break-all text-xs leading-relaxed text-muted-foreground" title={s.summary}>
                         处置参考：{s.summary}
                       </p>
                     )}

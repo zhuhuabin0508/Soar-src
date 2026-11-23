@@ -23,7 +23,7 @@ from app.core.security import (
 from app.core.workflow_runner import run_workflow
 from app.core.workflow_validator import validate_workflow
 from app.database import get_db
-from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, is_admin, require_permission, resource_can_edit
+from app.dependencies import check_resource_ownership, compute_can_edit_ids, get_current_user, is_admin, require_any_permission, require_permission, resource_can_edit
 from app.models import Execution, ExecutionLog, ExecutionTrace, Workflow
 from app.models.user import User
 from app.schemas.workflow import (
@@ -42,8 +42,20 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
+# 工作流写操作允许「列表」或「编排」任一编辑权限（两处 UI 均可发起保存/发布）
+_WF_EDIT = require_any_permission(("workflow_list", "edit"), ("workflow_editor", "edit"))
+# 工作流读取允许「列表」或「编排」任一查看权限
+_WF_VIEW = require_any_permission(("workflow_list", "view"), ("workflow_editor", "view"))
+# 测试运行允许列表执行权限或编排编辑权限
+_WF_EXECUTE = require_any_permission(("workflow_list", "execute"), ("workflow_editor", "edit"))
 
-@router.post("", response_model=WorkflowOut, status_code=201)
+
+@router.post(
+    "",
+    response_model=WorkflowOut,
+    status_code=201,
+    dependencies=[Depends(_WF_EDIT)],
+)
 def create_workflow(
     workflow: WorkflowCreate,
     db: Session = Depends(get_db),
@@ -186,7 +198,7 @@ def _build_workflow_stats(db: Session, workflow_ids: list[int]) -> dict[int, dic
     return result
 
 
-@router.get("", response_model=list[WorkflowListItem])
+@router.get("", response_model=list[WorkflowListItem], dependencies=[Depends(_WF_VIEW)])
 def list_workflows(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -230,7 +242,7 @@ def list_workflows(
     return result
 
 
-@router.patch("/{workflow_id}/favorite", response_model=WorkflowOut)
+@router.patch("/{workflow_id}/favorite", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def toggle_favorite(
     workflow_id: int,
     db: Session = Depends(get_db),
@@ -255,7 +267,7 @@ class StatusUpdateRequest(BaseModel):
     status: str = Field(..., description="目标状态：draft / published / disabled")
 
 
-@router.patch("/{workflow_id}/status", response_model=WorkflowOut)
+@router.patch("/{workflow_id}/status", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def update_status(
     workflow_id: int,
     body: StatusUpdateRequest,
@@ -289,7 +301,7 @@ class TagsUpdateRequest(BaseModel):
     category: Optional[str] = Field(None, description="业务场景分类")
 
 
-@router.patch("/{workflow_id}/tags", response_model=WorkflowOut)
+@router.patch("/{workflow_id}/tags", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def update_tags(
     workflow_id: int,
     body: TagsUpdateRequest,
@@ -322,7 +334,7 @@ class ImportRequest(BaseModel):
     description: Optional[str] = None
 
 
-@router.post("/import", response_model=WorkflowOut, status_code=201)
+@router.post("/import", response_model=WorkflowOut, status_code=201, dependencies=[Depends(require_permission("workflow_list", "import"))])
 def import_workflow(body: ImportRequest, db: Session = Depends(get_db)) -> Workflow:
     """导入工作流（从 JSON/YAML 导出文件恢复）。
 
@@ -386,7 +398,7 @@ def _get_draft_or_404(db: Session, draft_id: int, current_user: User) -> Workflo
     return wf
 
 
-@router.post("/drafts/generate", response_model=WorkflowOut, status_code=201)
+@router.post("/drafts/generate", response_model=WorkflowOut, status_code=201, dependencies=[Depends(_WF_EDIT)])
 def generate_workflow_draft(
     body: DraftGenerateRequest,
     db: Session = Depends(get_db),
@@ -413,7 +425,7 @@ def generate_workflow_draft(
     return db_workflow
 
 
-@router.get("/drafts", response_model=list[WorkflowListItem])
+@router.get("/drafts", response_model=list[WorkflowListItem], dependencies=[Depends(_WF_VIEW)])
 def list_workflow_drafts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -424,7 +436,7 @@ def list_workflow_drafts(
     return q.order_by(Workflow.updated_at.desc()).all()
 
 
-@router.get("/drafts/{draft_id}", response_model=WorkflowOut)
+@router.get("/drafts/{draft_id}", response_model=WorkflowOut, dependencies=[Depends(_WF_VIEW)])
 def get_workflow_draft(
     draft_id: int,
     db: Session = Depends(get_db),
@@ -433,7 +445,7 @@ def get_workflow_draft(
     return _get_draft_or_404(db, draft_id, current_user)
 
 
-@router.put("/drafts/{draft_id}", response_model=WorkflowOut)
+@router.put("/drafts/{draft_id}", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def update_workflow_draft(
     draft_id: int,
     body: DraftUpdateRequest,
@@ -456,7 +468,7 @@ def update_workflow_draft(
     return wf
 
 
-@router.post("/drafts/{draft_id}/publish", response_model=WorkflowOut)
+@router.post("/drafts/{draft_id}/publish", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def publish_workflow_draft(
     draft_id: int,
     db: Session = Depends(get_db),
@@ -471,7 +483,7 @@ def publish_workflow_draft(
     return wf
 
 
-@router.get("/{workflow_id}", response_model=WorkflowOut)
+@router.get("/{workflow_id}", response_model=WorkflowOut, dependencies=[Depends(_WF_VIEW)])
 def get_workflow(
     workflow_id: int,
     db: Session = Depends(get_db),
@@ -497,7 +509,7 @@ def get_workflow(
     return out
 
 
-@router.put("/{workflow_id}", response_model=WorkflowOut)
+@router.put("/{workflow_id}", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def update_workflow(
     workflow_id: int,
     workflow: WorkflowUpdate,
@@ -524,7 +536,7 @@ def update_workflow(
     return db_workflow
 
 
-@router.delete("/{workflow_id}", status_code=204)
+@router.delete("/{workflow_id}", status_code=204, dependencies=[Depends(require_permission("workflow_list", "delete"))])
 def delete_workflow(
     workflow_id: int,
     db: Session = Depends(get_db),
@@ -545,7 +557,7 @@ def delete_workflow(
     return None
 
 
-@router.post("/{workflow_id}/reset-secret", response_model=WorkflowOut)
+@router.post("/{workflow_id}/reset-secret", response_model=WorkflowOut, dependencies=[Depends(_WF_EDIT)])
 def reset_webhook_secret(
     workflow_id: int,
     db: Session = Depends(get_db),
@@ -585,7 +597,7 @@ class EnvVarList(BaseModel):
     items: list[EnvVarItem] = Field(default_factory=list, description="环境变量列表")
 
 
-@router.get("/{workflow_id}/env-vars")
+@router.get("/{workflow_id}/env-vars", dependencies=[Depends(_WF_EDIT)])
 def get_env_vars(
     workflow_id: int,
     db: Session = Depends(get_db),
@@ -621,7 +633,7 @@ def get_env_vars(
     return {"items": items}
 
 
-@router.put("/{workflow_id}/env-vars")
+@router.put("/{workflow_id}/env-vars", dependencies=[Depends(_WF_EDIT)])
 def update_env_vars(
     workflow_id: int,
     body: EnvVarList,
@@ -684,7 +696,7 @@ def update_env_vars(
     }
 
 
-@router.post("/{workflow_id}/env-vars/reveal")
+@router.post("/{workflow_id}/env-vars/reveal", dependencies=[Depends(_WF_EDIT)])
 def reveal_env_var(
     workflow_id: int,
     body: dict,
@@ -725,7 +737,7 @@ class TestNodeRequest(BaseModel):
     input_data: dict[str, Any] = Field(default_factory=dict, description="节点输入数据")
 
 
-@router.post("/{workflow_id}/test-run")
+@router.post("/{workflow_id}/test-run", dependencies=[Depends(_WF_EXECUTE)])
 async def test_run_workflow(
     workflow_id: int,
     body: TestRunRequest,

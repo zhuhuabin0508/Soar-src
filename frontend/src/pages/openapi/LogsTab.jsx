@@ -1,10 +1,13 @@
 // 调用日志：全量网关调用明细（含 401/403/429 拒绝），支持多维筛选与分页
 import { useCallback, useEffect, useState } from 'react'
 import { openAdminApi } from '../../api/openApi'
+import { CompactSelect, DataTable, Pagination } from '../../components/ui'
 import { RefreshCw, ScrollText, Search } from 'lucide-react'
 
 const PAGE_SIZE = 20
 const fmtTime = (t) => (t ? String(t).replace('T', ' ').slice(0, 19) : '-')
+
+const EMPTY_FILTER = { app_id: '', resource_code: '', status_group: 'all', client_ip: '' }
 
 const STATUS_META = {
   2: { label: '2xx 成功', cls: 'bg-success/15 text-success' },
@@ -13,15 +16,17 @@ const STATUS_META = {
 }
 const statusClass = (code) => (STATUS_META[Math.floor(code / 100)]?.cls || 'bg-muted text-muted-foreground')
 
-export default function LogsTab() {
+const inputCls = 'rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground outline-none transition focus:border-primary'
+
+export default function LogsTab({ refreshKey = 0 }) {
   const [logs, setLogs] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   // 筛选条件
-  const [filter, setFilter] = useState({ app_id: '', resource_code: '', status_group: 'all', client_ip: '' })
-  const [applied, setApplied] = useState(filter)
+  const [filter, setFilter] = useState(EMPTY_FILTER)
+  const [applied, setApplied] = useState(EMPTY_FILTER)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -37,18 +42,57 @@ export default function LogsTab() {
     }
   }, [applied, page])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load() }, [load, refreshKey])
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const isFiltered = JSON.stringify(applied) !== JSON.stringify(EMPTY_FILTER)
   const handleQuery = () => { setPage(1); setApplied(filter) }
-  const handleReset = () => { const f = { app_id: '', resource_code: '', status_group: 'all', client_ip: '' }; setFilter(f); setApplied(f); setPage(1) }
+  const handleReset = () => { setFilter(EMPTY_FILTER); setApplied(EMPTY_FILTER); setPage(1) }
 
-  const inputCls = 'rounded-md border border-border bg-background px-2.5 py-1.5 text-xs outline-none focus:border-primary'
+  // 列定义：时间/耗时右对齐，路径列自适应剩余宽度
+  const columns = [
+    {
+      key: 'created_at', header: '时间', width: '165px', numeric: true,
+      render: (log) => <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(log.created_at)}</span>,
+    },
+    {
+      key: 'app_name', header: '应用', width: '130px',
+      render: (log) => <span className="truncate" title={log.app_name}>{log.app_name || '-'}</span>,
+    },
+    {
+      key: 'resource_code', header: '资源', width: '120px',
+      render: (log) => <span className="font-mono text-xs text-muted-foreground">{log.resource_code || '-'}</span>,
+    },
+    {
+      key: 'status_code', header: '状态码', width: '100px',
+      render: (log) => (
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${statusClass(log.status_code)}`}>
+          {log.status_code}
+        </span>
+      ),
+    },
+    {
+      key: 'response_ms', header: '耗时', width: '90px', numeric: true,
+      render: (log) => <span className="text-muted-foreground">{log.response_ms} ms</span>,
+    },
+    {
+      key: 'client_ip', header: '客户端 IP', width: '140px',
+      render: (log) => <span className="font-mono text-xs text-muted-foreground">{log.client_ip || '-'}</span>,
+    },
+    {
+      key: '__path', header: '路径 / 参数',
+      render: (log) => (
+        <span className="block truncate text-xs text-muted-foreground" title={`${log.method} ${log.path} ${log.query_params || ''}`}>
+          <span className="font-mono">{log.method} {log.path}</span>
+          {log.query_params && <span className="ml-1 opacity-70">{String(log.query_params).slice(0, 80)}</span>}
+        </span>
+      ),
+    },
+  ]
 
   return (
     <div className="flex flex-col gap-4">
       {/* 筛选栏 */}
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5">
         <input
           value={filter.client_ip}
           onChange={(e) => setFilter((p) => ({ ...p, client_ip: e.target.value }))}
@@ -56,18 +100,26 @@ export default function LogsTab() {
           placeholder="客户端 IP..."
           className={`${inputCls} w-36`}
         />
-        <select value={filter.resource_code} onChange={(e) => setFilter((p) => ({ ...p, resource_code: e.target.value }))} className={inputCls}>
+        <CompactSelect
+          value={filter.resource_code}
+          onChange={(e) => setFilter((p) => ({ ...p, resource_code: e.target.value }))}
+          className="w-32"
+        >
           <option value="">全部资源</option>
           {['alerts', 'assets', 'banned_ips', 'tickets', 'executions', 'dashboard_stats', 'ticket_monitor'].map((c) => (
             <option key={c} value={c}>{c}</option>
           ))}
-        </select>
-        <select value={filter.status_group} onChange={(e) => setFilter((p) => ({ ...p, status_group: e.target.value }))} className={inputCls}>
+        </CompactSelect>
+        <CompactSelect
+          value={filter.status_group}
+          onChange={(e) => setFilter((p) => ({ ...p, status_group: e.target.value }))}
+          className="w-32"
+        >
           <option value="all">全部状态</option>
           <option value="2xx">2xx 成功</option>
           <option value="4xx">4xx 拒绝</option>
           <option value="5xx">5xx 异常</option>
-        </select>
+        </CompactSelect>
         <input
           value={filter.app_id}
           onChange={(e) => setFilter((p) => ({ ...p, app_id: e.target.value }))}
@@ -86,72 +138,34 @@ export default function LogsTab() {
       )}
 
       {/* 日志表格 */}
-      {loading ? (
-        <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">加载中...</div>
-      ) : logs.length === 0 ? (
-        <div className="flex h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border text-muted-foreground">
-          <ScrollText className="h-10 w-10" />
-          <div className="text-sm">
-            {JSON.stringify({ ...applied, status_group: applied.status_group, client_ip: applied.client_ip }) === JSON.stringify({ app_id: '', resource_code: '', status_group: 'all', client_ip: '' })
-              ? '暂无任何调用日志，第三方系统调用开放 API 后将在此记录'
-              : '当前筛选条件下没有匹配的调用日志'}
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={load} className="btn-secondary btn-sm"><RefreshCw className="h-3.5 w-3.5" /> 刷新</button>
-            {JSON.stringify({ ...applied, status_group: applied.status_group, client_ip: applied.client_ip }) !== JSON.stringify({ app_id: '', resource_code: '', status_group: 'all', client_ip: '' }) && (
-              <button type="button" onClick={handleReset} className="btn-secondary btn-sm">清除筛选</button>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="w-full overflow-x-auto rounded-lg border border-border">
-          <table className="w-full min-w-[960px] table-fixed border-collapse text-sm">
-            <thead className="bg-card text-muted-foreground">
-              <tr>
-                <th className="w-40 px-4 py-3 text-right font-medium">时间</th>
-                <th className="w-32 px-4 py-3 text-left font-medium">应用</th>
-                <th className="w-28 px-4 py-3 text-left font-medium">资源</th>
-                <th className="w-20 px-4 py-3 text-left font-medium">状态码</th>
-                <th className="w-24 px-4 py-3 text-right font-medium">耗时</th>
-                <th className="w-32 px-4 py-3 text-left font-medium">客户端 IP</th>
-                <th className="px-4 py-3 text-left font-medium">路径 / 参数</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log, idx) => (
-                <tr
-                  key={log.id}
-                  title={log.error_message ? `错误：${log.error_message}` : ''}
-                  className={`border-t border-border ${log.status_code >= 500 ? 'bg-destructive/5' : idx % 2 === 0 ? 'bg-muted' : 'bg-card'}`}
-                >
-                  <td className="px-4 py-2.5 text-right text-xs tabular-nums text-muted-foreground">{fmtTime(log.created_at)}</td>
-                  <td className="truncate px-4 py-2.5 text-foreground" title={log.app_name}>{log.app_name || '-'}</td>
-                  <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{log.resource_code || '-'}</td>
-                  <td className="px-4 py-2.5">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium tabular-nums ${statusClass(log.status_code)}`}>{log.status_code}</span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{log.response_ms} ms</td>
-                  <td className="truncate px-4 py-2.5 font-mono text-xs text-muted-foreground">{log.client_ip || '-'}</td>
-                  <td className="truncate px-4 py-2.5 text-xs text-muted-foreground" title={`${log.path} ${log.query_params || ''}`}>
-                    <span className="font-mono">{log.method} {log.path}</span>
-                    {log.query_params && <span className="ml-1 opacity-70">{String(log.query_params).slice(0, 80)}</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <div className="overflow-hidden rounded-lg border border-border">
+        <DataTable
+          columns={columns}
+          data={logs}
+          loading={loading}
+          rowKey="id"
+          emptyIcon={ScrollText}
+          emptyText={isFiltered ? '当前筛选条件下没有匹配的调用日志' : '暂无任何调用日志'}
+          emptyDescription={isFiltered ? '调整筛选条件后重试' : '第三方系统调用开放 API 后将在此记录'}
+          emptyAction={
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={load} className="btn-secondary btn-sm"><RefreshCw className="h-3.5 w-3.5" /> 刷新</button>
+              {isFiltered && <button type="button" onClick={handleReset} className="btn-secondary btn-sm">清除筛选</button>}
+            </div>
+          }
+          rowClassName={(log) => (log.status_code >= 500 ? 'bg-destructive/5' : '')}
+        />
+      </div>
 
       {/* 分页 */}
       {!loading && logs.length > 0 && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span className="tabular-nums">共 {total} 条，第 {page} / {totalPages} 页</span>
-          <div className="flex items-center gap-2">
-            <button type="button" disabled={page <= 1} onClick={() => setPage(page - 1)} className="btn-secondary btn-sm">上一页</button>
-            <button type="button" disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="btn-secondary btn-sm">下一页</button>
-          </div>
-        </div>
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={total}
+          onPageChange={setPage}
+          showPageSize={false}
+        />
       )}
     </div>
   )

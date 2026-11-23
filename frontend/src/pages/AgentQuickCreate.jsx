@@ -18,6 +18,7 @@ import {
   AGENT_QUICK_DRAFT_KEY,
 } from '../constants/agentIntentPlanner'
 import { TextInput, TextArea, SelectInput, CheckboxGroup } from '../components/property/FormControls'
+import { PillTabs } from '../components/ui'
 import { toast } from '../store/toastStore'
 import { runAgentQuickTest } from '../utils/runAgentQuickTest'
 
@@ -315,8 +316,7 @@ function AgentQuickCreate() {
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
-            <h1 className="text-lg font-semibold">描述创建智能体</h1>
-            <p className="text-xs text-muted-foreground">像 Coze 一样：描述需求 → 自动选配工具 → 测试 → 发布或暂存</p>
+            <h1 className="text-2xl font-semibold tracking-tight">描述创建智能体</h1>
           </div>
         </div>
         <button type="button" onClick={() => navigate('/agents/new')} className="text-xs text-muted-foreground underline hover:text-foreground">
@@ -357,7 +357,7 @@ function AgentQuickCreate() {
                     key={ex}
                     type="button"
                     onClick={() => setDescription(ex)}
-                    className="rounded-full border border-border bg-secondary px-3 py-1 text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+                    className="rounded-full border border-border bg-secondary px-3 py-1 text-xs text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
                   >
                     {ex.slice(0, 28)}…
                   </button>
@@ -423,7 +423,7 @@ function AgentQuickCreate() {
                     />
                     <div>
                       <div className="text-sm font-medium">{tool.label}</div>
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-xs text-muted-foreground">
                         {toolReasons[tool.value] || template?.tool_hints?.[tool.value] || (tool.description || '').slice(0, 60)}
                       </div>
                     </div>
@@ -434,7 +434,7 @@ function AgentQuickCreate() {
                 <button
                   type="button"
                   onClick={() => setShowExtraTools((v) => !v)}
-                  className="mt-2 text-[11px] text-primary underline"
+                  className="mt-2 text-xs text-primary underline"
                 >
                   {showExtraTools ? '收起' : `工具不够？添加更多（${extraTools.length} 个可选）`}
                 </button>
@@ -452,7 +452,7 @@ function AgentQuickCreate() {
             </div>
 
             {enabledKbs.length > 0 && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 <Database className="inline h-3 w-3" /> 已自动关联 {enabledKbs.length} 个知识库
               </p>
             )}
@@ -494,28 +494,19 @@ function AgentQuickCreate() {
 
               {(testing || testResult) && (
                 <div className="mt-4 rounded-lg border border-border bg-background">
-                  <div className="flex border-b border-border">
-                    {[
-                      { id: 'reply', label: '回复' },
-                      { id: 'tools', label: `工具(${testResult?.toolCalls?.length || 0})` },
-                      { id: 'logs', label: `日志(${testResult?.logs?.length || 0})` },
-                      { id: 'raw', label: '原始' },
-                    ].map((tab) => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setTestLogTab(tab.id)}
-                        className={`px-3 py-2 text-xs font-medium transition ${
-                          testLogTab === tab.id
-                            ? 'border-b-2 border-primary text-primary'
-                            : 'text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
+                  <div className="flex items-center gap-2 border-b border-border pb-2">
+                    <PillTabs
+                      items={[
+                        { key: 'reply', label: '回复' },
+                        { key: 'tools', label: '工具', count: testResult?.toolCalls?.length || 0 },
+                        { key: 'logs', label: '日志', count: testResult?.logs?.length || 0 },
+                        { key: 'raw', label: '原始' },
+                      ]}
+                      value={testLogTab}
+                      onChange={setTestLogTab}
+                    />
                     {testResult?.streaming && (
-                      <span className="ml-auto flex items-center gap-1.5 px-3 text-[10px] text-primary">
+                      <span className="ml-auto flex items-center gap-1.5 px-3 text-xs text-primary">
                         <Loader2 className="h-3 w-3 animate-spin" /> 运行中…
                       </span>
                     )}
@@ -525,7 +516,7 @@ function AgentQuickCreate() {
                     {testLogTab === 'reply' && (
                       <>
                         {(testResult?.statusMsgs?.length > 0) && (
-                          <div className="mb-2 space-y-0.5 text-[10px] text-muted-foreground">
+                          <div className="mb-2 space-y-0.5 text-xs text-muted-foreground">
                             {testResult.statusMsgs.map((s, i) => (
                               <div key={i}>· {s}</div>
                             ))}
@@ -551,7 +542,7 @@ function AgentQuickCreate() {
                               <div className="flex items-center gap-2 font-medium text-foreground">
                                 <Wrench className="h-3 w-3 text-primary" />
                                 {tc.name}
-                                <span className={`rounded px-1 text-[9px] ${
+                                <span className={`rounded px-1 text-xs ${
                                   tc.status === 'done' ? 'bg-emerald-500/15 text-emerald-600' : 'bg-warning/15 text-warning'
                                 }`}>
                                   {tc.status === 'done' ? '完成' : '执行中'}
@@ -559,7 +550,7 @@ function AgentQuickCreate() {
                               </div>
                               {tc.message && <div className="mt-1 text-muted-foreground">{tc.message}</div>}
                               {tc.result != null && (
-                                <pre className="mt-1 max-h-32 overflow-auto rounded bg-muted p-2 text-[10px]">
+                                <pre className="mt-1 max-h-32 overflow-auto rounded bg-muted p-2 text-xs">
                                   {typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)}
                                 </pre>
                               )}
@@ -573,13 +564,13 @@ function AgentQuickCreate() {
 
                     {testLogTab === 'logs' && (
                       (testResult?.logs?.length > 0) ? (
-                        <div className="flex flex-col gap-1 font-mono text-[11px]">
+                        <div className="flex flex-col gap-1 font-mono text-xs">
                           {testResult.logs.map((log, i) => (
                             <div key={i} className="border-b border-border pb-1 last:border-0">
                               <span className="text-muted-foreground">[{log.level || 'info'}]</span>
                               {' '}{log.message || JSON.stringify(log)}
                               {log.detail != null && (
-                                <pre className="mt-0.5 whitespace-pre-wrap text-[10px] text-muted-foreground">
+                                <pre className="mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground">
                                   {typeof log.detail === 'string' ? log.detail : JSON.stringify(log.detail, null, 2)}
                                 </pre>
                               )}
@@ -592,7 +583,7 @@ function AgentQuickCreate() {
                     )}
 
                     {testLogTab === 'raw' && testResult && (
-                      <pre className="whitespace-pre-wrap break-all font-mono text-[10px] text-muted-foreground">
+                      <pre className="whitespace-pre-wrap break-all font-mono text-xs text-muted-foreground">
                         {JSON.stringify(testResult, null, 2)}
                       </pre>
                     )}
@@ -621,7 +612,7 @@ function AgentQuickCreate() {
                 暂存草稿
               </button>
             </div>
-            <p className="text-center text-[10px] text-muted-foreground">
+            <p className="text-center text-xs text-muted-foreground">
               测试有问题可先「暂存草稿」，稍后在编辑器中补充工具后再发布
             </p>
           </div>

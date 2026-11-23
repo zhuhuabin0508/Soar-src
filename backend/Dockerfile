@@ -9,6 +9,14 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
+# 出站代理：构建机无法直连外网时，通过 --build-arg 注入宿主代理（如
+# HTTP_PROXY=http://127.0.0.1:8999）。未注入时为空，apt/pip 直连。
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
     || sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null \
     || true
@@ -17,13 +25,21 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 # gcc + libc6-dev：部分依赖（jieba 等）在 ARM64 上无预编译 wheel，需从源码编译，需要 C 标准库头文件
 # postgresql-client：pg_dump / psql 命令行工具（数据备份与恢复）
 # libjpeg-dev + zlib1g-dev：Pillow（图形验证码）编译所需的 JPEG/PNG 库头文件
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# libreoffice-writer + fonts-noto-cjk：报告 docx → PDF 保真预览（soffice --headless）；
+#   镜像会增大约 400MB，如不需要 PDF 可移除，并通过 REPORT_SOFFICE_BIN 接入外部转换服务
+RUN if [ -n "$HTTP_PROXY" ]; then \
+        echo "Acquire::http::Proxy \"$HTTP_PROXY\";"  > /etc/apt/apt.conf.d/99proxy; \
+        echo "Acquire::https::Proxy \"$HTTPS_PROXY\";" >> /etc/apt/apt.conf.d/99proxy; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
         gcc \
         libc6-dev \
         postgresql-client \
         libjpeg-dev \
         zlib1g-dev \
+        libreoffice-writer \
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 # 先单独复制 requirements.txt 安装依赖，利用 Docker 缓存层

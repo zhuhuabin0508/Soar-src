@@ -127,6 +127,8 @@ function SkillList() {
   const canEdit = hasPermission('skill', 'edit')
   const canCreate = hasPermission('skill', 'edit')
   const canDelete = hasPermission('skill', 'delete')
+  const canImport = hasPermission('skill', 'import')
+  const canExport = hasPermission('skill', 'export')
 
   const load = useCallback(async () => {
     try {
@@ -330,7 +332,7 @@ function SkillList() {
   const InlineToggle = ({ skill }) => {
     if (!canEdit) {
       return (
-        <span className={`rounded px-2 py-0.5 text-[11px] font-medium ${skill.enabled ? 'bg-success/20 text-success' : 'bg-secondary text-muted-foreground'}`}>
+        <span className={`rounded px-2 py-0.5 text-xs font-medium ${skill.enabled ? 'bg-success/20 text-success' : 'bg-secondary text-muted-foreground'}`}>
           {skill.enabled ? '启用' : '禁用'}
         </span>
       )
@@ -362,7 +364,7 @@ function SkillList() {
     )
     return (
       <HoverTip text={tip} placement="right">
-        <span className="inline-flex cursor-help items-center gap-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex cursor-help items-center gap-1 text-xs text-muted-foreground">
           <ListChecks className="h-3 w-3 text-primary" />
           <span className="font-medium tabular-nums text-primary">{count}</span>
           <span className="text-muted-foreground">个</span>
@@ -389,11 +391,11 @@ function SkillList() {
         const tags = r.tags || []
         return (
           <div className="flex flex-wrap items-center gap-1">
-            <span className={`rounded border px-2 py-0.5 text-[11px] font-medium ${CATEGORY_STYLES[r.category] || CATEGORY_STYLES['其他']}`}>{cat}</span>
+            <span className={`rounded border px-2 py-0.5 text-xs font-medium ${CATEGORY_STYLES[r.category] || CATEGORY_STYLES['其他']}`}>{cat}</span>
             {tags.slice(0, 2).map((t) => (
-              <span key={t} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary" title={t}>{t}</span>
+              <span key={t} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs text-primary" title={t}>{t}</span>
             ))}
-            {tags.length > 2 && <span className="text-[10px] text-muted-foreground">+{tags.length - 2}</span>}
+            {tags.length > 2 && <span className="text-xs text-muted-foreground">+{tags.length - 2}</span>}
           </div>
         )
       },
@@ -454,6 +456,7 @@ function SkillList() {
             <RefreshCw className="mr-1 h-3.5 w-3.5" /> 刷新
           </button>
           {/* 数据操作下拉：导出 / 导入（ref + document 监听点击外部关闭，不用全屏遮罩） */}
+          {(canImport || canExport) && (
           <div className="relative" ref={dataMenuRef}>
             <button
               type="button"
@@ -466,6 +469,7 @@ function SkillList() {
             </button>
             {dataMenuOpen && (
               <div className="absolute right-0 top-full z-50 mt-1.5 w-52 overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-xl shadow-black/20">
+                {canExport && (
                 <button
                   type="button"
                   onClick={() => { handleExport(); setDataMenuOpen(false) }}
@@ -474,6 +478,8 @@ function SkillList() {
                   <Download className="h-3.5 w-3.5 text-muted-foreground" />
                   导出全部技能
                 </button>
+                )}
+                {canExport && (
                 <button
                   type="button"
                   disabled={selectedKeys.length === 0}
@@ -483,7 +489,8 @@ function SkillList() {
                   <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
                   导出所选{selectedKeys.length > 0 ? `（${selectedKeys.length} 个）` : ''}
                 </button>
-                {canEdit && (
+                )}
+                {canImport && (
                   <button
                     type="button"
                     onClick={() => { setImportOpen(true); setDataMenuOpen(false) }}
@@ -496,6 +503,7 @@ function SkillList() {
               </div>
             )}
           </div>
+          )}
           {canCreate && (
             <button type="button" onClick={openCreate} className="btn-primary btn-sm">
               <Plus className="mr-1 h-3.5 w-3.5" /> 新建技能
@@ -532,7 +540,7 @@ function SkillList() {
                   <button
                     key={m.key} type="button"
                     onClick={() => setViewMode(m.key)}
-                    className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] transition ${viewMode === m.key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                    className={`flex items-center gap-1 rounded px-2 py-1 text-xs transition ${viewMode === m.key ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
                     title={m.label}
                   >
                     <Icon className="h-3 w-3" />{m.label}
@@ -815,23 +823,23 @@ function CardView({ rows, loading, selectable, selectedKeys, onSelectChange, can
                 )}
                 <span className="truncate text-sm font-semibold text-foreground" title={r.name}>{r.name || '-'}</span>
               </div>
-              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${CATEGORY_STYLES[r.category] || CATEGORY_STYLES['其他']}`}>{r.category || '未分类'}</span>
+              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${CATEGORY_STYLES[r.category] || CATEGORY_STYLES['其他']}`}>{r.category || '未分类'}</span>
             </div>
             {/* 摘要 + 正文前 2 行 */}
             <div className="flex-1 px-5">
-              <p className="mt-1.5 line-clamp-1 text-[11px] text-muted-foreground">{r.description || '（无摘要）'}</p>
-              <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{r.content || '（无正文）'}</p>
+              <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{r.description || '（无摘要）'}</p>
+              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{r.content || '（无正文）'}</p>
               {/* 标签 */}
               {(r.tags || []).length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {r.tags.slice(0, 3).map((t) => (
-                    <span key={t} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">{t}</span>
+                    <span key={t} className="rounded-full border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{t}</span>
                   ))}
                 </div>
               )}
             </div>
             {/* 底部信息 */}
-            <div className="mt-2 flex items-center justify-between border-t border-border px-5 py-2.5 text-[10px] text-muted-foreground">
+            <div className="mt-2 flex items-center justify-between border-t border-border px-5 py-2.5 text-xs text-muted-foreground">
               <span className="tabular-nums">优先级 <span className="font-mono">{r.priority ?? 0}</span></span>
               <span>{renderRef(r)}</span>
               <span title={fmtTime(r.updated_at)}>{relTime(r.updated_at)}</span>
@@ -850,7 +858,7 @@ function CardView({ rows, loading, selectable, selectedKeys, onSelectChange, can
                   <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${r.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                 </button>
               ) : (
-                <span className={`rounded px-2 py-0.5 text-[10px] ${r.enabled ? 'bg-success/20 text-success' : 'bg-secondary text-muted-foreground'}`}>{r.enabled ? '启用' : '禁用'}</span>
+                <span className={`rounded px-2 py-0.5 text-xs ${r.enabled ? 'bg-success/20 text-success' : 'bg-secondary text-muted-foreground'}`}>{r.enabled ? '启用' : '禁用'}</span>
               )}
               <div className="flex gap-1">
                 <button type="button" onClick={() => onEdit(r)} className="btn-secondary btn-sm" title={canEditResource(r) ? '编辑' : '查看'}>{canEditResource(r) ? <Pencil className="h-3 w-3" /> : <Eye className="h-3 w-3" />}</button>
@@ -1112,7 +1120,7 @@ function SkillImportModal({ onClose, onCompleted }) {
             <FileUp className="h-4 w-4 text-primary" />
             <h3 className="text-sm font-semibold text-foreground">导入技能</h3>
             {file && (
-              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+              <span className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
                 {file.name}
               </span>
             )}
@@ -1121,7 +1129,7 @@ function SkillImportModal({ onClose, onCompleted }) {
             <button
               type="button"
               onClick={handleDownloadTemplate}
-              className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-secondary px-2.5 py-1 text-[11px] text-primary transition hover:bg-primary/10"
+              className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-secondary px-2.5 py-1 text-xs text-primary transition hover:bg-primary/10"
               title="下载 JSON 导入模板（Markdown 格式见下方示例）"
             >
               <FileDown className="h-3 w-3" />
@@ -1151,10 +1159,10 @@ function SkillImportModal({ onClose, onCompleted }) {
             const isPassed = currentIdx > itemIdx
             return (
               <div key={s.key} className="flex items-center gap-2">
-                <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] transition ${
+                <div className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition ${
                   isActive ? 'bg-primary/15 text-primary' : isPassed ? 'bg-success/15 text-success' : 'text-muted-foreground'
                 }`}>
-                  <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] ${
+                  <span className={`flex h-4 w-4 items-center justify-center rounded-full text-xs ${
                     isActive ? 'bg-primary text-primary-foreground' : isPassed ? 'bg-success text-white' : 'bg-muted text-muted-foreground'
                   }`}>
                     {isPassed ? <CheckCircle2 className="h-2.5 w-2.5" /> : i + 1}
@@ -1195,7 +1203,7 @@ function SkillImportModal({ onClose, onCompleted }) {
                     </div>
                     <div className="text-center">
                       <div className="text-xs font-medium text-muted-foreground">暂无文件</div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">
+                      <div className="mt-1 text-xs text-muted-foreground">
                         点击选择 JSON / Markdown 文件，或拖拽文件到此处
                       </div>
                     </div>
@@ -1214,15 +1222,15 @@ function SkillImportModal({ onClose, onCompleted }) {
                 <button
                   type="button"
                   onClick={() => setShowFormat((p) => !p)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-[11px] text-muted-foreground transition hover:text-foreground"
+                  className="flex w-full items-center justify-between px-3 py-2 text-xs text-muted-foreground transition hover:text-foreground"
                 >
                   <span className="font-medium">查看格式示例</span>
                   <ChevronDown className={`h-3 w-3 transition-transform ${showFormat ? 'rotate-180' : ''}`} />
                 </button>
                 {showFormat && (
                   <div className="border-t border-border px-3 py-2">
-                    <div className="mb-1 text-[10px] font-medium text-muted-foreground">JSON 格式（.json）</div>
-                    <code className="block whitespace-pre-wrap text-[10px] text-primary">{`{
+                    <div className="mb-1 text-xs font-medium text-muted-foreground">JSON 格式（.json）</div>
+                    <code className="block whitespace-pre-wrap text-xs text-primary">{`{
   "skills": [
     {
       "name": "技能名称（必填）",
@@ -1235,11 +1243,11 @@ function SkillImportModal({ onClose, onCompleted }) {
     }
   ]
 }`}</code>
-                    <div className="mt-1.5 text-[10px] text-muted-foreground">
+                    <div className="mt-1.5 text-xs text-muted-foreground">
                       或直接为技能数组：[{`{ "name": "..." }`}]
                     </div>
-                    <div className="mt-3 mb-1 text-[10px] font-medium text-muted-foreground">Markdown 格式（.md，单文件 = 单个技能）</div>
-                    <code className="block whitespace-pre-wrap text-[10px] text-primary">{`---
+                    <div className="mt-3 mb-1 text-xs font-medium text-muted-foreground">Markdown 格式（.md，单文件 = 单个技能）</div>
+                    <code className="block whitespace-pre-wrap text-xs text-primary">{`---
 name: 技能名称（必填，缺失则用文件名）
 description: 技能描述
 category: 处置流程
@@ -1249,7 +1257,7 @@ enabled: true
 ---
 
 技能正文（注入 Agent prompt），支持完整 Markdown 语法。`}</code>
-                    <div className="mt-1.5 text-[10px] text-muted-foreground">
+                    <div className="mt-1.5 text-xs text-muted-foreground">
                       无 frontmatter 时整篇作为正文，名称用文件名兜底
                     </div>
                   </div>
@@ -1265,15 +1273,15 @@ enabled: true
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-md border border-border bg-secondary p-3 text-center">
                   <div className="text-lg font-bold text-foreground">{totalCount}</div>
-                  <div className="text-[10px] text-muted-foreground">总条数</div>
+                  <div className="text-xs text-muted-foreground">总条数</div>
                 </div>
                 <div className="rounded-md border border-success/30 bg-success/10 p-3 text-center">
                   <div className="text-lg font-bold text-success">{validCount}</div>
-                  <div className="text-[10px] text-muted-foreground">有效</div>
+                  <div className="text-xs text-muted-foreground">有效</div>
                 </div>
                 <div className={`rounded-md border p-3 text-center ${invalidCount > 0 ? 'border-destructive/30 bg-destructive/10' : 'border-border bg-secondary'}`}>
                   <div className={`text-lg font-bold ${invalidCount > 0 ? 'text-destructive' : 'text-muted-foreground'}`}>{invalidCount}</div>
-                  <div className="text-[10px] text-muted-foreground">无效/缺失</div>
+                  <div className="text-xs text-muted-foreground">无效/缺失</div>
                 </div>
               </div>
               {/* 可编辑预览卡片列表 */}
@@ -1285,16 +1293,16 @@ enabled: true
                     <div key={v.idx} className="rounded-md border border-border bg-secondary p-3">
                       {/* 卡片头：序号 + 状态徽章 */}
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="text-[11px] text-muted-foreground">#{v.idx + 1}</span>
+                        <span className="text-xs text-muted-foreground">#{v.idx + 1}</span>
                         {v.status === 'valid' ? (
-                          <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] text-success">有效</span>
+                          <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">有效</span>
                         ) : (
-                          <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] text-destructive" title={v.reason}>{v.reason}</span>
+                          <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-xs text-destructive" title={v.reason}>{v.reason}</span>
                         )}
                       </div>
                       {/* 名称 */}
                       <div className="mb-2">
-                        <label className="mb-0.5 block text-[10px] text-muted-foreground">名称 <span className="text-destructive">*</span></label>
+                        <label className="mb-0.5 block text-xs text-muted-foreground">名称 <span className="text-destructive">*</span></label>
                         <input
                           type="text"
                           value={skill.name || ''}
@@ -1306,7 +1314,7 @@ enabled: true
                       {/* 分类 + 优先级 */}
                       <div className="mb-2 grid grid-cols-2 gap-2">
                         <div>
-                          <label className="mb-0.5 block text-[10px] text-muted-foreground">分类</label>
+                          <label className="mb-0.5 block text-xs text-muted-foreground">分类</label>
                           <CompactSelect
                             size="lg"
                             block
@@ -1320,7 +1328,7 @@ enabled: true
                           </CompactSelect>
                         </div>
                         <div>
-                          <label className="mb-0.5 block text-[10px] text-muted-foreground">优先级</label>
+                          <label className="mb-0.5 block text-xs text-muted-foreground">优先级</label>
                           <input
                             type="number"
                             value={skill.priority ?? 0}
@@ -1331,7 +1339,7 @@ enabled: true
                       </div>
                       {/* 摘要 */}
                       <div className="mb-2">
-                        <label className="mb-0.5 block text-[10px] text-muted-foreground">摘要</label>
+                        <label className="mb-0.5 block text-xs text-muted-foreground">摘要</label>
                         <input
                           type="text"
                           value={skill.description || ''}
@@ -1342,7 +1350,7 @@ enabled: true
                       </div>
                       {/* 标签 */}
                       <div className="mb-2">
-                        <label className="mb-0.5 block text-[10px] text-muted-foreground">标签<span className="text-muted-foreground">（逗号分隔）</span></label>
+                        <label className="mb-0.5 block text-xs text-muted-foreground">标签<span className="text-muted-foreground">（逗号分隔）</span></label>
                         <input
                           type="text"
                           value={tagsStr}
@@ -1354,17 +1362,17 @@ enabled: true
                       {/* 正文预览（折叠） */}
                       {skill.content && (
                         <details className="group">
-                          <summary className="cursor-pointer select-none text-[10px] text-muted-foreground hover:text-foreground">
+                          <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
                             正文预览（{skill.content.length} 字符）
                           </summary>
-                          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-[10px] leading-relaxed text-muted-foreground">{skill.content}</pre>
+                          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-xs leading-relaxed text-muted-foreground">{skill.content}</pre>
                         </details>
                       )}
                     </div>
                   )
                 })}
                 {totalCount > 50 && (
-                  <div className="rounded-md border border-border bg-secondary px-3 py-1.5 text-center text-[10px] text-muted-foreground">
+                  <div className="rounded-md border border-border bg-secondary px-3 py-1.5 text-center text-xs text-muted-foreground">
                     仅显示前 50 条，共 {totalCount} 条
                   </div>
                 )}
@@ -1373,7 +1381,7 @@ enabled: true
               <div className="flex items-center justify-between rounded-md border border-border bg-secondary p-3">
                 <div>
                   <div className="text-xs font-medium text-foreground">覆盖同名技能</div>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  <div className="mt-0.5 text-xs text-muted-foreground">
                     {overwrite ? '同名的技能将被更新（覆盖原内容）' : '同名的技能将被跳过（仅新增）'}
                   </div>
                 </div>
@@ -1426,7 +1434,7 @@ enabled: true
             <div className="flex flex-col items-center gap-4 py-10">
               <Loader2 className="h-12 w-12 animate-spin text-primary" />
               <div className="text-sm font-medium text-foreground">正在导入技能...</div>
-              <div className="text-[11px] text-muted-foreground">共 {totalCount} 个技能，请勿关闭窗口</div>
+              <div className="text-xs text-muted-foreground">共 {totalCount} 个技能，请勿关闭窗口</div>
               <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
                 <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
               </div>
@@ -1459,20 +1467,20 @@ enabled: true
                 ].map((s) => (
                   <div key={s.label} className={`rounded-md border p-3 text-center ${s.bg}`}>
                     <div className={`text-xl font-bold ${s.color}`}>{s.value}</div>
-                    <div className="text-[10px] text-muted-foreground">{s.label}</div>
+                    <div className="text-xs text-muted-foreground">{s.label}</div>
                   </div>
                 ))}
               </div>
               {/* 失败记录详情 */}
               {importResult.errors?.length > 0 && (
                 <div className="rounded-md border border-warning/40 bg-warning/10">
-                  <div className="border-b border-warning/30 px-3 py-2 text-[11px] font-medium text-warning">
+                  <div className="border-b border-warning/30 px-3 py-2 text-xs font-medium text-warning">
                     失败记录（{importResult.errors.length} 条）
                   </div>
                   <div className="max-h-40 overflow-y-auto px-3 py-2">
                     {importResult.errors.map((e, i) => (
-                      <div key={i} className="flex items-start gap-2 border-b border-warning/20 py-1.5 text-[11px] last:border-0">
-                        <span className="mt-0.5 shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] text-destructive">{i + 1}</span>
+                      <div key={i} className="flex items-start gap-2 border-b border-warning/20 py-1.5 text-xs last:border-0">
+                        <span className="mt-0.5 shrink-0 rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">{i + 1}</span>
                         <span className="text-warning/90">{e}</span>
                       </div>
                     ))}
@@ -1500,7 +1508,7 @@ enabled: true
               </div>
               <div className="text-sm font-medium text-foreground">导入失败</div>
               {errorMsg && (
-                <div className="max-h-32 w-full overflow-y-auto rounded-md border border-destructive/40 bg-destructive/10 p-3 text-[11px] text-destructive">
+                <div className="max-h-32 w-full overflow-y-auto rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
                   {errorMsg}
                 </div>
               )}

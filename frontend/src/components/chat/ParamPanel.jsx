@@ -99,7 +99,7 @@ export default function ParamPanel({ params = {}, onChange, provider = 'openai' 
         <SlidersHorizontal className="h-3.5 w-3.5" />
         <span>参数</span>
         {enabledCount > 0 && (
-          <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+          <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-xs font-semibold text-primary-foreground">
             {enabledCount}
           </span>
         )}
@@ -181,13 +181,13 @@ export default function ParamPanel({ params = {}, onChange, provider = 'openai' 
                           const v = e.target.value
                           updateParamValue(key, v === '' ? null : Number(v))
                         }}
-                        className="ml-auto h-6 w-16 shrink-0 rounded border border-border bg-secondary px-1.5 text-right text-[11px] text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed"
+                        className="ml-auto h-6 w-16 shrink-0 rounded border border-border bg-secondary px-1.5 text-right text-xs text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed"
                       />
                     </div>
 
                     {/* 描述 + 滑块 */}
                     <div className="mt-1 pl-9">
-                      <div className="text-[10px] text-muted-foreground">
+                      <div className="text-xs text-muted-foreground">
                         {unsupported ? (
                           <span className="text-warning">当前模型（Anthropic）不支持此参数</span>
                         ) : (
@@ -218,18 +218,18 @@ export default function ParamPanel({ params = {}, onChange, provider = 'openai' 
               <button
                 type="button"
                 onClick={resetAll}
-                className="inline-flex items-center gap-1 text-[11px] text-muted-foreground transition hover:text-foreground"
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground transition hover:text-foreground"
               >
                 <RotateCcw className="h-3 w-3" />
                 <span>重置全部</span>
               </button>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">
                 已启用 {enabledCount} / 6
               </span>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-md bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground transition hover:bg-primary/90"
+                className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition hover:bg-primary/90"
               >
                 完成
               </button>

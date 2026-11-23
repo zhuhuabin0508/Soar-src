@@ -7,7 +7,7 @@
  *   已存在但尚未/无法落库的会话，避免误删），并给出需要拉取消息的 sid；
  * - ``toDisplayMessages``：把服务端消息行转换为前端消息结构。
  */
-import { MAX_CONVERSATIONS } from './chatConversations.js'
+import { MAX_CONVERSATIONS, stripFileWrapper } from './chatConversations.js'
 
 /** 时间值（数字毫秒 / ISO 字符串）-> 毫秒时间戳 */
 export function toMillis(value, fallback = 0) {
@@ -114,11 +114,13 @@ export function toDisplayMessages(rows, now = Date.now()) {
     if (!row || typeof row !== 'object') return
     const role = row.role
     if (role !== 'user' && role !== 'assistant') return
-    const content = typeof row.content === 'string' ? row.content : ''
+    const rawContent = typeof row.content === 'string' ? row.content : ''
+    // 用户消息中的文件注入前缀仅用于提示模型，展示时还原为用户原始输入
+    const content = role === 'user' ? stripFileWrapper(rawContent) : rawContent
     const toolCalls = Array.isArray(row.toolCalls)
       ? row.toolCalls.filter((tc) => tc && typeof tc === 'object')
       : []
-    if (!content && toolCalls.length === 0) return
+    if (!rawContent && toolCalls.length === 0) return
     const message = {
       id:
         typeof row.id === 'string' && row.id

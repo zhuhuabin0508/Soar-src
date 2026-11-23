@@ -248,14 +248,13 @@ function WorkflowQuickCreate() {
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
-            <h1 className="text-lg font-semibold">快速创建工作流</h1>
-            <p className="text-xs text-muted-foreground">选模板或一句话描述 → 确认步骤 → 发布（无需先进复杂画布）</p>
+            <h1 className="text-2xl font-semibold tracking-tight">快速创建工作流</h1>
           </div>
         </div>
         <div className="hidden items-center gap-2 sm:flex">
           {STEPS.map((label, i) => (
             <div key={label} className={`flex items-center gap-1.5 text-xs ${i === step ? 'font-medium text-primary' : i < step ? 'text-foreground' : 'text-muted-foreground'}`}>
-              <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${i <= step ? 'bg-primary text-primary-foreground' : 'bg-secondary'}`}>
+              <span className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${i <= step ? 'bg-primary text-primary-foreground' : 'bg-secondary'}`}>
                 {i < step ? <Check className="h-3 w-3" /> : i + 1}
               </span>
               {label}
@@ -268,7 +267,7 @@ function WorkflowQuickCreate() {
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-3xl px-6 py-8">
           {step === 0 && (
-            <div className="space-y-6">
+            <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-3">
                 <button
                   type="button"
@@ -322,7 +321,7 @@ function WorkflowQuickCreate() {
                         {tpl.tags?.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1">
                             {tpl.tags.map((tag) => (
-                              <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{tag}</span>
+                              <span key={tag} className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{tag}</span>
                             ))}
                           </div>
                         )}
@@ -347,7 +346,7 @@ function WorkflowQuickCreate() {
                         key={ex}
                         type="button"
                         onClick={() => setDescription(ex)}
-                        className="rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:border-primary/50 hover:text-foreground"
+                        className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground"
                       >
                         {ex.slice(0, 24)}…
                       </button>
@@ -368,7 +367,7 @@ function WorkflowQuickCreate() {
           )}
 
           {step === 1 && (
-            <div className="space-y-6">
+            <div className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <TextInput label="工作流名称" value={name} onChange={setName} />
                 <TextInput label="分类（可选）" value={category} onChange={setCategory} placeholder="告警处置" />
@@ -428,7 +427,7 @@ function WorkflowQuickCreate() {
           )}
 
           {step === 2 && (
-            <div className="space-y-6">
+            <div className="space-y-4">
               <div className="rounded-xl border border-primary/30 bg-primary/5 p-6 text-center">
                 <FolderKanban className="mx-auto mb-3 h-10 w-10 text-primary" />
                 <h2 className="text-lg font-semibold">{name}</h2>

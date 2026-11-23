@@ -8,7 +8,7 @@ import { authApi } from '../api/auth'
 import { useAuthStore } from '../store/authStore'
 import { toast } from '../store/toastStore'
 import { confirm } from '../components/ConfirmDialog'
-import {CompactSelect, AutoGrowTextarea } from '../components/ui'
+import {CompactSelect, AutoGrowTextarea, PillTabs } from '../components/ui'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 
 // ============ 工具函数 ============
@@ -297,7 +297,7 @@ function ProfileTab({ user, onSaved }) {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <ProfileInput
           label="显示名"
@@ -313,7 +313,7 @@ function ProfileTab({ user, onSaved }) {
           icon={Mail}
           suffix={
             profile.email ? (
-              <span className="flex items-center gap-0.5 text-[10px] text-success">
+              <span className="flex items-center gap-0.5 text-xs text-success">
                 <CheckCircle2 className="h-3 w-3" />
                 已验证
               </span>
@@ -521,7 +521,7 @@ function SecurityTab() {
   const strengthWidths = ['0%', '25%', '50%', '75%', '100%']
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="space-y-4">
         {/* 原密码 */}
         <div>
@@ -533,7 +533,7 @@ function SecurityTab() {
             suffix={
               <a
                 href="/forgot-password"
-                className="whitespace-nowrap text-[10px] text-primary hover:underline"
+                className="whitespace-nowrap text-xs text-primary hover:underline"
               >
                 忘记密码？
               </a>
@@ -559,14 +559,14 @@ function SecurityTab() {
                     style={{ width: strengthWidths[strength.score] }}
                   />
                 </div>
-                <span className="text-[10px] text-muted-foreground">{strength.label}</span>
+                <span className="text-xs text-muted-foreground">{strength.label}</span>
               </div>
               {/* 密码要求清单 */}
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
                 {strength.checks.map((c, i) => (
                   <span
                     key={i}
-                    className={`flex items-center gap-1 text-[10px] ${c.pass ? 'text-success' : 'text-muted-foreground'}`}
+                    className={`flex items-center gap-1 text-xs ${c.pass ? 'text-success' : 'text-muted-foreground'}`}
                   >
                     {c.pass ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
                     {c.label}
@@ -587,12 +587,12 @@ function SecurityTab() {
             placeholder="再次输入新密码"
           />
           {confirmMatch === 'match' && (
-            <div className="mt-1.5 flex items-center gap-1 text-[10px] text-success">
+            <div className="mt-1.5 flex items-center gap-1 text-xs text-success">
               <Check className="h-3 w-3" /> 密码一致
             </div>
           )}
           {confirmMatch === 'mismatch' && (
-            <div className="mt-1.5 flex items-center gap-1 text-[10px] text-destructive">
+            <div className="mt-1.5 flex items-center gap-1 text-xs text-destructive">
               <AlertCircle className="h-3 w-3" /> 两次输入的密码不一致
             </div>
           )}
@@ -622,12 +622,12 @@ function SecurityTab() {
           <Smartphone className="h-4 w-4 text-primary" />
           <h3 className="text-sm font-semibold text-foreground">OTP 二次验证</h3>
           {user?.otp_enabled ? (
-            <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">已启用</span>
+            <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium text-success">已启用</span>
           ) : (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">未启用</span>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">未启用</span>
           )}
         </div>
-        <p className="mb-3 text-[11px] text-muted-foreground">
+        <p className="mb-3 text-xs text-muted-foreground">
           启用后，每次登录密码验证通过后需输入 Authenticator 应用中的 6 位动态码，防止密码泄露导致账号被盗。
         </p>
         {user?.otp_enabled ? (
@@ -662,7 +662,7 @@ function SecurityTab() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="space-y-4 p-5">
+            <div className="space-y-4 p-4">
               {/* 步骤 1：扫码 */}
               <div className="text-center">
                 <p className="mb-3 text-xs text-muted-foreground">
@@ -671,7 +671,7 @@ function SecurityTab() {
                 <div className="inline-block rounded-lg border border-border bg-white p-3">
                   <img src={otpSetup.qr_code} alt="OTP 二维码" className="h-40 w-40" />
                 </div>
-                <p className="mt-2 text-[10px] text-muted-foreground">
+                <p className="mt-2 text-xs text-muted-foreground">
                   无法扫码？手动输入密钥：
                   <code className="ml-1 rounded bg-secondary px-1.5 py-0.5 font-mono text-primary">{otpSetup.secret}</code>
                 </p>
@@ -722,7 +722,7 @@ function SecurityTab() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div className="space-y-3 p-5">
+            <div className="space-y-3 p-4">
               <p className="text-xs text-muted-foreground">
                 解绑后登录将不再需要动态验证码。为安全起见，请输入当前 Authenticator 中的 6 位动态码确认。
               </p>
@@ -830,16 +830,16 @@ function DevicesTab({ sessions, loading, currentSid, onRevoke, onRevokeAll, onRe
                       {browser} · {os}
                     </span>
                     {isCurrent ? (
-                      <span className="inline-flex items-center gap-1 rounded bg-primary/20 px-2 py-0.5 text-[10px] font-medium text-primary">
+                      <span className="inline-flex items-center gap-1 rounded bg-primary/20 px-2 py-0.5 text-xs font-medium text-primary">
                         <CheckCircle2 className="h-3 w-3" /> 当前设备 · 本机
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
                         <BrowserIcon className="h-3 w-3" /> {browser}
                       </span>
                     )}
                   </div>
-                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
+                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <MapPin className="h-3 w-3" /> {s.ip || 'unknown'}
                     </span>
@@ -912,7 +912,7 @@ function AvatarUploadModal({ open, onClose, onUpload, uploading }) {
             选择图片
             <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
           </label>
-          <p className="text-[11px] text-muted-foreground">支持 JPG / PNG / GIF，大小不超过 2MB</p>
+          <p className="text-xs text-muted-foreground">支持 JPG / PNG / GIF，大小不超过 2MB</p>
         </div>
         <div className="mt-6 flex justify-end gap-3">
           <button
@@ -1046,7 +1046,7 @@ function Profile() {
       {/* 页面标题 */}
       <header className="flex shrink-0 items-center justify-between border-b border-border bg-card px-6 py-4">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">个人中心</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">个人中心</h1>
         </div>
       </header>
 
@@ -1066,25 +1066,8 @@ function Profile() {
           <div className="lg:col-span-2">
             <div className="rounded-xl border border-border bg-card p-6">
               {/* Tab 切换 */}
-              <div className="mb-6 flex items-center gap-1 border-b border-border pb-3">
-                {tabs.map((t) => {
-                  const Icon = t.icon
-                  return (
-                    <button
-                      key={t.key}
-                      type="button"
-                      onClick={() => setActiveTab(t.key)}
-                      className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors ${
-                        activeTab === t.key
-                          ? 'bg-primary/10 text-primary'
-                          : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
-                      }`}
-                    >
-                      <Icon className="h-4 w-4" />
-                      {t.label}
-                    </button>
-                  )
-                })}
+              <div className="mb-6">
+                <PillTabs items={tabs} value={activeTab} onChange={setActiveTab} />
               </div>
 
               {/* Tab 内容 */}

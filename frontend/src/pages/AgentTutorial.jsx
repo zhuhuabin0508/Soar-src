@@ -61,7 +61,7 @@ function ConfigCard({ icon, title, name, children }) {
         {renderTutorialIcon(icon, 'h-4 w-4 shrink-0 text-primary')}
         <h4 className="text-sm font-semibold text-foreground">{title}</h4>
         {name && (
-          <code className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-primary">{name}</code>
+          <code className="rounded bg-secondary px-1.5 py-0.5 text-xs text-primary">{name}</code>
         )}
       </div>
       <div className="text-sm leading-relaxed text-muted-foreground">{children}</div>
@@ -174,9 +174,6 @@ function AgentTutorial() {
           <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-gray-950/60 to-transparent" />
           <div className="absolute bottom-0 left-0 right-0 p-6 md:p-10">
             <h1 className="text-2xl font-semibold text-foreground md:text-3xl">智能体使用教程</h1>
-            <p className="mt-1 text-sm text-muted-foreground md:text-base">
-              从零开始配置一个 SOAR 智能体 —— 每个参数、每个开关，图文详解
-            </p>
           </div>
         </div>
 

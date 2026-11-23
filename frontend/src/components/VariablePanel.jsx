@@ -7,6 +7,7 @@ import {
   Variable, Key, Boxes, GitBranch, ArrowRight, Shield, Copy, RefreshCw,
 } from 'lucide-react'
 import { inputCls } from './property/FormControls'
+import { PillTabs } from './ui'
 
 // 内置上下文变量列表（执行时自动注入，不可编辑）
 const BUILTIN_VARS = [
@@ -141,29 +142,11 @@ function CollapsibleSection({ title, icon: Icon, defaultOpen = true, count, chil
         {Icon && <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />}
         <span className="min-w-0 flex-1 truncate">{title}</span>
         {count != null && (
-          <span className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">{count}</span>
+          <span className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{count}</span>
         )}
       </button>
       {open && <div className="border-t border-border p-3">{children}</div>}
     </div>
-  )
-}
-
-// ============ Tab 按钮 ============
-function TabButton({ active, onClick, icon: Icon, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex flex-1 items-center justify-center gap-1.5 border-b-2 px-2 py-2 text-xs font-medium transition ${
-        active
-          ? 'border-primary text-primary'
-          : 'border-transparent text-muted-foreground hover:text-foreground'
-      }`}
-    >
-      {Icon && <Icon className="h-3.5 w-3.5" />}
-      {children}
-    </button>
   )
 }
 
@@ -189,7 +172,7 @@ function GlobalVarsSection() {
   return (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between">
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           工作流级自定义变量，节点参数中用{' '}
           <code className="rounded bg-secondary px-1 text-primary">{'${variables.名称}'}</code>{' '}
           引用
@@ -224,7 +207,7 @@ function GlobalVarsSection() {
                   type="button"
                   onClick={() => copyVar(`variables.${v.name}`)}
                   title="复制引用语法"
-                  className="flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-primary hover:bg-secondary"
+                  className="flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-xs text-primary hover:bg-secondary"
                 >
                   {copied === `variables.${v.name}` ? <><Check className="h-3 w-3" /> 已复制</> : <Copy className="h-3 w-3" />}
                 </button>
@@ -256,7 +239,7 @@ function GlobalVarsSection() {
 
       {/* 内置上下文变量（只读） */}
       <div className="mt-1 rounded-md border border-border bg-card p-2.5">
-        <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           内置上下文变量
         </h4>
         <div className="flex flex-col gap-1.5">
@@ -266,22 +249,22 @@ function GlobalVarsSection() {
               className="flex items-center justify-between rounded border border-border bg-card px-2 py-1"
             >
               <div className="min-w-0">
-                <div className="truncate font-mono text-[11px] text-primary">
+                <div className="truncate font-mono text-xs text-primary">
                   {'${'}{bv.path}{'}'}
                 </div>
-                <div className="truncate text-[10px] text-muted-foreground">{bv.desc}</div>
+                <div className="truncate text-xs text-muted-foreground">{bv.desc}</div>
               </div>
               <button
                 type="button"
                 onClick={() => copyVar(bv.path)}
-                className="flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-secondary hover:text-foreground"
+                className="flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
               >
                 {copied === bv.path ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
               </button>
             </div>
           ))}
         </div>
-        <div className="mt-2 rounded bg-secondary p-1.5 text-[10px] text-muted-foreground">
+        <div className="mt-2 rounded bg-secondary p-1.5 text-xs text-muted-foreground">
           引用上游节点输出：用{' '}
           <code className="rounded bg-background px-1 text-primary">{'${node_id.field}'}</code>
         </div>
@@ -439,7 +422,7 @@ function EnvVarsSection() {
   return (
     <div className="flex flex-col gap-2.5">
       {/* 敏感信息说明 */}
-      <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-[11px] text-warning">
+      <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-xs text-warning">
         <Shield className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
           <div className="font-medium">敏感信息加密存储，运行时自动解密注入</div>
@@ -451,7 +434,7 @@ function EnvVarsSection() {
       </div>
 
       <div className="flex items-center justify-between">
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           共 {envVars.length} 个环境变量
           {dirty && <span className="ml-1 text-warning">· 未保存</span>}
         </p>
@@ -502,7 +485,7 @@ function EnvVarsSection() {
                   type="button"
                   onClick={() => copyVar(v.name)}
                   title="复制引用语法"
-                  className="flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-[11px] text-primary hover:bg-secondary"
+                  className="flex shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-xs text-primary hover:bg-secondary"
                 >
                   {copied === v.name ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
                 </button>
@@ -577,7 +560,7 @@ function LocalVarsSection() {
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="rounded-md bg-secondary p-2.5 text-[11px] text-muted-foreground">
+      <div className="rounded-md bg-secondary p-2.5 text-xs text-muted-foreground">
         局部变量由节点在运行时产生（如变量赋值、代码执行输出、AI 智能体输出），此处只读展示。
         下游节点可用{' '}
         <code className="rounded bg-background px-1 text-primary">{'${node_id.字段}'}</code>{' '}
@@ -598,15 +581,15 @@ function LocalVarsSection() {
           >
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs text-primary">{lv.name}</span>
-              <span className="ml-auto shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <span className="ml-auto shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                 {lv.sourceType}
               </span>
             </div>
-            <div className="mt-1 text-[11px] text-muted-foreground">
+            <div className="mt-1 text-xs text-muted-foreground">
               来源节点：{lv.source}
             </div>
             {lv.desc && (
-              <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{lv.desc}</div>
+              <div className="mt-0.5 truncate text-xs text-muted-foreground">{lv.desc}</div>
             )}
           </div>
         ))
@@ -630,7 +613,7 @@ function VarReferenceGraph() {
 
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         扫描节点参数中的{' '}
         <code className="rounded bg-secondary px-1 text-primary">{'{{var}}'}</code>{' '}
         /{' '}
@@ -638,7 +621,7 @@ function VarReferenceGraph() {
         引用，展示变量与节点的引用关系。
       </p>
       {allNames.length === 0 ? (
-        <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+        <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
           暂无变量引用
         </div>
       ) : (
@@ -655,9 +638,9 @@ function VarReferenceGraph() {
                   <Variable className="h-3 w-3 shrink-0 text-primary" />
                   <span className="font-mono text-xs text-foreground">{name}</span>
                   {isGlobal && (
-                    <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] text-primary">全局</span>
+                    <span className="rounded bg-primary/15 px-1.5 py-0.5 text-xs text-primary">全局</span>
                   )}
-                  <span className="ml-auto text-[10px] text-muted-foreground">
+                  <span className="ml-auto text-xs text-muted-foreground">
                     {refs.length} 个节点引用
                   </span>
                 </div>
@@ -666,14 +649,14 @@ function VarReferenceGraph() {
                     {refs.map((label, i) => (
                       <span
                         key={i}
-                        className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                        className="rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground"
                       >
                         {label}
                       </span>
                     ))}
                   </div>
                 ) : (
-                  <div className="mt-1 text-[10px] text-muted-foreground">未被任何节点引用</div>
+                  <div className="mt-1 text-xs text-muted-foreground">未被任何节点引用</div>
                 )}
               </div>
             )
@@ -746,13 +729,13 @@ function DataFlowView() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           展示每个节点的输入来源与输出去向。
         </p>
         <button
           type="button"
           onClick={() => setShowFlow((s) => !s)}
-          className={`shrink-0 rounded border px-2 py-0.5 text-[10px] transition ${
+          className={`shrink-0 rounded border px-2 py-0.5 text-xs transition ${
             showFlow
               ? 'border-primary bg-primary/10 text-primary'
               : 'border-border text-muted-foreground hover:text-foreground'
@@ -765,11 +748,11 @@ function DataFlowView() {
       {showFlow ? (
         // 数据流连线视图
         flowLines.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+          <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
             暂无数据流连线（节点间未连接或无输入字段）
           </div>
         ) : (
-          <div className="flex flex-col gap-1 font-mono text-[10px]">
+          <div className="flex flex-col gap-1 font-mono text-xs">
             {flowLines.map((l, i) => (
               <div
                 key={i}
@@ -786,7 +769,7 @@ function DataFlowView() {
       ) : (
         // 节点卡片视图
         cards.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+          <div className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
             画布上没有节点
           </div>
         ) : (
@@ -799,22 +782,22 @@ function DataFlowView() {
                 <div className="flex items-center gap-1.5">
                   <Boxes className="h-3 w-3 shrink-0 text-primary" />
                   <span className="truncate text-xs font-medium text-foreground">{c.label}</span>
-                  <span className="ml-auto shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  <span className="ml-auto shrink-0 rounded bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">
                     {NODE_TYPE_LABELS[c.type] || c.type}
                   </span>
                 </div>
                 <div className="mt-1.5 grid grid-cols-2 gap-2">
                   {/* 输入 */}
                   <div className="rounded border border-border bg-secondary p-1.5">
-                    <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold text-muted-foreground">
+                    <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-muted-foreground">
                       <ArrowRight className="h-2.5 w-2.5 rotate-180" /> 输入
                     </div>
                     {c.inputs.length === 0 ? (
-                      <div className="text-[10px] text-muted-foreground">无（起始节点）</div>
+                      <div className="text-xs text-muted-foreground">无（起始节点）</div>
                     ) : (
                       <div className="flex flex-col gap-0.5">
                         {c.inputs.map((inp, i) => (
-                          <div key={i} className="truncate font-mono text-[10px] text-foreground">
+                          <div key={i} className="truncate font-mono text-xs text-foreground">
                             <span className="text-primary">{inp.from}</span>
                             <span className="text-muted-foreground">.{inp.field}</span>
                           </div>
@@ -824,17 +807,17 @@ function DataFlowView() {
                   </div>
                   {/* 输出 */}
                   <div className="rounded border border-border bg-secondary p-1.5">
-                    <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold text-muted-foreground">
+                    <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-muted-foreground">
                       <ArrowRight className="h-2.5 w-2.5" /> 输出
                     </div>
                     {c.outputs.length === 0 ? (
-                      <div className="text-[10px] text-muted-foreground">无</div>
+                      <div className="text-xs text-muted-foreground">无</div>
                     ) : (
                       <div className="flex flex-wrap gap-1">
                         {c.outputs.map((out, i) => (
                           <span
                             key={i}
-                            className="rounded bg-primary/10 px-1 py-0.5 font-mono text-[10px] text-primary"
+                            className="rounded bg-primary/10 px-1 py-0.5 font-mono text-xs text-primary"
                           >
                             {out}
                           </span>
@@ -860,28 +843,16 @@ function VariablePanel() {
   return (
     <div className="flex flex-col gap-3 p-3 text-foreground">
       {/* Tab 切换 */}
-      <div className="flex border-b border-border">
-        <TabButton
-          active={activeTab === 'global'}
-          onClick={() => setActiveTab('global')}
-          icon={Variable}
-        >
-          全局变量
-        </TabButton>
-        <TabButton
-          active={activeTab === 'env'}
-          onClick={() => setActiveTab('env')}
-          icon={Key}
-        >
-          环境变量
-        </TabButton>
-        <TabButton
-          active={activeTab === 'local'}
-          onClick={() => setActiveTab('local')}
-          icon={Boxes}
-        >
-          局部变量
-        </TabButton>
+      <div>
+        <PillTabs
+          items={[
+            { key: 'global', label: '全局变量', icon: Variable },
+            { key: 'env', label: '环境变量', icon: Key },
+            { key: 'local', label: '局部变量', icon: Boxes },
+          ]}
+          value={activeTab}
+          onChange={setActiveTab}
+        />
       </div>
 
       {/* Tab 内容 */}

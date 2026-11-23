@@ -99,7 +99,7 @@ export default function ChatToolbar({
         <div className="flex items-center gap-2">
           <span className="truncate text-base font-semibold text-foreground">{name}</span>
           {/* 引擎药丸标签（低饱和描边小标签） */}
-          <span className="inline-flex shrink-0 items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="inline-flex shrink-0 items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
             Hermes
           </span>
           {/* 模型覆盖指示点 */}
@@ -111,7 +111,7 @@ export default function ChatToolbar({
           )}
           {/* 流式状态 */}
           {streaming && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+            <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
               生成中
             </span>

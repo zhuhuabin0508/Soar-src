@@ -4,7 +4,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelect } from '../../components/ui'
+import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelect, Pagination, SearchInput } from '../../components/ui'
 import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
@@ -356,7 +356,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
     const base = [
       {
         key: 'wlist', header: '白名单条目', width: '170px',
-        render: (r) => <span className="font-mono text-[13px] font-medium">{r.wlist}</span>,
+        render: (r) => <span className="font-mono text-xs font-medium">{r.wlist}</span>,
       },
       {
         key: 'age', header: '有效期', width: '110px', numeric: true,
@@ -369,7 +369,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
       {
         key: 'effectTime', header: '生效时间', width: '160px',
         render: (r) => (
-          <span className="font-mono text-[13px] text-muted-foreground">
+          <span className="font-mono text-xs text-muted-foreground">
             {r.effectTime ? String(r.effectTime).replace('T', ' ').slice(0, 19) : '--'}
           </span>
         ),
@@ -404,7 +404,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
       },
       {
         key: 'node_id', header: '节点 ID', width: '110px',
-        render: (r) => <span className="block truncate font-mono text-[13px] text-muted-foreground">{r.node_id || '--'}</span>,
+        render: (r) => <span className="block truncate font-mono text-xs text-muted-foreground">{r.node_id || '--'}</span>,
       },
     ]
     if (!canEdit) return base
@@ -491,25 +491,13 @@ export default function AnbotongWhitelist({ embedded = false }) {
 
       {/* 筛选栏：关键词（条目/备注/策略组）+ 启用状态 */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <div className="relative w-72 max-w-full">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            className={`${inputBaseCls} w-full pl-8 pr-8`}
-            placeholder="搜索白名单条目 / 备注 / 策略组"
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-          />
-          {keyword && (
-            <button
-              type="button"
-              aria-label="清空搜索"
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
-              onClick={() => setKeyword('')}
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+        <SearchInput
+          className="w-72"
+          placeholder="搜索白名单条目 / 备注 / 策略组"
+          value={keyword}
+          onChange={setKeyword}
+          onClear={() => setKeyword('')}
+        />
         <CompactSelect size="sm" className="shrink-0" value={enableFilter} onChange={(e) => changeEnableFilter(e.target.value)}>
           <option value="">全部状态</option>
           <option value="1">仅启用</option>
@@ -535,7 +523,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
       </div>
 
       {error && (
-        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-600">
+        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
           白名单列表加载失败：{error}（将自动重试）
         </div>
       )}
@@ -562,25 +550,17 @@ export default function AnbotongWhitelist({ embedded = false }) {
         />
       </div>
 
-      {/* 分页栏：左侧总页数/总条数，右侧每页条数与翻页（与黑名单页一致） */}
-      <div ref={paginationRef} className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-          第 {page} / {Math.max(1, Math.ceil(data.total / pageSize))} 页 · 共 {data.total} 条
-        </span>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="text-xs text-muted-foreground">每页</span>
-            <CompactSelect size="sm" className="shrink-0" value={String(pageSize)} onChange={(e) => changePageSize(e.target.value)}>
-              {PAGE_SIZE_OPTIONS.map((n) => <option key={n} value={String(n)}>{n} 条</option>)}
-            </CompactSelect>
-          </div>
-          <Button size="sm" variant="ghost" className="shrink-0" disabled={page <= 1 || loading} onClick={() => gotoPage(page - 1)}>
-            上一页
-          </Button>
-          <Button size="sm" variant="ghost" className="shrink-0" disabled={page * pageSize >= data.total || loading} onClick={() => gotoPage(page + 1)}>
-            下一页
-          </Button>
-        </div>
+      {/* 分页栏：与全站统一分页组件一致 */}
+      <div ref={paginationRef} className="mt-3">
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={data.total}
+          onPageChange={gotoPage}
+          onPageSizeChange={changePageSize}
+          pageSizeOptions={PAGE_SIZE_OPTIONS}
+          showJumper={false}
+        />
       </div>
 
       {/* 新增弹窗 */}
@@ -591,7 +571,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
         maxWidth="max-w-2xl"
         footer={(
           <div className="flex w-full flex-wrap items-center justify-between gap-2">
-            <span className="text-[11px] text-muted-foreground">提交后实时下发至安博通阻断器并记录操作日志</span>
+            <span className="text-xs text-muted-foreground">提交后实时下发至安博通阻断器并记录操作日志</span>
             <div className="flex shrink-0 items-center gap-2">
               <Button size="sm" variant="ghost" onClick={closeAdd} disabled={addSubmitting}>取消</Button>
               <Button size="sm" loading={addSubmitting} onClick={submitAdd}>
@@ -603,14 +583,14 @@ export default function AnbotongWhitelist({ embedded = false }) {
           </div>
         )}
       >
-        <div className="space-y-5">
+        <div className="space-y-4">
           {/* 条目输入 */}
           <section className="space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label htmlFor="wl-add-text" className="text-[13px] font-medium text-foreground">
+              <label htmlFor="wl-add-text" className="text-xs font-medium text-foreground">
                 白名单条目 <span className="text-destructive">*</span>
               </label>
-              <div className="flex items-center gap-2 text-[11px] tabular-nums">
+              <div className="flex items-center gap-2 text-xs tabular-nums">
                 <span className={parsedAdd.targets.length > 100 ? 'text-destructive' : 'text-muted-foreground'}>
                   {parsedAdd.targets.length} / 100 条
                 </span>
@@ -621,7 +601,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
             </div>
             <textarea
               id="wl-add-text"
-              className={`${inputBaseCls} min-h-[132px] w-full resize-y font-mono text-[13px] leading-relaxed ${parsedAdd.invalid.length ? '!border-destructive' : ''}`}
+              className={`${inputBaseCls} min-h-[132px] w-full resize-y font-mono text-xs leading-relaxed ${parsedAdd.invalid.length ? '!border-destructive' : ''}`}
               placeholder={'每行一条，或用逗号/空格分隔，例如：\n192.0.2.10\n2001:db8::10\ntrusted.example.com'}
               value={addForm.text}
               onChange={(e) => setAddForm((f) => ({ ...f, text: e.target.value }))}
@@ -631,7 +611,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
               仅支持单个 IPv4/IPv6 或 ASCII 域名；不支持 CIDR、地址段、通配与 MAC。重复条目自动去重。
             </p>
             {parsedAdd.invalid.length > 0 ? (
-              <div className="flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-[11px] leading-relaxed text-destructive">
+              <div className="flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs leading-relaxed text-destructive">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0 break-all">
                   无法识别：{parsedAdd.invalid.slice(0, 8).join('、')}
@@ -645,7 +625,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
 
           {/* 下发参数：移动端纵向堆叠，≥640px 三列对齐 */}
           <section className="rounded-lg border border-border bg-muted/40 p-3 sm:p-4">
-            <div className="mb-3 text-[13px] font-medium text-foreground">下发参数</div>
+            <div className="mb-3 text-xs font-medium text-foreground">下发参数</div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
               <div className="min-w-0">
                 <label className="mb-1 block text-xs font-medium text-foreground">
@@ -672,7 +652,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
                     disabled={addSubmitting}
                   />
                 )}
-                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">永久 -1；自定义 1~2592000 秒</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">永久 -1；自定义 1~2592000 秒</p>
               </div>
               <div className="min-w-0">
                 <label className="mb-1 block text-xs font-medium text-foreground">启用状态</label>
@@ -685,14 +665,14 @@ export default function AnbotongWhitelist({ embedded = false }) {
                   <option value="1">启用</option>
                   <option value="0">停用</option>
                 </CompactSelect>
-                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">停用条目不参与封禁匹配</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">停用条目不参与封禁匹配</p>
               </div>
               <div className="min-w-0">
                 <div className="mb-1 flex items-center justify-between gap-2">
                   <label htmlFor="wl-add-reason" className="text-xs font-medium text-foreground">
                     添加方式/备注 <span className="text-destructive">*</span>
                   </label>
-                  <span className={`shrink-0 text-[11px] tabular-nums ${addReasonBytes > REASON_MAX_BYTES ? 'text-destructive' : 'text-muted-foreground'}`}>
+                  <span className={`shrink-0 text-xs tabular-nums ${addReasonBytes > REASON_MAX_BYTES ? 'text-destructive' : 'text-muted-foreground'}`}>
                     {addReasonBytes}/{REASON_MAX_BYTES}
                   </span>
                 </div>
@@ -706,19 +686,19 @@ export default function AnbotongWhitelist({ embedded = false }) {
                   }))}
                   disabled={addSubmitting}
                 />
-                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">写入设备 reason 字段，不含英文引号/反斜杠</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">写入设备 reason 字段，不含英文引号/反斜杠</p>
               </div>
             </div>
           </section>
 
           {addError && (
-            <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] leading-relaxed text-destructive">
+            <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0 break-all">{addError}</span>
             </div>
           )}
           {addResults && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[13px] text-amber-700">
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
               <div className="font-medium">部分条目下发失败（成功 {addResults.created} 条）：</div>
               <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto font-mono text-xs">
                 {addResults.failed.map((r) => (
@@ -736,10 +716,9 @@ export default function AnbotongWhitelist({ embedded = false }) {
   return (
     <PageContainer>
       <PageHeader
-        title="安博通白名单"
-        description="安博通阻断器全局白名单：每 5 秒自动同步设备数据，支持手动新增与批量删除，保障封禁预检准确"
+        title="安博通白名单"
         actions={(
-          <Button size="sm" variant="ghost" loading={loading} onClick={() => load()}>
+          <Button size="sm" variant="secondary" loading={loading} onClick={() => load()}>
             <RotateCw className="h-3.5 w-3.5" /> 刷新
           </Button>
         )}

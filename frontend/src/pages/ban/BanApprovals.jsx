@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 import { toast } from '../../store/toastStore'
 import { confirm } from '../../components/ConfirmDialog'
-import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, AutoGrowTextarea } from '../../components/ui'
+import {Button, PageContainer, PageHeader, Card, DataTable, Badge, Pagination, AutoGrowTextarea, PillTabs } from '../../components/ui'
 import { Modal } from '../../components/Dialog'
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
@@ -74,7 +74,7 @@ function DetailSection({ title, data }) {
   return (
     <div>
       <div className="mb-1.5 text-xs font-medium text-muted-foreground">{title}</div>
-      <pre className="max-h-56 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-[11px] leading-relaxed text-foreground">
+      <pre className="max-h-56 overflow-auto rounded-lg border border-border bg-muted p-3 font-mono text-xs leading-relaxed text-foreground">
         {typeof data === 'string' ? data : JSON.stringify(data, null, 2)}
       </pre>
     </div>
@@ -212,7 +212,7 @@ export default function BanApprovals({ embedded = false }) {
         </Badge>
       ),
     },
-    { key: 'ip', header: 'IP', width: '130px', render: (r) => <span className="font-mono text-[13px] font-medium">{r.ip || '--'}</span> },
+    { key: 'ip', header: 'IP', width: '130px', render: (r) => <span className="font-mono text-xs font-medium">{r.ip || '--'}</span> },
     { key: 'risk_level', header: '风险等级', width: '85px', render: (r) => <Badge variant={riskVariant(r.risk_level)}>{r.risk_level || '未知'}</Badge> },
     {
       key: 'alert_name', header: '告警名称', width: '180px',
@@ -227,7 +227,7 @@ export default function BanApprovals({ embedded = false }) {
       render: (r) => (
         <span className="flex items-center gap-1.5">
           <Badge variant={r.action === 'ban' ? 'danger' : 'info'}>{ACTION_LABELS[r.action] || r.action || '--'}</Badge>
-          {r.need_confirm && <span className="text-[11px] text-muted-foreground">需确认</span>}
+          {r.need_confirm && <span className="text-xs text-muted-foreground">需确认</span>}
         </span>
       ),
     },
@@ -235,12 +235,12 @@ export default function BanApprovals({ embedded = false }) {
       key: 'ban_duration', header: '封禁时长', width: '90px',
       render: (r) => <span className="text-muted-foreground">{r.source === 'ban' ? (r.is_permanent ? '永久' : fmtDuration(r.ban_duration)) : '--'}</span>,
     },
-    { key: 'created_at', header: '创建时间', width: '145px', render: (r) => <span className="font-mono text-[13px] text-muted-foreground">{fmtTime(r.created_at)}</span> },
+    { key: 'created_at', header: '创建时间', width: '145px', render: (r) => <span className="font-mono text-xs text-muted-foreground">{fmtTime(r.created_at)}</span> },
     {
       key: 'remaining', header: '剩余审批时间', width: '100px',
       render: (r) => (
         r.status === 'pending' && r.source === 'ban'
-          ? <span className={`font-mono text-[13px] ${r.remaining_ms != null && r.remaining_ms < 2 * 3600000 ? 'text-destructive' : 'text-muted-foreground'}`}>{fmtRemaining(r.remaining_ms)}</span>
+          ? <span className={`font-mono text-xs ${r.remaining_ms != null && r.remaining_ms < 2 * 3600000 ? 'text-destructive' : 'text-muted-foreground'}`}>{fmtRemaining(r.remaining_ms)}</span>
           : <span className="text-muted-foreground">--</span>
       ),
     },
@@ -280,22 +280,17 @@ export default function BanApprovals({ embedded = false }) {
       {/* Tab + 搜索 */}
       <Card className="mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1 rounded-lg border border-border bg-muted p-1">
-            {TABS.map((tb) => (
-              <button
-                key={tb.key}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${tab === tb.key ? 'bg-primary text-white' : 'text-muted-foreground hover:text-foreground'}`}
-                onClick={() => { setTab(tb.key); setPage(1) }}
-              >
-                {tb.label}
-                {tb.key === 'pending' && list.items.filter((x) => x.status === 'pending').length > 0 && tab !== 'pending' && (
-                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">
-                    {list.items.filter((x) => x.status === 'pending').length}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+          <PillTabs
+            items={TABS.map((tb) => {
+              const pendingCount = list.items.filter((x) => x.status === 'pending').length
+              return {
+                ...tb,
+                count: tb.key === 'pending' && tab !== 'pending' && pendingCount > 0 ? pendingCount : undefined,
+              }
+            })}
+            value={tab}
+            onChange={(k) => { setTab(k); setPage(1) }}
+          />
           <input
             className={`${inputBaseCls} h-[34px] w-[220px]`}
             placeholder="IP / 告警名称"
@@ -304,7 +299,7 @@ export default function BanApprovals({ embedded = false }) {
             onKeyDown={(e) => { if (e.key === 'Enter') load() }}
           />
           {embedded && (
-            <Button size="sm" variant="ghost" onClick={load}>
+            <Button size="sm" variant="secondary" onClick={load}>
               <RotateCw className="h-3.5 w-3.5" /> 刷新
             </Button>
           )}
@@ -446,8 +441,7 @@ export default function BanApprovals({ embedded = false }) {
   return (
     <PageContainer>
       <PageHeader
-        title="审批中心"
-        description="封禁审批与工作流人工审批统一入口：同意后执行封禁或继续工作流，驳回转持续监控，超过 24 小时未处理默认驳回"
+        title="审批中心"
         actions={(
           <Button size="sm" variant="ghost" onClick={load}>
             <RotateCw className="h-3.5 w-3.5" /> 刷新

@@ -26,6 +26,7 @@ import { Drawer } from './Dialog'
 import { Button } from './ui'
 import { inputCls, hintCls } from './property/FormControls'
 import { guardNavPermission, hasPermission } from '../utils/permissions'
+import { AGENT_REASON_MODULES, parseAgentReasonModules } from '../utils/ticketAgentReasons'
 import ticketApi from '../api/tickets'
 import banWorkflowApi from '../api/banWorkflow'
 import { ipLibraryApi } from '../api/ipLibrary'
@@ -109,7 +110,7 @@ function CopyIpButton({ ip, className = '' }) {
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
       {copied && (
-        <span className="pointer-events-none absolute -top-6 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-[10px] font-medium text-background shadow-sm">
+        <span className="pointer-events-none absolute -top-6 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-1.5 py-0.5 text-xs font-medium text-background shadow-sm">
           已复制
         </span>
       )}
@@ -132,10 +133,51 @@ function EnrichRow({ label, children }) {
   )
 }
 
-function fmtAgentReasonText(reasons) {
-  if (Array.isArray(reasons)) return reasons.length ? null : '--'
-  if (reasons == null || reasons === '') return '--'
-  return String(reasons)
+/**
+ * 智能体研判详情：结论（风险等级/处置动作）+ 五模块固定字段。
+ *
+ * 五模块字段名与顺序严格取自 ``AGENT_REASON_MODULES``，
+ * 正文按前缀精准映射后原样展示（``whitespace-pre-wrap`` 保留换行与标点），
+ * 缺失模块显示「未提供」，不做任何截断或改写。
+ */
+function AgentDecisionDetail({ agent, na }) {
+  const { modules, matched } = parseAgentReasonModules(agent.reasons)
+  const rawText = Array.isArray(agent.reasons)
+    ? agent.reasons.map((r) => (r == null ? '' : String(r))).join('\n')
+    : (agent.reasons == null ? '' : String(agent.reasons))
+  return (
+    <div className="space-y-2.5 text-xs leading-relaxed">
+      <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+        <EnrichRow label="风险等级：">
+          <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${AGENT_RISK_CLS[agent.risk_level] || 'bg-muted text-muted-foreground'}`}>
+            {agent.risk_level || '未知'}
+          </span>
+        </EnrichRow>
+        <EnrichRow label="处置动作：">
+          <span>
+            {AGENT_ACTION_LABELS[agent.action] || agent.action || na}
+            {agent.monitoring_advice ? `（${agent.monitoring_advice}）` : ''}
+          </span>
+        </EnrichRow>
+      </div>
+      <div className="space-y-2 border-t border-border/70 pt-2.5">
+        {AGENT_REASON_MODULES.map((name) => (
+          <div key={name} className="min-w-0">
+            <div className="mb-0.5 text-xs font-semibold text-foreground">【{name}】</div>
+            <div className="whitespace-pre-wrap break-words text-muted-foreground">
+              {modules[name] || <span className="italic opacity-60">未提供</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      {!matched && rawText.trim() && (
+        <div className="rounded border border-border/70 bg-background/60 p-2">
+          <div className="mb-0.5 text-xs font-semibold text-foreground">原始研判依据（历史数据未按五模块结构化）</div>
+          <div className="whitespace-pre-wrap break-words text-muted-foreground">{rawText}</div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function fmtAssetVal(v) {
@@ -169,7 +211,7 @@ function AssetMatchFields({ asset, fallbackIp }) {
   }
   const tags = f?.tags || []
   return (
-    <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs leading-relaxed sm:grid-cols-2">
       {rows.map(([label, text]) => (
         <div key={label} className="flex min-w-0 items-start gap-2">
           <span className="shrink-0 text-muted-foreground">{label}：</span>
@@ -190,8 +232,37 @@ function AssetMatchFields({ asset, fallbackIp }) {
   )
 }
 
+// 资产发现可能命中的 IP 类字段 → 展示名。资产匹配按所有 IP 列精确匹配，
+// 命中列未必是展示的「IP 地址」（如青藤主机的 VIP 绑定在 internal_ip），
+// 此处归因命中字段，避免看起来匹配到 IP 不一致的资产。
+const DISCOVERY_IP_FIELD_LABELS = [
+  ['display_ip', '展示 IP'], ['connection_ip', '连接 IP'], ['external_ip', '外部 IP'],
+  ['internal_ip', '内部 IP'], ['proxy_ip', '代理 IP'], ['ip_address', 'IP 地址'],
+  ['floatip_address', '浮动 IP'], ['IP', 'IP'], ['ip', 'IP'], ['弹性IP', '弹性 IP'],
+]
+
+function discoveryIpHitText(asset, targetIp) {
+  const target = String(targetIp || '').trim()
+  if (!target) return null
+  const labels = []
+  const seen = new Set()
+  for (const [key, label] of DISCOVERY_IP_FIELD_LABELS) {
+    const value = String(asset?.[key] ?? '').trim()
+    if (value !== target || seen.has(value)) continue
+    seen.add(value)
+    if (!labels.includes(label)) labels.push(label)
+  }
+  // 内部 IP 始终展示（集群/VIP 场景下它是命中原因）；再标注命中的字段列
+  const internalIp = String(asset?.internal_ip ?? '').trim()
+  if (internalIp) {
+    return labels.length ? `${internalIp}（命中：${labels.join('、')}）` : internalIp
+  }
+  return labels.length ? `命中：${labels.join('、')}` : null
+}
+
 const DISCOVERY_FIELD_LABELS = [
   ['资源类型', 'resource_label'], ['实例名称', 'instance_name'], ['IP 地址', 'ip_address'],
+  ['内部 IP/命中字段', '__ip_hit__'],
   ['浮动 IP', 'floatip_address'], ['网段', 'cidr'], ['所属部门', 'user_department'],
   ['申请部门', 'applicant_department'], ['操作系统', 'operating_system'],
   ['主机状态', 'host_status'], ['资源区域', 'biz_region_name'], ['带宽(M)', 'bandwidth'],
@@ -212,7 +283,7 @@ const SOURCE_TONES = {
 function SourceLabel({ tone = 'inventory', sm = false, children }) {
   const c = SOURCE_TONES[tone] || SOURCE_TONES.inventory
   return (
-    <span className={`inline-flex max-w-full items-center gap-1.5 rounded border font-semibold ${sm ? 'px-1.5 py-0.5 text-[11px]' : 'px-2 py-1 text-xs'} ${c.box}`}>
+    <span className={`inline-flex max-w-full items-center gap-1.5 rounded border font-semibold ${sm ? 'px-1.5 py-0.5 text-xs' : 'px-2 py-1 text-xs'} ${c.box}`}>
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${c.dot}`} />
       <span className="min-w-0 break-words">{children}</span>
     </span>
@@ -230,12 +301,14 @@ function DiscoveryMatchFields({ asset, fallbackIp }) {
           {multi ? (
             <div className="mb-1.5 flex flex-wrap items-center gap-2">
               <SourceLabel tone="discovery" sm>{m.source_label || m.resource_label || '资产发现'}</SourceLabel>
-              <span className="text-[11px] text-muted-foreground">#{idx + 1}</span>
+              <span className="text-xs text-muted-foreground">#{idx + 1}</span>
             </div>
           ) : null}
-          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs leading-relaxed sm:grid-cols-2">
             {DISCOVERY_FIELD_LABELS.map(([label, key]) => {
-              const raw = m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null)
+              const raw = key === '__ip_hit__'
+                ? discoveryIpHitText(m, asset.asset_ip || fallbackIp)
+                : (m[key] ?? (key === 'ip_address' ? (asset.asset_ip || fallbackIp) : null))
               const text = fmtAssetVal(raw)
               return (
                 <div key={key} className="flex min-w-0 items-start gap-2">
@@ -339,7 +412,7 @@ function TI360Body({ ti360, fmtTime, na }) {
             </span>
           </div>
           {geoKnown && (
-            <div className="mt-1.5 grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+            <div className="mt-1.5 grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs leading-relaxed sm:grid-cols-2">
               <EnrichRow label="国家/地区：">{geo.country || na}</EnrichRow>
               <EnrichRow label="省份：">{geo.province || na}</EnrichRow>
               <EnrichRow label="城市：">{geo.city || na}</EnrichRow>
@@ -351,7 +424,7 @@ function TI360Body({ ti360, fmtTime, na }) {
         </div>
       )}
       {!results.length ? (
-        <div className="text-[13px] text-muted-foreground">360 情报库未命中该实体</div>
+        <div className="text-xs text-muted-foreground">360 情报库未命中该实体</div>
       ) : (
         results.map((r, i) => (
         <div key={`${r.ioc}-${i}`} className="min-w-0 space-y-2 rounded-md border border-border bg-background/50 p-2.5">
@@ -370,7 +443,7 @@ function TI360Body({ ti360, fmtTime, na }) {
             </span>
           </div>
           {/* 基础属性 */}
-          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs leading-relaxed sm:grid-cols-2">
             <EnrichRow label="置信度：">{r.confidence != null ? `${r.confidence}%` : na}</EnrichRow>
             <EnrichRow label="病毒名称：">{r.malware || na}</EnrichRow>
             <EnrichRow label="威胁用途：">{r.function?.length ? r.function.join('、') : na}</EnrichRow>
@@ -381,7 +454,7 @@ function TI360Body({ ti360, fmtTime, na }) {
           </div>
           {/* 威胁标签 */}
           {r.tags?.length ? (
-            <div className="flex min-w-0 items-start gap-2 text-[13px]">
+            <div className="flex min-w-0 items-start gap-2 text-xs">
               <span className="shrink-0 text-muted-foreground">威胁标签：</span>
               <div className="min-w-0 flex-1"><TI360TagList tags={r.tags} /></div>
             </div>
@@ -463,7 +536,7 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
             ) : null}
           </div>
         ) : (
-          <div className="text-[13px] text-muted-foreground">
+          <div className="text-xs text-muted-foreground">
             {isDomain ? '域名实体不参与资产匹配（资产库以 IP 为匹配口径）' : '资产发现与资产清单中均未找到与该 IP 匹配的资产'}
           </div>
         )}
@@ -482,7 +555,7 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
           </div>
           {t ? (
             <>
-              <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-[13px] leading-relaxed sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs leading-relaxed sm:grid-cols-2">
                 <EnrichRow label="研判结论：">
                   {t.is_malicious ? <span className="font-medium text-red-500">恶意</span> : <span className="font-medium text-emerald-500">非恶意</span>}
                 </EnrichRow>
@@ -510,7 +583,7 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
                 <EnrichRow label="设备特征：">{deviceText || na}</EnrichRow>
                 <EnrichRow label="归属组织：">{orgText || na}</EnrichRow>
               </div>
-              <div className="mt-2 flex min-w-0 items-start gap-2 text-[13px]">
+              <div className="mt-2 flex min-w-0 items-start gap-2 text-xs">
                 <span className="shrink-0 text-muted-foreground">情报描述：</span>
                 {t.description
                   ? <span className="min-w-0 break-words rounded-md bg-muted px-3 py-1.5 leading-relaxed text-foreground">{t.description}</span>
@@ -518,11 +591,11 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
               </div>
             </>
           ) : entry.threat === null ? (
-            <div className="text-[13px] text-muted-foreground">威胁情报查询失败，可"重新研判"重试</div>
+            <div className="text-xs text-muted-foreground">威胁情报查询失败，可"重新研判"重试</div>
           ) : isDomain ? (
-            <div className="text-[13px] text-muted-foreground">知道创宇情报仅支持 IP 实体，域名研判请查看 360 威胁情报</div>
+            <div className="text-xs text-muted-foreground">知道创宇情报仅支持 IP 实体，域名研判请查看 360 威胁情报</div>
           ) : (
-            <div className="text-[13px] text-muted-foreground">未开启威胁情报查询</div>
+            <div className="text-xs text-muted-foreground">未开启威胁情报查询</div>
           )}
         </div>
         {/* 360 威胁情报子卡（intel 开启且 360 工具可用时渲染） */}
@@ -537,9 +610,9 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
             {ti360 ? (
               <TI360Body ti360={ti360} fmtTime={fmtTime} na={na} />
             ) : entry.ti_360 === null ? (
-              <div className="text-[13px] text-muted-foreground">360威胁情报查询失败，可"重新研判"重试</div>
+              <div className="text-xs text-muted-foreground">360威胁情报查询失败，可"重新研判"重试</div>
             ) : (
-              <div className="text-[13px] text-muted-foreground">未开启威胁情报查询</div>
+              <div className="text-xs text-muted-foreground">未开启威胁情报查询</div>
             )}
           </div>
         )}
@@ -550,17 +623,17 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
         <div className={`min-w-0 rounded-md border border-border bg-secondary p-3 ${stacked ? '' : 'xl:col-span-2'}`}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-foreground">
             <Bot className="h-3.5 w-3.5 text-primary" />智能体研判
-            <span className="font-normal text-muted-foreground">IP风险智能研判与封禁决策</span>
+            <span className="font-normal text-muted-foreground">工单安全分析研判智能体</span>
             {onFill && entry.agent && !entry.agent.pending && (
               <button type="button" onClick={() => onFill({ ...entry, label: roleText })}
-                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-[11px] font-normal text-primary transition hover:bg-primary/10"
+                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded border border-primary/40 px-1.5 py-0.5 text-xs font-normal text-primary transition hover:bg-primary/10"
                 title="将智能体研判结果一键填入处理意见，可编辑后提交">
                 <Sparkles className="h-3 w-3" />填入处置意见
               </button>
             )}
           </div>
           {entry.agent?.pending ? (
-            <div className="flex items-center gap-2.5 text-[13px] text-muted-foreground">
+            <div className="flex items-center gap-2.5 text-xs text-muted-foreground">
               <span className="flex items-end gap-1">
                 <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:0ms]" />
                 <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:150ms]" />
@@ -569,32 +642,9 @@ function EnrichEntryDetail({ entry, roleText, onFill, liteHint, stacked = false 
               智能体正在思考中，研判结果将自动更新…
             </div>
           ) : entry.agent ? (
-            <div className="grid grid-cols-1 gap-x-6 gap-y-2 text-[13px] leading-relaxed xl:grid-cols-2">
-              <div className="grid content-start gap-y-1.5">
-                <EnrichRow label="风险等级：">
-                  <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${AGENT_RISK_CLS[entry.agent.risk_level] || 'bg-muted text-muted-foreground'}`}>
-                    {entry.agent.risk_level || '未知'}
-                  </span>
-                </EnrichRow>
-                <EnrichRow label="处置建议：">
-                  <span>
-                    {AGENT_ACTION_LABELS[entry.agent.action] || entry.agent.action || na}
-                    {entry.agent.monitoring_advice ? `（${entry.agent.monitoring_advice}）` : ''}
-                  </span>
-                </EnrichRow>
-              </div>
-              <EnrichRow label="决策依据：">
-                {Array.isArray(entry.agent.reasons) && entry.agent.reasons.length ? (
-                  <ul className="list-disc space-y-1 pl-5">
-                    {entry.agent.reasons.map((r, i) => <li key={i} className="break-words">{String(r)}</li>)}
-                  </ul>
-                ) : (
-                  <span className="text-muted-foreground">{fmtAgentReasonText(entry.agent.reasons)}</span>
-                )}
-              </EnrichRow>
-            </div>
+            <AgentDecisionDetail agent={entry.agent} na={na} />
           ) : (
-            <div className="text-[13px] text-muted-foreground">智能体研判失败</div>
+            <div className="text-xs text-muted-foreground">智能体研判失败</div>
           )}
         </div>
       )}
@@ -783,14 +833,14 @@ const INTEL_STATUS_CLS = {
 
 function IntelIpRow({ ip, badge, tone = 'muted', note, noteClass = 'text-muted-foreground' }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5 text-[13px] last:border-b-0">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5 text-xs last:border-b-0">
       <span className="min-w-0 break-all font-mono font-medium text-foreground">{ip}</span>
       {badge ? (
-        <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${INTEL_STATUS_CLS[tone] || INTEL_STATUS_CLS.muted}`}>
+        <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${INTEL_STATUS_CLS[tone] || INTEL_STATUS_CLS.muted}`}>
           {badge}
         </span>
       ) : null}
-      {note ? <span className={`min-w-0 break-all text-[11px] ${noteClass}`}>{note}</span> : null}
+      {note ? <span className={`min-w-0 break-all text-xs ${noteClass}`}>{note}</span> : null}
     </div>
   )
 }
@@ -1162,43 +1212,43 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
     return (
       <>
         {e.pending || e.requery_pending ? (
-          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-medium text-sky-600">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-600">
             <Loader2 className="h-3 w-3 animate-spin" />研判中
           </span>
         ) : (
           <>
             {e.threat?.is_malicious && (
-              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">恶意</span>
+              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">恶意</span>
             )}
             {!e.threat?.is_malicious && isHighSeverity(e.threat?.severity) && (
-              <span className="whitespace-nowrap rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-600">高危</span>
+              <span className="whitespace-nowrap rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-600">高危</span>
             )}
             {e.threat === null && e.ti_360 === undefined && (
-              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">情报失败</span>
+              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">情报失败</span>
             )}
             {e.ti_360 === null && (
-              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">360失败</span>
+              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">360失败</span>
             )}
             {ti360MaxLevelOf(e) >= 60 && (
-              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">
+              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">
                 360{ti360LabelOf(e)}
               </span>
             )}
             {ban?.banned && (
-              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">封禁中</span>
+              <span className="whitespace-nowrap rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
             )}
             {wlMap.get(e.ip)?.matched && (
-              <span className="whitespace-nowrap rounded bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600">白名单</span>
+              <span className="whitespace-nowrap rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs font-medium text-emerald-600">白名单</span>
             )}
             {e.asset?.matched ? (
-              <span className={`inline-flex min-w-0 items-center gap-1 truncate rounded px-1.5 py-0.5 text-[11px] font-medium ${isHighCriticality(e) ? 'bg-amber-500/10 text-amber-600' : 'bg-primary/10 text-primary'}`}>
+              <span className={`inline-flex min-w-0 items-center gap-1 truncate rounded px-1.5 py-0.5 text-xs font-medium ${isHighCriticality(e) ? 'bg-amber-500/10 text-amber-600' : 'bg-primary/10 text-primary'}`}>
                 {e.asset.asset_name || '资产'}{e.asset.source_label ? `·${e.asset.source_label}` : ''}
               </span>
             ) : e.asset && !e.asset.error ? (
-              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">未匹配</span>
+              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">未匹配</span>
             ) : null}
             {e.asset?.error && (
-              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">资产失败</span>
+              <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">资产失败</span>
             )}
           </>
         )}
@@ -1224,7 +1274,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
         <span className="w-4 shrink-0 text-muted-foreground" title={roleText}>
           {(e.roles || []).includes('src_ip') && e.roles.length === 1 ? '源' : (e.roles || []).includes('dst_ip') && e.roles.length === 1 ? '目' : (e.roles || []).includes('domain_url') && e.roles.length === 1 ? '域' : '双'}
         </span>
-        <span className="min-w-0 shrink-0 font-mono text-[13px] font-medium text-foreground">{e.ip}</span>
+        <span className="min-w-0 shrink-0 font-mono text-xs font-medium text-foreground">{e.ip}</span>
         <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden">{ipBadges(e)}</span>
         <CopyIpButton ip={e.ip} />
       </div>
@@ -1441,7 +1491,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                             {collapsedGroups.has(item.role) ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                             {item.label}（{item.count}）
                             {!filters.size && !!item.dropped && (
-                              <span className="text-[11px] font-normal text-muted-foreground" title={`另有 ${item.dropped} 个双角色 IP 已在源IP分组展示`}>· 另有 {item.dropped} 个双角色 IP 已在源分组</span>
+                              <span className="text-xs font-normal text-muted-foreground" title={`另有 ${item.dropped} 个双角色 IP 已在源IP分组展示`}>· 另有 {item.dropped} 个双角色 IP 已在源分组</span>
                             )}
                           </button>
                           <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" title="组内全选"
@@ -1464,7 +1514,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                     <span className="inline-flex items-center gap-1.5">
                       <Database className="h-3.5 w-3.5 text-primary" />{g.label}（{g.ips.length}）
                       {!filters.size && !!g.dropped && (
-                        <span className="text-[11px] font-normal text-muted-foreground" title={`另有 ${g.dropped} 个双角色 IP 已在源IP分组展示`}>· 另有 {g.dropped} 个双角色 IP 已在源分组</span>
+                        <span className="text-xs font-normal text-muted-foreground" title={`另有 ${g.dropped} 个双角色 IP 已在源IP分组展示`}>· 另有 {g.dropped} 个双角色 IP 已在源分组</span>
                       )}
                     </span>
                     <input type="checkbox" className="h-4 w-4 cursor-pointer accent-primary" title="组内全选"
@@ -1485,7 +1535,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                               <span className="w-4 shrink-0 text-center text-xs text-muted-foreground" title={roleText}>
                                 {(e.roles || []).includes('src_ip') && e.roles.length === 1 ? '源' : (e.roles || []).includes('dst_ip') && e.roles.length === 1 ? '目' : (e.roles || []).includes('domain_url') && e.roles.length === 1 ? '域' : '双'}
                               </span>
-                              <span className="min-w-0 shrink-0 font-mono text-[13px] font-medium text-foreground">{e.ip}</span>
+                              <span className="min-w-0 shrink-0 font-mono text-xs font-medium text-foreground">{e.ip}</span>
                               <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1 overflow-hidden">{ipBadges(e)}</span>
                               {open
                                 ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1503,7 +1553,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
                                 <span className="text-xs text-muted-foreground">{roleText}</span>
                                 <span className="font-mono text-sm font-medium text-foreground">{e.ip}</span>
                                 {e.detail === 'lite' && (
-                                  <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">精简档</span>
+                                  <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">精简档</span>
                                 )}
                                 <Button size="sm" variant="outline" className="ml-auto h-7 shrink-0"
                                   disabled={requerying}
@@ -1544,7 +1594,7 @@ export default function TicketEnrichment({ ticket, enrichment, onFill, onTicketU
             <span className="break-words font-mono">{drawerEntry.ip}</span>
             <CopyIpButton ip={drawerEntry.ip} />
             {(drawerEntry.roles || []).map((r) => roleLabels[r] || r).join('、')}
-            {drawerEntry.detail === 'lite' && <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">精简档</span>}
+            {drawerEntry.detail === 'lite' && <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">精简档</span>}
           </span>
         ) : ''}
       >
@@ -1612,13 +1662,13 @@ function BanStatusDetail({ ip, st }) {
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-foreground">
         <ShieldBan className="h-3.5 w-3.5 text-primary" />黑名单状态
         {st.banned ? (
-          <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-500">封禁中</span>
+          <span className="rounded bg-red-500/10 px-1.5 py-0.5 text-xs font-medium text-red-500">封禁中</span>
         ) : (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">未封禁</span>
+          <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">未封禁</span>
         )}
       </div>
       {st.entry ? (
-        <div className="rounded-md bg-muted p-2.5 text-[13px] leading-relaxed">
+        <div className="rounded-md bg-muted p-2.5 text-xs leading-relaxed">
           <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
             {Object.entries(st.entry).map(([k, v]) => (
               <div key={k} className="flex min-w-0 items-start gap-2">
@@ -1678,9 +1728,9 @@ function BanQueryBox({
       <div className="flex flex-wrap items-center gap-2">
         <ShieldBan className="h-3.5 w-3.5 shrink-0 text-primary" />
         <span className="text-xs font-semibold text-foreground">安博通黑名单</span>
-        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">阻断器实时</span>
+        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">阻断器实时</span>
       </div>
-      <p className="mt-1 line-clamp-2 min-h-[2.25rem] text-[11px] leading-relaxed text-muted-foreground" title={desc}>
+      <p className="mt-1 line-clamp-2 min-h-[2.25rem] text-xs leading-relaxed text-muted-foreground" title={desc}>
         {desc}
       </p>
 
@@ -1760,9 +1810,9 @@ function WhitelistQueryBox({ ticketIps = [], wlMap = null, progress = null, onRe
       <div className="flex flex-wrap items-center gap-2">
         <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
         <span className="text-xs font-semibold text-foreground">安博通白名单</span>
-        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">本地同步索引</span>
+        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">本地同步索引</span>
       </div>
-      <p className="mt-1 line-clamp-2 min-h-[2.25rem] text-[11px] leading-relaxed text-muted-foreground" title={desc}>
+      <p className="mt-1 line-clamp-2 min-h-[2.25rem] text-xs leading-relaxed text-muted-foreground" title={desc}>
         {desc}
       </p>
 
@@ -1799,7 +1849,7 @@ function WhitelistQueryBox({ ticketIps = [], wlMap = null, progress = null, onRe
       )}
 
       <div className="mt-2 flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title="白名单命中不免除黑名单与资产风险判定">
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title="白名单命中不免除黑名单与资产风险判定">
           命中不免除黑名单判定
         </span>
         <Button size="sm" className="shrink-0" loading={loading}
@@ -1848,7 +1898,7 @@ const IP_LIB_DETAIL_FIELDS = {
 
 function IpLibBadge({ type, label }) {
   return (
-    <span className={`inline-flex whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${IP_LIB_THEME[type] || 'bg-muted text-muted-foreground'}`}>
+    <span className={`inline-flex whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${IP_LIB_THEME[type] || 'bg-muted text-muted-foreground'}`}>
       {label}
     </span>
   )
@@ -1872,9 +1922,9 @@ function IpLibraryMatchBox({ ips = [], ipMap = null, progress = null, onRetry })
       <div className="flex flex-wrap items-center gap-2">
         <Globe className="h-3.5 w-3.5 shrink-0 text-primary" />
         <span className="text-xs font-semibold text-foreground">IP地址库匹配</span>
-        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">本地内置库</span>
+        <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">本地内置库</span>
       </div>
-      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground" title={desc}>{desc}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground" title={desc}>{desc}</p>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
         <span className="inline-flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-muted-foreground">
@@ -1907,33 +1957,33 @@ function IpLibraryMatchBox({ ips = [], ipMap = null, progress = null, onRetry })
           return (
             <div key={ip} className="border-b border-border last:border-b-0">
               <button type="button" onClick={() => toggle(ip)}
-                className="flex w-full min-w-0 flex-wrap items-center gap-2 px-2.5 py-1.5 text-left text-[13px] transition hover:bg-background/60">
+                className="flex w-full min-w-0 flex-wrap items-center gap-2 px-2.5 py-1.5 text-left text-xs transition hover:bg-background/60">
                 <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${isOpen ? 'rotate-90' : ''}`} />
                 <span className="min-w-0 break-all font-mono font-medium text-foreground">{ip}</span>
                 {st ? (
-                  <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${st.match_count ? INTEL_STATUS_CLS.emerald : INTEL_STATUS_CLS.muted}`}>
+                  <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-xs font-medium ${st.match_count ? INTEL_STATUS_CLS.emerald : INTEL_STATUS_CLS.muted}`}>
                     {st.match_count ? '已匹配' : '未匹配'}
                   </span>
                 ) : (
-                  <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">--</span>
+                  <span className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">--</span>
                 )}
                 {hitTypes.map((t) => (
                   <IpLibBadge key={t} type={t}
                     label={(st.matches.find((m) => m.library_type === t) || {}).library_label || t} />
                 ))}
-                {!st && loading && <span className="text-[11px] text-muted-foreground">校验中…</span>}
+                {!st && loading && <span className="text-xs text-muted-foreground">校验中…</span>}
               </button>
               {isOpen && (
                 <div className="space-y-1.5 px-2.5 pb-2 pl-8">
                   {!st ? (
-                    <p className="text-[12px] text-muted-foreground">尚未完成校验</p>
+                    <p className="text-xs text-muted-foreground">尚未完成校验</p>
                   ) : st.matches.length === 0 ? (
-                    <p className="text-[12px] text-muted-foreground">未命中任何内置 IPv4 地址库</p>
+                    <p className="text-xs text-muted-foreground">未命中任何内置 IPv4 地址库</p>
                   ) : st.matches.map((m, idx) => (
-                    <div key={`${m.library_type}-${m.id ?? idx}`} className="rounded border border-border bg-card/60 p-2 text-[12px] leading-relaxed">
+                    <div key={`${m.library_type}-${m.id ?? idx}`} className="rounded border border-border bg-card/60 p-2 text-xs leading-relaxed">
                       <div className="mb-1 flex flex-wrap items-center gap-2">
                         <IpLibBadge type={m.library_type} label={m.library_label} />
-                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">{m.cidr || '--'}</span>
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">{m.cidr || '--'}</span>
                       </div>
                       <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
                         {(IP_LIB_DETAIL_FIELDS[m.library_type] || []).filter(([k]) => m[k]).map(([k, label]) => (
@@ -1953,7 +2003,7 @@ function IpLibraryMatchBox({ ips = [], ipMap = null, progress = null, onRetry })
       </div>
 
       <div className="mt-2 flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title="点击 IP 行可展开查看命中网段与归属字段">
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title="点击 IP 行可展开查看命中网段与归属字段">
           点击 IP 行展开归属详情
         </span>
         <Button size="sm" className="shrink-0" loading={loading}
@@ -1970,7 +2020,7 @@ function IpLibraryMatchBox({ ips = [], ipMap = null, progress = null, onRetry })
 function LegacyEnrichmentView({ enrichment, onFill }) {
   if (!enrichment?.sources?.length) return null
   return (
-    <div className="rounded-md border border-border bg-card p-5">
+    <div className="rounded-md border border-border bg-card p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <ShieldCheck className="h-4 w-4 text-primary" />
         <span className="font-semibold text-foreground">安全上下文（自动研判）</span>
