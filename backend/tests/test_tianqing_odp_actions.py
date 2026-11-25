@@ -20,7 +20,7 @@ from app.core.tianqing_odp_actions import (  # noqa: E402
 
 
 def test_actions_unique_and_readonly():
-    assert len(TIANQING_ODP_ACTIONS) >= 20
+    assert len(TIANQING_ODP_ACTIONS) == 26
     types = [a["action_type"] for a in TIANQING_ODP_ACTIONS]
     names = [a["name"] for a in TIANQING_ODP_ACTIONS]
     assert len(types) == len(set(types))

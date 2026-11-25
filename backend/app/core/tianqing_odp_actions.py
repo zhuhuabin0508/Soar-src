@@ -3,6 +3,7 @@
 数据来源：《奇安信天擎终端安全管理系统 V10.0R7 ODP 对接文档 V1.8》。
 ODP 仅提供查询类接口，本模块收录文档中的全部查询能力（版本、分组、终端、
 病毒防护、补丁、基线、软件、移动存储、任务执行结果、安全评估），
+及文档 4.4.6 硬件资产纳管、4.4.4 软件反查终端等扩展查询，
 不包含创建/修改/删除/隔离/扫描等写操作。
 
 动作结构对应 DeviceAction 模型：
@@ -120,6 +121,26 @@ Q_CLIENT_BASIC = (
     "system_language } } }"
 )
 
+Q_NODES_BY_NAME = (
+    "query { nodes( limit: {{limit}} offset: {{offset}} "
+    'node_meta_filter: { name: "{{group_name}}" } ) { relation_entitys { '
+    "key { asset_id { id oid } id } meta { node_name node_path } } } }"
+)
+
+Q_UN_ASSET_NODE = (
+    "query { un_asset_node( key: { asset_id: { oid: \"{{oid}}\", id: \"{{asset_id}}\" }, "
+    'id: "{{node_id}}" } ) { meta { node_name node_path childs { id asset_id { oid id } } } } }'
+)
+
+Q_UN_ASSETS = (
+    "query { un_assets( limit: {{limit}} offset: {{offset}} extra_filter: { searcher: { "
+    "ast_node: { and: { children: [ { leaf: { key: \"node_path\" operator: {{operator}} "
+    'string_value: "{{node_path}}" } } ] } } } } ) { count relation_entitys { '
+    "key { id asset_id { id oid } } meta { asset_name ip_v4 mac finger_os_family remark "
+    "source create_at last_at active classifyType "
+    "un_asset_node { meta { node_name } } } } }"
+)
+
 Q_CLIENT_HARDWARE = (
     '{ client( key: { id: "{{client_id}}" asset_id: { oid: "{{oid}}", id: "{{asset_id}}" } } ) { '
     "asset_audiocards { audiocard { model } } "
@@ -183,6 +204,14 @@ Q_CLIENT_SOFTWARE = (
     'asset_id:{oid:"{{oid}}",id:"{{asset_id}}"}}, option:"1"}, '
     "limit:{{limit}}, offset:{{offset}}){ collects { corp install_time soft_name version "
     "soft_id{id} install_source is_update license newest_ver size } } }"
+)
+
+Q_SOFT_CLIENTS = (
+    "{ statistics( key: { soft_name: \"{{soft_name}}\" soft_version: \"{{soft_version}}\" "
+    'offset: {{offset}} limit: {{limit}} id: { oid: "{{oid}}" id: "{{asset_id}}" } } ) { '
+    "client_soft { Install { client_ip client_name client_mac client_node client_os "
+    "client_login_account is_online soft_install_time soft_version } version } "
+    "id key { soft_name soft_version } } }"
 )
 
 # ============ 移动存储 ============
@@ -300,6 +329,38 @@ TIANQING_ODP_ACTIONS: list[dict[str, Any]] = [
         ["relation_entitys: 子分组列表（key.id / meta.name / meta.type / meta.path）"],
     ),
     _action(
+        "tianqing_nodes_by_name", "按名称查询分组",
+        "按分组名称模糊/精确匹配查询硬件资产分组节点（返回 node_name / node_path）。",
+        Q_NODES_BY_NAME,
+        [
+            _p("group_name", "分组名称", "string", True, None, "如「应纳管资产」"),
+            _PAGE_LIMIT,
+            _PAGE_OFFSET,
+        ],
+        ["relation_entitys: 分组节点（meta.node_name / meta.node_path）"],
+    ),
+    _action(
+        "tianqing_un_asset_node", "查询硬件资产分组树",
+        "查询硬件资产管理中的资产类型节点及子类型（文档 4.4.6，node_id=0 为根）。",
+        Q_UN_ASSET_NODE,
+        [
+            _p("node_id", "资产类型 ID", "string", False, "0", "根节点填 0，子类型填上级查询返回的 id"),
+        ],
+        ["meta: 类型名称/路径及 childs 子类型列表"],
+    ),
+    _action(
+        "tianqing_un_assets", "查询应纳管硬件资产",
+        "按资产分组路径分页查询应纳管硬件资产列表（名称 / IP / MAC / 所属类型等）。",
+        Q_UN_ASSETS,
+        [
+            _p("node_path", "资产分组路径", "string", True, None, "如 0 或 0_1，可从「查询硬件资产分组树」获取"),
+            _p("operator", "匹配范围", "integer", False, 6, "6=包含子孙分组，0=仅当前分组"),
+            _PAGE_LIMIT,
+            _PAGE_OFFSET,
+        ],
+        ["relation_entitys: 硬件资产列表（meta.asset_name / ip_v4 / mac）"],
+    ),
+    _action(
         "tianqing_clients", "查询分组终端列表",
         "按分组路径分页查询终端列表与基础信息（计算机名 / IP / MAC / 系统 / 在线等）。",
         Q_CLIENTS,
@@ -381,6 +442,18 @@ TIANQING_ODP_ACTIONS: list[dict[str, Any]] = [
         Q_CLIENT_SOFTWARE,
         [_CLIENT_ID, _p("limit", "每页条数", "integer", False, 1000), _PAGE_OFFSET],
         ["collects: 软件清单（soft_name / version / corp / newest_ver）"],
+    ),
+    _action(
+        "tianqing_soft_clients", "按软件名版本查终端",
+        "按软件名称与版本反查安装该软件的终端列表（文档 4.4.4 statistics）。",
+        Q_SOFT_CLIENTS,
+        [
+            _p("soft_name", "软件名称", "string", True, None, "与终端软件清单中的名称一致"),
+            _p("soft_version", "软件版本", "string", True, None, "与终端软件清单中的 version 一致"),
+            _PAGE_LIMIT,
+            _PAGE_OFFSET,
+        ],
+        ["client_soft.Install: 终端 IP / 计算机名 / MAC 等", "key: soft_name / soft_version"],
     ),
     _action(
         "tianqing_storage_categories", "查询移动存储分类",
