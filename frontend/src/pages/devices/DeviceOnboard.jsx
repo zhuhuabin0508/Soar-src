@@ -103,6 +103,9 @@ const RESP_INIT = {
   verifyTls: false,          // TLS 证书校验
 }
 
+// 使用平台根地址、不拼接业务路径的认证方式（天擎 ODP / 椒图云锁）
+const ROOT_URL_AUTH_TYPES = new Set(['tianqing', 'jiaotu'])
+
 // 按所选能力构建步骤序列（能力步在设备信息之后动态插入）
 function buildSteps(caps) {
   const steps = [
@@ -179,11 +182,7 @@ export default function DeviceOnboard() {
   // ===== 联动处置：API 地址拼接 =====
   const buildApiUrl = () => {
     // 天擎 / 椒图：API 地址固定为平台根地址，不拼接业务路径
-    if (respForm.authType === 'tianqing') {
-      const proto = respForm.useHttps ? 'https' : 'http'
-      return `${proto}://${respForm.deviceIp}:${respForm.port}`
-    }
-    if (respForm.authType === 'jiaotu') {
+    if (ROOT_URL_AUTH_TYPES.has(respForm.authType)) {
       const proto = respForm.useHttps ? 'https' : 'http'
       return `${proto}://${respForm.deviceIp}:${respForm.port}`
     }
@@ -198,6 +197,7 @@ export default function DeviceOnboard() {
   const needUserPass = ['basic', 'qingteng'].includes(respForm.authType)
   const needApiKey = ['api_key', 'bearer', 'sangfor_xdr', 'tianqing', 'jiaotu'].includes(respForm.authType)
   const needPassword = needUserPass || respForm.authType === 'tianqing'
+  const needApiPath = !ROOT_URL_AUTH_TYPES.has(respForm.authType)
 
   // ===== 步骤校验（按 key） =====
   const canNext = () => {
@@ -222,7 +222,7 @@ export default function DeviceOnboard() {
       }
       case 'response': {
         if (validateSingleIP(respForm.deviceIp, '设备 IP')) return false
-        if (respForm.authType !== 'tianqing' && respForm.authType !== 'jiaotu' && !respForm.apiPath.trim()) return false
+        if (needApiPath && !respForm.apiPath.trim()) return false
         if (needUserPass && !respForm.username.trim()) return false
         if (needPassword && !respForm.password) return false
         if (needApiKey && !respForm.apiKey.trim()) return false
@@ -262,7 +262,7 @@ export default function DeviceOnboard() {
       if (devIpMsg) {
         toast.warning(devIpMsg); return false
       }
-      if (respForm.authType !== 'tianqing' && respForm.authType !== 'jiaotu' && !respForm.apiPath.trim()) {
+      if (needApiPath && !respForm.apiPath.trim()) {
         toast.warning('请填写 API 地址'); return false
       }
       if (needUserPass && !respForm.username.trim()) { toast.warning('请填写用户名'); return false }

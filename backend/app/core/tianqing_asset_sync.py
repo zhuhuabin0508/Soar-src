@@ -20,6 +20,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Optional
 
 import httpx
@@ -83,14 +84,20 @@ def _normalize_base_url(device: Device) -> str:
     return base
 
 
+@lru_cache(maxsize=256)
+def _decrypt_secret_cached(ciphertext: str) -> str:
+    """凭据解密缓存：按密文缓存，避免软件清单/动作逐请求重复 Fernet 解密。"""
+    return decrypt_device_secret(ciphertext)
+
+
 def _sign_headers(device: Device) -> dict[str, str]:
     """生成天擎 ODP 的 ZEUS-HMAC-SHA256 鉴权头。
 
     stringToSign = ``appKey:{appKey}&nonce:{nonce}&timestamp:{timestamp}``
     signature = HMAC-SHA256(AppSecret, stringToSign) 的十六进制小写。
     """
-    app_key = decrypt_device_secret(device.api_key or "").strip()
-    app_secret = decrypt_device_secret(device.password or "").strip()
+    app_key = _decrypt_secret_cached(device.api_key or "").strip()
+    app_secret = _decrypt_secret_cached(device.password or "").strip()
     if not app_key or not app_secret:
         raise ValueError("设备未配置天擎 AppKey / AppSecret")
     nonce = str(secrets.randbelow(10**9))

@@ -708,16 +708,6 @@ def infer_resource_type(filename: str, explicit: str) -> str:
     )
 
 
-def _excel_columns(resource_type: str) -> list[dict]:
-    base, _, _ = _resolve_type(resource_type)
-    if base == "tianqing_endpoint":
-        return _columns(base)
-    cols = []
-    for key in RESOURCE_EXCEL_FIELDS[base]:
-        cols.append({"key": key, "label": FIELD_LABELS.get(key, key)})
-    return cols
-
-
 def _type_payload(code: str, meta: dict, device: Device | None = None) -> dict:
     """资源类型 payload；青藤按设备生成（code 带设备维度，卡片名 = 设备名）。"""
     real_code = f"{code}:{device.id}" if device else code
@@ -806,57 +796,68 @@ def _qingteng_group_tables(db: Session, gcode: str, devices: list[Device]) -> li
     return tables
 
 
-def _tianqing_group_tables(
+def _group_payload(code: str, meta: dict, tables: list[dict], enabled: bool) -> dict:
+    """资产发现来源分组 payload（meta/summary 共用，避免字段口径漂移）。"""
+    return {
+        "code": code,
+        "label": meta["label"],
+        "index": meta.get("index", ""),
+        "enabled": enabled,
+        "sort_order": meta.get("sort_order", 0),
+        "description": meta.get("description", ""),
+        "tables": tables,
+    }
+
+
+def _new_pending_sync_batch(
+    *,
+    resource_type: str,
+    filename: str,
+    import_mode: str,
+    user_id: int,
+    now,
+) -> GovCloudImportBatch:
+    """构造异步同步的 pending 批次（各 API 来源共用，字段口径一致）。"""
+    return GovCloudImportBatch(
+        resource_type=resource_type,
+        filename=filename[:300],
+        file_size=0,
+        excel_rows=0,
+        unique_source_ids=0,
+        inserted=0,
+        updated=0,
+        deleted=0,
+        skipped=0,
+        live_count=0,
+        consistent=0,
+        import_mode=import_mode,
+        status="pending",
+        phase="等待执行",
+        percent=0,
+        stats={},
+        note="",
+        created_by=user_id,
+        created_at=now,
+    )
+
+
+def _api_device_group_tables(
     db: Session,
     devices: list[Device],
-    base: str = "tianqing_endpoint",
+    base: str,
+    device_attr: str,
+    module_tabs: list[dict] | None = None,
 ) -> list[dict]:
-    """天擎分组下按设备统计的数据表卡片（终端 / 组件共用）。"""
+    """API 同步来源按设备生成数据表卡片（天擎 / 椒图共用）。"""
     model = RESOURCE_MODELS[base]
+    device_column = getattr(model, device_attr)
     columns = _columns(base)
     tables = []
     for dev in devices:
         code = f"{base}:{dev.id}"
         live = int(
             db.query(func.count(model.id))
-            .filter(model.tianqing_device_id == dev.id)
-            .scalar() or 0
-        )
-        last_batch = (
-            db.query(GovCloudImportBatch)
-            .filter(GovCloudImportBatch.resource_type == code)
-            .order_by(GovCloudImportBatch.id.desc())
-            .first()
-        )
-        tables.append({
-            "code": code,
-            "label": dev.name,
-            "excel_name": dev.name,
-            "source_group": base,
-            "excel_columns": columns,
-            "total": live,
-            "consistent": _batch_consistent(live, last_batch),
-            "last_batch": last_batch.to_dict() if last_batch else None,
-            "device_id": dev.id,
-            "api_sync": True,
-        })
-    return tables
-
-
-def _jiaotu_group_tables(
-    db: Session,
-    devices: list[Device],
-    base: str = "jiaotu_host",
-) -> list[dict]:
-    """椒图分组下按设备统计的数据表卡片（主机 / 资产明细共用）。"""
-    model = RESOURCE_MODELS[base]
-    columns = _columns(base)
-    tables = []
-    for dev in devices:
-        code = f"{base}:{dev.id}"
-        live = int(
-            db.query(func.count(model.id))
-            .filter(model.jiaotu_device_id == dev.id)
+            .filter(device_column == dev.id)
             .scalar() or 0
         )
         last_batch = (
@@ -877,8 +878,8 @@ def _jiaotu_group_tables(
             "device_id": dev.id,
             "api_sync": True,
         }
-        if base == "jiaotu_asset":
-            table["modules"] = _jiaotu_module_tabs()
+        if module_tabs:
+            table["modules"] = module_tabs
         tables.append(table)
     return tables
 
@@ -893,11 +894,19 @@ def govcloud_meta(
     qingteng_component_tables = _qingteng_table_payloads(db, "qingteng_component", qingteng_devices)
     qingteng_asset_tables = _qingteng_table_payloads(db, "qingteng_asset", qingteng_devices)
     tianqing_devices = get_tianqing_devices(db)
-    tianqing_tables = _tianqing_group_tables(db, tianqing_devices)
-    tianqing_software_tables = _tianqing_group_tables(db, tianqing_devices, "tianqing_software")
+    tianqing_tables = _api_device_group_tables(
+        db, tianqing_devices, "tianqing_endpoint", "tianqing_device_id",
+    )
+    tianqing_software_tables = _api_device_group_tables(
+        db, tianqing_devices, "tianqing_software", "tianqing_device_id",
+    )
     jiaotu_devices = get_jiaotu_devices(db)
-    jiaotu_host_tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_host")
-    jiaotu_asset_tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_asset")
+    jiaotu_host_tables = _api_device_group_tables(
+        db, jiaotu_devices, "jiaotu_host", "jiaotu_device_id",
+    )
+    jiaotu_asset_tables = _api_device_group_tables(
+        db, jiaotu_devices, "jiaotu_asset", "jiaotu_device_id", _jiaotu_module_tabs(),
+    )
     types = [
         _type_payload(code, meta)
         for code, meta in RESOURCE_TYPES.items()
@@ -929,15 +938,7 @@ def govcloud_meta(
         else:
             tables = [t for t in types if t.get("source_group") == gcode]
             enabled = bool(gmeta.get("enabled", True))
-        groups.append({
-            "code": gcode,
-            "label": gmeta["label"],
-            "index": gmeta.get("index", ""),
-            "enabled": enabled,
-            "sort_order": gmeta.get("sort_order", 0),
-            "description": gmeta.get("description", ""),
-            "tables": tables,
-        })
+        groups.append(_group_payload(gcode, gmeta, tables, enabled))
     groups.sort(key=lambda g: g["sort_order"])
     return {
         "types": types,
@@ -969,63 +970,31 @@ def govcloud_summary(
         if gcode in QINGTENG_DEVICE_TYPES:
             # 每台青藤设备一张数据表卡片（主机 / 组件）：总数/一致性按设备维度统计
             tables = _qingteng_group_tables(db, gcode, qingteng_devices)
-            groups.append({
-                "code": gcode,
-                "label": gmeta["label"],
-                "index": gmeta.get("index", ""),
-                "enabled": bool(qingteng_devices),
-                "sort_order": gmeta.get("sort_order", 0),
-                "description": gmeta.get("description", ""),
-                "tables": tables,
-            })
+            groups.append(_group_payload(gcode, gmeta, tables, bool(qingteng_devices)))
             continue
         if gcode == "jiaotu_host":
-            tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_host")
-            groups.append({
-                "code": gcode,
-                "label": gmeta["label"],
-                "index": gmeta.get("index", ""),
-                "enabled": bool(jiaotu_devices),
-                "sort_order": gmeta.get("sort_order", 0),
-                "description": gmeta.get("description", ""),
-                "tables": tables,
-            })
+            tables = _api_device_group_tables(
+                db, jiaotu_devices, "jiaotu_host", "jiaotu_device_id",
+            )
+            groups.append(_group_payload(gcode, gmeta, tables, bool(jiaotu_devices)))
             continue
         if gcode == "jiaotu_asset":
-            tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_asset")
-            groups.append({
-                "code": gcode,
-                "label": gmeta["label"],
-                "index": gmeta.get("index", ""),
-                "enabled": bool(jiaotu_devices),
-                "sort_order": gmeta.get("sort_order", 0),
-                "description": gmeta.get("description", ""),
-                "tables": tables,
-            })
+            tables = _api_device_group_tables(
+                db, jiaotu_devices, "jiaotu_asset", "jiaotu_device_id", _jiaotu_module_tabs(),
+            )
+            groups.append(_group_payload(gcode, gmeta, tables, bool(jiaotu_devices)))
             continue
         if gcode == "tianqing_endpoint":
-            tables = _tianqing_group_tables(db, tianqing_devices)
-            groups.append({
-                "code": gcode,
-                "label": gmeta["label"],
-                "index": gmeta.get("index", ""),
-                "enabled": bool(tianqing_devices),
-                "sort_order": gmeta.get("sort_order", 0),
-                "description": gmeta.get("description", ""),
-                "tables": tables,
-            })
+            tables = _api_device_group_tables(
+                db, tianqing_devices, "tianqing_endpoint", "tianqing_device_id",
+            )
+            groups.append(_group_payload(gcode, gmeta, tables, bool(tianqing_devices)))
             continue
         if gcode == "tianqing_software":
-            tables = _tianqing_group_tables(db, tianqing_devices, "tianqing_software")
-            groups.append({
-                "code": gcode,
-                "label": gmeta["label"],
-                "index": gmeta.get("index", ""),
-                "enabled": bool(tianqing_devices),
-                "sort_order": gmeta.get("sort_order", 0),
-                "description": gmeta.get("description", ""),
-                "tables": tables,
-            })
+            tables = _api_device_group_tables(
+                db, tianqing_devices, "tianqing_software", "tianqing_device_id",
+            )
+            groups.append(_group_payload(gcode, gmeta, tables, bool(tianqing_devices)))
             continue
         for code, meta in RESOURCE_TYPES.items():
             if meta.get("source_group") != gcode or code in DEVICE_DIMENSION_TYPES:
@@ -1048,15 +1017,9 @@ def govcloud_summary(
                 "consistent": consistent,
                 "last_batch": last_batch.to_dict() if last_batch else None,
             })
-        groups.append({
-            "code": gcode,
-            "label": gmeta["label"],
-            "index": gmeta.get("index", ""),
-            "enabled": bool(gmeta.get("enabled", True)),
-            "sort_order": gmeta.get("sort_order", 0),
-            "description": gmeta.get("description", ""),
-            "tables": tables,
-        })
+        groups.append(_group_payload(
+            gcode, gmeta, tables, bool(gmeta.get("enabled", True)),
+        ))
     groups.sort(key=lambda g: g["sort_order"])
     return {"groups": groups}
 
@@ -1677,26 +1640,12 @@ def sync_qingteng_components_endpoint(
     now = beijing_now()
     batches: list[tuple[Device, GovCloudImportBatch]] = []
     for dev in devices:
-        batch = GovCloudImportBatch(
+        batch = _new_pending_sync_batch(
             resource_type=f"qingteng_component:{dev.id}",
-            filename=f"API同步组件:{dev.name}"[:300],
-            file_size=0,
-            excel_rows=0,
-            unique_source_ids=0,
-            inserted=0,
-            updated=0,
-            deleted=0,
-            skipped=0,
-            live_count=0,
-            consistent=0,
+            filename=f"API同步组件:{dev.name}",
             import_mode=import_mode,
-            status="pending",
-            phase="等待执行",
-            percent=0,
-            stats={},
-            note="",
-            created_by=user.id,
-            created_at=now,
+            user_id=user.id,
+            now=now,
         )
         db.add(batch)
         db.flush()
@@ -1857,26 +1806,12 @@ def sync_qingteng_modules_endpoint(
     now = beijing_now()
     batches: list[tuple[Device, GovCloudImportBatch]] = []
     for dev in devices:
-        batch = GovCloudImportBatch(
+        batch = _new_pending_sync_batch(
             resource_type=f"qingteng_asset:{dev.id}",
-            filename=f"API同步资产:{dev.name}"[:300],
-            file_size=0,
-            excel_rows=0,
-            unique_source_ids=0,
-            inserted=0,
-            updated=0,
-            deleted=0,
-            skipped=0,
-            live_count=0,
-            consistent=0,
+            filename=f"API同步资产:{dev.name}",
             import_mode=import_mode,
-            status="pending",
-            phase="等待执行",
-            percent=0,
-            stats={},
-            note="",
-            created_by=user.id,
-            created_at=now,
+            user_id=user.id,
+            now=now,
         )
         db.add(batch)
         db.flush()
@@ -2313,26 +2248,12 @@ def sync_tianqing_software_endpoint(
     now = beijing_now()
     batches: list[tuple[Device, GovCloudImportBatch]] = []
     for dev in devices:
-        batch = GovCloudImportBatch(
+        batch = _new_pending_sync_batch(
             resource_type=f"tianqing_software:{dev.id}",
-            filename=f"API同步组件:{dev.name}"[:300],
-            file_size=0,
-            excel_rows=0,
-            unique_source_ids=0,
-            inserted=0,
-            updated=0,
-            deleted=0,
-            skipped=0,
-            live_count=0,
-            consistent=0,
+            filename=f"API同步组件:{dev.name}",
             import_mode=import_mode,
-            status="pending",
-            phase="等待执行",
-            percent=0,
-            stats={},
-            note="",
-            created_by=user.id,
-            created_at=now,
+            user_id=user.id,
+            now=now,
         )
         db.add(batch)
         db.flush()
@@ -2498,47 +2419,19 @@ def sync_jiaotu_assets_endpoint(
     now = beijing_now()
     batches: list[tuple[Device, GovCloudImportBatch, GovCloudImportBatch]] = []
     for dev in devices:
-        host_batch = GovCloudImportBatch(
+        host_batch = _new_pending_sync_batch(
             resource_type=f"jiaotu_host:{dev.id}",
-            filename=f"API同步主机:{dev.name}"[:300],
-            file_size=0,
-            excel_rows=0,
-            unique_source_ids=0,
-            inserted=0,
-            updated=0,
-            deleted=0,
-            skipped=0,
-            live_count=0,
-            consistent=0,
+            filename=f"API同步主机:{dev.name}",
             import_mode=import_mode,
-            status="pending",
-            phase="等待执行",
-            percent=0,
-            stats={},
-            note="",
-            created_by=user.id,
-            created_at=now,
+            user_id=user.id,
+            now=now,
         )
-        asset_batch = GovCloudImportBatch(
+        asset_batch = _new_pending_sync_batch(
             resource_type=f"jiaotu_asset:{dev.id}",
-            filename=f"API同步资产:{dev.name}"[:300],
-            file_size=0,
-            excel_rows=0,
-            unique_source_ids=0,
-            inserted=0,
-            updated=0,
-            deleted=0,
-            skipped=0,
-            live_count=0,
-            consistent=0,
+            filename=f"API同步资产:{dev.name}",
             import_mode=import_mode,
-            status="pending",
-            phase="等待执行",
-            percent=0,
-            stats={},
-            note="",
-            created_by=user.id,
-            created_at=now,
+            user_id=user.id,
+            now=now,
         )
         db.add(host_batch)
         db.add(asset_batch)

@@ -63,6 +63,8 @@ _PLACEHOLDER_VERSIONS = frozenset({
     "0", "0.0", "0.0.0", "?", "??", "not installed", "未采集", "未获取", "无",
 })
 
+_BJ_TZ = timezone(timedelta(hours=8))
+
 
 def _norm_text(value: Any) -> str:
     """软件名归一化：NFKC、去首尾空白、小写。"""
@@ -95,7 +97,7 @@ def _fmt_install_time(value: Any) -> str:
         return ""
     if s.isdigit() and len(s) >= 10:
         try:
-            dt = datetime.fromtimestamp(int(s), tz=timezone(timedelta(hours=8)))
+            dt = datetime.fromtimestamp(int(s), tz=_BJ_TZ)
             return dt.strftime("%Y-%m-%d %H:%M:%S")
         except (OverflowError, OSError, ValueError):
             pass
@@ -180,6 +182,7 @@ def _row_to_values(
     name_norm = _norm_text(soft_name)
     version_norm = _norm_version(version)
     client_id = str(getattr(endpoint, "client_id", "") or "")
+    is_update = row.get("is_update")
 
     return {
         "source_id": build_source_id(
@@ -204,11 +207,7 @@ def _row_to_values(
         "license": str(row.get("license") or "")[:64],
         "newest_ver": str(row.get("newest_ver") or "")[:255],
         "size": str(row.get("size") or "")[:32],
-        "is_update": (
-            bool(row.get("is_update"))
-            if row.get("is_update") is not None
-            else None
-        ),
+        "is_update": bool(is_update) if is_update is not None else None,
         "extra": {k: v for k, v in row.items() if k not in _CONSUMED_SOFT_KEYS},
         "created_at": now,
         "updated_at": now,

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.timezone import beijing_now, to_beijing_iso

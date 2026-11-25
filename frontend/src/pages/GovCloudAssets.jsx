@@ -769,6 +769,25 @@ export default function GovCloudAssets() {
     }
   }
 
+  // 批量轮询异步同步批次：全部进入终态返回 statuses，超时/中止返回 null
+  async function pollSyncBatches(statusChecks, {
+    intervalMs = 2000,
+    timeoutMs = 30 * 60 * 1000,
+    onProgress,
+  } = {}) {
+    const deadline = Date.now() + timeoutMs
+    while (syncPollRef.current && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      if (!syncPollRef.current) break
+      const statuses = await Promise.all(statusChecks.map((check) => check()))
+      if (onProgress) onProgress(statuses)
+      if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
+        return statuses
+      }
+    }
+    return null
+  }
+
   // 天擎组件异步同步：逐台终端拉取已安装软件，终端量大时耗时较长
   async function handleTianqingSoftwareSync() {
     const deviceIds = currentTable?.device_id ? [currentTable.device_id] : []
@@ -782,21 +801,17 @@ export default function GovCloudAssets() {
       if (!batches.length) throw new Error('未创建同步批次')
       const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
       // 逐台终端拉取，万级终端耗时较长：前端轮询 30 分钟，未完成则提示稍后刷新
-      const deadline = Date.now() + 30 * 60 * 1000
-      let final = null
-      while (syncPollRef.current && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 3000))
-        if (!syncPollRef.current) break
-        const statuses = await Promise.all(
-          batches.map((b) => govCloudApi.tianqingSoftwareSyncStatus({ batchId: b.batch_id })),
-        )
-        lastStatus = statuses.find((s) => s.status === 'running') || statuses[0]
-        setSyncProgress(lastStatus)
-        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
-          final = statuses
-          break
-        }
-      }
+      const final = await pollSyncBatches(
+        batches.map((b) => () => govCloudApi.tianqingSoftwareSyncStatus({ batchId: b.batch_id })),
+        {
+          intervalMs: 3000,
+          timeoutMs: 30 * 60 * 1000,
+          onProgress: (statuses) => {
+            lastStatus = statuses.find((s) => s.status === 'running') || statuses[0]
+            setSyncProgress(lastStatus)
+          },
+        },
+      )
       if (!final) {
         toast.info(`天擎组件同步仍在后台进行（${lastStatus?.percent ?? 0}%），可稍后刷新查看进度`)
         return
@@ -838,24 +853,20 @@ export default function GovCloudAssets() {
         { id: b.asset_batch_id, name: b.device_name, kind: 'asset' },
       ])
       // 逐主机拉取详情，耗时较长：前端轮询 30 分钟，未完成则提示稍后刷新
-      const deadline = Date.now() + 30 * 60 * 1000
-      let final = null
-      while (syncPollRef.current && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 3000))
-        if (!syncPollRef.current) break
-        const statuses = await Promise.all(
-          tracked.map((t) => govCloudApi.jiaotuSyncStatus({ batchId: t.id })),
-        )
-        // 优先展示资产明细批次（主机批次先完成）
-        lastStatus = statuses.find((s, i) => tracked[i].kind === 'asset' && ['pending', 'running'].includes(s.status))
-          || statuses.find((s) => ['pending', 'running'].includes(s.status))
-          || statuses[statuses.length - 1]
-        setSyncProgress(lastStatus)
-        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
-          final = statuses
-          break
-        }
-      }
+      const final = await pollSyncBatches(
+        tracked.map((t) => () => govCloudApi.jiaotuSyncStatus({ batchId: t.id })),
+        {
+          intervalMs: 3000,
+          timeoutMs: 30 * 60 * 1000,
+          onProgress: (statuses) => {
+            // 优先展示资产明细批次（主机批次先完成）
+            lastStatus = statuses.find((s, i) => tracked[i].kind === 'asset' && ['pending', 'running'].includes(s.status))
+              || statuses.find((s) => ['pending', 'running'].includes(s.status))
+              || statuses[statuses.length - 1]
+            setSyncProgress(lastStatus)
+          },
+        },
+      )
       if (!final) {
         toast.info(`椒图资产同步仍在后台进行（${lastStatus?.percent ?? 0}%），可稍后刷新查看进度`)
         return
@@ -900,21 +911,15 @@ export default function GovCloudAssets() {
       if (!batches.length) throw new Error('未创建同步批次')
       const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
       // 后端任务上限 65 分钟（time_limit=3900s），前端轮询留出余量
-      const deadline = Date.now() + 70 * 60 * 1000
-      let final = null
-      while (syncPollRef.current && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
-        if (!syncPollRef.current) break
-        const statuses = await Promise.all(
-          batches.map((b) => govCloudApi.componentSyncStatus({ batchId: b.batch_id })),
-        )
-        const running = statuses.find((s) => s.status === 'running') || statuses[0]
-        setSyncProgress(running)
-        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
-          final = statuses
-          break
-        }
-      }
+      const final = await pollSyncBatches(
+        batches.map((b) => () => govCloudApi.componentSyncStatus({ batchId: b.batch_id })),
+        {
+          timeoutMs: 70 * 60 * 1000,
+          onProgress: (statuses) => setSyncProgress(
+            statuses.find((s) => s.status === 'running') || statuses[0],
+          ),
+        },
+      )
       if (!final) {
         toast.error('组件同步耗时较长，请稍后刷新查看结果')
         return
@@ -952,21 +957,15 @@ export default function GovCloudAssets() {
       const batches = result?.batches || []
       if (!batches.length) throw new Error('未创建同步批次')
       const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
-      const deadline = Date.now() + 70 * 60 * 1000
-      let final = null
-      while (syncPollRef.current && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 2000))
-        if (!syncPollRef.current) break
-        const statuses = await Promise.all(
-          batches.map((b) => govCloudApi.moduleSyncStatus({ batchId: b.batch_id })),
-        )
-        const running = statuses.find((s) => s.status === 'running') || statuses[0]
-        setSyncProgress(running)
-        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
-          final = statuses
-          break
-        }
-      }
+      const final = await pollSyncBatches(
+        batches.map((b) => () => govCloudApi.moduleSyncStatus({ batchId: b.batch_id })),
+        {
+          timeoutMs: 70 * 60 * 1000,
+          onProgress: (statuses) => setSyncProgress(
+            statuses.find((s) => s.status === 'running') || statuses[0],
+          ),
+        },
+      )
       if (!final) {
         toast.error('资产同步耗时较长，请稍后刷新查看结果')
         return

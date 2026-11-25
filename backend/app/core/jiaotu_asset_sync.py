@@ -20,6 +20,7 @@ import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from typing import Any, Optional
 
 import httpx
@@ -34,7 +35,6 @@ from app.models.device import Device
 from app.models.govcloud_asset import GovCloudImportBatch
 from app.models.jiaotu_asset_item import (
     JIAOTU_ASSET_UPDATE_COLS,
-    JIAOTU_MODULE_LABELS,
     JiaotuAssetItem,
 )
 from app.models.jiaotu_host import (
@@ -166,8 +166,14 @@ def _normalize_base_url(device: Device) -> str:
     return base
 
 
+@lru_cache(maxsize=256)
+def _decrypt_secret_cached(ciphertext: str) -> str:
+    """凭据解密缓存：按密文缓存，避免逐主机请求重复 Fernet 解密。"""
+    return decrypt_device_secret(ciphertext)
+
+
 def _token(device: Device) -> str:
-    token = decrypt_device_secret(device.api_key or "").strip()
+    token = _decrypt_secret_cached(device.api_key or "").strip()
     if not token:
         raise ValueError("设备未配置椒图云锁授权码（产品联动 Token）")
     return token
@@ -690,12 +696,13 @@ def sync_device_assets(
                 JiaotuHostAsset.extranet_ip,
                 JiaotuHostAsset.os_type,
             )
-            .filter(JiaotuHostAsset.jiaotu_device_id == device.id)
+            # 仅处理本轮主机清单中的主机（增量/limit 场景不重复拉取库内旧主机）
+            .filter(
+                JiaotuHostAsset.jiaotu_device_id == device.id,
+                JiaotuHostAsset.batch_id == host_batch.id,
+            )
             .order_by(JiaotuHostAsset.id)
-        )
-        if limited:
-            hosts = hosts.limit(limit)
-        hosts = hosts.all()
+        ).all()
         total_hosts = len(hosts)
         stats["hosts_total"] = total_hosts
         if not total_hosts:
