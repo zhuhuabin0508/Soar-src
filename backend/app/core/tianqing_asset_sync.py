@@ -150,7 +150,7 @@ def _gql(
 ) -> dict:
     """执行天擎 ODP GraphQL 查询，返回 ``data``。
 
-    传入 ``client`` 时复用连接（软件清单按终端逐台查询，避免每台重复 TLS 握手）。
+    传入 ``client`` 时复用连接（仅单线程场景；并发 Worker 勿共享同一 client）。
     """
     base_url = _normalize_base_url(device)
     validate_outbound_url(base_url, field="天擎 api_url")

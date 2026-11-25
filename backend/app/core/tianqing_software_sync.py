@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.core.asset_upsert import bulk_upsert
 from app.core.security import validate_outbound_url
-from app.core.tianqing_asset_sync import _fmt_ts, _gql, _http_client, get_asset_ids
+from app.core.tianqing_asset_sync import _fmt_ts, _gql, get_asset_ids
 from app.core.timezone import beijing_now
 from app.devices.action_executor import record_device_call
 from app.models.device import Device
@@ -346,10 +346,9 @@ def sync_device_software(
             api_key=device.api_key,
             password=device.password,
         )
-        # 分批并发拉取终端软件；DB 写入仍在主线程顺序执行
-        with _http_client(timeout, verify) as client, ThreadPoolExecutor(
-            max_workers=FETCH_CONCURRENCY
-        ) as pool:
+        # 分批并发拉取终端软件；DB 写入仍在主线程顺序执行。
+        # httpx.Client 非线程安全：Worker 内自建连接，不向线程池传入共享 client。
+        with ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as pool:
             finished = 0
             for start in range(0, total, FETCH_BATCH):
                 chunk = endpoints[start:start + FETCH_BATCH]
@@ -359,7 +358,7 @@ def sync_device_software(
                         pool.submit(
                             fetch_client_software,
                             device_snapshot, oid, asset_id, str(endpoint.client_id or ""),
-                            timeout=timeout, verify=verify, client=client,
+                            timeout=timeout, verify=verify,
                         ),
                     )
                     for endpoint in chunk

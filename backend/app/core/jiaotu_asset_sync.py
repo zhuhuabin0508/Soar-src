@@ -733,9 +733,8 @@ def sync_device_assets(
             api_key=device.api_key,
             password=device.password,
         )
-        with _http_client(timeout, verify) as client, ThreadPoolExecutor(
-            max_workers=FETCH_CONCURRENCY
-        ) as pool:
+        # httpx.Client 非线程安全：Worker 内自建连接（client=None），主线程不复用同一实例
+        with ThreadPoolExecutor(max_workers=FETCH_CONCURRENCY) as pool:
             for start in range(0, total_hosts, FETCH_BATCH):
                 chunk = hosts[start:start + FETCH_BATCH]
                 pending = []
@@ -749,7 +748,7 @@ def sync_device_assets(
                         pool.submit(
                             fetch_host_detail,
                             device_snapshot, ip,
-                            timeout=timeout, verify=verify, client=client,
+                            timeout=timeout, verify=verify,
                         ),
                         "",
                     ))
