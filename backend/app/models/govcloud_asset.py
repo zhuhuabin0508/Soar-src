@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from app.core.govcloud_schema import RESOURCE_EXCEL_FIELDS, excel_attr
 from app.core.timezone import beijing_now, to_beijing_iso
 from app.database import Base
+from app.models.tianqing_endpoint import TianqingEndpointAsset
 
 
 class GovCloudImportBatch(Base):
@@ -115,4 +116,6 @@ RESOURCE_MODELS = {
     "bare_metal": GovCloudBareMetal,
     "e_government_network": GovCloudNetwork,
     "elastic_ip": GovCloudElasticIP,
+    # 天擎终端：API 同步来源，按设备维度生成数据表卡片
+    "tianqing_endpoint": TianqingEndpointAsset,
 }

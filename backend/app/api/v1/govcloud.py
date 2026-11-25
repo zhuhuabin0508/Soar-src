@@ -36,6 +36,7 @@ from app.core.qingteng_asset_sync import get_qingteng_devices, sync_device_hosts
 from app.core.qingteng_component_search import search_components
 from app.core.qingteng_cve import query_cve_hosts
 from app.core.qingteng_realtime import REALTIME_MODULES, realtime_query
+from app.core.tianqing_asset_sync import get_tianqing_devices, sync_device_endpoints
 from app.core.timezone import beijing_now
 from app.database import get_db
 from app.dependencies import require_permission
@@ -61,6 +62,11 @@ from app.models.qingteng_asset_item import (
     QINGTENG_ASSET_FIELD_LABELS,
     QINGTENG_ASSET_FIELDS,
     QINGTENG_ASSET_LIST_FIELDS,
+)
+from app.models.tianqing_endpoint import (
+    TIANQING_ENDPOINT_FIELDS,
+    TIANQING_FIELD_LABELS,
+    TIANQING_LIST_FIELDS,
 )
 from app.models.user import User
 from app.tasks.qingteng_component_tasks import (
@@ -113,6 +119,19 @@ RESOURCE_TYPES = {
             "user_department", "applicant_department", "source_id",
         ),
     },
+    # 奇安信天擎终端：凭据来自设备管理（auth_type=tianqing），ODP API 拉取入库。
+    # resource_type 实际取值带设备维度："tianqing_endpoint:<设备ID>"（每台天擎一张数据表卡片）。
+    "tianqing_endpoint": {
+        "label": "天擎终端",
+        "excel_name": "天擎终端资产",
+        "source_group": "tianqing_endpoint",
+        "filename_hints": (),
+        "search_fields": (
+            "computer_name", "ip", "report_ip", "mac", "client_id",
+            "login_account", "group_name", "tianqing_device_name",
+        ),
+        "api_sync": True,
+    },
     # 青藤主机：凭据来自设备管理（auth_type=qingteng），API 拉取入库而非 Excel 导入。
     # resource_type 实际取值带设备维度："qingteng_host:<设备ID>"（每台青藤一张数据表卡片）。
     "qingteng_host": {
@@ -154,8 +173,9 @@ RESOURCE_MODELS["qingteng_host"] = QingtengHostAsset
 RESOURCE_MODELS["qingteng_component"] = QingtengComponentAsset
 RESOURCE_MODELS["qingteng_asset"] = QingtengAssetItem
 
-# 支持 "<类型>:<设备ID>" 后缀的青藤资源类型
+# 支持 "<类型>:<设备ID>" 后缀的资产类型（青藤 + 天擎）
 QINGTENG_DEVICE_TYPES = ("qingteng_host", "qingteng_component", "qingteng_asset")
+DEVICE_DIMENSION_TYPES = (*QINGTENG_DEVICE_TYPES, "tianqing_endpoint")
 
 SOURCE_GROUPS = {
     "itsm_ops": {
@@ -203,9 +223,9 @@ SOURCE_GROUPS = {
     "tianqing_endpoint": {
         "label": "天擎终端资产发现",
         "index": "1.4",
-        "enabled": False,
+        "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
         "sort_order": 5,
-        "description": "天擎终端资产发现结果，后续接入",
+        "description": "登录设备管理中配置的奇安信天擎平台（ODP），API 拉取终端基础信息、在线状态与版本",
     },
 }
 
@@ -218,6 +238,8 @@ EXPORT_CHUNK = 2000
 EXPORT_TAIL_COLUMNS = ("source_id", "created_at", "updated_at")
 # 青藤导出尾部业务列（额外带来源青藤平台名，多平台数据可追溯）
 QT_EXPORT_TAIL_COLUMNS = ("source_id", "qingteng_device_name", "created_at", "updated_at")
+# 天擎导出尾部业务列
+TQ_EXPORT_TAIL_COLUMNS = ("source_id", "tianqing_device_name", "created_at", "updated_at")
 
 
 def _keyword_clauses(model, meta: dict, kw: str) -> list:
@@ -275,12 +297,12 @@ def _resolve_type(resource_type: str) -> tuple[str, dict, int | None]:
     if not meta:
         raise HTTPException(status_code=400, detail="不支持的资源类型")
     if ":" in (resource_type or ""):
-        if base not in QINGTENG_DEVICE_TYPES:
+        if base not in DEVICE_DIMENSION_TYPES:
             raise HTTPException(status_code=400, detail="该资源类型不支持设备维度参数")
         if not dev or not dev.isdigit():
             raise HTTPException(
                 status_code=400,
-                detail=f"青藤资源类型格式应为 {base}:<设备ID>",
+                detail=f"该资源类型格式应为 {base}:<设备ID>",
             )
         return base, meta, int(dev)
     return base, meta, None
@@ -298,9 +320,11 @@ def _model(resource_type: str):
 
 
 def _device_filter(model, base: str, device_id: int | None):
-    """青藤模型按设备维度过滤（None 表示全部设备）。其它类型返回 None。"""
+    """设备维度过滤（青藤 / 天擎）；None 表示全部设备，其它类型返回 None。"""
     if base in QINGTENG_DEVICE_TYPES and device_id is not None:
         return model.qingteng_device_id == device_id
+    if base == "tianqing_endpoint" and device_id is not None:
+        return model.tianqing_device_id == device_id
     return None
 
 
@@ -361,6 +385,11 @@ def _columns(resource_type: str, module: str = "") -> list[dict]:
         return _qt_component_columns()
     if base == "qingteng_asset":
         return _qt_asset_columns(module)
+    if base == "tianqing_endpoint":
+        return [
+            {"key": k, "label": TIANQING_FIELD_LABELS.get(k, k)}
+            for k in TIANQING_LIST_FIELDS
+        ]
     cols = []
     for key in RESOURCE_EXCEL_FIELDS[base]:
         cols.append({"key": key, "label": FIELD_LABELS.get(key, key)})
@@ -520,8 +549,10 @@ def infer_resource_type(filename: str, explicit: str) -> str:
 
 
 def _excel_columns(resource_type: str) -> list[dict]:
-    cols = []
     base, _, _ = _resolve_type(resource_type)
+    if base == "tianqing_endpoint":
+        return _columns(base)
+    cols = []
     for key in RESOURCE_EXCEL_FIELDS[base]:
         cols.append({"key": key, "label": FIELD_LABELS.get(key, key)})
     return cols
@@ -537,6 +568,7 @@ def _type_payload(code: str, meta: dict, device: Device | None = None) -> dict:
         "source_group": meta.get("source_group", "itsm_ops"),
         "excel_columns": _columns(real_code),
         "device_id": device.id if device else None,
+        "api_sync": bool(meta.get("api_sync")),
     }
 
 
@@ -614,6 +646,38 @@ def _qingteng_group_tables(db: Session, gcode: str, devices: list[Device]) -> li
     return tables
 
 
+def _tianqing_group_tables(db: Session, devices: list[Device]) -> list[dict]:
+    """天擎分组下按设备统计的数据表卡片。"""
+    model = RESOURCE_MODELS["tianqing_endpoint"]
+    columns = _columns("tianqing_endpoint")
+    tables = []
+    for dev in devices:
+        code = f"tianqing_endpoint:{dev.id}"
+        live = int(
+            db.query(func.count(model.id))
+            .filter(model.tianqing_device_id == dev.id)
+            .scalar() or 0
+        )
+        last_batch = (
+            db.query(GovCloudImportBatch)
+            .filter(GovCloudImportBatch.resource_type == code)
+            .order_by(GovCloudImportBatch.id.desc())
+            .first()
+        )
+        tables.append({
+            "code": code,
+            "label": dev.name,
+            "excel_name": dev.name,
+            "excel_columns": columns,
+            "total": live,
+            "consistent": _batch_consistent(live, last_batch),
+            "last_batch": last_batch.to_dict() if last_batch else None,
+            "device_id": dev.id,
+            "api_sync": True,
+        })
+    return tables
+
+
 @router.get("/meta")
 def govcloud_meta(
     db: Session = Depends(get_db),
@@ -623,14 +687,16 @@ def govcloud_meta(
     qingteng_host_tables = _qingteng_table_payloads(db, "qingteng_host", qingteng_devices)
     qingteng_component_tables = _qingteng_table_payloads(db, "qingteng_component", qingteng_devices)
     qingteng_asset_tables = _qingteng_table_payloads(db, "qingteng_asset", qingteng_devices)
+    tianqing_tables = _tianqing_group_tables(db, get_tianqing_devices(db))
     types = [
         _type_payload(code, meta)
         for code, meta in RESOURCE_TYPES.items()
-        if code not in QINGTENG_DEVICE_TYPES
+        if code not in DEVICE_DIMENSION_TYPES
     ]
     types.extend(qingteng_host_tables)
     types.extend(qingteng_component_tables)
     types.extend(qingteng_asset_tables)
+    types.extend(tianqing_tables)
     groups = []
     for gcode, gmeta in SOURCE_GROUPS.items():
         if gcode == "qingteng_host":
@@ -639,6 +705,8 @@ def govcloud_meta(
             tables, enabled = qingteng_component_tables, bool(qingteng_component_tables)
         elif gcode == "qingteng_asset":
             tables, enabled = qingteng_asset_tables, bool(qingteng_asset_tables)
+        elif gcode == "tianqing_endpoint":
+            tables, enabled = tianqing_tables, bool(tianqing_tables)
         else:
             tables = [t for t in types if t["source_group"] == gcode]
             enabled = bool(gmeta.get("enabled", True))
@@ -660,6 +728,7 @@ def govcloud_meta(
             **QINGTENG_FIELD_LABELS,
             **QINGTENG_COMPONENT_FIELD_LABELS,
             **QINGTENG_ASSET_FIELD_LABELS,
+            **TIANQING_FIELD_LABELS,
         },
     }
 
@@ -671,6 +740,7 @@ def govcloud_summary(
 ) -> dict:
     groups = []
     qingteng_devices = get_qingteng_devices(db)
+    tianqing_devices = get_tianqing_devices(db)
     for gcode, gmeta in SOURCE_GROUPS.items():
         tables = []
         if gcode in QINGTENG_DEVICE_TYPES:
@@ -686,8 +756,20 @@ def govcloud_summary(
                 "tables": tables,
             })
             continue
+        if gcode == "tianqing_endpoint":
+            tables = _tianqing_group_tables(db, tianqing_devices)
+            groups.append({
+                "code": gcode,
+                "label": gmeta["label"],
+                "index": gmeta.get("index", ""),
+                "enabled": bool(tianqing_devices),
+                "sort_order": gmeta.get("sort_order", 0),
+                "description": gmeta.get("description", ""),
+                "tables": tables,
+            })
+            continue
         for code, meta in RESOURCE_TYPES.items():
-            if meta.get("source_group") != gcode or code in QINGTENG_DEVICE_TYPES:
+            if meta.get("source_group") != gcode or code in DEVICE_DIMENSION_TYPES:
                 continue
             model = RESOURCE_MODELS[code]
             live = int(db.query(func.count(model.id)).scalar() or 0)
@@ -804,6 +886,11 @@ def export_govcloud_assets(
         labels = QINGTENG_ASSET_FIELD_LABELS
         extra_col = "payload"
         tail = QT_EXPORT_TAIL_COLUMNS
+    elif base == "tianqing_endpoint":
+        fields = list(TIANQING_ENDPOINT_FIELDS)
+        labels = TIANQING_FIELD_LABELS
+        extra_col = "extra"
+        tail = TQ_EXPORT_TAIL_COLUMNS
     else:
         fields = RESOURCE_EXCEL_FIELDS[base]
         labels = FIELD_LABELS
@@ -1005,10 +1092,16 @@ def import_govcloud_excel(
         raise HTTPException(status_code=413, detail="文件超过 200MB")
 
     rtype = infer_resource_type(filename, resource_type)
-    if rtype.split(":", 1)[0] in QINGTENG_DEVICE_TYPES:
+    rtype_base = rtype.split(":", 1)[0]
+    if rtype_base in QINGTENG_DEVICE_TYPES:
         raise HTTPException(
             status_code=400,
             detail="青藤主机/组件来自 API 同步（设备管理配置青藤设备后一键拉取），不支持 Excel 导入",
+        )
+    if rtype_base == "tianqing_endpoint":
+        raise HTTPException(
+            status_code=400,
+            detail="天擎终端为 API 同步来源（设备管理配置天擎设备后一键拉取），不支持 Excel 导入",
         )
     model = _model(rtype)
     started = time.perf_counter()
@@ -1769,3 +1862,87 @@ def qingteng_component_hosts(
             host["biz_group"] = host.get("biz_group") or rec.biz_group or ""
 
     return result
+
+
+# ============================================================================
+# 奇安信天擎终端同步
+# ============================================================================
+
+class TianqingSyncRequest(BaseModel):
+    """天擎终端同步请求：不传 device_ids 同步全部已启用的天擎设备。"""
+
+    device_ids: list[int] = Field(default_factory=list, description="天擎设备 ID 列表（空 = 全部）")
+    mode: str = Field("full", description="full 全量对齐 / incremental 增量 upsert 不删除")
+
+
+@router.post("/tianqing/sync")
+def sync_tianqing_endpoints(
+    payload: TianqingSyncRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "edit")),
+) -> dict:
+    """手动触发天擎终端同步：逐台登录 ODP，分页拉取全网终端入库。
+
+    - 凭据复用设备管理（auth_type=tianqing 的 api_url/AppKey/AppSecret）；
+    - oid/asset_id 通过 ODP ``/license_component/v1/get/asset`` 自动获取；
+    - 单台失败不阻断其它设备，逐台返回结果。
+    """
+    devices = get_tianqing_devices(db)
+    if payload.device_ids:
+        wanted = set(payload.device_ids)
+        devices = [d for d in devices if d.id in wanted]
+        missing = wanted - {d.id for d in devices}
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"天擎设备不存在或未启用: {sorted(missing)}，请到「设备管理」检查",
+            )
+    if not devices:
+        raise HTTPException(
+            status_code=400,
+            detail="没有已启用的天擎设备：请先在「设备管理」新建设备（认证方式选择「奇安信天擎」），"
+                   "配置 grpc-web 地址与 AppKey/AppSecret 后启用",
+        )
+
+    import_mode = payload.mode if payload.mode in ("full", "incremental") else "full"
+    results = []
+    for dev in devices:
+        try:
+            res = sync_device_endpoints(db, dev, user_id=user.id, mode=import_mode)
+            results.append({"success": True, **res})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("天擎同步失败: device=%s(%d) err=%s", dev.name, dev.id, exc)
+            results.append({
+                "success": False,
+                "device_id": dev.id,
+                "device_name": dev.name,
+                "import_mode": import_mode,
+                "error": str(exc),
+            })
+
+    ok_count = sum(1 for r in results if r.get("success"))
+    try:
+        log_audit(
+            db,
+            user_id=user.id,
+            username=user.username,
+            action="sync",
+            resource_type="asset_discovery",
+            detail=(
+                f"tianqing {import_mode} devices={len(devices)} ok={ok_count} "
+                f"failed={len(results) - ok_count}"
+            ),
+            ip_address=get_client_ip(request) if request else None,
+            result="success" if ok_count == len(results) else "partial",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("同步审计写入失败（忽略）: %s", exc)
+
+    return {
+        "success": ok_count == len(results),
+        "mode": import_mode,
+        "device_count": len(devices),
+        "ok_count": ok_count,
+        "results": results,
+    }

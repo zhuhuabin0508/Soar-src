@@ -12,6 +12,7 @@ export const DEVICE_TYPES = [
   { value: 'switch', label: '交换机', icon: Cpu },
   { value: 'cloud', label: '云平台', icon: Cloud },
   { value: 'qingteng', label: '青藤万相', icon: Cpu },
+  { value: 'tianqing', label: '奇安信天擎', icon: Cpu },
   { value: 'custom', label: '自定义', icon: Settings },
 ]
 export const DEVICE_TYPE_LABELS = Object.fromEntries(
@@ -95,6 +96,7 @@ export const DEVICE_AUTH_TYPES = [
   { value: 'oauth2', label: 'OAuth2' },
   { value: 'mtls', label: 'mTLS 双向证书' },
   { value: 'qingteng', label: '青藤签名 (JWT/Sign)' },
+  { value: 'tianqing', label: '奇安信天擎 (ODP)' },
   { value: 'sangfor_xdr', label: '深信服 XDR 联动码签名 (AK/SK)' },
 ]
 

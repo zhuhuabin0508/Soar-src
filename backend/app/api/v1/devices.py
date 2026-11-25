@@ -69,7 +69,7 @@ class DeviceBase(BaseModel):
     enabled: bool = Field(True, description="是否启用")
     description: str = Field("", description="设备描述")
     # v2 新增字段
-    auth_type: str = Field("api_key", description="认证方式: none/api_key/basic/bearer/oauth2/mtls/qingteng")
+    auth_type: str = Field("api_key", description="认证方式: none/api_key/basic/bearer/oauth2/mtls/qingteng/tianqing")
     timeout: int | None = Field(None, description="请求超时(秒)")
     max_retries: int | None = Field(None, description="最大重试次数")
     verify_tls: bool = Field(False, description="是否校验 TLS 证书")
@@ -207,6 +207,16 @@ def _test_device_connection(device: Device) -> tuple[bool, int | None, int | Non
             _qingteng_login(device, timeout=timeout, verify=verify)
             latency = int((time.perf_counter() - start) * 1000)
             return True, 200, latency, None, "online"
+        except Exception as exc:  # noqa: BLE001
+            return False, None, None, f"{type(exc).__name__}: {exc}", "abnormal"
+
+    # 奇安信天擎：获取 ODP 组织/资产 ID 并查询版本，验证 AppKey/AppSecret 与地址
+    if auth_type == "tianqing":
+        try:
+            from app.core.tianqing_asset_sync import test_tianqing_connection
+
+            info = test_tianqing_connection(device, timeout=timeout, verify=verify)
+            return True, 200, info.get("latency_ms"), None, "online"
         except Exception as exc:  # noqa: BLE001
             return False, None, None, f"{type(exc).__name__}: {exc}", "abnormal"
     # none/oauth2/mtls: 此处仅做基础连通性探测，不附加复杂认证

@@ -379,6 +379,36 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
             </div>
           )}
 
+          {form.auth_type === 'tianqing' && (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <label>
+                  <div className="mb-1 text-xs font-medium text-muted-foreground">AppKey</div>
+                  <input
+                    className={inputCls}
+                    value={form.api_key}
+                    onChange={(e) => set('api_key')(e.target.value)}
+                    placeholder="天擎应用 AppKey"
+                  />
+                </label>
+                <label>
+                  <div className="mb-1 text-xs font-medium text-muted-foreground">AppSecret</div>
+                  <input
+                    type="password"
+                    className={inputCls}
+                    value={form.password}
+                    onChange={(e) => set('password')(e.target.value)}
+                    placeholder="天擎应用 AppSecret"
+                  />
+                </label>
+              </div>
+              <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                API 地址请填天擎 <span className="font-medium text-foreground">grpc-web</span> 地址（一般端口 30081，不是控制台 30082）。
+                oid / asset_id 由系统自动获取，无需填写；编辑时 AppKey / AppSecret 留空表示不修改。
+              </div>
+            </div>
+          )}
+
           {form.auth_type === 'sangfor_xdr' && (
             <label className="block">
               <div className="mb-1 text-xs font-medium text-muted-foreground">联动码（AK/SK）</div>

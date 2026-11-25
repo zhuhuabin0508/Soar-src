@@ -52,6 +52,11 @@ export const govCloudApi = {
     method: 'POST',
     body: JSON.stringify({ device_ids: deviceIds, mode: mode === 'incremental' ? 'incremental' : 'full' }),
   }),
+  // 天擎终端同步：device_ids 为空同步全部已启用的天擎设备
+  syncTianqing: (deviceIds = [], mode = 'full') => request('/govcloud/tianqing/sync', {
+    method: 'POST',
+    body: JSON.stringify({ device_ids: deviceIds, mode: mode === 'incremental' ? 'incremental' : 'full' }),
+  }),
   // 青藤组件异步同步：返回每台设备的批次 ID，随后轮询 componentSyncStatus
   syncQingtengComponents: ({ deviceIds = [], mode = 'full', sources = [] } = {}) => request(
     '/govcloud/qingteng/component-sync',
