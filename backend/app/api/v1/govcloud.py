@@ -668,6 +668,7 @@ def _tianqing_group_tables(db: Session, devices: list[Device]) -> list[dict]:
             "code": code,
             "label": dev.name,
             "excel_name": dev.name,
+            "source_group": "tianqing_endpoint",
             "excel_columns": columns,
             "total": live,
             "consistent": _batch_consistent(live, last_batch),
@@ -708,7 +709,7 @@ def govcloud_meta(
         elif gcode == "tianqing_endpoint":
             tables, enabled = tianqing_tables, bool(tianqing_tables)
         else:
-            tables = [t for t in types if t["source_group"] == gcode]
+            tables = [t for t in types if t.get("source_group") == gcode]
             enabled = bool(gmeta.get("enabled", True))
         groups.append({
             "code": gcode,
