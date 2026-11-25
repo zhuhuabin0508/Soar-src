@@ -11,13 +11,20 @@ ODP 仅提供查询类接口，本模块收录文档中的全部查询能力（�
 - 请求体为 ODP GraphQL，``{{oid}}`` / ``{{asset_id}}`` 由执行器自动填充；
 - 其余 ``{{param}}`` 由动作参数渲染，参数在 params_schema 中声明。
 
-本模块仅维护 ODP 查询动作清单（便于对照文档与单测），不自动写入设备动作表；
-设备侧动作请在「设备管理 / 内置设备库」或前端界面自行配置。
+``ensure_tianqing_actions`` 幂等为所有 auth_type=tianqing 的设备补齐动作：
+按 action_type 判重，不覆盖用户已修改的同名动作。
 """
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.models.device import Device, DeviceAction
+
+logger = logging.getLogger(__name__)
 
 ODP_PROJECT = "skylar.business.odp"
 
@@ -538,3 +545,56 @@ TIANQING_ODP_ACTIONS: list[dict[str, Any]] = [
         ["relation_entitys: 终端评估明细"],
     ),
 ]
+
+
+def ensure_tianqing_actions(db: Session, device_ids: list[int] | None = None) -> int:
+    """幂等为天擎设备补齐 ODP 只读动作。
+
+    按 ``action_type`` 判重，不覆盖用户已存在的同名动作；新增动作统一为
+    ``auth_type=tianqing``、``category=query``、``risk_level=readonly``。
+
+    Returns:
+        新增动作条数。
+    """
+    query = db.query(Device).filter(Device.auth_type == "tianqing")
+    if device_ids:
+        query = query.filter(Device.id.in_(device_ids))
+    devices = query.order_by(Device.id).all()
+    if not devices:
+        return 0
+
+    added = 0
+    for device in devices:
+        existing = {
+            row[0]
+            for row in db.query(DeviceAction.action_type)
+            .filter(DeviceAction.device_id == device.id)
+            .all()
+        }
+        for spec in TIANQING_ODP_ACTIONS:
+            if spec["action_type"] in existing:
+                continue
+            db.add(
+                DeviceAction(
+                    device_id=device.id,
+                    name=spec["name"],
+                    action_type=spec["action_type"],
+                    http_method=spec["http_method"],
+                    api_path=spec["api_path"],
+                    params_schema=spec["params_schema"],
+                    headers=spec["headers"],
+                    body_template=spec["body_template"],
+                    auth_type=spec["auth_type"],
+                    enabled=True,
+                    description=spec["description"],
+                    category=spec["category"],
+                    risk_level=spec["risk_level"],
+                    version=spec["version"],
+                    example_response=spec.get("example_response"),
+                )
+            )
+            added += 1
+    if added:
+        db.commit()
+        logger.info("天擎 ODP 内置动作已补齐 %s 条（设备 %s 台）", added, len(devices))
+    return added

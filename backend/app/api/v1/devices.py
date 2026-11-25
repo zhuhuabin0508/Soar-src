@@ -258,6 +258,22 @@ def _test_device_connection(device: Device) -> tuple[bool, int | None, int | Non
     return False, None, None, last_error or "连接失败", "abnormal"
 
 
+def _ensure_tianqing_actions(db: Session, device: Device) -> None:
+    """天擎设备保存后幂等补齐 ODP 只读动作包（失败不影响设备保存）。"""
+    if device.auth_type != "tianqing":
+        return
+    try:
+        from app.core.tianqing_odp_actions import ensure_tianqing_actions
+
+        ensure_tianqing_actions(db, [device.id])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("天擎内置动作初始化失败（忽略）: %s", exc)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _apply_device_fields(device: Device, body: DeviceBase, *, is_create: bool) -> None:
     """将请求体字段写入设备对象。"""
     # SSRF 防护：写时校验 api_url（协议白名单 + 云元数据黑名单）
@@ -395,6 +411,8 @@ def create_device(
     db.add(device)
     db.commit()
     db.refresh(device)
+    # 天擎设备：自动补齐 ODP 只读动作包，新建后即可在设备详情测试/编排
+    _ensure_tianqing_actions(db, device)
     logger.info("设备已创建: id=%s", device.id)
     log_audit(
         db,
@@ -455,6 +473,8 @@ def update_device(
     _apply_device_fields(device, body, is_create=False)
     db.commit()
     db.refresh(device)
+    # 天擎设备：保存后幂等补齐 ODP 只读动作包（编辑凭据/地址不影响已有动作）
+    _ensure_tianqing_actions(db, device)
     logger.info("设备已更新: id=%s", device.id)
     log_audit(
         db,
