@@ -139,14 +139,21 @@ def _gql(
     *,
     timeout: float = 30,
     verify: bool = False,
+    client: httpx.Client | None = None,
 ) -> dict:
-    """执行天擎 ODP GraphQL 查询，返回 ``data``。"""
+    """执行天擎 ODP GraphQL 查询，返回 ``data``。
+
+    传入 ``client`` 时复用连接（软件清单按终端逐台查询，避免每台重复 TLS 握手）。
+    """
     base_url = _normalize_base_url(device)
     validate_outbound_url(base_url, field="天擎 api_url")
     url = f"{base_url}/Gql/S"
     payload = {"project": ODP_PROJECT, "query": query, "variables": {}}
-    with _http_client(timeout, verify) as client:
+    if client is not None:
         resp = client.post(url, headers=_sign_headers(device), json=payload)
+    else:
+        with _http_client(timeout, verify) as own_client:
+            resp = own_client.post(url, headers=_sign_headers(device), json=payload)
     if resp.status_code >= 400:
         raise RuntimeError(f"天擎 ODP 请求失败 HTTP {resp.status_code}: {resp.text[:300]}")
     try:

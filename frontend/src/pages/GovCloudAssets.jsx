@@ -21,6 +21,7 @@ const TYPE_ICONS = {
   e_government_network: Network,
   elastic_ip: Globe,
   tianqing_endpoint: Monitor,
+  tianqing_software: Package,
 }
 
 const SOURCE_ICONS = {
@@ -31,6 +32,7 @@ const SOURCE_ICONS = {
   qingteng_asset: Boxes,
   jiaotu_yunsuo: Shield,
   tianqing_endpoint: Monitor,
+  tianqing_software: Package,
 }
 
 function fmtTime(iso) {
@@ -532,7 +534,8 @@ export default function GovCloudAssets() {
   const isQingtengAsset = currentGroup?.code === 'qingteng_asset'
   const isQingtengApi = isQingteng || isQingtengComponent || isQingtengAsset
   const isTianqing = currentGroup?.code === 'tianqing_endpoint'
-  const isApiSync = isQingtengApi || isTianqing
+  const isTianqingSoftware = currentGroup?.code === 'tianqing_software'
+  const isApiSync = isQingtengApi || isTianqing || isTianqingSoftware
   const currentModuleLabel = currentTable?.modules?.find((m) => m.value === assetModule)?.label || ''
 
   const displayColumns = useMemo(() => {
@@ -757,6 +760,59 @@ export default function GovCloudAssets() {
     }
   }
 
+  // 天擎组件异步同步：逐台终端拉取已安装软件，终端量大时耗时较长
+  async function handleTianqingSoftwareSync() {
+    const deviceIds = currentTable?.device_id ? [currentTable.device_id] : []
+    setSyncing(true)
+    setSyncProgress({ status: 'pending', phase: '派发任务', percent: 0 })
+    syncPollRef.current = true
+    let lastStatus = null
+    try {
+      const result = await govCloudApi.syncTianqingSoftware({ deviceIds })
+      const batches = result?.batches || []
+      if (!batches.length) throw new Error('未创建同步批次')
+      const nameByBatch = new Map(batches.map((b) => [b.batch_id, b.device_name]))
+      // 逐台终端拉取，万级终端耗时较长：前端轮询 30 分钟，未完成则提示稍后刷新
+      const deadline = Date.now() + 30 * 60 * 1000
+      let final = null
+      while (syncPollRef.current && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 3000))
+        if (!syncPollRef.current) break
+        const statuses = await Promise.all(
+          batches.map((b) => govCloudApi.tianqingSoftwareSyncStatus({ batchId: b.batch_id })),
+        )
+        lastStatus = statuses.find((s) => s.status === 'running') || statuses[0]
+        setSyncProgress(lastStatus)
+        if (statuses.every((s) => ['success', 'partial', 'failed'].includes(s.status))) {
+          final = statuses
+          break
+        }
+      }
+      if (!final) {
+        toast.info(`天擎组件同步仍在后台进行（${lastStatus?.percent ?? 0}%），可稍后刷新查看进度`)
+        return
+      }
+      final.forEach((s) => {
+        const name = nameByBatch.get(s.id) || s.resource_type
+        if (s.status === 'failed') {
+          toast.error(`${name} 组件同步失败：${s.note || '未知错误'}`)
+        } else {
+          toast.success(
+            `${name} 组件同步${s.status === 'partial' ? '部分完成' : '完成'}：拉取 ${s.excel_rows} 条 / 库内 ${s.live_count} 条`,
+          )
+        }
+      })
+      setPage(1)
+      await load(1)
+    } catch (e) {
+      toast.error(e.message || '组件同步失败')
+    } finally {
+      syncPollRef.current = false
+      setSyncing(false)
+      setSyncProgress(null)
+    }
+  }
+
   // 青藤组件异步同步：创建批次后轮询进度（phase/percent），完成后刷新列表
   async function handleComponentSync() {
     const deviceIds = currentTable?.device_id ? [currentTable.device_id] : []
@@ -943,7 +999,7 @@ export default function GovCloudAssets() {
                   : `导出${currentTable?.excel_name || ' CSV'}`}
             </Button>
           )}
-          {canEdit && sourceEnabled && (isQingteng || isQingtengComponent || isQingtengAsset || isTianqing) ? (
+          {canEdit && sourceEnabled && (isQingteng || isQingtengComponent || isQingtengAsset || isTianqing || isTianqingSoftware) ? (
             <Button
               variant="primary"
               size="sm"
@@ -951,32 +1007,38 @@ export default function GovCloudAssets() {
               onClick={
                 isTianqing
                   ? handleTianqingSync
-                  : isQingtengAsset
-                    ? handleAssetModuleSync
-                    : isQingtengComponent ? handleComponentSync : handleSync
+                  : isTianqingSoftware
+                    ? handleTianqingSoftwareSync
+                    : isQingtengAsset
+                      ? handleAssetModuleSync
+                      : isQingtengComponent ? handleComponentSync : handleSync
               }
               title={
                 isTianqing
                   ? '登录设备管理中配置的天擎平台，通过 ODP 拉取全网终端清单入库'
-                  : isQingtengAsset
-                    ? '异步同步该设备的资产明细模块（当前 tab 有值时只同步该模块）'
-                    : isQingtengComponent
-                      ? '异步同步该青藤设备的组件清单（安装包 / 软件应用 / 数据库 / Jar 包 / Web 框架）'
-                      : '登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库'
+                  : isTianqingSoftware
+                    ? '按已同步的天擎终端逐台拉取已安装软件清单（终端量大时耗时较长）'
+                    : isQingtengAsset
+                      ? '异步同步该设备的资产明细模块（当前 tab 有值时只同步该模块）'
+                      : isQingtengComponent
+                        ? '异步同步该青藤设备的组件清单（安装包 / 软件应用 / 数据库 / Jar 包 / Web 框架）'
+                        : '登录设备管理中配置的青藤平台，API 拉取 linux / win 主机清单入库'
               }
             >
               {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
               {syncing
-                ? ((isQingtengComponent || isQingtengAsset) && syncProgress?.percent != null
+                ? ((isQingtengComponent || isQingtengAsset || isTianqingSoftware) && syncProgress?.percent != null
                   ? `同步中 ${syncProgress.percent}%`
                   : '同步中')
                 : isTianqing
                   ? '同步天擎终端'
-                  : isQingtengAsset
-                    ? (currentModuleLabel ? `同步${currentModuleLabel}` : '同步资产明细')
-                    : isQingtengComponent ? '同步组件' : `同步${currentTable?.excel_name || '青藤主机'}`}
+                  : isTianqingSoftware
+                    ? '同步天擎组件'
+                    : isQingtengAsset
+                      ? (currentModuleLabel ? `同步${currentModuleLabel}` : '同步资产明细')
+                      : isQingtengComponent ? '同步组件' : `同步${currentTable?.excel_name || '青藤主机'}`}
             </Button>
-          ) : canImport && sourceEnabled && !isTianqing ? (
+          ) : canImport && sourceEnabled && !isTianqing && !isTianqingSoftware ? (
             <Button
               variant="primary"
               size="sm"
@@ -1099,7 +1161,9 @@ export default function GovCloudAssets() {
                                 ? <Boxes className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
                                 : isTianqing
                                   ? <Monitor className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
-                                  : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
+                                  : isTianqingSoftware
+                                    ? <Package className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />
+                                    : <FileSpreadsheet className={`h-4 w-4 shrink-0 ${on ? 'text-primary' : 'text-primary/70'}`} />}
                           <span className={`truncate text-sm font-medium ${on ? 'text-primary' : 'text-foreground'}`}>
                             {t.excel_name || t.label}
                           </span>
@@ -1134,6 +1198,11 @@ export default function GovCloudAssets() {
                           API 同步 · 天擎终端
                         </div>
                       )}
+                      {isTianqingSoftware && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          API 同步 · 终端已安装软件
+                        </div>
+                      )}
                     </button>
                   )
                 })}
@@ -1159,6 +1228,26 @@ export default function GovCloudAssets() {
                         唯一 ID {(cons.unique_source_ids ?? 0).toLocaleString()} · 库内 {(cons.live_count ?? 0).toLocaleString()} ·
                         {fmtTime(cons.last_batch.created_at)}
                         {cons.last_batch.note ? ` · ${cons.last_batch.note}` : ''}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 异步同步进度：组件 / 资产明细 / 天擎组件等长任务展示阶段与百分比 */}
+              {syncing && syncProgress?.percent != null && (
+                <div className="mb-4 flex items-center gap-3 rounded-lg border border-info/30 bg-info/10 px-4 py-3 text-sm text-foreground">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-info" />
+                  <div className="min-w-0">
+                    <div className="font-medium">
+                      {syncProgress.phase || '同步中'} · {syncProgress.percent}%
+                      {syncProgress.stats?.terminals_total
+                        ? `（终端 ${syncProgress.stats.terminals_done || 0}/${syncProgress.stats.terminals_total}）`
+                        : ''}
+                    </div>
+                    {syncProgress.stats?.terminals_failed > 0 && (
+                      <div className="mt-0.5 text-xs text-warning">
+                        拉取失败终端 {syncProgress.stats.terminals_failed} 台，完成后保留其旧数据
                       </div>
                     )}
                   </div>
@@ -1195,9 +1284,11 @@ export default function GovCloudAssets() {
                   placeholder={
                     isQingtengAsset
                       ? `搜索${currentModuleLabel ? `「${currentModuleLabel}」` : '「资产明细」'}名称 / IP / 主机名`
-                      : isTianqing
-                        ? `搜索「${currentTable?.excel_name || '天擎终端'}」计算机名 / IP / MAC / 终端 ID`
-                        : `搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`
+                      : isTianqingSoftware
+                        ? `搜索「${currentTable?.excel_name || '天擎组件'}」软件名 / 版本 / 主机名 / IP`
+                        : isTianqing
+                          ? `搜索「${currentTable?.excel_name || '天擎终端'}」计算机名 / IP / MAC / 终端 ID`
+                          : `搜索「${currentTable?.excel_name || '当前表'}」名称 / IP / 部门 / CMDB ID`
                   }
                   value={keyword}
                   onChange={(v) => { setKeyword(v); setPage(1) }}
@@ -1266,7 +1357,7 @@ export default function GovCloudAssets() {
               ) : items.length === 0 ? (
                 <div className="min-h-0 flex-1 overflow-auto">
                 <EmptyState
-                  icon={isQingteng ? Server : isQingtengComponent ? Package : isQingtengAsset ? Boxes : isTianqing ? Monitor : FileSpreadsheet}
+                  icon={isQingteng ? Server : isQingtengComponent ? Package : isQingtengAsset ? Boxes : isTianqing ? Monitor : isTianqingSoftware ? Package : FileSpreadsheet}
                   title={keyword ? '未找到匹配的资产' : `${currentTable?.excel_name || '当前表'}暂无数据`}
                   description={
                     keyword
@@ -1279,7 +1370,9 @@ export default function GovCloudAssets() {
                             ? (canEdit ? '点击同步从青藤平台拉取资产明细' : '等待管理员从青藤平台同步资产明细')
                             : isTianqing
                               ? (canEdit ? '点击同步从天擎 ODP 拉取终端清单' : '等待管理员从天擎平台同步终端清单')
-                              : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
+                              : isTianqingSoftware
+                                ? (canEdit ? '点击同步按终端拉取已安装软件清单' : '等待管理员从天擎平台同步组件清单')
+                                : (canEdit ? '请导入对应全量爬取 Excel（Sheet「原始数据」）' : '等待管理员导入全量爬取结果')
                   }
                   bordered
                   action={
@@ -1290,6 +1383,10 @@ export default function GovCloudAssets() {
                     ) : canEdit && isTianqing ? (
                       <Button variant="primary" size="sm" disabled={syncing} onClick={handleTianqingSync}>
                         <RefreshCw className="h-3.5 w-3.5" /> 同步天擎终端
+                      </Button>
+                    ) : canEdit && isTianqingSoftware ? (
+                      <Button variant="primary" size="sm" disabled={syncing} onClick={handleTianqingSoftwareSync}>
+                        <RefreshCw className="h-3.5 w-3.5" /> 同步天擎组件
                       </Button>
                     ) : canEdit && isQingtengAsset ? (
                       <Button variant="primary" size="sm" disabled={syncing} onClick={handleAssetModuleSync}>

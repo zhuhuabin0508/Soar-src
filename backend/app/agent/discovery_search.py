@@ -32,6 +32,9 @@ _IP_COLUMNS = {
     # 青藤主机（API 同步）：以「连接 IP」为主检索字段，其余 IP 列兼容查询；
     # JSONB 兜底列叫 extra（非 extra_excel）
     "qingteng_host": ("connection_ip", "display_ip", "external_ip", "internal_ip", "proxy_ip"),
+    # 天擎终端 / 组件（API 同步）：终端以通信 IP 为主，组件行冗余IP便于直接检索
+    "tianqing_endpoint": ("ip", "report_ip"),
+    "tianqing_software": ("ip",),
 }
 _CIDR_COLUMNS = {
     "e_government_network": ("cidr",),
@@ -43,6 +46,14 @@ _TEXT_COLUMNS = {
     "e_government_network": ("instance_name", "inst_name", "name", "user_department", "applicant_department"),
     "elastic_ip": ("instance_name", "inst_name", "user_department", "applicant_department"),
     "qingteng_host": ("hostname", "biz_group", "charge_name", "remark", "qingteng_device_name", "host_location"),
+    "tianqing_endpoint": (
+        "computer_name", "login_account", "group_name", "client_id",
+        "os_name", "tianqing_device_name",
+    ),
+    "tianqing_software": (
+        "soft_name", "version", "corp", "computer_name", "ip",
+        "client_id", "tianqing_device_name",
+    ),
 }
 
 # 内部簿记字段：不透出给 Agent（原始 JSON 列 extra/extra_excel 在 _merge_type_fields 展开）

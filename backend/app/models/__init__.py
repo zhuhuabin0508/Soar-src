@@ -115,6 +115,7 @@ from app.models.role import Role
 from app.models.skill import Skill
 from app.models.system_config import SystemConfig
 from app.models.tianqing_endpoint import TianqingEndpointAsset
+from app.models.tianqing_software import TianqingSoftwareAsset
 from app.models.tool import Tool
 from app.models.tool_version import ToolVersion
 from app.models.user import User

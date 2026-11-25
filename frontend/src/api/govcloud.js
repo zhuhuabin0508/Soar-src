@@ -57,6 +57,23 @@ export const govCloudApi = {
     method: 'POST',
     body: JSON.stringify({ device_ids: deviceIds, mode: mode === 'incremental' ? 'incremental' : 'full' }),
   }),
+  // 天擎组件（终端软件）异步同步：逐台终端拉取，返回批次 ID 后轮询进度
+  syncTianqingSoftware: ({ deviceIds = [], mode = 'full' } = {}) => request(
+    '/govcloud/tianqing/software-sync',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        device_ids: deviceIds,
+        mode: mode === 'incremental' ? 'incremental' : 'full',
+      }),
+    },
+  ),
+  tianqingSoftwareSyncStatus: ({ batchId, deviceId } = {}) => {
+    const qs = new URLSearchParams()
+    if (batchId) qs.set('batch_id', String(batchId))
+    if (deviceId) qs.set('device_id', String(deviceId))
+    return request(`/govcloud/tianqing/software-sync/status?${qs.toString()}`)
+  },
   // 青藤组件异步同步：返回每台设备的批次 ID，随后轮询 componentSyncStatus
   syncQingtengComponents: ({ deviceIds = [], mode = 'full', sources = [] } = {}) => request(
     '/govcloud/qingteng/component-sync',
