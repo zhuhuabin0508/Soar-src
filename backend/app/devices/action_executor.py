@@ -603,6 +603,47 @@ def execute_device_action(
             # 签名可能为 GET 追加查询串，审计摘要更新为最终 URL
             request_summary = json.dumps({"url": url, "method": method}, ensure_ascii=False)
 
+    # 奇安信天擎 ODP：ZEUS-HMAC-SHA256 签名；自动获取并注入 oid / asset_id
+    if auth_type == "tianqing":
+        def _fail_tianqing(msg: str) -> dict[str, Any]:
+            logger.warning("天擎动作鉴权失败: %s", msg)
+            if not skip_log:
+                _record_device_call_isolated(
+                    dev_snap, act_snap, source=source,
+                    workflow_id=workflow_id, agent_id=agent_id,
+                    user_id=user_id, source_ip=source_ip,
+                    request_summary=request_summary, status="failed",
+                    latency_ms=0, error_message=msg,
+                )
+            return {"success": False, "status_code": None, "response_body": None,
+                    "error": msg, "latency_ms": 0}
+
+        try:
+            from app.core.tianqing_asset_sync import _sign_headers, get_asset_ids
+
+            oid, asset_id = get_asset_ids(dev_snap, timeout=timeout, verify=verify)
+            headers.update(_sign_headers(dev_snap))
+            headers["Content-Type"] = "application/json"
+
+            def _inject_ids(value):
+                if isinstance(value, dict):
+                    return {k: _inject_ids(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [_inject_ids(v) for v in value]
+                if isinstance(value, str):
+                    return value.replace("{{oid}}", oid).replace("{{asset_id}}", asset_id)
+                return value
+
+            req_body = _inject_ids(req_body)
+            if isinstance(req_body, dict):
+                req_body.setdefault("project", "skylar.business.odp")
+                req_body.setdefault("variables", {})
+        except Exception as exc:  # noqa: BLE001
+            return _fail_tianqing(f"{type(exc).__name__}: {exc}")
+        request_summary = json.dumps(
+            {"url": url, "method": method, "auth": "tianqing"}, ensure_ascii=False
+        )
+
     # 深信服 XDR：AK/SK 联动码签名；GET 参数转 Query，其余走 JSON 请求体。
     if auth_type == "sangfor_xdr":
         try:

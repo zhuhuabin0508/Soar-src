@@ -113,6 +113,9 @@ def _init_db() -> None:
             seed_builtin_device_templates(db)
             # 深信服 XDR 模板（安全告警 / 安全事件全部 OpenAPI 动作）独立幂等注册
             seed_sangfor_xdr_template(db)
+            # 天擎 ODP 只读动作包：为存量/新增天擎设备幂等补齐动作
+            from app.core.tianqing_odp_actions import ensure_tianqing_actions
+            ensure_tianqing_actions(db)
             db.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("内置设备库模板注册失败（忽略）: %s", exc)

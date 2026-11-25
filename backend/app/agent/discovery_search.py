@@ -35,6 +35,9 @@ _IP_COLUMNS = {
     # 天擎终端 / 组件（API 同步）：终端以通信 IP 为主，组件行冗余IP便于直接检索
     "tianqing_endpoint": ("ip", "report_ip"),
     "tianqing_software": ("ip",),
+    # 椒图：主机以内外网 IP 检索；明细行冗余主机 IP 便于直接查组件/端口
+    "jiaotu_host": ("intranet_ip", "extranet_ip"),
+    "jiaotu_asset": ("intranet_ip", "extranet_ip"),
 }
 _CIDR_COLUMNS = {
     "e_government_network": ("cidr",),
@@ -53,6 +56,14 @@ _TEXT_COLUMNS = {
     "tianqing_software": (
         "soft_name", "version", "corp", "computer_name", "ip",
         "client_id", "tianqing_device_name",
+    ),
+    "jiaotu_host": (
+        "machine_name", "machine_uuid", "os_name", "cpu",
+        "intranet_ip", "extranet_ip", "jiaotu_device_name",
+    ),
+    "jiaotu_asset": (
+        "machine_name", "name", "version", "protocol", "path",
+        "intranet_ip", "module", "jiaotu_device_name",
     ),
 }
 

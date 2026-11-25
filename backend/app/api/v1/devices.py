@@ -69,7 +69,7 @@ class DeviceBase(BaseModel):
     enabled: bool = Field(True, description="是否启用")
     description: str = Field("", description="设备描述")
     # v2 新增字段
-    auth_type: str = Field("api_key", description="认证方式: none/api_key/basic/bearer/oauth2/mtls/qingteng/tianqing")
+    auth_type: str = Field("api_key", description="认证方式: none/api_key/basic/bearer/oauth2/mtls/qingteng/tianqing/jiaotu")
     timeout: int | None = Field(None, description="请求超时(秒)")
     max_retries: int | None = Field(None, description="最大重试次数")
     verify_tls: bool = Field(False, description="是否校验 TLS 证书")
@@ -216,6 +216,16 @@ def _test_device_connection(device: Device) -> tuple[bool, int | None, int | Non
             from app.core.tianqing_asset_sync import test_tianqing_connection
 
             info = test_tianqing_connection(device, timeout=timeout, verify=verify)
+            return True, 200, info.get("latency_ms"), None, "online"
+        except Exception as exc:  # noqa: BLE001
+            return False, None, None, f"{type(exc).__name__}: {exc}", "abnormal"
+
+    # 奇安信椒图云锁：拉取 1 台主机验证授权码与地址
+    if auth_type == "jiaotu":
+        try:
+            from app.core.jiaotu_asset_sync import test_jiaotu_connection
+
+            info = test_jiaotu_connection(device, timeout=timeout, verify=verify)
             return True, 200, info.get("latency_ms"), None, "online"
         except Exception as exc:  # noqa: BLE001
             return False, None, None, f"{type(exc).__name__}: {exc}", "abnormal"
@@ -385,6 +395,15 @@ def create_device(
     db.add(device)
     db.commit()
     db.refresh(device)
+    # 天擎设备：自动补齐 ODP 只读动作包，新建后即可在设备详情测试/编排
+    if device.auth_type == "tianqing":
+        try:
+            from app.core.tianqing_odp_actions import ensure_tianqing_actions
+
+            ensure_tianqing_actions(db, [device.id])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("天擎内置动作初始化失败（忽略）: %s", exc)
+            db.rollback()
     logger.info("设备已创建: id=%s", device.id)
     log_audit(
         db,
@@ -445,6 +464,15 @@ def update_device(
     _apply_device_fields(device, body, is_create=False)
     db.commit()
     db.refresh(device)
+    # 天擎设备：保存后幂等补齐 ODP 只读动作包（编辑凭据/地址不影响已有动作）
+    if device.auth_type == "tianqing":
+        try:
+            from app.core.tianqing_odp_actions import ensure_tianqing_actions
+
+            ensure_tianqing_actions(db, [device.id])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("天擎内置动作初始化失败（忽略）: %s", exc)
+            db.rollback()
     logger.info("设备已更新: id=%s", device.id)
     log_audit(
         db,

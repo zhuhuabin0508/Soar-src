@@ -409,6 +409,25 @@ export function DeviceFormModal({ open, initial, onClose, onSubmit, saving, onTe
             </div>
           )}
 
+          {form.auth_type === 'jiaotu' && (
+            <label className="block">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">授权码（产品联动 Token）</div>
+              <input
+                className={inputCls}
+                type={showApiKey ? 'text' : 'password'}
+                value={form.api_key}
+                onChange={(e) => set('api_key')(e.target.value)}
+                placeholder="椒图云锁产品联动授权码"
+                autoComplete="off"
+              />
+              <div className="mt-1 text-xs text-muted-foreground">
+                API 地址填云锁管理中心地址（如 https://10.132.0.1:443，无需 /api）；
+                Token 在云锁控制台「后台设置 → 产品联动」获取。
+                {initial?.id ? ' 编辑时留空表示不修改。' : ''}
+              </div>
+            </label>
+          )}
+
           {form.auth_type === 'sangfor_xdr' && (
             <label className="block">
               <div className="mb-1 text-xs font-medium text-muted-foreground">联动码（AK/SK）</div>

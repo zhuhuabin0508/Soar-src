@@ -36,6 +36,7 @@ from app.core.qingteng_asset_sync import get_qingteng_devices, sync_device_hosts
 from app.core.qingteng_component_search import search_components
 from app.core.qingteng_cve import query_cve_hosts
 from app.core.qingteng_realtime import REALTIME_MODULES, realtime_query
+from app.core.jiaotu_asset_sync import get_jiaotu_devices
 from app.core.tianqing_asset_sync import get_tianqing_devices, sync_device_endpoints
 from app.core.timezone import beijing_now
 from app.database import get_db
@@ -63,6 +64,20 @@ from app.models.qingteng_asset_item import (
     QINGTENG_ASSET_FIELDS,
     QINGTENG_ASSET_LIST_FIELDS,
 )
+from app.models.jiaotu_asset_item import (
+    JIAOTU_ASSET_FIELD_LABELS,
+    JIAOTU_ASSET_FIELDS,
+    JIAOTU_ASSET_LIST_FIELDS,
+    JIAOTU_MODULE_LABELS,
+    JIAOTU_MODULES,
+    JiaotuAssetItem,
+)
+from app.models.jiaotu_host import (
+    JIAOTU_HOST_FIELD_LABELS,
+    JIAOTU_HOST_FIELDS,
+    JIAOTU_HOST_LIST_FIELDS,
+    JiaotuHostAsset,
+)
 from app.models.tianqing_endpoint import (
     TIANQING_ENDPOINT_FIELDS,
     TIANQING_FIELD_LABELS,
@@ -79,6 +94,7 @@ from app.tasks.qingteng_component_tasks import (
     sync_qingteng_components,
     sync_qingteng_modules,
 )
+from app.tasks.jiaotu_asset_tasks import sync_jiaotu_assets
 from app.tasks.tianqing_software_tasks import sync_tianqing_software
 
 logger = logging.getLogger(__name__)
@@ -125,6 +141,30 @@ RESOURCE_TYPES = {
             "instance_name", "inst_name", "ip_address", "floatip_address",
             "user_department", "applicant_department", "source_id",
         ),
+    },
+    # 椒图云锁：凭据来自设备管理（auth_type=jiaotu），API 拉取主机与资产明细。
+    # resource_type 实际取值带设备维度："jiaotu_host:<设备ID>" / "jiaotu_asset:<设备ID>"
+    "jiaotu_host": {
+        "label": "椒图主机",
+        "excel_name": "椒图云锁主机资产",
+        "source_group": "jiaotu_host",
+        "filename_hints": (),
+        "search_fields": (
+            "machine_name", "intranet_ip", "extranet_ip", "machine_uuid",
+            "os_name", "cpu", "jiaotu_device_name",
+        ),
+        "api_sync": True,
+    },
+    "jiaotu_asset": {
+        "label": "椒图资产明细",
+        "excel_name": "椒图云锁资产明细",
+        "source_group": "jiaotu_asset",
+        "filename_hints": (),
+        "search_fields": (
+            "name", "name_norm", "version", "machine_name", "intranet_ip",
+            "protocol", "path", "module", "jiaotu_device_name",
+        ),
+        "api_sync": True,
     },
     # 奇安信天擎终端：凭据来自设备管理（auth_type=tianqing），ODP API 拉取入库。
     # resource_type 实际取值带设备维度："tianqing_endpoint:<设备ID>"（每台天擎一张数据表卡片）。
@@ -193,10 +233,18 @@ RESOURCE_MODELS["qingteng_host"] = QingtengHostAsset
 RESOURCE_MODELS["qingteng_component"] = QingtengComponentAsset
 RESOURCE_MODELS["qingteng_asset"] = QingtengAssetItem
 RESOURCE_MODELS["tianqing_software"] = TianqingSoftwareAsset
+RESOURCE_MODELS["jiaotu_host"] = JiaotuHostAsset
+RESOURCE_MODELS["jiaotu_asset"] = JiaotuAssetItem
 
-# 支持 "<类型>:<设备ID>" 后缀的资产类型（青藤 + 天擎）
+# 支持 "<类型>:<设备ID>" 后缀的资产类型（青藤 + 天擎 + 椒图）
 QINGTENG_DEVICE_TYPES = ("qingteng_host", "qingteng_component", "qingteng_asset")
-DEVICE_DIMENSION_TYPES = (*QINGTENG_DEVICE_TYPES, "tianqing_endpoint", "tianqing_software")
+JIAOTU_DEVICE_TYPES = ("jiaotu_host", "jiaotu_asset")
+DEVICE_DIMENSION_TYPES = (
+    *QINGTENG_DEVICE_TYPES,
+    *JIAOTU_DEVICE_TYPES,
+    "tianqing_endpoint",
+    "tianqing_software",
+)
 
 SOURCE_GROUPS = {
     "itsm_ops": {
@@ -234,25 +282,32 @@ SOURCE_GROUPS = {
         "sort_order": 3,
         "description": "按模块同步系统账号 / 用户组 / Web 应用 / Web 站点等资产明细，支持按模块 tab 浏览",
     },
-    "jiaotu_yunsuo": {
+    "jiaotu_host": {
         "label": "椒图云锁主机资产发现",
         "index": "1.3",
-        "enabled": False,
+        "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
         "sort_order": 4,
-        "description": "椒图云锁主机资产发现结果，后续接入",
+        "description": "登录设备管理中配置的椒图云锁平台（支持多台），API 拉取服务器清单与硬件概况",
+    },
+    "jiaotu_asset": {
+        "label": "椒图云锁资产明细",
+        "index": "1.3.1",
+        "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
+        "sort_order": 5,
+        "description": "按主机同步安装包 / 端口 / 进程 / 数据库 / Web 服务 / Web 框架 / 账号等资产明细",
     },
     "tianqing_endpoint": {
         "label": "天擎终端资产发现",
         "index": "1.4",
         "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
-        "sort_order": 5,
+        "sort_order": 6,
         "description": "登录设备管理中配置的奇安信天擎平台（ODP），API 拉取终端基础信息、在线状态与版本",
     },
     "tianqing_software": {
         "label": "天擎组件资产发现",
         "index": "1.4.1",
         "enabled": False,  # 实际启用状态按设备列表动态派生（meta/summary 内覆盖）
-        "sort_order": 6,
+        "sort_order": 7,
         "description": "按天擎终端逐台拉取已安装软件清单（名称 / 版本 / 厂商 / 安装时间），支撑 CVE 版本匹配",
     },
 }
@@ -268,6 +323,8 @@ EXPORT_TAIL_COLUMNS = ("source_id", "created_at", "updated_at")
 QT_EXPORT_TAIL_COLUMNS = ("source_id", "qingteng_device_name", "created_at", "updated_at")
 # 天擎导出尾部业务列
 TQ_EXPORT_TAIL_COLUMNS = ("source_id", "tianqing_device_name", "created_at", "updated_at")
+# 椒图导出尾部业务列
+JT_EXPORT_TAIL_COLUMNS = ("source_id", "jiaotu_device_name", "created_at", "updated_at")
 
 
 def _keyword_clauses(model, meta: dict, kw: str) -> list:
@@ -353,6 +410,8 @@ def _device_filter(model, base: str, device_id: int | None):
         return model.qingteng_device_id == device_id
     if base in ("tianqing_endpoint", "tianqing_software") and device_id is not None:
         return model.tianqing_device_id == device_id
+    if base in JIAOTU_DEVICE_TYPES and device_id is not None:
+        return model.jiaotu_device_id == device_id
     return None
 
 
@@ -405,6 +464,67 @@ def _qt_asset_columns(module: str = "") -> list[dict]:
     ]
 
 
+# 椒图资产明细：按模块的列表列定义（模块 tab 切换时复用）
+_JIAOTU_ASSET_MODULE_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "install_package": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "安装包"), ("version", "版本"), ("releaseNo", "发布号"),
+        ("installTime", "安装时间"), ("publisher", "厂商"), ("path", "安装路径"),
+        ("packageSizeStr", "大小"),
+    ],
+    "port": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "进程名"), ("port", "端口"), ("protocol", "协议"), ("status", "状态"),
+    ],
+    "process": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "进程名"), ("version", "版本"), ("start_user", "运行用户"), ("pid", "PID"),
+    ],
+    "database": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "数据库"), ("version", "版本"), ("port", "端口"),
+        ("path", "绑定 IP"), ("start_user", "运行用户"),
+    ],
+    "web_server": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "Web 服务"), ("version", "版本"), ("port", "端口"),
+        ("path", "进程路径"), ("start_user", "运行用户"), ("status", "服务类型"),
+    ],
+    "web_frame": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "Web 框架"), ("version", "版本"), ("path", "框架路径"),
+    ],
+    "account": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "账号名"), ("status", "角色"), ("lastLoginTime", "最后登录"),
+    ],
+    "network_connection": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "进程名"), ("protocol", "协议"), ("path", "连接"), ("status", "连接状态"),
+    ],
+    "start_service": [
+        ("machine_name", "服务器名"), ("intranet_ip", "内网 IP"), ("os_type", "系统类型"),
+        ("name", "服务名"), ("status", "启动状态"), ("path", "脚本路径"),
+        ("publisher", "发布者"),
+    ],
+}
+
+
+def _jiaotu_asset_columns(module: str = "") -> list[dict]:
+    """椒图资产明细列表页展示列；指定模块时按模块字段展示。"""
+    columns = _JIAOTU_ASSET_MODULE_COLUMNS.get(module)
+    if columns:
+        return [{"key": k, "label": label} for k, label in columns]
+    return [
+        {"key": k, "label": JIAOTU_ASSET_FIELD_LABELS.get(k, k)}
+        for k in JIAOTU_ASSET_LIST_FIELDS
+    ]
+
+
+def _jiaotu_module_tabs() -> list[dict]:
+    return [{"value": m, "label": JIAOTU_MODULE_LABELS[m]} for m in JIAOTU_MODULES]
+
+
 def _columns(resource_type: str, module: str = "") -> list[dict]:
     base, _, _ = _resolve_type(resource_type)
     if base == "qingteng_host":
@@ -413,6 +533,13 @@ def _columns(resource_type: str, module: str = "") -> list[dict]:
         return _qt_component_columns()
     if base == "qingteng_asset":
         return _qt_asset_columns(module)
+    if base == "jiaotu_host":
+        return [
+            {"key": k, "label": JIAOTU_HOST_FIELD_LABELS.get(k, k)}
+            for k in JIAOTU_HOST_LIST_FIELDS
+        ]
+    if base == "jiaotu_asset":
+        return _jiaotu_asset_columns(module)
     if base == "tianqing_endpoint":
         return [
             {"key": k, "label": TIANQING_FIELD_LABELS.get(k, k)}
@@ -716,6 +843,46 @@ def _tianqing_group_tables(
     return tables
 
 
+def _jiaotu_group_tables(
+    db: Session,
+    devices: list[Device],
+    base: str = "jiaotu_host",
+) -> list[dict]:
+    """椒图分组下按设备统计的数据表卡片（主机 / 资产明细共用）。"""
+    model = RESOURCE_MODELS[base]
+    columns = _columns(base)
+    tables = []
+    for dev in devices:
+        code = f"{base}:{dev.id}"
+        live = int(
+            db.query(func.count(model.id))
+            .filter(model.jiaotu_device_id == dev.id)
+            .scalar() or 0
+        )
+        last_batch = (
+            db.query(GovCloudImportBatch)
+            .filter(GovCloudImportBatch.resource_type == code)
+            .order_by(GovCloudImportBatch.id.desc())
+            .first()
+        )
+        table = {
+            "code": code,
+            "label": dev.name,
+            "excel_name": dev.name,
+            "source_group": base,
+            "excel_columns": columns,
+            "total": live,
+            "consistent": _batch_consistent(live, last_batch),
+            "last_batch": last_batch.to_dict() if last_batch else None,
+            "device_id": dev.id,
+            "api_sync": True,
+        }
+        if base == "jiaotu_asset":
+            table["modules"] = _jiaotu_module_tabs()
+        tables.append(table)
+    return tables
+
+
 @router.get("/meta")
 def govcloud_meta(
     db: Session = Depends(get_db),
@@ -728,6 +895,9 @@ def govcloud_meta(
     tianqing_devices = get_tianqing_devices(db)
     tianqing_tables = _tianqing_group_tables(db, tianqing_devices)
     tianqing_software_tables = _tianqing_group_tables(db, tianqing_devices, "tianqing_software")
+    jiaotu_devices = get_jiaotu_devices(db)
+    jiaotu_host_tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_host")
+    jiaotu_asset_tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_asset")
     types = [
         _type_payload(code, meta)
         for code, meta in RESOURCE_TYPES.items()
@@ -738,6 +908,8 @@ def govcloud_meta(
     types.extend(qingteng_asset_tables)
     types.extend(tianqing_tables)
     types.extend(tianqing_software_tables)
+    types.extend(jiaotu_host_tables)
+    types.extend(jiaotu_asset_tables)
     groups = []
     for gcode, gmeta in SOURCE_GROUPS.items():
         if gcode == "qingteng_host":
@@ -746,6 +918,10 @@ def govcloud_meta(
             tables, enabled = qingteng_component_tables, bool(qingteng_component_tables)
         elif gcode == "qingteng_asset":
             tables, enabled = qingteng_asset_tables, bool(qingteng_asset_tables)
+        elif gcode == "jiaotu_host":
+            tables, enabled = jiaotu_host_tables, bool(jiaotu_host_tables)
+        elif gcode == "jiaotu_asset":
+            tables, enabled = jiaotu_asset_tables, bool(jiaotu_asset_tables)
         elif gcode == "tianqing_endpoint":
             tables, enabled = tianqing_tables, bool(tianqing_tables)
         elif gcode == "tianqing_software":
@@ -773,6 +949,8 @@ def govcloud_meta(
             **QINGTENG_ASSET_FIELD_LABELS,
             **TIANQING_FIELD_LABELS,
             **TIANQING_SOFTWARE_FIELD_LABELS,
+            **JIAOTU_HOST_FIELD_LABELS,
+            **JIAOTU_ASSET_FIELD_LABELS,
         },
     }
 
@@ -785,6 +963,7 @@ def govcloud_summary(
     groups = []
     qingteng_devices = get_qingteng_devices(db)
     tianqing_devices = get_tianqing_devices(db)
+    jiaotu_devices = get_jiaotu_devices(db)
     for gcode, gmeta in SOURCE_GROUPS.items():
         tables = []
         if gcode in QINGTENG_DEVICE_TYPES:
@@ -795,6 +974,30 @@ def govcloud_summary(
                 "label": gmeta["label"],
                 "index": gmeta.get("index", ""),
                 "enabled": bool(qingteng_devices),
+                "sort_order": gmeta.get("sort_order", 0),
+                "description": gmeta.get("description", ""),
+                "tables": tables,
+            })
+            continue
+        if gcode == "jiaotu_host":
+            tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_host")
+            groups.append({
+                "code": gcode,
+                "label": gmeta["label"],
+                "index": gmeta.get("index", ""),
+                "enabled": bool(jiaotu_devices),
+                "sort_order": gmeta.get("sort_order", 0),
+                "description": gmeta.get("description", ""),
+                "tables": tables,
+            })
+            continue
+        if gcode == "jiaotu_asset":
+            tables = _jiaotu_group_tables(db, jiaotu_devices, "jiaotu_asset")
+            groups.append({
+                "code": gcode,
+                "label": gmeta["label"],
+                "index": gmeta.get("index", ""),
+                "enabled": bool(jiaotu_devices),
                 "sort_order": gmeta.get("sort_order", 0),
                 "description": gmeta.get("description", ""),
                 "tables": tables,
@@ -874,7 +1077,7 @@ def list_govcloud_assets(
     dev_filter = _device_filter(model, base, device_id)
     if dev_filter is not None:
         query = query.filter(dev_filter)
-    if module and base == "qingteng_asset":
+    if module and base in ("qingteng_asset", "jiaotu_asset"):
         query = query.filter(model.module == module)
     kw = keyword.strip()
     if kw:
@@ -919,7 +1122,7 @@ def export_govcloud_assets(
     kw_clauses = _keyword_clauses(model, meta, kw) if kw else []
     dev_filter = _device_filter(model, base, device_id)
     module_filter = (
-        model.module == module if module and base == "qingteng_asset" else None
+        model.module == module if module and base in ("qingteng_asset", "jiaotu_asset") else None
     )
 
     if base == "qingteng_host":
@@ -952,6 +1155,18 @@ def export_govcloud_assets(
         labels = TIANQING_SOFTWARE_FIELD_LABELS
         extra_col = "extra"
         tail = TQ_EXPORT_TAIL_COLUMNS
+    elif base == "jiaotu_host":
+        fields = list(JIAOTU_HOST_FIELDS)
+        labels = JIAOTU_HOST_FIELD_LABELS
+        extra_col = "extra"
+        tail = JT_EXPORT_TAIL_COLUMNS
+    elif base == "jiaotu_asset":
+        fields = ["module_label"] + [
+            f for f in JIAOTU_ASSET_FIELDS if f != "module"
+        ]
+        labels = JIAOTU_ASSET_FIELD_LABELS
+        extra_col = "payload"
+        tail = JT_EXPORT_TAIL_COLUMNS
     else:
         fields = RESOURCE_EXCEL_FIELDS[base]
         labels = FIELD_LABELS
@@ -1168,6 +1383,11 @@ def import_govcloud_excel(
         raise HTTPException(
             status_code=400,
             detail="天擎组件为 API 同步来源（按终端拉取已安装软件），不支持 Excel 导入",
+        )
+    if rtype_base in JIAOTU_DEVICE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="椒图云锁主机/资产明细为 API 同步来源（设备管理配置椒图设备后一键拉取），不支持 Excel 导入",
         )
     model = _model(rtype)
     started = time.perf_counter()
@@ -2194,5 +2414,217 @@ def tianqing_software_sync_status(
             .first()
         )
     if batch is None or not (batch.resource_type or "").startswith("tianqing_software:"):
+        raise HTTPException(status_code=404, detail="同步批次不存在")
+    return batch.to_dict()
+
+
+# ============================================================================
+# 奇安信椒图云锁资产异步同步（主机清单 + 资产明细）
+# ============================================================================
+
+class JiaotuSyncRequest(BaseModel):
+    """椒图资产同步请求：不传 device_ids 同步全部已启用的椒图设备。"""
+
+    device_ids: list[int] = Field(default_factory=list, description="椒图设备 ID 列表（空 = 全部）")
+    mode: str = Field("full", description="full 全量对齐 / incremental 增量 upsert 不删除")
+    limit: int = Field(
+        0, ge=0, le=100000,
+        description="仅同步前 N 台主机（0 = 全部；大于 0 时不做全量删除，供调试）",
+    )
+
+
+@router.post("/jiaotu/sync", status_code=202)
+def sync_jiaotu_assets_endpoint(
+    payload: JiaotuSyncRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "edit")),
+) -> dict:
+    """异步触发椒图主机与资产明细同步（Celery 任务 + 批次进度轮询）。
+
+    - 每台设备创建两个 pending 批次：``jiaotu_host:<ID>`` / ``jiaotu_asset:<ID>``；
+    - 同一设备已有 pending/running 批次时拒绝重复派发；
+    - 派发失败（Redis/Celery 未就绪）返回 503 并把批次置为 failed。
+    """
+    devices = get_jiaotu_devices(db)
+    if payload.device_ids:
+        wanted = set(payload.device_ids)
+        devices = [d for d in devices if d.id in wanted]
+        missing = wanted - {d.id for d in devices}
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"椒图设备不存在或未启用: {sorted(missing)}，请到「设备管理」检查",
+            )
+    if not devices:
+        raise HTTPException(
+            status_code=400,
+            detail="没有已启用的椒图设备：请先在「设备管理」配置并启用椒图云锁设备",
+        )
+
+    import_mode = payload.mode if payload.mode in ("full", "incremental") else "full"
+    device_ids = [d.id for d in devices]
+    active_types = [
+        f"{base}:{did}" for base in JIAOTU_DEVICE_TYPES for did in device_ids
+    ]
+    active_query = db.query(GovCloudImportBatch).filter(
+        GovCloudImportBatch.resource_type.in_(active_types),
+        GovCloudImportBatch.status.in_(("pending", "running")),
+    )
+    # 任务上限 3 小时，超过 4 小时仍未完成的批次视为失效
+    stale_before = beijing_now() - timedelta(hours=4)
+    stale = active_query.filter(GovCloudImportBatch.created_at < stale_before).all()
+    if stale:
+        for b in stale:
+            b.status = "failed"
+            b.phase = "超时"
+            b.percent = 100
+            b.note = "同步任务超过 4 小时未完成，已标记失败"
+        db.commit()
+    active = active_query.filter(GovCloudImportBatch.created_at >= stale_before).all()
+    if active:
+        busy_ids = {
+            int(b.resource_type.split(":", 1)[-1])
+            for b in active
+            if b.resource_type.split(":", 1)[-1].isdigit()
+        }
+        name_by_id = {d.id: d.name for d in devices}
+        names = "、".join(name_by_id.get(i, str(i)) for i in sorted(busy_ids))
+        raise HTTPException(
+            status_code=409,
+            detail=f"设备 {names} 已有椒图资产同步任务在运行，请等待完成后再试",
+        )
+
+    now = beijing_now()
+    batches: list[tuple[Device, GovCloudImportBatch, GovCloudImportBatch]] = []
+    for dev in devices:
+        host_batch = GovCloudImportBatch(
+            resource_type=f"jiaotu_host:{dev.id}",
+            filename=f"API同步主机:{dev.name}"[:300],
+            file_size=0,
+            excel_rows=0,
+            unique_source_ids=0,
+            inserted=0,
+            updated=0,
+            deleted=0,
+            skipped=0,
+            live_count=0,
+            consistent=0,
+            import_mode=import_mode,
+            status="pending",
+            phase="等待执行",
+            percent=0,
+            stats={},
+            note="",
+            created_by=user.id,
+            created_at=now,
+        )
+        asset_batch = GovCloudImportBatch(
+            resource_type=f"jiaotu_asset:{dev.id}",
+            filename=f"API同步资产:{dev.name}"[:300],
+            file_size=0,
+            excel_rows=0,
+            unique_source_ids=0,
+            inserted=0,
+            updated=0,
+            deleted=0,
+            skipped=0,
+            live_count=0,
+            consistent=0,
+            import_mode=import_mode,
+            status="pending",
+            phase="等待执行",
+            percent=0,
+            stats={},
+            note="",
+            created_by=user.id,
+            created_at=now,
+        )
+        db.add(host_batch)
+        db.add(asset_batch)
+        db.flush()
+        batches.append((dev, host_batch, asset_batch))
+    db.commit()
+
+    task_id = ""
+    try:
+        task = sync_jiaotu_assets.delay(
+            device_ids, user.id, import_mode, payload.limit,
+        )
+        task_id = str(getattr(task, "id", "") or "")
+        for _dev, host_batch, asset_batch in batches:
+            for batch in (host_batch, asset_batch):
+                batch.stats = {**(batch.stats or {}), "task_id": task_id}
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("椒图资产同步任务派发失败: %s", exc)
+        for _dev, host_batch, asset_batch in batches:
+            for batch in (host_batch, asset_batch):
+                batch.status = "failed"
+                batch.phase = "派发失败"
+                batch.percent = 100
+                batch.note = f"异步任务派发失败（Redis/Celery 未就绪）: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="椒图资产同步任务派发失败，请确认后台任务服务（Celery worker）已启动",
+        )
+
+    try:
+        log_audit(
+            db,
+            user_id=user.id,
+            username=user.username,
+            action="sync",
+            resource_type="asset_discovery",
+            detail=(
+                f"jiaotu {import_mode} devices={device_ids} "
+                f"limit={payload.limit} task={task_id}"
+            ),
+            ip_address=get_client_ip(request) if request else None,
+            result="success",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("同步审计写入失败（忽略）: %s", exc)
+
+    return {
+        "mode": import_mode,
+        "limit": payload.limit,
+        "task_id": task_id,
+        "batches": [
+            {
+                "device_id": dev.id,
+                "device_name": dev.name,
+                "host_batch_id": host_batch.id,
+                "asset_batch_id": asset_batch.id,
+                "status": host_batch.status,
+            }
+            for dev, host_batch, asset_batch in batches
+        ],
+    }
+
+
+@router.get("/jiaotu/sync/status")
+def jiaotu_sync_status(
+    batch_id: int | None = Query(None, description="批次 ID"),
+    device_id: int | None = Query(None, description="椒图设备 ID（取最近批次）"),
+    resource_type: str = Query("jiaotu_host", description="jiaotu_host / jiaotu_asset"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("asset_discovery", "view")),  # noqa: ARG001
+) -> dict:
+    """查询椒图同步批次进度（前端轮询）。"""
+    if batch_id is None and device_id is None:
+        raise HTTPException(status_code=400, detail="batch_id 与 device_id 至少传一个")
+    base = resource_type if resource_type in JIAOTU_DEVICE_TYPES else "jiaotu_host"
+    query = db.query(GovCloudImportBatch)
+    if batch_id is not None:
+        batch = query.filter(GovCloudImportBatch.id == batch_id).first()
+    else:
+        batch = (
+            query.filter(GovCloudImportBatch.resource_type == f"{base}:{device_id}")
+            .order_by(GovCloudImportBatch.id.desc())
+            .first()
+        )
+    if batch is None or not (batch.resource_type or "").startswith(tuple(f"{b}:" for b in JIAOTU_DEVICE_TYPES)):
         raise HTTPException(status_code=404, detail="同步批次不存在")
     return batch.to_dict()

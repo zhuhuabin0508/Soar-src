@@ -178,8 +178,12 @@ export default function DeviceOnboard() {
 
   // ===== 联动处置：API 地址拼接 =====
   const buildApiUrl = () => {
-    // 天擎：API 地址固定为 grpc-web 根地址（端口一般 30081），不拼接业务路径
+    // 天擎 / 椒图：API 地址固定为平台根地址，不拼接业务路径
     if (respForm.authType === 'tianqing') {
+      const proto = respForm.useHttps ? 'https' : 'http'
+      return `${proto}://${respForm.deviceIp}:${respForm.port}`
+    }
+    if (respForm.authType === 'jiaotu') {
       const proto = respForm.useHttps ? 'https' : 'http'
       return `${proto}://${respForm.deviceIp}:${respForm.port}`
     }
@@ -192,7 +196,7 @@ export default function DeviceOnboard() {
 
   // ===== 认证方式动态必填字段 =====
   const needUserPass = ['basic', 'qingteng'].includes(respForm.authType)
-  const needApiKey = ['api_key', 'bearer', 'sangfor_xdr', 'tianqing'].includes(respForm.authType)
+  const needApiKey = ['api_key', 'bearer', 'sangfor_xdr', 'tianqing', 'jiaotu'].includes(respForm.authType)
   const needPassword = needUserPass || respForm.authType === 'tianqing'
 
   // ===== 步骤校验（按 key） =====
@@ -218,7 +222,7 @@ export default function DeviceOnboard() {
       }
       case 'response': {
         if (validateSingleIP(respForm.deviceIp, '设备 IP')) return false
-        if (respForm.authType !== 'tianqing' && !respForm.apiPath.trim()) return false
+        if (respForm.authType !== 'tianqing' && respForm.authType !== 'jiaotu' && !respForm.apiPath.trim()) return false
         if (needUserPass && !respForm.username.trim()) return false
         if (needPassword && !respForm.password) return false
         if (needApiKey && !respForm.apiKey.trim()) return false
@@ -258,13 +262,16 @@ export default function DeviceOnboard() {
       if (devIpMsg) {
         toast.warning(devIpMsg); return false
       }
-      if (respForm.authType !== 'tianqing' && !respForm.apiPath.trim()) {
+      if (respForm.authType !== 'tianqing' && respForm.authType !== 'jiaotu' && !respForm.apiPath.trim()) {
         toast.warning('请填写 API 地址'); return false
       }
       if (needUserPass && !respForm.username.trim()) { toast.warning('请填写用户名'); return false }
       if (needPassword && !respForm.password) { toast.warning(respForm.authType === 'tianqing' ? '请填写 AppSecret' : '请填写密码'); return false }
       if (needApiKey && !respForm.apiKey.trim()) {
-        toast.warning(respForm.authType === 'tianqing' ? '请填写 AppKey' : '请填写 API Key'); return false
+        const msg = respForm.authType === 'tianqing'
+          ? '请填写 AppKey'
+          : respForm.authType === 'jiaotu' ? '请填写授权码 Token' : '请填写 API Key'
+        toast.warning(msg); return false
       }
     }
     return true
@@ -889,6 +896,7 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
   const [ipTouched, setIpTouched] = useState(false)
   const deviceIpError = validateSingleIP(form.deviceIp, '设备 IP')
   const isTianqing = form.authType === 'tianqing'
+  const isJiaotu = form.authType === 'jiaotu'
   return (
     <div className="space-y-4">
       {/* 连接配置 */}
@@ -920,6 +928,10 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
                 <div className="flex-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   天擎 ODP 固定使用 grpc-web 根地址；端口填 <span className="font-medium text-foreground">30081</span>（不是控制台 30082），无需填写 /api 路径。
                 </div>
+              ) : isJiaotu ? (
+                <div className="flex-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  椒图云锁使用管理中心根地址；端口一般 <span className="font-medium text-foreground">443</span>，无需填写 /api 路径。
+                </div>
               ) : (
                 <input className={inputCls} value={form.apiPath}
                   onChange={(e) => onChange({ apiPath: e.target.value })} placeholder="API 路径（如 /api）或完整 URL" />
@@ -940,8 +952,9 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
             <CompactSelect value={form.authType}
               onChange={(e) => {
                 const v = e.target.value
-                // 天擎固定 grpc-web 端口 30081，切换时自动带出
+                // 天擎固定 grpc-web 端口 30081；椒图固定 443
                 if (v === 'tianqing') onChange({ authType: v, port: 30081, useHttps: true })
+                else if (v === 'jiaotu') onChange({ authType: v, port: 443, useHttps: true })
                 else onChange({ authType: v })
               }} size="lg" block>
               {DEVICE_AUTH_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
@@ -960,6 +973,13 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
                   onChange={(e) => onChange({ password: e.target.value })} placeholder="天擎应用 AppSecret" />
               </div>
             </>
+          ) : isJiaotu ? (
+            <div className="col-span-2">
+              <label className={labelCls}>授权码（产品联动 Token）<span className="text-destructive">*</span></label>
+              <input type="password" className={inputCls} value={form.apiKey}
+                onChange={(e) => onChange({ apiKey: e.target.value })}
+                placeholder="椒图云锁产品联动授权码" autoComplete="off" />
+            </div>
           ) : (
             <>
               {needUserPass && (
@@ -996,6 +1016,11 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
         {isTianqing && (
           <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
             天擎使用 ODP 平台签名认证，oid / asset_id 由系统自动获取；同步入口在「资产发现 → 天擎终端资产发现」。
+          </div>
+        )}
+        {isJiaotu && (
+          <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            椒图使用云锁产品联动授权码认证；同步入口在「资产发现 → 1.3 椒图云锁主机资产发现」。
           </div>
         )}
         {(form.authType === 'oauth2' || form.authType === 'mtls') && (

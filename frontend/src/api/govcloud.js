@@ -74,6 +74,24 @@ export const govCloudApi = {
     if (deviceId) qs.set('device_id', String(deviceId))
     return request(`/govcloud/tianqing/software-sync/status?${qs.toString()}`)
   },
+  // 椒图云锁：主机清单 + 资产明细异步同步（每台设备两个批次，返回后轮询进度）
+  syncJiaotu: ({ deviceIds = [], mode = 'full' } = {}) => request(
+    '/govcloud/jiaotu/sync',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        device_ids: deviceIds,
+        mode: mode === 'incremental' ? 'incremental' : 'full',
+      }),
+    },
+  ),
+  jiaotuSyncStatus: ({ batchId, deviceId, resourceType = 'jiaotu_host' } = {}) => {
+    const qs = new URLSearchParams()
+    if (batchId) qs.set('batch_id', String(batchId))
+    if (deviceId) qs.set('device_id', String(deviceId))
+    qs.set('resource_type', resourceType)
+    return request(`/govcloud/jiaotu/sync/status?${qs.toString()}`)
+  },
   // 青藤组件异步同步：返回每台设备的批次 ID，随后轮询 componentSyncStatus
   syncQingtengComponents: ({ deviceIds = [], mode = 'full', sources = [] } = {}) => request(
     '/govcloud/qingteng/component-sync',

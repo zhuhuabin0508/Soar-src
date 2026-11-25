@@ -69,6 +69,8 @@ from app.models.log_receiver import (
     DeviceReceiveMetric,
     LogReceiver,
 )
+from app.models.jiaotu_asset_item import JiaotuAssetItem
+from app.models.jiaotu_host import JiaotuHostAsset
 from app.models.qingteng_host import QingtengHostAsset
 from app.models.qingteng_component import QingtengComponentAsset
 from app.models.qingteng_asset_item import QingtengAssetItem
