@@ -136,6 +136,8 @@ class JiaotuAssetItem(Base):
     __table_args__ = (
         UniqueConstraint("source_id", name="uq_jiaotu_asset_items_source"),
         Index("ix_jiaotu_asset_items_device_module", "jiaotu_device_id", "module"),
+        # 模块 tab 列表按设备 + 模块分页、按 id 排序
+        Index("ix_jiaotu_asset_items_device_module_id", "jiaotu_device_id", "module", "id"),
         Index("ix_jiaotu_asset_items_machine", "machine_uuid"),
         Index("ix_jiaotu_asset_items_ip", "intranet_ip"),
         Index("ix_jiaotu_asset_items_port", "port"),
@@ -174,6 +176,9 @@ class JiaotuAssetItem(Base):
 
     # 模块差异字段（如 releaseNo / pid / lastLoginTime / dstIp）
     payload = Column(JSONB, nullable=False, default=dict)
+
+    # 内容指纹：增量同步时用于跳过未变化行
+    row_hash = Column(String(40), nullable=False, default="")
 
     created_at = Column(DateTime, default=beijing_now)
     updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)

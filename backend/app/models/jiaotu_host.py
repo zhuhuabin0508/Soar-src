@@ -76,9 +76,16 @@ JIAOTU_HOST_FIELD_LABELS = {
     "jiaotu_device_name": "椒图平台",
 }
 
-# upsert 时需要更新的列（不含 source_id / 设备维度 / created_at）
+# upsert 时需要更新的列（硬件/os_name 由单机详情回填，避免主机清单覆盖为空）
 JIAOTU_HOST_UPDATE_COLS = [
-    *JIAOTU_HOST_FIELDS,
+    "machine_name",
+    "intranet_ip",
+    "extranet_ip",
+    "mac",
+    "os_type",
+    "online_status",
+    "agent_version",
+    "adv_version",
     "if_delete",
     "jiaotu_device_name",
     "extra",
@@ -125,6 +132,9 @@ class JiaotuHostAsset(Base):
 
     # 云锁未知字段兜底
     extra = Column(JSONB, nullable=False, default=dict)
+
+    # 内容指纹：增量同步时用于跳过未变化行（硬件字段由详情回填，不参与指纹）
+    row_hash = Column(String(40), nullable=False, default="")
 
     created_at = Column(DateTime, default=beijing_now)
     updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)

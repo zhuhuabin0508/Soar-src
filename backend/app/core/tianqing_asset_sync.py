@@ -25,9 +25,9 @@ from typing import Any, Optional
 
 import httpx
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app.core.asset_upsert import bulk_upsert
 from app.core.security import decrypt_device_secret, validate_outbound_url
 from app.core.timezone import beijing_now
 from app.devices.action_executor import record_device_call
@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 # 单页拉取条数：ODP 文档建议不超过 1000
 PAGE_SIZE = 1000
-# 入库分块
-UPSERT_CHUNK = 500
+# 入库分块：单行约 30 列，1000 行仍在 PostgreSQL 参数上限内
+UPSERT_CHUNK = 1000
 # 分页上限，防异常死循环（1000 条/页 x 500 页 = 50 万条）
 MAX_PAGES = 500
 # GraphQL 固定项目名
@@ -368,17 +368,7 @@ def sync_device_endpoints(
             values_map[values["source_id"]] = values
         unique_values = list(values_map.values())
         duplicate = len(entries) - skipped - len(unique_values)
-
-        existing_ids = {
-            r[0]
-            for r in db.query(TianqingEndpointAsset.source_id)
-            .filter(TianqingEndpointAsset.tianqing_device_id == device.id)
-            .all()
-        }
         unique_ids = set(values_map.keys())
-        inserted = len(unique_ids - existing_ids)
-        updated = len(unique_ids & existing_ids)
-        deleted = len(existing_ids - unique_ids) if import_mode == "full" else 0
 
         batch = GovCloudImportBatch(
             resource_type=f"tianqing_endpoint:{device.id}",
@@ -386,9 +376,9 @@ def sync_device_endpoints(
             file_size=0,
             excel_rows=len(entries),
             unique_source_ids=len(unique_ids),
-            inserted=inserted,
-            updated=updated,
-            deleted=deleted,
+            inserted=0,
+            updated=0,
+            deleted=0,
             skipped=skipped,
             live_count=0,
             consistent=0,
@@ -402,22 +392,29 @@ def sync_device_endpoints(
 
         for v in unique_values:
             v["batch_id"] = batch.id
-        update_cols = [c for c in TIANQING_UPDATE_COLS]
+        inserted = updated = 0
         for i in range(0, len(unique_values), UPSERT_CHUNK):
             chunk = unique_values[i:i + UPSERT_CHUNK]
-            stmt = insert(TianqingEndpointAsset).values(chunk)
-            excluded = stmt.excluded
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["source_id"],
-                set_={col: getattr(excluded, col) for col in update_cols},
+            chunk_inserted, chunk_updated = bulk_upsert(
+                db,
+                TianqingEndpointAsset,
+                chunk,
+                update_cols=TIANQING_UPDATE_COLS,
+                skip_unchanged=import_mode == "incremental",
             )
-            db.execute(stmt)
+            inserted += chunk_inserted
+            updated += chunk_updated
 
+        deleted = 0
         if import_mode == "full":
-            db.query(TianqingEndpointAsset).filter(
-                TianqingEndpointAsset.tianqing_device_id == device.id,
-                TianqingEndpointAsset.batch_id != batch.id,
-            ).delete(synchronize_session=False)
+            deleted = (
+                db.query(TianqingEndpointAsset)
+                .filter(
+                    TianqingEndpointAsset.tianqing_device_id == device.id,
+                    TianqingEndpointAsset.batch_id != batch.id,
+                )
+                .delete(synchronize_session=False)
+            )
 
         live = int(
             db.query(func.count(TianqingEndpointAsset.id))
@@ -439,6 +436,9 @@ def sync_device_endpoints(
             notes.append(f"同步后库内 {live} 与唯一 ID {len(unique_ids)} 不一致")
         batch.live_count = live
         batch.consistent = int(consistent)
+        batch.inserted = inserted
+        batch.updated = updated
+        batch.deleted = deleted
         batch.note = "；".join(notes)
 
         # 同步成功视为一次心跳：更新设备连接状态

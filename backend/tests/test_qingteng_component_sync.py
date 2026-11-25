@@ -252,6 +252,14 @@ class _FakeQuery:
         return self.db.scalars.pop(0) if self.db.scalars else 0
 
 
+class _FakeResult:
+    def __init__(self, count: int):
+        self.count = count
+
+    def scalars(self):
+        return [True] * self.count
+
+
 class _FakeDB:
     def __init__(self, scalars=None):
         self.batch = GovCloudImportBatch(
@@ -268,6 +276,13 @@ class _FakeDB:
 
     def execute(self, stmt):
         self.executed.append(stmt)
+        # bulk_upsert 通过 RETURNING 统计行数：按编译参数中的 source_id 数量模拟
+        try:
+            keys = stmt.compile().params
+            count = sum(1 for key in keys if key.startswith("source_id"))
+        except Exception:  # noqa: BLE001
+            count = 0
+        return _FakeResult(count)
 
     def add(self, obj):  # pragma: no cover - sync_device_components 不新增批次
         pass

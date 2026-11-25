@@ -14,8 +14,9 @@ from typing import Any, Optional
 
 import httpx
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+
+from app.core.asset_upsert import bulk_upsert
 
 from app.core.qingteng_component_sync import (
     UPSERT_CHUNK,
@@ -177,27 +178,25 @@ def _row_to_values(
     }
 
 
-def _flush_values(db: Session, values: list[dict], stats: dict[str, Any]) -> None:
-    """分块 upsert，并统计新增/更新条数。"""
+def _flush_values(
+    db: Session,
+    values: list[dict],
+    stats: dict[str, Any],
+    *,
+    skip_unchanged: bool = False,
+) -> None:
+    """分块 upsert；增量模式跳过内容未变化的行。"""
     if not values:
         return
-    source_ids = [v["source_id"] for v in values]
-    existing = {
-        r[0]
-        for r in db.query(QingtengAssetItem.source_id)
-        .filter(QingtengAssetItem.source_id.in_(source_ids))
-        .all()
-    }
-    stats["inserted"] = stats.get("inserted", 0) + len(set(source_ids) - existing)
-    stats["updated"] = stats.get("updated", 0) + len(set(source_ids) & existing)
-
-    stmt = insert(QingtengAssetItem).values(values)
-    excluded = stmt.excluded
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["source_id"],
-        set_={col: getattr(excluded, col) for col in QINGTENG_ASSET_UPDATE_COLS},
+    inserted, updated = bulk_upsert(
+        db,
+        QingtengAssetItem,
+        values,
+        update_cols=QINGTENG_ASSET_UPDATE_COLS,
+        skip_unchanged=skip_unchanged,
     )
-    db.execute(stmt)
+    stats["inserted"] = stats.get("inserted", 0) + inserted
+    stats["updated"] = stats.get("updated", 0) + updated
 
 
 def sync_device_modules(
@@ -275,9 +274,15 @@ def sync_device_modules(
                             module_ids.add(values["source_id"])
                             buffer.append(values)
                             if len(buffer) >= UPSERT_CHUNK:
-                                _flush_values(db, buffer, module_stats)
+                                _flush_values(
+                                    db, buffer, module_stats,
+                                    skip_unchanged=import_mode == "incremental",
+                                )
                                 buffer = []
-                    _flush_values(db, buffer, module_stats)
+                    _flush_values(
+                        db, buffer, module_stats,
+                        skip_unchanged=import_mode == "incremental",
+                    )
                     unique_ids |= module_ids
 
                     if module_stats["truncated"]:

@@ -165,6 +165,9 @@ class TianqingEndpointAsset(Base):
     # ODP 未知字段兜底（天擎升级新增字段不丢）
     extra = Column(JSONB, nullable=False, default=dict)
 
+    # 内容指纹：增量同步时用于跳过未变化行
+    row_hash = Column(String(40), nullable=False, default="")
+
     created_at = Column(DateTime, default=beijing_now)
     updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)
 

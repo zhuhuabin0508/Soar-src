@@ -90,6 +90,8 @@ class TianqingSoftwareAsset(Base):
     __table_args__ = (
         UniqueConstraint("source_id", name="uq_tianqing_software_source"),
         Index("ix_tianqing_software_device_client", "tianqing_device_id", "client_id"),
+        # 列表按设备分页、按 id 排序：复合索引避免大表排序
+        Index("ix_tianqing_software_device_id", "tianqing_device_id", "id"),
         Index(
             "ix_tianqing_software_name_trgm",
             "name_norm",
@@ -129,6 +131,9 @@ class TianqingSoftwareAsset(Base):
 
     # ODP 未知字段兜底
     extra = Column(JSONB, nullable=False, default=dict)
+
+    # 内容指纹：增量同步时用于跳过未变化行
+    row_hash = Column(String(40), nullable=False, default="")
 
     created_at = Column(DateTime, default=beijing_now)
     updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)

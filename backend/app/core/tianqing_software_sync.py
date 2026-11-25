@@ -14,16 +14,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app.core.asset_upsert import bulk_upsert
 from app.core.security import validate_outbound_url
 from app.core.tianqing_asset_sync import _fmt_ts, _gql, _http_client, get_asset_ids
 from app.core.timezone import beijing_now
@@ -42,12 +44,20 @@ logger = logging.getLogger(__name__)
 PAGE_SIZE = 1000
 # 单终端分页上限，防异常死循环（1000 条/页 x 20 页 = 2 万条软件）
 MAX_PAGES_PER_CLIENT = 20
-# 入库分块
-UPSERT_CHUNK = 500
+# 入库分块：单行约 30 列，1000 行仍在 PostgreSQL 参数上限内
+UPSERT_CHUNK = 1000
 # 进度落库间隔（秒）：终端逐台拉取，避免每台都 commit
 PROGRESS_COMMIT_SECONDS = 5.0
-# 并发拉取终端数：万级终端串行耗时过长；DB 写入仍在主线程，仅网络请求并行
-FETCH_CONCURRENCY = 8
+# 并发拉取终端数：可通过环境变量调节（默认 8，范围 1~32）
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+FETCH_CONCURRENCY = _env_int("TQ_SOFTWARE_CONCURRENCY", 8, 1, 32)
 FETCH_BATCH = FETCH_CONCURRENCY * 4
 # 失败终端明细最多保留条数（stats 仅用于排障展示）
 MAX_FAILED_DETAILS = 100
@@ -214,27 +224,25 @@ def _row_to_values(
     }
 
 
-def _flush_values(db: Session, values: list[dict], stats: dict[str, Any]) -> None:
-    """分块 upsert，并统计新增/更新条数。"""
+def _flush_values(
+    db: Session,
+    values: list[dict],
+    stats: dict[str, Any],
+    *,
+    skip_unchanged: bool = False,
+) -> None:
+    """分块 upsert；增量模式跳过内容未变化的行，降低写放大。"""
     if not values:
         return
-    source_ids = [v["source_id"] for v in values]
-    existing = {
-        r[0]
-        for r in db.query(TianqingSoftwareAsset.source_id)
-        .filter(TianqingSoftwareAsset.source_id.in_(source_ids))
-        .all()
-    }
-    stats["inserted"] = stats.get("inserted", 0) + len(set(source_ids) - existing)
-    stats["updated"] = stats.get("updated", 0) + len(set(source_ids) & existing)
-
-    stmt = insert(TianqingSoftwareAsset).values(values)
-    excluded = stmt.excluded
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["source_id"],
-        set_={col: getattr(excluded, col) for col in TIANQING_SOFTWARE_UPDATE_COLS},
+    inserted, updated = bulk_upsert(
+        db,
+        TianqingSoftwareAsset,
+        values,
+        update_cols=TIANQING_SOFTWARE_UPDATE_COLS,
+        skip_unchanged=skip_unchanged,
     )
-    db.execute(stmt)
+    stats["inserted"] = stats.get("inserted", 0) + inserted
+    stats["updated"] = stats.get("updated", 0) + updated
 
 
 def sync_device_software(
@@ -330,6 +338,14 @@ def sync_device_software(
         db.commit()
 
         now = beijing_now()
+        # 线程池只使用纯值快照，避免 Worker 线程访问已过期的 ORM 实例触发数据库刷新
+        device_snapshot = SimpleNamespace(
+            id=device.id,
+            name=device.name,
+            api_url=device.api_url,
+            api_key=device.api_key,
+            password=device.password,
+        )
         # 分批并发拉取终端软件；DB 写入仍在主线程顺序执行
         with _http_client(timeout, verify) as client, ThreadPoolExecutor(
             max_workers=FETCH_CONCURRENCY
@@ -342,7 +358,7 @@ def sync_device_software(
                         endpoint,
                         pool.submit(
                             fetch_client_software,
-                            device, oid, asset_id, str(endpoint.client_id or ""),
+                            device_snapshot, oid, asset_id, str(endpoint.client_id or ""),
                             timeout=timeout, verify=verify, client=client,
                         ),
                     )
@@ -371,7 +387,7 @@ def sync_device_software(
                         stats["rows"] += len(rows)
                         client_ids: set[str] = set()
                         for row in rows:
-                            values = _row_to_values(device, endpoint, row, batch.id, now)
+                            values = _row_to_values(device_snapshot, endpoint, row, batch.id, now)
                             if values is None:
                                 stats["skipped"] += 1
                                 continue
@@ -387,7 +403,10 @@ def sync_device_software(
                     batch.percent = min(96, 3 + int(93 * finished / total))
 
                     if len(buffer) >= UPSERT_CHUNK:
-                        _flush_values(db, list(buffer.values()), stats)
+                        _flush_values(
+                            db, list(buffer.values()), stats,
+                            skip_unchanged=import_mode == "incremental",
+                        )
                         buffer.clear()
                     if (
                         time.monotonic() - last_commit >= PROGRESS_COMMIT_SECONDS
@@ -398,7 +417,10 @@ def sync_device_software(
                         last_commit = time.monotonic()
 
         if buffer:
-            _flush_values(db, list(buffer.values()), stats)
+            _flush_values(
+                db, list(buffer.values()), stats,
+                skip_unchanged=import_mode == "incremental",
+            )
             buffer.clear()
 
         if len(failed_clients) == total:

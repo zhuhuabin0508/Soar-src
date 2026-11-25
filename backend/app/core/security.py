@@ -353,6 +353,18 @@ def ensure_columns(engine, table_name: str, columns: dict[str, str]) -> None:
 
 
 def _ensure_govcloud_search_indexes(engine) -> None:
+    # 增量同步内容指纹列（新表由 create_all 创建，老库在此补齐）
+    for table in (
+        "qingteng_hosts",
+        "qingteng_components",
+        "qingteng_asset_items",
+        "tianqing_endpoints",
+        "tianqing_software",
+        "jiaotu_hosts",
+        "jiaotu_asset_items",
+    ):
+        ensure_columns(engine, table, {"row_hash": "VARCHAR(40)"})
+
     btree_indexes = (
         ("ix_gch_ip", "govcloud_cloud_hosts", "ip_address"),
         ("ix_gch_fip", "govcloud_cloud_hosts", "floatip_address"),
@@ -419,6 +431,27 @@ def _ensure_govcloud_search_indexes(engine) -> None:
                 ))
         except Exception as exc:  # noqa: BLE001
             logger.warning("资产发现索引 %s 创建失败: %s", index_name, exc)
+
+    # API 资产表的大表复合索引（列表分页 + 全量清理）
+    composite_indexes = (
+        ("ix_tianqing_software_device_id", "tianqing_software", ("tianqing_device_id", "id")),
+        (
+            "ix_jiaotu_asset_items_device_module_id",
+            "jiaotu_asset_items",
+            ("jiaotu_device_id", "module", "id"),
+        ),
+    )
+    for index_name, table, columns in composite_indexes:
+        if not all(_ready(table, column) for column in columns):
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} "
+                    f"ON {table} ({', '.join(columns)})"
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("资产发现复合索引 %s 创建失败: %s", index_name, exc)
     trgm_ok = False
     try:
         with engine.begin() as conn:

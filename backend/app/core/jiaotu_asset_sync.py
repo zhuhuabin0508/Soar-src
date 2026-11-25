@@ -16,18 +16,20 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import httpx
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from app.core.asset_upsert import bulk_upsert
 from app.core.security import decrypt_device_secret, validate_outbound_url
 from app.core.timezone import beijing_now
 from app.devices.action_executor import record_device_call
@@ -49,10 +51,18 @@ logger = logging.getLogger(__name__)
 # 主机清单分页（云锁接口 currentPage / maxResults）
 PAGE_SIZE = 500
 MAX_PAGES = 200
-# 入库分块
-UPSERT_CHUNK = 500
-# 单主机详情并发与批次大小
-FETCH_CONCURRENCY = 8
+# 入库分块：单行字段较多，1000 行仍在 PostgreSQL 参数上限内
+UPSERT_CHUNK = 1000
+# 单主机详情并发与批次大小（可通过环境变量调节，默认 8，范围 1~32）
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+FETCH_CONCURRENCY = _env_int("JIAOTU_FETCH_CONCURRENCY", 8, 1, 32)
 FETCH_BATCH = FETCH_CONCURRENCY * 4
 # 进度落库间隔（秒）
 PROGRESS_COMMIT_SECONDS = 5.0
@@ -497,52 +507,54 @@ def _asset_values(
     }
 
 
-def _flush_hosts(db: Session, values: list[dict], stats: dict[str, Any]) -> None:
+def _flush_hosts(
+    db: Session,
+    values: list[dict],
+    stats: dict[str, Any],
+    *,
+    skip_unchanged: bool = False,
+) -> None:
     if not values:
         return
+    inserted = updated = 0
     for start in range(0, len(values), UPSERT_CHUNK):
         chunk = values[start:start + UPSERT_CHUNK]
-        source_ids = [v["source_id"] for v in chunk]
-        existing = {
-            r[0]
-            for r in db.query(JiaotuHostAsset.source_id)
-            .filter(JiaotuHostAsset.source_id.in_(source_ids))
-            .all()
-        }
-        stats["hosts_inserted"] = stats.get("hosts_inserted", 0) + len(set(source_ids) - existing)
-        stats["hosts_updated"] = stats.get("hosts_updated", 0) + len(set(source_ids) & existing)
-
-        stmt = insert(JiaotuHostAsset).values(chunk)
-        excluded = stmt.excluded
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["source_id"],
-            set_={col: getattr(excluded, col) for col in JIAOTU_HOST_UPDATE_COLS},
+        i, u = bulk_upsert(
+            db,
+            JiaotuHostAsset,
+            chunk,
+            update_cols=JIAOTU_HOST_UPDATE_COLS,
+            skip_unchanged=skip_unchanged,
         )
-        db.execute(stmt)
+        inserted += i
+        updated += u
+    stats["hosts_inserted"] = stats.get("hosts_inserted", 0) + inserted
+    stats["hosts_updated"] = stats.get("hosts_updated", 0) + updated
 
 
-def _flush_items(db: Session, values: list[dict], stats: dict[str, Any]) -> None:
+def _flush_items(
+    db: Session,
+    values: list[dict],
+    stats: dict[str, Any],
+    *,
+    skip_unchanged: bool = False,
+) -> None:
     if not values:
         return
+    inserted = updated = 0
     for start in range(0, len(values), UPSERT_CHUNK):
         chunk = values[start:start + UPSERT_CHUNK]
-        source_ids = [v["source_id"] for v in chunk]
-        existing = {
-            r[0]
-            for r in db.query(JiaotuAssetItem.source_id)
-            .filter(JiaotuAssetItem.source_id.in_(source_ids))
-            .all()
-        }
-        stats["inserted"] = stats.get("inserted", 0) + len(set(source_ids) - existing)
-        stats["updated"] = stats.get("updated", 0) + len(set(source_ids) & existing)
-
-        stmt = insert(JiaotuAssetItem).values(chunk)
-        excluded = stmt.excluded
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["source_id"],
-            set_={col: getattr(excluded, col) for col in JIAOTU_ASSET_UPDATE_COLS},
+        i, u = bulk_upsert(
+            db,
+            JiaotuAssetItem,
+            chunk,
+            update_cols=JIAOTU_ASSET_UPDATE_COLS,
+            skip_unchanged=skip_unchanged,
         )
-        db.execute(stmt)
+        inserted += i
+        updated += u
+    stats["inserted"] = stats.get("inserted", 0) + inserted
+    stats["updated"] = stats.get("updated", 0) + updated
 
 
 def _get_batch(db: Session, batch_id: int, expected_type: str) -> GovCloudImportBatch:
@@ -632,6 +644,8 @@ def sync_device_assets(
                 continue
             host_values[values["source_id"]] = values
         unique_hosts = len(host_values)
+        # 主机行数远小于明细（千级 vs 十万级）：始终刷新 batch_id，
+        # 保证后续详情阶段能准确圈定本轮主机；硬件字段不参与覆盖。
         _flush_hosts(db, list(host_values.values()), stats)
 
         deleted_hosts = 0
@@ -711,6 +725,14 @@ def sync_device_assets(
         buffer: dict[str, dict] = {}
         last_commit = time.monotonic()
         finished = 0
+        # 线程池只使用纯值快照，避免 Worker 线程访问已过期的 ORM 实例触发数据库刷新
+        device_snapshot = SimpleNamespace(
+            id=device.id,
+            name=device.name,
+            api_url=device.api_url,
+            api_key=device.api_key,
+            password=device.password,
+        )
         with _http_client(timeout, verify) as client, ThreadPoolExecutor(
             max_workers=FETCH_CONCURRENCY
         ) as pool:
@@ -726,7 +748,7 @@ def sync_device_assets(
                         host,
                         pool.submit(
                             fetch_host_detail,
-                            device, ip,
+                            device_snapshot, ip,
                             timeout=timeout, verify=verify, client=client,
                         ),
                         "",
@@ -765,7 +787,7 @@ def sync_device_assets(
                                 device.name, host.machine_name, exc,
                             )
                         else:
-                            _update_host_hardware(db, device.id, uuid, detail)
+                            _update_host_hardware(db, device_snapshot.id, uuid, detail)
                             local_ids: set[str] = set()
                             for module, spec in ASSET_MODULE_SPECS.items():
                                 items = detail.get(spec["key"]) or []
@@ -774,7 +796,7 @@ def sync_device_assets(
                                     if not isinstance(item, dict):
                                         continue
                                     values = _asset_values(
-                                        device, host, module, item,
+                                        device_snapshot, host, module, item,
                                         asset_batch.id, now,
                                     )
                                     if values is None:
@@ -798,7 +820,10 @@ def sync_device_assets(
                     asset_batch.percent = min(96, 2 + int(94 * finished / total_hosts))
 
                     if len(buffer) >= UPSERT_CHUNK:
-                        _flush_items(db, list(buffer.values()), stats)
+                        _flush_items(
+                            db, list(buffer.values()), stats,
+                            skip_unchanged=import_mode == "incremental",
+                        )
                         buffer.clear()
                     if (
                         time.monotonic() - last_commit >= PROGRESS_COMMIT_SECONDS
@@ -809,7 +834,10 @@ def sync_device_assets(
                         last_commit = time.monotonic()
 
         if buffer:
-            _flush_items(db, list(buffer.values()), stats)
+            _flush_items(
+                db, list(buffer.values()), stats,
+                skip_unchanged=import_mode == "incremental",
+            )
             buffer.clear()
 
         # 全量删除：本次未出现且主机详情处理成功的旧明细
