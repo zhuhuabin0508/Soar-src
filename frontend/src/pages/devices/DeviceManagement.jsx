@@ -187,6 +187,21 @@ function DeviceManagement() {
       const data = await devicesApi.list()
       const list = Array.isArray(data) ? data : []
       setDevices(list)
+      // 自动清理已删除设备的本地状态：展开态 / 动作缓存 / 勾选 / 分栏选中
+      const validIds = new Set(list.map((d) => d.id))
+      setExpandedIds((prev) => {
+        const next = prev.filter((id) => validIds.has(id))
+        return next.length === prev.length ? prev : next
+      })
+      setActionsMap((prev) => {
+        const next = {}
+        Object.entries(prev).forEach(([id, actions]) => {
+          if (validIds.has(Number(id))) next[id] = actions
+        })
+        return next
+      })
+      setCheckIds((prev) => prev.filter((id) => validIds.has(id)))
+      setSelectedId((prev) => (prev && !validIds.has(prev) ? null : prev))
       setError('')
       // 失败告警：状态由 online 变为 offline 时提示
       // 通过对比前后状态实现
@@ -199,6 +214,8 @@ function DeviceManagement() {
 
   // 用 ref 记录上次状态用于失败告警
   const prevStatusRef = useRef({})
+  // 刷新后恢复展开设备：只在设备列表首次加载完成后执行一次
+  const restoredExpandedRef = useRef(false)
   useEffect(() => {
     if (!devices.length) return
     const prev = prevStatusRef.current
@@ -224,6 +241,17 @@ function DeviceManagement() {
       const arr = Array.isArray(data) ? data : []
       setActionsMap((m) => ({ ...m, [deviceId]: arr }))
     } catch (err) {
+      // 设备已被删除（本地缓存了旧 ID / 其他用户删除）：清理展开态，不弹错误
+      const msg = String(err?.message || err || '')
+      if (err?.status === 404 || msg.includes('Device not found')) {
+        setExpandedIds((prev) => prev.filter((id) => id !== deviceId))
+        setActionsMap((m) => {
+          const c = { ...m }
+          delete c[deviceId]
+          return c
+        })
+        return
+      }
       toast.error(`加载动作失败：${err.message || err}`)
       setActionsMap((m) => ({ ...m, [deviceId]: [] }))
     } finally {
@@ -241,13 +269,18 @@ function DeviceManagement() {
     })
   }
 
-  // 组件挂载后：刷新页面会从 localStorage 恢复 expandedIds，但动作需重新拉取，
-  // 否则已展开设备在刷新后动作列表为空（表现为“动作消失”）。
+  // 刷新页面后恢复展开设备：等待设备列表首次加载完成，先剔除已删除设备再拉动作，
+  // 避免对历史缓存中的失效设备 ID 发请求产生「Device not found」
   useEffect(() => {
-    expandedIds.forEach((id) => loadActions(id))
-    // 仅挂载时执行一次（此时 expandedIds 已从 localStorage 恢复）
+    if (restoredExpandedRef.current || loading) return
+    restoredExpandedRef.current = true
+    const validIds = new Set(devices.map((d) => d.id))
+    const kept = expandedIds.filter((id) => validIds.has(id))
+    if (kept.length !== expandedIds.length) setExpandedIds(kept)
+    kept.forEach((id) => loadActions(id))
+    // 仅首次设备列表加载完成后执行
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [loading, devices])
 
   // 切换分栏视图选中
   const handleSelectDevice = (device) => {
@@ -286,14 +319,13 @@ function DeviceManagement() {
     if (!ok) return
     try {
       await devicesApi.remove(device.id)
-      if (selectedId === device.id) {
-        setSelectedId(null)
-        setActionsMap((m) => {
-          const c = { ...m }
-          delete c[device.id]
-          return c
-        })
-      }
+      // 清理动作缓存与展开/选中状态（无论当前是否选中该设备）
+      setActionsMap((m) => {
+        const c = { ...m }
+        delete c[device.id]
+        return c
+      })
+      if (selectedId === device.id) setSelectedId(null)
       setExpandedIds((prev) => prev.filter((id) => id !== device.id))
       setCheckIds((prev) => prev.filter((id) => id !== device.id))
       await loadDevices()
