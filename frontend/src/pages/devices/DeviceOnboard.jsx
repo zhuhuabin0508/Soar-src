@@ -178,6 +178,11 @@ export default function DeviceOnboard() {
 
   // ===== 联动处置：API 地址拼接 =====
   const buildApiUrl = () => {
+    // 天擎：API 地址固定为 grpc-web 根地址（端口一般 30081），不拼接业务路径
+    if (respForm.authType === 'tianqing') {
+      const proto = respForm.useHttps ? 'https' : 'http'
+      return `${proto}://${respForm.deviceIp}:${respForm.port}`
+    }
     const p = respForm.apiPath.trim()
     if (/^https?:\/\//i.test(p)) return p
     const proto = respForm.useHttps ? 'https' : 'http'
@@ -187,7 +192,8 @@ export default function DeviceOnboard() {
 
   // ===== 认证方式动态必填字段 =====
   const needUserPass = ['basic', 'qingteng'].includes(respForm.authType)
-  const needApiKey = ['api_key', 'bearer', 'sangfor_xdr'].includes(respForm.authType)
+  const needApiKey = ['api_key', 'bearer', 'sangfor_xdr', 'tianqing'].includes(respForm.authType)
+  const needPassword = needUserPass || respForm.authType === 'tianqing'
 
   // ===== 步骤校验（按 key） =====
   const canNext = () => {
@@ -212,8 +218,9 @@ export default function DeviceOnboard() {
       }
       case 'response': {
         if (validateSingleIP(respForm.deviceIp, '设备 IP')) return false
-        if (!respForm.apiPath.trim()) return false
-        if (needUserPass && (!respForm.username.trim() || !respForm.password)) return false
+        if (respForm.authType !== 'tianqing' && !respForm.apiPath.trim()) return false
+        if (needUserPass && !respForm.username.trim()) return false
+        if (needPassword && !respForm.password) return false
         if (needApiKey && !respForm.apiKey.trim()) return false
         return true
       }
@@ -251,10 +258,14 @@ export default function DeviceOnboard() {
       if (devIpMsg) {
         toast.warning(devIpMsg); return false
       }
-      if (!respForm.apiPath.trim()) { toast.warning('请填写 API 地址'); return false }
+      if (respForm.authType !== 'tianqing' && !respForm.apiPath.trim()) {
+        toast.warning('请填写 API 地址'); return false
+      }
       if (needUserPass && !respForm.username.trim()) { toast.warning('请填写用户名'); return false }
-      if (needUserPass && !respForm.password) { toast.warning('请填写密码'); return false }
-      if (needApiKey && !respForm.apiKey.trim()) { toast.warning('请填写 API Key'); return false }
+      if (needPassword && !respForm.password) { toast.warning(respForm.authType === 'tianqing' ? '请填写 AppSecret' : '请填写密码'); return false }
+      if (needApiKey && !respForm.apiKey.trim()) {
+        toast.warning(respForm.authType === 'tianqing' ? '请填写 AppKey' : '请填写 API Key'); return false
+      }
     }
     return true
   }
@@ -301,7 +312,7 @@ export default function DeviceOnboard() {
         auth_type: caps.response ? respForm.authType : 'none',
         api_key: caps.response && needApiKey ? respForm.apiKey : '',
         username: caps.response && needUserPass ? respForm.username.trim() : '',
-        password: caps.response && needUserPass ? respForm.password : '',
+        password: caps.response && needPassword ? respForm.password : '',
         timeout: caps.response ? Number(respForm.timeout) || 30 : null,
         max_retries: caps.response ? Number(respForm.maxRetries) || 2 : null,
         verify_tls: caps.response ? !!respForm.verifyTls : false,
@@ -877,6 +888,7 @@ function StepLogCollect({ form, onChange, receivers, strategies }) {
 function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
   const [ipTouched, setIpTouched] = useState(false)
   const deviceIpError = validateSingleIP(form.deviceIp, '设备 IP')
+  const isTianqing = form.authType === 'tianqing'
   return (
     <div className="space-y-4">
       {/* 连接配置 */}
@@ -904,8 +916,14 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
             <div className="flex items-center gap-2">
               <Switch checked={form.useHttps} onChange={(v) => onChange({ useHttps: v })} />
               <span className="whitespace-nowrap text-xs text-muted-foreground">{form.useHttps ? 'HTTPS' : 'HTTP'}</span>
-              <input className={inputCls} value={form.apiPath}
-                onChange={(e) => onChange({ apiPath: e.target.value })} placeholder="API 路径（如 /api）或完整 URL" />
+              {isTianqing ? (
+                <div className="flex-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  天擎 ODP 固定使用 grpc-web 根地址；端口填 <span className="font-medium text-foreground">30081</span>（不是控制台 30082），无需填写 /api 路径。
+                </div>
+              ) : (
+                <input className={inputCls} value={form.apiPath}
+                  onChange={(e) => onChange({ apiPath: e.target.value })} placeholder="API 路径（如 /api）或完整 URL" />
+              )}
             </div>
             <div className="mt-1 break-all text-xs text-muted-foreground">
               最终 API 基地址：<span className="font-mono text-foreground">{apiUrl || '--'}</span>
@@ -920,39 +938,66 @@ function StepResponse({ form, onChange, needUserPass, needApiKey, apiUrl }) {
           <div>
             <label className={labelCls}>认证方式</label>
             <CompactSelect value={form.authType}
-              onChange={(e) => onChange({ authType: e.target.value })} size="lg" block>
+              onChange={(e) => {
+                const v = e.target.value
+                // 天擎固定 grpc-web 端口 30081，切换时自动带出
+                if (v === 'tianqing') onChange({ authType: v, port: 30081, useHttps: true })
+                else onChange({ authType: v })
+              }} size="lg" block>
               {DEVICE_AUTH_TYPES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
             </CompactSelect>
           </div>
-          {needUserPass && (
+          {isTianqing ? (
             <>
               <div>
-                <label className={labelCls}>用户名 <span className="text-destructive">*</span></label>
-                <input className={inputCls} value={form.username}
-                  onChange={(e) => onChange({ username: e.target.value })} placeholder="登录用户名" />
+                <label className={labelCls}>AppKey <span className="text-destructive">*</span></label>
+                <input className={inputCls} value={form.apiKey}
+                  onChange={(e) => onChange({ apiKey: e.target.value })} placeholder="天擎应用 AppKey" />
               </div>
               <div>
-                <label className={labelCls}>密码 <span className="text-destructive">*</span></label>
+                <label className={labelCls}>AppSecret <span className="text-destructive">*</span></label>
                 <input type="password" className={inputCls} value={form.password}
-                  onChange={(e) => onChange({ password: e.target.value })} placeholder="登录密码" />
+                  onChange={(e) => onChange({ password: e.target.value })} placeholder="天擎应用 AppSecret" />
               </div>
             </>
-          )}
-          {needApiKey && (
-            <div>
-              <label className={labelCls}>
-                {form.authType === 'bearer'
-                  ? 'Bearer Token'
-                  : form.authType === 'sangfor_xdr'
-                    ? '联动码（AK/SK）'
-                    : 'API Key'} <span className="text-destructive">*</span>
-              </label>
-              <input type="password" className={inputCls} value={form.apiKey}
-                onChange={(e) => onChange({ apiKey: e.target.value })}
-                placeholder={form.authType === 'sangfor_xdr' ? '粘贴深信服 XDR 联动码' : '认证凭据'} />
-            </div>
+          ) : (
+            <>
+              {needUserPass && (
+                <>
+                  <div>
+                    <label className={labelCls}>用户名 <span className="text-destructive">*</span></label>
+                    <input className={inputCls} value={form.username}
+                      onChange={(e) => onChange({ username: e.target.value })} placeholder="登录用户名" />
+                  </div>
+                  <div>
+                    <label className={labelCls}>密码 <span className="text-destructive">*</span></label>
+                    <input type="password" className={inputCls} value={form.password}
+                      onChange={(e) => onChange({ password: e.target.value })} placeholder="登录密码" />
+                  </div>
+                </>
+              )}
+              {needApiKey && (
+                <div>
+                  <label className={labelCls}>
+                    {form.authType === 'bearer'
+                      ? 'Bearer Token'
+                      : form.authType === 'sangfor_xdr'
+                        ? '联动码（AK/SK）'
+                        : 'API Key'} <span className="text-destructive">*</span>
+                  </label>
+                  <input type="password" className={inputCls} value={form.apiKey}
+                    onChange={(e) => onChange({ apiKey: e.target.value })}
+                    placeholder={form.authType === 'sangfor_xdr' ? '粘贴深信服 XDR 联动码' : '认证凭据'} />
+                </div>
+              )}
+            </>
           )}
         </div>
+        {isTianqing && (
+          <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            天擎使用 ODP 平台签名认证，oid / asset_id 由系统自动获取；同步入口在「资产发现 → 天擎终端资产发现」。
+          </div>
+        )}
         {(form.authType === 'oauth2' || form.authType === 'mtls') && (
           <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
             {form.authType === 'oauth2'
