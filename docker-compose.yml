@@ -126,8 +126,10 @@ services:
       start_period: 90s
     ports:
       - "127.0.0.1:8001:8000"
-      # 把容器内 514 UDP 发布到宿主机，供上游设备(青藤/防火墙)推送 syslog
+      # 把容器内 syslog 监听端口发布到宿主机，供上游设备(青藤/防火墙)推送
       - "514:514/udp"
+      - "514:514/tcp"
+      - "515:515/tcp"
     networks: [soar-net]
     restart: unless-stopped
     mem_limit: 5g
