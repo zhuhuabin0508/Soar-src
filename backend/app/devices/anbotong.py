@@ -528,6 +528,7 @@ def fetch_all_blacklist_entries(
     page_size: int = BLACKLIST_SCAN_PAGE_SIZE,
     max_pages: int = BLACKLIST_SCAN_MAX_PAGES,
     max_seconds: float = 12.0,
+    request_timeout: Optional[float] = None,
 ) -> dict[str, Any]:
     """全量拉取设备黑名单条目（供网段 / 范围查询在本地做区间匹配）。
 
@@ -536,6 +537,11 @@ def fetch_all_blacklist_entries(
     智能体工具默认 30 秒超时，这里用 max_seconds 限制单次扫描总耗时，
     超出后停止翻页并标记 truncated（不会因大黑名单把整次工具调用拖超时）。
 
+    Args:
+        request_timeout: 单页请求超时（秒）。默认沿用 QUERY_TIMEOUT_CAP_SECONDS
+            （智能体工具需在总超时内完成）；页面级全量快照可传设备配置的超时，
+            避免设备偶发 10 秒以上响应时反复超时重试。
+
     Returns:
         统一结果结构 + entries / pages / truncated / fetched_at。
         truncated=True 表示达到页数或耗时上限仍未拉完，结果可能不完整。
@@ -543,7 +549,10 @@ def fetch_all_blacklist_entries(
     device, action, err = find_anbotong_action(db, "list")
     if err:
         return _result(success=False, error=err)
-    timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
+    timeout = min(
+        device.timeout or 30,
+        request_timeout if request_timeout is not None else QUERY_TIMEOUT_CAP_SECONDS,
+    )
     paginated = "{page}" in (action.api_path or "") or "{count}" in (action.api_path or "")
     entries: list[dict] = []
     pages = 0

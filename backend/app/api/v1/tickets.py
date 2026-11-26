@@ -38,6 +38,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.ip_region import resolve_ban_region
 from app.core.sanitizer import sanitize_text
 from app.core.audit import get_client_ip
 from app.core.ticket_enrichment import (
@@ -3308,6 +3309,7 @@ def _sync_ban_from_ticket(db: Session, ticket: Ticket, node: dict, values: dict,
         is_permanent=permanent,
         expire_time=None if permanent else now + timedelta(seconds=seconds),
         reason=f"工单同步：{ticket.ticket_no}",
+        region=resolve_ban_region(db, ip),
         ban_source="ticket",
         status="active",
         ticket_id=ticket.id,

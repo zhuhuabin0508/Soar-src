@@ -65,14 +65,18 @@ const blacklistColumns = [
 
 /**
  * 安博通黑名单（设备实时，需 ban_workflow:view）：从封禁工作台拆出的独立 Tab 页。
- * 分页拉取 + 自动刷新间隔可调 + 关键词模糊查询（后端全量拉取设备条目后匹配，
- * IP 片段按前缀、域名片段按包含，异常按 502 报错）。
+ * 分页拉取 + 自动刷新间隔可调 + 查询框（完整 IPv4 走后端设备精确查询，
+ * IPv6 / IP 前缀 / 域名片段走后端全量快照模糊匹配，异常按 502 报错）。
  */
+// 本次会话内的页面级缓存：离开页面（切 Tab）后组件卸载，再次进入时复用上次
+// 成功拉取的数据，避免每次都重新打设备；「立即刷新」/自动刷新/翻页仍会更新。
+let blacklistSessionCache = null
+
 export default function AnbotongBlacklist({ embedded = false }) {
   const canView = hasPermission('ban_workflow', 'view')
   // 安博通黑名单（设备实时，分页）：需 ban_workflow:view（端点已按权限矩阵校验；
   // 无权限轮询会 403 且 client.js 对 403 全局 toast，必须避免）
-  const [blacklist, setBlacklist] = useState({
+  const [blacklist, setBlacklist] = useState(() => blacklistSessionCache?.list || {
     device: null, page: 1, count: 50, page_full: false, paginated: true,
     items: [], note: '', fetched_at: null,
   })
@@ -81,15 +85,19 @@ export default function AnbotongBlacklist({ embedded = false }) {
   // 自动刷新间隔（毫秒，0 = 不自动）：localStorage 持久化，切换后立即生效并刷新一次
   const [blacklistRefreshMs, setBlacklistRefreshMs] = useState(loadBlacklistRefreshMs)
   // 分页：页码 + 每页条数（localStorage 持久化）；ref 供无参刷新（轮询/手动）复用当前页
-  const [blacklistPage, setBlacklistPage] = useState(1)
-  const [blacklistPageSize, setBlacklistPageSize] = useState(loadBlacklistPageSize)
-  const blPageRef = useRef(1)
-  const blPageSizeRef = useRef(loadBlacklistPageSize())
+  const [blacklistPage, setBlacklistPage] = useState(() => blacklistSessionCache?.page || 1)
+  const [blacklistPageSize, setBlacklistPageSize] = useState(
+    () => blacklistSessionCache?.pageSize || loadBlacklistPageSize(),
+  )
+  const blPageRef = useRef(blacklistSessionCache?.page || 1)
+  const blPageSizeRef = useRef(blacklistSessionCache?.pageSize || loadBlacklistPageSize())
   const blSeq = useRef(0)
   const blMounted = useRef(true)
   useEffect(() => () => { blMounted.current = false }, [])
-  // 总条数统计：设备列表接口不返回 total，由后端全量计数（缓存 60 秒）
-  const [blTotal, setBlTotal] = useState({ total: null, loading: false, error: '', fetchedAt: null })
+  // 总条数统计：复用后端黑名单快照（缓存 120 秒），不单独扫描设备
+  const [blTotal, setBlTotal] = useState(() => blacklistSessionCache?.total || {
+    total: null, loading: false, error: '', fetchedAt: null,
+  })
   const blTotalSeq = useRef(0)
   const blTotalInFlight = useRef(false)
   const loadBlacklistTotal = useCallback(() => {
@@ -100,9 +108,11 @@ export default function AnbotongBlacklist({ embedded = false }) {
     banWorkflowApi.anbotongBlacklistCount()
       .then((res) => {
         if (!blMounted.current || seq !== blTotalSeq.current) return
-        setBlTotal({
+        const next = {
           total: res.total ?? null, loading: false, error: '', fetchedAt: res.fetched_at || null,
-        })
+        }
+        setBlTotal(next)
+        blacklistSessionCache = { ...(blacklistSessionCache || {}), total: next }
       })
       .catch((e) => {
         if (!blMounted.current || seq !== blTotalSeq.current) return
@@ -121,12 +131,17 @@ export default function AnbotongBlacklist({ embedded = false }) {
     banWorkflowApi.anbotongBlacklist(p, c)
       .then((res) => {
         if (!ok()) return
-        setBlacklist({
+        const next = {
           device: res.device, page: res.page || p, count: res.count || c,
           page_full: Boolean(res.page_full), paginated: res.paginated !== false,
           items: res.items || [], note: res.note || '', fetched_at: res.fetched_at,
-        })
+        }
+        setBlacklist(next)
         setBlacklistError('')
+        blacklistSessionCache = {
+          ...(blacklistSessionCache || {}),
+          list: next, page: next.page, pageSize: next.count,
+        }
       })
       .catch((e) => { if (ok()) setBlacklistError(e.message || '安博通黑名单拉取失败') })
       .finally(() => { if (ok()) setBlacklistLoading(false) })
@@ -144,13 +159,13 @@ export default function AnbotongBlacklist({ embedded = false }) {
     loadBlacklist(1, nc)
     try { localStorage.setItem(BLACKLIST_PAGE_SIZE_STORAGE_KEY, String(nc)) } catch { /* 隐私模式等写入失败可忽略 */ }
   }
-  // 初始加载：有查看权限进入即拉一次当前数据（与自动刷新开关无关）
+  // 首次进入（无会话缓存）才自动拉取；再次进入复用上次数据，避免每次都打设备
   useEffect(() => {
     if (!canView) return
-    loadBlacklist()
-    loadBlacklistTotal()
+    if (!blacklistSessionCache?.list) loadBlacklist()
+    if (!blacklistSessionCache?.total) loadBlacklistTotal()
   }, [canView, loadBlacklist, loadBlacklistTotal])
-  // 自动刷新：按当前间隔轮询当前页 + 总条数（后端缓存，不会每次扫设备）；
+  // 自动刷新：按当前间隔轮询当前页 + 总条数（总条数走后端快照缓存）；
   // 调整间隔时重建 timer，embedded 卸载（切 Tab）清理
   useEffect(() => {
     if (!canView || !blacklistRefreshMs) return undefined
@@ -166,8 +181,8 @@ export default function AnbotongBlacklist({ embedded = false }) {
     try { localStorage.setItem(BLACKLIST_REFRESH_STORAGE_KEY, String(ms)) } catch { /* 隐私模式等写入失败可忽略 */ }
   }
 
-  // 关键词模糊查询：设备「查询指定黑名单」只支持单条精确查询，后端改为全量拉取
-  // 黑名单列表后匹配（IP 片段按前缀、域名片段按包含，30 秒快照缓存）。
+  // 查询框：完整 IPv4 由后端走设备精确接口（约 0.2 秒）；IPv6 / IP 前缀 /
+  // 域名片段才走全量快照模糊匹配（后端 120 秒快照缓存 + 单飞刷新）。
   // 查询后面板切换为结果模式，null = 列表模式；命中多条时表格展示全部命中条目
   const [blQueryIp, setBlQueryIp] = useState('')
   const [blQuery, setBlQuery] = useState(null)
@@ -298,18 +313,18 @@ export default function AnbotongBlacklist({ embedded = false }) {
           </Button>
         </div>
       </div>
-      {/* 筛选栏：关键词模糊查询为本区域唯一主操作；查询模式提供返回列表出口 */}
+      {/* 筛选栏：查询框为本区域唯一主操作；查询模式提供返回列表出口 */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <SearchInput
           className="w-72"
-          placeholder="输入 IP 前缀 / 域名片段模糊查询"
+          placeholder="输入 IP 精确查询 / IP 前缀或域名片段模糊查询"
           value={blQueryIp}
           onChange={setBlQueryIp}
           onClear={() => setBlQueryIp('')}
           onKeyDown={(e) => { if (e.key === 'Enter' && !blQueryLoading) runBlacklistQuery() }}
         />
         <Button size="sm" className="shrink-0" loading={blQueryLoading} onClick={() => runBlacklistQuery()}>
-          <Search className="h-3.5 w-3.5" /> 模糊查询
+          <Search className="h-3.5 w-3.5" /> 查询
         </Button>
         {blQuery && (
           <Button size="sm" variant="ghost" className="shrink-0" onClick={clearBlacklistQuery}>
@@ -320,7 +335,9 @@ export default function AnbotongBlacklist({ embedded = false }) {
       {/* 次级统计信息（弱化层级，不与标题/操作抢视觉重心） */}
       <div className="mt-2 text-xs text-muted-foreground">
         {blQuery
-          ? `模糊匹配 ${blQuery.matched} 条 · 扫描设备 ${blQuery.scanned_entries} 条`
+          ? (blQuery.query_mode === 'exact'
+            ? '精确查询 · 设备实时结果'
+            : `模糊匹配 ${blQuery.matched} 条 · 扫描设备 ${blQuery.scanned_entries} 条`)
           : (blacklist.paginated
             ? `本页 ${blacklist.items.length} 条${blacklist.page_full ? '' : ' · 已到末页'}`
             : `共 ${blacklist.items.length} 条`)}
@@ -337,9 +354,13 @@ export default function AnbotongBlacklist({ embedded = false }) {
       )}
       {blQuery && (
         <div className={`mt-2 rounded-md border px-3 py-2 text-xs ${blQuery.matched > 0 ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600' : 'border-amber-500/30 bg-amber-500/10 text-amber-600'}`}>
-          {blQuery.matched > 0
-            ? `模糊匹配到 ${blQuery.matched} 条与「${blQuery.keyword}」相关的黑名单条目，下方为命中结果`
-            : `未找到与「${blQuery.keyword}」匹配的黑名单条目`}
+          {blQuery.query_mode === 'exact'
+            ? (blQuery.matched > 0
+              ? `已在安博通黑名单中找到 ${blQuery.keyword}，下方为该条目详情`
+              : `${blQuery.keyword} 不在安博通黑名单中`)
+            : (blQuery.matched > 0
+              ? `模糊匹配到 ${blQuery.matched} 条与「${blQuery.keyword}」相关的黑名单条目，下方为命中结果`
+              : `未找到与「${blQuery.keyword}」匹配的黑名单条目`)}
           {blQuery.note ? ` · ${blQuery.note}` : ''}
         </div>
       )}
@@ -358,8 +379,14 @@ export default function AnbotongBlacklist({ embedded = false }) {
           selectable={false}
           stickyHeader
           maxHeight={tableMaxHeight ?? '26rem'}
-          emptyText={blQuery ? '未匹配到黑名单条目' : (blacklist.page > 1 ? '本页无数据' : '设备黑名单为空')}
-          emptyDescription={blQuery ? `设备黑名单中没有与「${blQuery.keyword}」匹配的条目，可缩短关键词后重试` : (blacklist.page > 1 ? '该页码已超出设备黑名单范围，请返回上一页' : '安博通阻断器上当前没有任何黑名单条目')}
+          emptyText={blQuery
+            ? (blQuery.query_mode === 'exact' ? `${blQuery.keyword} 不在黑名单中` : '未匹配到黑名单条目')
+            : (blacklist.page > 1 ? '本页无数据' : '设备黑名单为空')}
+          emptyDescription={blQuery
+            ? (blQuery.query_mode === 'exact'
+              ? '设备精确查询未找到该条目（设备返回 404），即当前未封禁'
+              : `设备黑名单中没有与「${blQuery.keyword}」匹配的条目，可缩短关键词后重试`)
+            : (blacklist.page > 1 ? '该页码已超出设备黑名单范围，请返回上一页' : '安博通阻断器上当前没有任何黑名单条目')}
           emptyIcon={Inbox}
         />
       </div>

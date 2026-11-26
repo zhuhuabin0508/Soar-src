@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.ip_region import resolve_ban_region
 from app.core.ip_validation import validate_ban_entry
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
@@ -181,7 +182,7 @@ def manual_ban_ip(
         ban_level=body.ban_level,
         ban_duration=body.ban_duration,
         expired_at=expired_at,
-        region=body.region or "",
+        region=body.region or resolve_ban_region(db, ban_ip),
         violation_count=1,
         reason=body.reason or "手动添加封禁",
         status="active",
@@ -404,6 +405,8 @@ async def import_banned_ips(
                 expired_at = now + timedelta(seconds=ban_duration)
 
             region = row[4].strip() if len(row) > 4 else ""
+            # 导入未填写地区时按 IP 地址库自动识别，保证台账地区非空
+            region = region or resolve_ban_region(db, ip)
             violation_count = int(row[5].strip()) if len(row) > 5 and row[5].strip() else 1
             reason = row[6].strip() if len(row) > 6 else ""
             status = row[7].strip() if len(row) > 7 else "active"

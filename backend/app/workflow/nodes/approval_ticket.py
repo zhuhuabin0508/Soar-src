@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.ip_region import resolve_ban_region
 from app.core.timezone import beijing_now
 from app.models.alert_event import AlertEvent
 from app.models.workflow_ban import ApprovalTicket, BanRecord, WorkflowInstance
@@ -77,7 +78,7 @@ class ApprovalTicketNode(BaseNode):
             ban_duration=int(ban_plan.get("ban_duration") or 3600),
             is_permanent=bool(ban_plan.get("is_permanent")),
             reason=str(ban_plan.get("reason") or ""),
-            region=str(ban_plan.get("region") or ""),
+            region=str(ban_plan.get("region") or "") or resolve_ban_region(db, ip),
             source_instance_id=instance.id,
             ban_source="approval",
             status="pending_approval",

@@ -903,7 +903,7 @@ export default function BanWorkbench({ embedded = false }) {
       render: (r) => <Badge variant={SOURCE_VARIANT[r.ban_source] || 'neutral'}>{r.ban_source_label || r.ban_source || '--'}</Badge>,
     },
     {
-      key: 'ban_device', header: '封禁设备', width: '110px',
+      key: 'ban_device', header: '封堵设备', width: '110px',
       render: (r) => <span className="block max-w-[100px] truncate text-muted-foreground" title={r.ban_device}>{r.ban_device || '--'}</span>,
     },
     { key: 'status', header: '当前状态', width: '95px', render: (r) => <Badge variant={STATUS_VARIANT[r.status] || 'neutral'}>{r.status_label}</Badge> },
@@ -920,6 +920,11 @@ export default function BanWorkbench({ embedded = false }) {
       key: 'reason', header: '封禁原因', width: '210px',
       render: (r) => <span className="block max-w-[200px] truncate text-muted-foreground" title={r.reason}>{r.reason || '--'}</span>,
     },
+    {
+      // 与导出字段对齐：归属地区为封禁台账必填项（无法识别时后端兜底「未知」）
+      key: 'region', header: '归属地区', width: '140px',
+      render: (r) => <span className="block max-w-[130px] truncate text-muted-foreground" title={r.region}>{r.region || '--'}</span>,
+    },
     // 时间戳 / 数值列统一右对齐 + 等宽数字，便于垂直扫读比较
     { key: 'created_at', header: '开始封禁时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-xs text-muted-foreground">{fmtTime(r.created_at)}</span> },
     { key: 'expire_time', header: '解封时间', width: '150px', numeric: true, render: (r) => <span className="font-mono text-xs text-muted-foreground">{r.is_permanent ? '永久' : fmtTime(r.expire_time)}</span> },
@@ -932,6 +937,11 @@ export default function BanWorkbench({ embedded = false }) {
       ),
     },
     { key: 'alert_count', header: '关联告警', width: '85px', numeric: true, render: (r) => <span className="tabular-nums">{r.alert_count}</span> },
+    {
+      // 与导出字段对齐：封禁工具记录（设备侧条目 ID，排查封禁状态时使用）
+      key: 'record_id', header: '封禁工具记录', width: '150px',
+      render: (r) => <span className="block max-w-[140px] truncate font-mono text-xs text-muted-foreground" title={r.record_id}>{r.record_id || '--'}</span>,
+    },
     {
       // 操作列冻结在右侧：滚动浏览长行时操作按钮不被挤出视野
       key: 'actions', header: '操作', width: canEdit && canDelete ? '180px' : (canEdit || canDelete ? '150px' : '70px'),
@@ -1233,9 +1243,10 @@ export default function BanWorkbench({ embedded = false }) {
                 <div><span className="text-muted-foreground">封禁等级：</span><span className="font-medium text-foreground">{LEVEL_LABELS[t.ban_level] || t.ban_level || '--'}</span></div>
                 <div><span className="text-muted-foreground">封禁时长：</span><span className="font-medium text-foreground">{fmtDuration(t.ban_duration, t.is_permanent)}</span></div>
                 <div><span className="text-muted-foreground">剩余时长：</span><span className="font-medium text-foreground">{t.is_permanent ? '永久' : fmtRemaining(t.remaining_ms)}</span></div>
+                <div><span className="text-muted-foreground">归属地区：</span><span className="font-medium text-foreground">{t.region || '--'}</span></div>
                 <div><span className="text-muted-foreground">开始封禁时间：</span><span className="font-mono text-xs text-foreground">{fmtTime(t.created_at)}</span></div>
                 <div><span className="text-muted-foreground">解封时间：</span><span className="font-mono text-xs text-foreground">{t.is_permanent ? '永久' : fmtTime(t.expire_time)}</span></div>
-                <div><span className="text-muted-foreground">封禁设备：</span><span className="font-medium text-foreground">{t.ban_device || '--'}</span></div>
+                <div><span className="text-muted-foreground">封堵设备：</span><span className="font-medium text-foreground">{t.ban_device || '--'}</span></div>
                 {t.ticket_id && (
                   <div>
                     <span className="text-muted-foreground">来源工单：</span>

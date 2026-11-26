@@ -4,6 +4,7 @@ import re
 from datetime import timedelta
 from typing import Any, Optional
 
+from app.core.ip_region import resolve_ban_region
 from app.core.ticket_flow import parse_duration
 from app.core.timezone import beijing_now
 from app.models.device import Device, DeviceAction, DeviceCallLog
@@ -643,6 +644,7 @@ def sync_block_ip_record(db, ticket, node: dict, device: Device, params: dict) -
         is_permanent=permanent,
         expire_time=None if permanent else now + timedelta(seconds=seconds),
         reason=ban_record_reason(params, ticket.ticket_no),
+        region=resolve_ban_region(db, ip),
         ban_source="ticket",
         status="active",
         ticket_id=ticket.id,

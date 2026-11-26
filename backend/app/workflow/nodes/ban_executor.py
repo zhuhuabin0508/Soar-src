@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.ip_region import resolve_ban_region
 from app.core.timezone import beijing_now
 from datetime import timedelta
 
@@ -64,6 +65,8 @@ def _persist_ban_after_api(
     duration = int(ban_plan.get("ban_duration") or 3600)
     now = beijing_now()
     expire_time = None if is_permanent else now + timedelta(seconds=duration)
+    # 归属地区：优先用预案给定值；缺失时按 IP 地址库识别（无法识别兜底「未知」）
+    region = str(ban_plan.get("region") or "") or resolve_ban_region(db, ip)
 
     # 写封禁记录（工作台数据源）：审批路径更新 pending_approval 记录为 active
     record = db.query(BanRecord).filter(
@@ -77,7 +80,7 @@ def _persist_ban_after_api(
     record.is_permanent = is_permanent
     record.expire_time = expire_time
     record.reason = str(ban_plan.get("reason") or "")
-    record.region = str(ban_plan.get("region") or "")
+    record.region = region
     record.record_id = record_id
     record.ban_source = ban_source
     record.status = "active"
@@ -91,7 +94,7 @@ def _persist_ban_after_api(
     legacy.ban_level = str(ban_plan.get("ban_level") or "medium")
     legacy.ban_duration = duration
     legacy.expired_at = expire_time or (now + timedelta(days=36500))
-    legacy.region = str(ban_plan.get("region") or "")
+    legacy.region = region
     legacy.reason = str(ban_plan.get("reason") or "")
     legacy.status = "active"
     legacy.source = "agent"

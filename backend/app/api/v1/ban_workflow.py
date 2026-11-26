@@ -6,7 +6,7 @@
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/anbotong/blacklist`` + ``GET .../blacklist/query``：安博通黑名单
   分页拉取与单个 IP 精确查询（需 ban_workflow:view）；
-  ``GET .../blacklist/search`` 按关键词模糊查询黑名单条目；
+  ``GET .../blacklist/search`` 完整 IP 走设备精确查询、IP 前缀/域名片段走全量快照模糊匹配；
   ``POST .../blacklist/unban`` 行内解封（需 ban_workflow:edit）
 - ``GET /ban-workflow/ip-region``：手动封禁归属地区自动识别（IP 地址库点查，
   需 ban_workflow:view）
@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.core.ip_region import lookup_ip_region, resolve_ban_region
 from app.core.timezone import BEIJING_TZ, beijing_now
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
@@ -849,106 +850,94 @@ def escalate_ticket(
                            comment=str(body.get("comment") or "升级转人工调查"))
 
 
-# 安博通黑名单总条数缓存：设备列表接口不返回 total，需一次性拉全量在内存计数
-# （实测约 1 万条、2~3 秒）；缓存 60 秒，避免每次分页/自动刷新都触发全量扫描。
-_BLACKLIST_TOTAL_SCAN_LIMIT = 100000
-_BLACKLIST_TOTAL_TTL_SECONDS = 60.0
-_BLACKLIST_TOTAL_CACHE: dict = {}
-_BLACKLIST_TOTAL_LOCK = threading.Lock()
-# 黑名单模糊查询快照缓存：设备列表接口不支持关键词过滤，只能全量拉取后本地
-# 过滤。条目数超过阈值时不缓存，避免大黑名单长期占用内存。
-_BLACKLIST_SEARCH_TTL_SECONDS = 30.0
-_BLACKLIST_SEARCH_CACHE_MAX_ENTRIES = 20000
-_BLACKLIST_SEARCH_CACHE: dict = {}
+# 安博通黑名单快照缓存：设备列表接口不支持关键词过滤、也不返回总条数，
+# 模糊查询与总条数统计都需要全量扫描。设备全量扫描约 10~20 秒且抖动明显，
+# 因此两类请求共用同一份快照：TTL 内直接命中，过期后单飞刷新。
+_BLACKLIST_SNAPSHOT_TTL_SECONDS = 120.0
+_BLACKLIST_SNAPSHOT_CACHE_MAX_ENTRIES = 20000
+_BLACKLIST_SNAPSHOT_CACHE: dict = {}
+_BLACKLIST_SNAPSHOT_LOCK = threading.Lock()
+# 单飞锁：缓存过期时仅一个请求真正扫描设备，其余请求等待并复用新快照，
+# 避免并发查询 / 自动刷新各自触发全量扫描把设备拖垮。
+_BLACKLIST_SNAPSHOT_FETCH_LOCK = threading.Lock()
 
 
-def _invalidate_blacklist_total() -> None:
-    with _BLACKLIST_TOTAL_LOCK:
-        _BLACKLIST_TOTAL_CACHE.clear()
-        _BLACKLIST_SEARCH_CACHE.clear()
+def _invalidate_blacklist_snapshot() -> None:
+    """封禁/解封后失效黑名单快照（下次查询重新扫描设备）。"""
+    with _BLACKLIST_SNAPSHOT_LOCK:
+        _BLACKLIST_SNAPSHOT_CACHE.clear()
 
 
 def _blacklist_entries_snapshot(db: Session) -> dict:
-    """全量拉取设备黑名单条目并缓存 30 秒（模糊查询数据源）。"""
-    now_mono = time.monotonic()
-    with _BLACKLIST_TOTAL_LOCK:
-        cached = _BLACKLIST_SEARCH_CACHE.get("default")
-        if cached and (now_mono - cached["_mono"]) < _BLACKLIST_SEARCH_TTL_SECONDS:
-            return cached
+    """全量拉取设备黑名单条目并缓存 120 秒（模糊查询与总条数统计共用）。
 
-    from app.devices.anbotong import fetch_all_blacklist_entries
+    缓存 TTL 内直接返回；过期后通过单飞锁保证同一时刻只有一个请求扫描
+    设备，其余请求阻塞等待并复用新快照。
+    """
+    with _BLACKLIST_SNAPSHOT_LOCK:
+        cached = _BLACKLIST_SNAPSHOT_CACHE.get("default")
+        if cached and (time.monotonic() - cached["_mono"]) < _BLACKLIST_SNAPSHOT_TTL_SECONDS:
+            return {**cached, "cached": True}
 
-    # 设备单页支持较大 count（实测 1 万条约 3 秒），用大页减少翻页次数，
-    # 避免 1000/页 时 12 秒内只扫到万条就截断、模糊查询漏掉后面的条目
-    result = fetch_all_blacklist_entries(
-        db, source="workbench", page_size=10000, max_seconds=20.0,
-    )
-    if not result.get("success"):
-        raise HTTPException(
-            status_code=502,
-            detail=result.get("error") or "安博通阻断器黑名单拉取失败",
+    with _BLACKLIST_SNAPSHOT_FETCH_LOCK:
+        # 等待期间可能已被其他请求刷新，进入单飞后再检查一次
+        with _BLACKLIST_SNAPSHOT_LOCK:
+            cached = _BLACKLIST_SNAPSHOT_CACHE.get("default")
+            if cached and (time.monotonic() - cached["_mono"]) < _BLACKLIST_SNAPSHOT_TTL_SECONDS:
+                return {**cached, "cached": True}
+
+        from app.devices.anbotong import fetch_all_blacklist_entries
+
+        # 设备单页 1 万条约 10 秒（1000/页 0.5~10 秒波动大），用 1 万/页把
+        # 扫描请求数压到最少（当前黑名单约 1.5 万条 → 2 页）。单请求超时放宽
+        # 到设备配置值（30 秒）：仍按 10 秒上限会频繁超时重试，反而更慢；
+        # max_seconds 覆盖两页（典型 15~30 秒），仅设备极端异常时才截断。
+        result = fetch_all_blacklist_entries(
+            db, source="workbench", page_size=10000,
+            max_seconds=40.0, request_timeout=30.0,
         )
-    entries = [e for e in (result.get("entries") or []) if isinstance(e, dict)]
-    payload = {
-        "device": result.get("device"),
-        "entries": entries,
-        "scanned_entries": len(entries),
-        "scan_truncated": bool(result.get("truncated")),
-        "fetched_at": result.get("fetched_at") or beijing_now().isoformat(),
-    }
-    if len(entries) <= _BLACKLIST_SEARCH_CACHE_MAX_ENTRIES:
-        with _BLACKLIST_TOTAL_LOCK:
-            _BLACKLIST_SEARCH_CACHE["default"] = {
-                **payload, "_mono": time.monotonic(),
-            }
-    return payload
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("error") or "安博通阻断器黑名单拉取失败",
+            )
+        entries = [e for e in (result.get("entries") or []) if isinstance(e, dict)]
+        payload = {
+            "device": result.get("device"),
+            "entries": entries,
+            "scanned_entries": len(entries),
+            "scan_truncated": bool(result.get("truncated")),
+            "fetched_at": result.get("fetched_at") or beijing_now().isoformat(),
+            "cached": False,
+        }
+        if len(entries) <= _BLACKLIST_SNAPSHOT_CACHE_MAX_ENTRIES:
+            with _BLACKLIST_SNAPSHOT_LOCK:
+                _BLACKLIST_SNAPSHOT_CACHE["default"] = {
+                    **payload, "_mono": time.monotonic(),
+                }
+        return payload
 
 
 @router.get("/anbotong/blacklist/count", dependencies=[Depends(require_permission("ban_workflow", "view"))])
 def get_anbotong_blacklist_count(
-    request: Request,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ) -> dict:
     """统计安博通阻断器黑名单总条数（黑名单页分页栏「总页数/总条数」展示）。
 
-    设备列表接口不返回 total：这里一次性按大页拉取全量条目后计数，结果缓存
-    60 秒（解封成功后主动失效）。条目数超过单次扫描上限时 total 返回 null，
-    前端降级为「第 X 页」展示，不影响列表本身。
+    设备列表接口不返回 total：复用模糊查询的全量快照计数（TTL 120 秒），
+    不再单独发起一次全量扫描。快照被截断时 total 返回 null，前端降级为
+    「第 X 页」展示，不影响列表本身。
     """
-    from app.devices.anbotong import list_blacklist_on_anbotong
-
-    now_mono = time.monotonic()
-    with _BLACKLIST_TOTAL_LOCK:
-        cached = _BLACKLIST_TOTAL_CACHE.get("default")
-        if cached and (now_mono - cached["_mono"]) < _BLACKLIST_TOTAL_TTL_SECONDS:
-            return {**{k: v for k, v in cached.items() if k != "_mono"}, "cached": True}
-
-    started = time.perf_counter()
-    result = list_blacklist_on_anbotong(
-        db,
-        page=1,
-        count=_BLACKLIST_TOTAL_SCAN_LIMIT,
-        source="workbench",
-        user_id=user.id,
-        source_ip=request.client.host if request.client else "",
-    )
-    if not result["success"]:
-        raise HTTPException(status_code=502, detail=result.get("error") or "安博通阻断器黑名单统计失败")
-
-    items = result.get("items") or []
-    exceeds_limit = bool(result.get("paginated", True) and result.get("page_full"))
-    payload = {
-        "device": result.get("device"),
-        "total": None if exceeds_limit else len(items),
-        "paginated": result.get("paginated", True),
-        "note": "设备条目数超过单次统计上限，暂无法统计总条数" if exceeds_limit else None,
-        "fetched_at": result.get("fetched_at"),
-        "took_ms": round((time.perf_counter() - started) * 1000),
+    snapshot = _blacklist_entries_snapshot(db)
+    truncated = bool(snapshot.get("scan_truncated"))
+    return {
+        "device": snapshot.get("device"),
+        "total": None if truncated else int(snapshot.get("scanned_entries") or 0),
+        "paginated": True,
+        "note": "设备条目数超过单次扫描上限，暂无法统计总条数" if truncated else None,
+        "fetched_at": snapshot.get("fetched_at"),
+        "cached": bool(snapshot.get("cached")),
     }
-    with _BLACKLIST_TOTAL_LOCK:
-        _BLACKLIST_TOTAL_CACHE["default"] = {**payload, "_mono": time.monotonic()}
-    return {**payload, "cached": False}
 
 
 @router.get("/anbotong/blacklist", dependencies=[Depends(require_permission("ban_workflow", "view"))])
@@ -1000,14 +989,19 @@ def search_anbotong_blacklist(
     limit: int = Query(200, ge=1, le=1000, description="最多返回条数"),
     db: Session = Depends(get_db),
 ) -> dict:
-    """安博通黑名单模糊查询（黑名单页查询框）。
+    """安博通黑名单查询（黑名单页查询框）。
 
-    设备「查询指定黑名单」只支持单条精确查询，无法做片段匹配；这里全量拉取
-    设备黑名单列表（30 秒快照缓存，避免每次查询都拉全量），在本地过滤：
+    分两条链路：
 
-    - IP 片段（仅数字与点，如 ``10.0.0``）：按条目 **前缀** 匹配，避免
-      ``10.`` 命中 ``205.210.31.52`` 这类中间片段造成噪音；
-    - 其他关键词（域名片段等）：按条目 **包含** 匹配（大小写不敏感）。
+    - **完整 IPv4**：走设备「查询指定黑名单」精确接口（约 0.2 秒），直接返回
+      ``query_mode="exact"``；未命中即设备 404（未封禁），无需全量扫描。
+      IPv6 仍走全量快照，避免设备精确接口对 IPv6 支持不一致导致漏判；
+    - **片段关键词**（IP 前缀 / 域名片段等）：设备列表接口不支持过滤，全量拉取
+      设备黑名单（120 秒快照缓存 + 单飞刷新）后在本地匹配，返回
+      ``query_mode="fuzzy"``：
+      IP 片段（仅数字与点，如 ``10.0.0``）按条目 **前缀** 匹配，避免
+      ``10.`` 命中 ``205.210.31.52`` 这类中间片段造成噪音；其他关键词
+      （域名片段等）按条目 **包含** 匹配（大小写不敏感）。
 
     命中数超过 ``limit`` 或设备条目超过单次扫描上限时 ``truncated=True``，
     并通过 ``note`` 说明结果可能不完整。
@@ -1015,6 +1009,36 @@ def search_anbotong_blacklist(
     needle = keyword.strip().lower()
     if not needle:
         raise HTTPException(status_code=400, detail="查询关键词不能为空")
+
+    # 完整 IPv4：走设备精确接口，避免为一次“是否封禁”判定触发全量扫描
+    try:
+        ipaddress.IPv4Address(needle)
+        is_exact_ip = True
+    except ValueError:
+        is_exact_ip = False
+    if is_exact_ip:
+        from app.devices.anbotong import query_blacklist_on_anbotong
+
+        result = query_blacklist_on_anbotong(db, needle, source="workbench")
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=502,
+                detail=result.get("error") or "安博通阻断器查询失败",
+            )
+        entry = result.get("entry") if result.get("found") else None
+        return {
+            "device": result.get("device"),
+            "keyword": keyword.strip(),
+            "query_mode": "exact",
+            "matched": 1 if entry else 0,
+            "entries": [entry] if entry else [],
+            "truncated": False,
+            "scanned_entries": 1,
+            "scan_truncated": False,
+            "note": result.get("note"),
+            "fetched_at": beijing_now().isoformat(),
+        }
+
     snapshot = _blacklist_entries_snapshot(db)
     ip_fragment = all(ch.isdigit() or ch == "." for ch in needle)
     matched = []
@@ -1032,6 +1056,7 @@ def search_anbotong_blacklist(
     return {
         "device": snapshot.get("device"),
         "keyword": keyword.strip(),
+        "query_mode": "fuzzy",
         "matched": len(matched),
         "entries": matched[:limit],
         "truncated": len(matched) > limit or snapshot["scan_truncated"],
@@ -1145,7 +1170,7 @@ def unban_anbotong_blacklist_ip(
         legacy.status = "unbanned"
     db.commit()
     # 设备黑名单条目已变化：失效总条数缓存，下一次统计重新计算
-    _invalidate_blacklist_total()
+    _invalidate_blacklist_snapshot()
 
     write_audit(
         db, action="unban", resource_type="anbotong_blacklist", resource_id=target,
@@ -1545,105 +1570,8 @@ def match_anbotong_whitelist(
 # ======================================================================
 # 手动封禁归属地区自动识别（IP 地址库）
 # ======================================================================
-# 点查结果按库优先级选取归属信息：国内运营商地理库最精确，其次注册持有者库；
-# 港澳/境外库各自覆盖对应网段；云服务库只覆盖国内云网段，作为「中国」兜底。
-_REGION_LIBRARY_PRIORITY = ("geo_cn", "holder_cn", "hk_mo", "overseas", "cloud_cn")
-# 归属地区落库长度上限：ban_records.region 为 64，legacy banned_ips.region 为 50，
-# 统一截断到 50 保证两侧都能写入
-_REGION_MAX_LEN = 50
-
-# ISO 3166-1 alpha-2 国家代码 → 中文国家名（Babel/CLDR，首次使用时加载）
-_ZH_COUNTRY_NAMES: dict[str, str] | None = None
-
-
-def _country_name_zh(code) -> str:
-    """把国家代码转换成中文国家名；无映射返回空串。"""
-    global _ZH_COUNTRY_NAMES
-    if _ZH_COUNTRY_NAMES is None:
-        try:
-            from babel import Locale
-
-            _ZH_COUNTRY_NAMES = {
-                str(key).upper(): str(name)
-                for key, name in Locale("zh").territories.items()
-                if len(str(key)) == 2
-            }
-        except Exception:  # noqa: BLE001
-            _ZH_COUNTRY_NAMES = {}
-            logger.warning("Babel 中文国家名映射不可用，境外归属地区将保留英文", exc_info=True)
-    return _ZH_COUNTRY_NAMES.get(str(code or "").strip().upper(), "")
-
-
-def _compose_region_text(match: dict) -> str:
-    """把一条 IP 地址库命中记录拼成「国家 省 市」文本（去重、截断）。"""
-    library_type = match.get("library_type")
-    if library_type == "overseas":
-        # 境外库的国家/省州/城市均为英文，且省州/城市没有权威中文映射：
-        # 归属地区只取中文国家名，避免「美国 New Jersey ...」中英混排
-        zh_name = _country_name_zh(
-            match.get("geo_country_code") or match.get("rir_country")
-        )
-        if zh_name:
-            return zh_name[:_REGION_MAX_LEN]
-        return str(match.get("country_geo") or "").strip()[:_REGION_MAX_LEN]
-
-    parts: list[str] = []
-
-    def add(value) -> None:
-        text = str(value or "").strip()
-        if not text:
-            return
-        for idx, part in enumerate(parts):
-            if text == part or text in part:
-                # 完全相同，或新值已被更完整的已有值包含（省=市 / 香港 vs 中国香港）
-                return
-            if part in text:
-                # 已有值是新值的一部分：用更具体的新值替换（如 中国 → 中国香港）
-                parts[idx] = text
-                return
-        parts.append(text)
-
-    if library_type in ("geo_cn", "cloud_cn"):
-        # 这两个库只收录中国大陆网段且不含国家字段，补「中国」前缀
-        add("中国")
-    add(match.get("country_geo"))
-    add(match.get("province"))
-    add(match.get("city"))
-    return " ".join(parts)[:_REGION_MAX_LEN]
-
-
-def lookup_ip_region(db: Session, ip: str) -> tuple[str, str]:
-    """查询单个 IPv4 的归属地区。
-
-    Returns:
-        ``(归属地区文本, 命中的库中文名)``；非 IPv4 / 地址库无命中 / 查询异常
-        返回 ``("", "")``，调用方按无归属地区处理，不影响封禁主流程。
-    """
-    try:
-        addr = ipaddress.IPv4Address(str(ip or "").strip())
-    except ValueError:
-        return "", ""
-    try:
-        # 复用 IP 地址库的跨库点查（GiST ip_range @>，毫秒级）
-        from app.api.v1.ip_library import _lookup_matches
-
-        matches = _lookup_matches(db, int(addr))
-    except Exception:  # noqa: BLE001
-        logger.warning("IP 地址库归属地区查询失败 ip=%s", ip, exc_info=True)
-        return "", ""
-    by_type = {
-        m.get("library_type"): m
-        for m in matches
-        if isinstance(m, dict) and m.get("library_type")
-    }
-    for library_type in _REGION_LIBRARY_PRIORITY:
-        match = by_type.get(library_type)
-        if not match:
-            continue
-        text = _compose_region_text(match)
-        if text:
-            return text, str(match.get("library_label") or "")
-    return "", ""
+# 归属地区查询已抽到 app.core.ip_region（工单/工作流/导入等封禁来源共用），
+# 本模块的 /ip-region 端点只负责参数校验与多目标汇总。
 
 
 @router.get("/ip-region", dependencies=[Depends(require_permission("ban_workflow", "view"))])
@@ -2038,6 +1966,9 @@ def sync_banned_ips_to_device(
         # 下发成功后才更新平台记录，避免设备失败却展示为生效中
         now = beijing_now()
         expire_time = None if r.is_permanent else now + timedelta(seconds=duration_seconds)
+        if not (r.region or "").strip():
+            # 兼容历史待同步记录：台账地区不允许为空
+            r.region = resolve_ban_region(db, r.ip)
         r.status = "active"
         r.ban_device = target_device.name
         r.expire_time = expire_time
@@ -2052,7 +1983,7 @@ def sync_banned_ips_to_device(
         legacy.ban_level = r.ban_level
         legacy.ban_duration = int(r.ban_duration or 3600)
         legacy.expired_at = expire_time or (now + timedelta(days=36500))
-        legacy.region = r.region or ""
+        legacy.region = r.region
         legacy.reason = r.reason or ""
         legacy.status = "active"
         legacy.source = "import"
@@ -2071,7 +2002,7 @@ def sync_banned_ips_to_device(
     used_devices = sorted({i.get("device_name") for i in items if i.get("device_name")})
     if success_n:
         # 设备黑名单新增条目：失效总条数缓存
-        _invalidate_blacklist_total()
+        _invalidate_blacklist_snapshot()
     write_audit(
         db, action="sync_ban", resource_type="ban_record", resource_id="",
         detail={
@@ -2767,7 +2698,8 @@ def _issue_manual_ban(
         if region:
             return region
         if target not in auto_regions:
-            auto_regions[target] = lookup_ip_region(db, target)[0]
+            # 无法识别（IPv6 / 网段 / 域名）时兜底「未知」，保证台账地区非空
+            auto_regions[target] = resolve_ban_region(db, target)
         return auto_regions[target]
 
     records: list = []
@@ -2806,7 +2738,7 @@ def _issue_manual_ban(
         records.append(record)
     db.commit()
     # 新条目已下发设备：失效黑名单统计 / 模糊查询快照，避免页面查询到旧数据
-    _invalidate_blacklist_total()
+    _invalidate_blacklist_snapshot()
 
     for record, (_, result) in zip(records, dispatched):
         write_audit(
@@ -3125,7 +3057,7 @@ def import_banned_ips_csv(
             is_permanent=data["is_permanent"],
             expire_time=None,
             reason=data["reason"],
-            region=data["region"],
+            region=data["region"] or resolve_ban_region(db, ip),
             ban_device=data["ban_device"] or None,
             ban_source="import",
             status=_PENDING_SYNC_STATUS,
