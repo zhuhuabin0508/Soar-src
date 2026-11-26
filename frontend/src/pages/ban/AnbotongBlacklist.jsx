@@ -430,7 +430,8 @@ export default function AnbotongBlacklist({ embedded = false }) {
   return (
     <PageContainer>
       <PageHeader
-        title="安博通黑名单"
+        title="安博通黑名单"
+
         actions={(
           <Button size="sm" variant="secondary" loading={blacklistLoading} onClick={() => loadBlacklist()}>
             <RotateCw className="h-3.5 w-3.5" /> 刷新
