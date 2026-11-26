@@ -27,6 +27,9 @@ from app.core.log_receiver_manager import (
     get_receiver_runtime_status,
     start_receiver_sync,
 )
+from app.core.log_receiver_manager.adapters.kafka_adapter import (
+    normalize_bootstrap_servers,
+)
 from app.core.log_receiver_manager.entry_registry import (
     LISTEN_PROTOCOLS,
     entry_registry,
@@ -245,6 +248,11 @@ def _validate_payload(body: LogReceiverBase) -> None:
         else:  # kafka
             if not body.kafka_bootstrap or not body.kafka_topic:
                 raise HTTPException(status_code=422, detail="kafka 协议必须配置 kafka_bootstrap 与 kafka_topic")
+            # 地址必须是 host:port（仅填端口会被 aiokafka 当作主机名导致连接失败）
+            normalized, bootstrap_err = normalize_bootstrap_servers(body.kafka_bootstrap)
+            if bootstrap_err:
+                raise HTTPException(status_code=422, detail=bootstrap_err)
+            body.kafka_bootstrap = normalized
         return
     # 新源类型：注册表校验（未注册协议 / 缺必配键）
     errors = adapter_registry.validate_config(protocol, dict(body.adapter_config or {}))
