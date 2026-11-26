@@ -1334,4 +1334,43 @@ HERMES_BUILTIN_TOOLS: list[dict[str, Any]] = [
         "category": "security",
         "enabled": True,
     },
+    {
+        "name": "query_anbotong_blacklist",
+        "description": (
+            "批量判断目标是否已被安博通阻断器封禁（查询设备侧黑名单，不是平台封禁台账）。"
+            "支持单 IP、域名、CIDR 网段（如 10.0.0.0/24）、IP 范围（如 10.0.0.1-10.0.0.50、"
+            "10.0.0.1-100）与末段通配（如 10.0.0.*）；多个目标用逗号/分号/换行分隔一次传入，"
+            "禁止逐个目标重复调用。"
+            "单 IP/域名走设备精确查询（同批含网段/范围时复用已拉取的黑名单列表），"
+            "网段/范围返回与查询区间重叠的黑名单条目，"
+            "并给出 coverage（full=区间全部被覆盖，partial=仅部分覆盖）。"
+            "返回 {success, total, banned_count, clean_count, error_count, items, note}；"
+            "items 每项含 target / query_type / banned / match_type / coverage / matched_count / entries："
+            "banned=true 已封禁、false 未封禁、null 查询失败（error 说明原因，不能当作未封禁）；"
+            "entries 含 blist / reason / effectTime / leftTime（剩余秒数，-1 表示永久）/ permanent 等。"
+            "该工具只查安博通设备黑名单，不做资产归属、威胁情报等其他分析。"
+        ),
+        "parameters_schema": [
+            {
+                "name": "targets",
+                "type": "String",
+                "required": True,
+                "description": (
+                    "查询目标表达式，多目标用逗号/分号/空白分隔。"
+                    "每项支持单 IP、域名、CIDR 网段、IP 范围（含末段简写）与末段通配"
+                ),
+            },
+        ],
+        "code": (
+            "async def run(**kwargs):\n"
+            "    targets = kwargs.get('targets') or kwargs.get('ip') or ''\n"
+            "    if not str(targets).strip():\n"
+            "        return {'success': False, 'error': '请提供 targets 参数（IP/CIDR/范围/域名，多值用逗号分隔）'}\n"
+            "    return await query_anbotong_blacklist(targets)\n"
+        ),
+        "tool_type": "code",
+        "category": "blocking",
+        "tags": ["安博通", "黑名单", "封禁查询", "IP封禁"],
+        "enabled": True,
+    },
 ]

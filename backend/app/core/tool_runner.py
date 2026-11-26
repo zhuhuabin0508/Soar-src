@@ -1982,6 +1982,13 @@ def load_tool_function(tool, enabled_kbs=None, agent_id=None, user_id=None) -> C
         namespace["block_ip_on_firewall"] = block_ip_on_firewall
     except ImportError:  # pragma: no cover
         logger.debug("firewall 模块未安装，工具命名空间不注入 block_ip_on_firewall")
+    # 安博通黑名单查询注入：沙箱禁止 import 且查询需要复用设备动作执行引擎，
+    # 工具代码只传查询目标；单 IP/域名走设备精确查询，网段/范围走全量列表匹配。
+    try:
+        from app.tools.anbotong_tools import query_anbotong_blacklist
+        namespace["query_anbotong_blacklist"] = query_anbotong_blacklist
+    except ImportError:  # pragma: no cover
+        logger.debug("anbotong_tools 未安装，工具命名空间不注入 query_anbotong_blacklist")
     # 青藤万相直连能力注入：沙箱禁止 import，登录签名依赖 hashlib/ssl/http.client，
     # 均在 app.tools.qingteng_tools 内实现；工具代码只传业务参数。
     # 设备凭据走 QINGTENG_DEVICES 环境变量，工具代码与日志均不接触明文口令。

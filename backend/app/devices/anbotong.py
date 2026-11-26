@@ -23,6 +23,7 @@
 """
 import ipaddress
 import logging
+import time as _time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -465,6 +466,120 @@ def query_blacklist_on_anbotong(
         return _result(success=False, error=err)
     timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
     return query_blacklist_entry(device, action, ip, timeout=timeout)
+
+
+# ======================================================================
+# 黑名单全量扫描（网段 / 范围批量查询用）
+# ======================================================================
+# 单页条数（设备列表接口单页上限 1000）与最大页数：设备响应不含总条数，
+# 只能翻到「未满页 / 404」为止；最大页数防止设备异常返回时无限翻页。
+BLACKLIST_SCAN_PAGE_SIZE = 1000
+BLACKLIST_SCAN_MAX_PAGES = 100
+
+
+def fetch_blacklist_page(
+    device: Device,
+    action: DeviceAction,
+    page: int,
+    count: int,
+    *,
+    timeout: float,
+    source: str = "query",
+) -> tuple[dict[str, Any], list[dict], bool]:
+    """拉取单页设备黑名单（不查库、不写日志，可安全并发调用）。
+
+    设备对「黑名单为空 / 页码超出末页」返回 HTTP 404：统一容错为空页，
+    beyond_end=True 表示已到末页。
+
+    Returns:
+        (统一结果结构, 条目列表, 是否已到末页)。
+    """
+    api_path = action.api_path or ""
+    paginated = "{page}" in api_path or "{count}" in api_path
+    params: dict[str, Any] = {}
+    if paginated:
+        params["page"] = str(max(1, int(page)))
+        params["count"] = str(max(1, int(count)))
+    result = execute_device_action(
+        device, action, params, timeout=timeout, source=source, db=None, skip_log=True,
+    )
+    beyond_end = (
+        paginated
+        and not result["success"]
+        and result.get("status_code") == 404
+    )
+    if beyond_end:
+        result.update(success=True, error=None, note="黑名单为空或页码超出范围")
+    items: list[dict] = []
+    body = result.get("response_body")
+    if result["success"] and isinstance(body, dict):
+        data = body.get("data")
+        if isinstance(data, list):
+            items = [x for x in data if isinstance(x, dict)]
+        elif isinstance(data, dict) and data:
+            items = [data]  # 容错：设备把单对象按对象返回
+    return result, items, beyond_end
+
+
+def fetch_all_blacklist_entries(
+    db: Session,
+    *,
+    source: str = "query",
+    page_size: int = BLACKLIST_SCAN_PAGE_SIZE,
+    max_pages: int = BLACKLIST_SCAN_MAX_PAGES,
+    max_seconds: float = 12.0,
+) -> dict[str, Any]:
+    """全量拉取设备黑名单条目（供网段 / 范围查询在本地做区间匹配）。
+
+    设备列表接口不支持按目标过滤，且不返回总条数：按页拉取到未满页为止。
+    单页请求不碰 DB（db=None），可安全在调用线程内循环执行。
+    智能体工具默认 30 秒超时，这里用 max_seconds 限制单次扫描总耗时，
+    超出后停止翻页并标记 truncated（不会因大黑名单把整次工具调用拖超时）。
+
+    Returns:
+        统一结果结构 + entries / pages / truncated / fetched_at。
+        truncated=True 表示达到页数或耗时上限仍未拉完，结果可能不完整。
+    """
+    device, action, err = find_anbotong_action(db, "list")
+    if err:
+        return _result(success=False, error=err)
+    timeout = min(device.timeout or 30, QUERY_TIMEOUT_CAP_SECONDS)
+    paginated = "{page}" in (action.api_path or "") or "{count}" in (action.api_path or "")
+    entries: list[dict] = []
+    pages = 0
+    truncated = False
+    started = _time.monotonic()
+    try:
+        page = 1
+        while page <= max_pages:
+            result, items, beyond_end = fetch_blacklist_page(
+                device, action, page, page_size, timeout=timeout, source=source,
+            )
+            if not result.get("success"):
+                error = result.get("error") or f"拉取第 {page} 页失败"
+                return _result(success=False, error=error, status_code=result.get("status_code"))
+            pages += 1
+            entries.extend(items)
+            # 不分页动作一次返回全量；分页动作拉满页数/耗时仍未结束则标记截断
+            if not paginated or beyond_end or len(items) < page_size:
+                break
+            if _time.monotonic() - started >= max_seconds:
+                truncated = True
+                break
+            page += 1
+        else:
+            truncated = True
+    except Exception as exc:  # noqa: BLE001
+        return _result(success=False, error=f"黑名单全量拉取异常: {exc}")
+    return _result(
+        success=True,
+        device=_device_info(device),
+        action={"id": action.id, "name": action.name},
+        entries=entries,
+        pages=pages,
+        truncated=truncated,
+        fetched_at=beijing_now().isoformat(),
+    )
 
 
 # ======================================================================
