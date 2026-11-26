@@ -493,7 +493,7 @@ export default function AnbotongWhitelist({ embedded = false }) {
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <SearchInput
           className="w-72"
-          placeholder="搜索白名单条目 / 备注 / 策略组"
+          placeholder="模糊搜索白名单条目 / 备注 / 策略组"
           value={keyword}
           onChange={setKeyword}
           onClear={() => setKeyword('')}

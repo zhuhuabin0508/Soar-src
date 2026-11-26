@@ -237,10 +237,78 @@ export default function BanWorkbench({ embedded = false }) {
   const manualIpError = validateBanEntry(manualForm.ip, '封禁目标')
   // 即时校验：封禁原因必填
   const manualReasonError = manualForm.reason.trim() ? '' : '请填写封禁原因'
+  // ===== 归属地区自动识别：输入单个/多个 IPv4 时查询 IP 地址库 =====
+  // 仅当全部目标都是单 IPv4 时查询（网段/范围/域名没有单一归属地区）；
+  // 结果一致且用户未手动修改「归属地区」时才回填，避免覆盖人工填写。
+  const [regionAuto, setRegionAuto] = useState({
+    loading: false, checked: false, region: '', label: '', mixed: false, error: '',
+  })
+  const [regionTouched, setRegionTouched] = useState(false)
+  const regionTouchedRef = useRef(false)
+  regionTouchedRef.current = regionTouched
+  const regionAutoRef = useRef(regionAuto)
+  regionAutoRef.current = regionAuto
+  const regionSeq = useRef(0)
+  useEffect(() => {
+    if (!manualOpen || !canView) {
+      regionSeq.current += 1
+      setRegionAuto({ loading: false, checked: false, region: '', label: '', mixed: false, error: '' })
+      return undefined
+    }
+    const tokens = splitIPExpression(manualForm.ip.trim())
+    // 仅单 IPv4 可识别（IPv6 / CIDR / 范围 / 域名无单一归属地区）
+    const ips = tokens.filter((t) => !validateSingleIP(t, 'IP') && !t.includes(':'))
+    if (!tokens.length || ips.length !== tokens.length || ips.length > 20) {
+      regionSeq.current += 1
+      setRegionAuto({ loading: false, checked: false, region: '', label: '', mixed: false, error: '' })
+      // 输入从可识别 IP 变为网段/域名/空值时，清掉上一轮自动回填的地区，
+      // 避免把旧 IP 的地区带到新目标上（手工填写的内容不受影响）
+      const autoRegion = regionAutoRef.current.region
+      if (autoRegion && !regionTouchedRef.current) {
+        setManualForm((f) => (f.region === autoRegion ? { ...f, region: '' } : f))
+      }
+      return undefined
+    }
+    const seq = ++regionSeq.current
+    const timer = setTimeout(() => {
+      setRegionAuto((s) => ({ ...s, loading: true, error: '' }))
+      banWorkflowApi.ipRegion(ips)
+        .then((res) => {
+          if (seq !== regionSeq.current) return
+          const regions = Array.from(new Set(
+            (res?.items || []).map((i) => i.region).filter(Boolean),
+          ))
+          const mixed = Boolean(res?.mixed) || regions.length > 1
+          // 多目标地区不一致时汇总为「美国、德国…」填入字段用于展示；
+          // 提交时若用户未手动修改，该汇总不会提交，由后端逐目标识别落库
+          const region = res?.region || (mixed ? regions.slice(0, 8).join('、').slice(0, 50) : '')
+          const labels = Array.from(new Set(
+            (res?.items || []).map((i) => i.library_label).filter(Boolean),
+          ))
+          setRegionAuto({
+            loading: false, checked: true, region,
+            label: labels.join(' / '), mixed, error: '',
+          })
+          if (!regionTouchedRef.current) {
+            setManualForm((f) => (f.region === region ? f : { ...f, region }))
+          }
+        })
+        .catch((e) => {
+          if (seq !== regionSeq.current) return
+          setRegionAuto({
+            loading: false, checked: false, region: '', label: '', mixed: false,
+            error: e?.message || 'IP地址库查询失败',
+          })
+        })
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [manualOpen, manualForm.ip, canView])
   // 打开手动封禁弹窗：重置校验状态，避免上次残留的报错提示
   const openManualBan = () => {
     setManualIpTouched(false)
     setManualReasonTouched(false)
+    setRegionTouched(false)
+    setRegionAuto({ loading: false, checked: false, region: '', label: '', mixed: false, error: '' })
     setManualOpen(true)
   }
 
@@ -563,7 +631,9 @@ export default function BanWorkbench({ embedded = false }) {
       ban_duration: manualForm.is_permanent ? 3600 : Math.max(1, Math.round(days * 86400)),
       is_permanent: manualForm.is_permanent,
       reason: manualForm.reason.trim(),
-      region: manualForm.region.trim(),
+      // 多目标地区不一致时字段里是「美国、德国…」展示用汇总；未手动修改则
+      // 不提交该汇总，交由后端按每个 IP 分别识别并落库，避免所有记录共用汇总
+      region: regionAuto.mixed && !regionTouched ? '' : manualForm.region.trim(),
     })
       .then((rec) => {
         // 后端自动跳过「生效中」目标：按 created/skipped 分别提示
@@ -585,6 +655,8 @@ export default function BanWorkbench({ embedded = false }) {
         setManualOpen(false)
         setManualIpTouched(false)
         setManualReasonTouched(false)
+        setRegionTouched(false)
+        setRegionAuto({ loading: false, checked: false, region: '', label: '', mixed: false, error: '' })
         setManualForm({ ip: '', ban_level: 'medium', ban_duration_days: '1', is_permanent: false, reason: '', region: '' })
         load()
         // 设备侧黑名单展示在独立 Tab 页（AnbotongBlacklist），进入该 Tab 时自行拉取
@@ -1526,13 +1598,46 @@ export default function BanWorkbench({ embedded = false }) {
             )}
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">归属地区（可选）</label>
+            <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <label className="text-xs text-muted-foreground">归属地区（可选）</label>
+              {regionAuto.loading && (
+                <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> 正在查询 IP 地址库…
+                </span>
+              )}
+              {!regionAuto.loading && regionAuto.region && !regionTouched && (
+                <span className="text-xs text-emerald-600">
+                  已按 IP 地址库自动识别{regionAuto.label ? `（${regionAuto.label}）` : ''}
+                </span>
+              )}
+              {!regionAuto.loading && regionTouched && manualForm.region.trim() && (
+                <span className="text-xs text-muted-foreground">已手动填写，不再自动覆盖</span>
+              )}
+            </div>
             <input
               className={`${inputBaseCls} h-[38px] w-full`}
-              placeholder="如 美国 / 中国上海"
+              placeholder="输入 IP 后自动识别，也可手动填写（如 美国 / 中国上海）"
               value={manualForm.region}
-              onChange={(e) => setManualForm((f) => ({ ...f, region: e.target.value }))}
+              onChange={(e) => {
+                setRegionTouched(true)
+                setManualForm((f) => ({ ...f, region: e.target.value }))
+              }}
             />
+            {!regionAuto.loading && !regionTouched && regionAuto.mixed && regionAuto.region && (
+              <div className="mt-1 text-xs text-muted-foreground">
+                多个目标归属地区不一致，已汇总展示；保存时按每个 IP 分别记录归属地区
+              </div>
+            )}
+            {!regionAuto.loading && !regionTouched && regionAuto.checked && !regionAuto.region && (
+              <div className="mt-1 text-xs text-muted-foreground">
+                {regionAuto.mixed ? '多个目标归属地区不一致，请手动填写' : 'IP 地址库未匹配到归属地区'}
+              </div>
+            )}
+            {!regionAuto.loading && regionAuto.error && !regionTouched && (
+              <div className="mt-1 text-xs text-muted-foreground">
+                IP 地址库查询失败：{regionAuto.error}（不影响封禁提交）
+              </div>
+            )}
           </div>
           <div className="flex items-start gap-1.5 rounded-lg border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />

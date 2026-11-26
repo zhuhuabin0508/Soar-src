@@ -6,7 +6,6 @@ import { Button, PageContainer, PageHeader, Card, DataTable, Badge, CompactSelec
 import { inputBaseCls } from '../../components/property/FormControls'
 import { hasPermission } from '../../utils/permissions'
 import banWorkflowApi from '../../api/banWorkflow'
-import { validateSingleIP } from '../../utils/ipValidation'
 import { useTableFillHeight } from '../../hooks/useTableFillHeight'
 
 // 设备侧时长（秒，-1 为永久）→ 中文
@@ -66,8 +65,8 @@ const blacklistColumns = [
 
 /**
  * 安博通黑名单（设备实时，需 ban_workflow:view）：从封禁工作台拆出的独立 Tab 页。
- * 分页拉取 + 自动刷新间隔可调 + 单个 IP 精确查询（设备「查询指定黑名单」，
- * 404 = 未封禁属业务结果，异常按 502 报错）。
+ * 分页拉取 + 自动刷新间隔可调 + 关键词模糊查询（后端全量拉取设备条目后匹配，
+ * IP 片段按前缀、域名片段按包含，异常按 502 报错）。
  */
 export default function AnbotongBlacklist({ embedded = false }) {
   const canView = hasPermission('ban_workflow', 'view')
@@ -167,24 +166,37 @@ export default function AnbotongBlacklist({ embedded = false }) {
     try { localStorage.setItem(BLACKLIST_REFRESH_STORAGE_KEY, String(ms)) } catch { /* 隐私模式等写入失败可忽略 */ }
   }
 
-  // IP 精确查询（设备「查询指定黑名单」）：查询后面板切换为单条结果模式，
-  // null = 列表模式；设备对不存在的条目返回 404，后端已归一为 found=false 业务结果
+  // 关键词模糊查询：设备「查询指定黑名单」只支持单条精确查询，后端改为全量拉取
+  // 黑名单列表后匹配（IP 片段按前缀、域名片段按包含，30 秒快照缓存）。
+  // 查询后面板切换为结果模式，null = 列表模式；命中多条时表格展示全部命中条目
   const [blQueryIp, setBlQueryIp] = useState('')
   const [blQuery, setBlQuery] = useState(null)
   const [blQueryLoading, setBlQueryLoading] = useState(false)
-  const runBlacklistQuery = () => {
-    const target = blQueryIp.trim()
-    const ipErr = validateSingleIP(target, '查询 IP')
-    if (ipErr) return toast.error(ipErr)
+  const blQuerySeq = useRef(0)
+  const runBlacklistQuery = useCallback((keywordArg) => {
+    const keyword = String(keywordArg ?? blQueryIp).trim()
+    if (!keyword) return toast.error('请输入查询关键词')
+    const seq = ++blQuerySeq.current
     setBlQueryLoading(true)
-    banWorkflowApi.anbotongBlacklistQuery(target)
-      .then((res) => setBlQuery(res))
-      .catch((e) => toast.error(e.message || '安博通黑名单查询失败'))
-      .finally(() => setBlQueryLoading(false))
-  }
+    banWorkflowApi.anbotongBlacklistSearch(keyword)
+      .then((res) => {
+        if (seq !== blQuerySeq.current) return
+        setBlQuery({ ...res, keyword: res.keyword || keyword })
+      })
+      .catch((e) => {
+        if (seq !== blQuerySeq.current) return
+        setBlQuery(null)
+        toast.error(e.message || '安博通黑名单模糊查询失败')
+      })
+      .finally(() => {
+        if (seq === blQuerySeq.current) setBlQueryLoading(false)
+      })
+  }, [blQueryIp])
   const clearBlacklistQuery = () => {
+    blQuerySeq.current += 1
     setBlQuery(null)
     setBlQueryIp('')
+    setBlQueryLoading(false)
   }
 
   // 行内解封（需 ban_workflow:edit）：二次确认 → 设备解封 → 刷新列表
@@ -208,17 +220,18 @@ export default function AnbotongBlacklist({ embedded = false }) {
           : `IP ${ip} 已解封（已从安博通阻断器黑名单移除）`)
         // 刷新当前页黑名单，更新设备侧数据状态
         loadBlacklist()
-        // 条目已从设备移除：同步刷新总条数（后端已失效统计缓存）
-        loadBlacklistTotal()
+        // 条目已从设备移除：同步刷新总条数（后端已失效统计缓存）；
+        // 模糊查询模式的底部分页已隐藏，无需重复触发全量统计扫描
+        if (!blQuery) loadBlacklistTotal()
         // 单条查询模式下同步刷新该条结果（解封后应变更为「不在黑名单中」）
-        // 后端返回的 ip 已归一化为小写域名，这里忽略大小写比较，避免大写域名不刷新
-        if (blQuery && String(blQuery.ip || '').toLowerCase() === ip.toLowerCase()) {
-          banWorkflowApi.anbotongBlacklistQuery(ip).then(setBlQuery).catch(() => {})
+        // 模糊查询模式下按当前关键词重新查询，命中列表同步剔除该条目
+        if (blQuery && blQuery.keyword) {
+          runBlacklistQuery(blQuery.keyword)
         }
       })
       .catch((e) => toast.error(e.message || '解封失败，列表数据保持不变'))
       .finally(() => setUnbanningIp(''))
-  }, [unbanningIp, blQuery, loadBlacklist, loadBlacklistTotal])
+  }, [unbanningIp, blQuery, loadBlacklist, loadBlacklistTotal, runBlacklistQuery])
 
   // 列表列：末尾追加解封操作（冻结右侧，与封禁工作台操作列同风格）
   const columns = useMemo(() => {
@@ -285,18 +298,18 @@ export default function AnbotongBlacklist({ embedded = false }) {
           </Button>
         </div>
       </div>
-      {/* 筛选栏：IP 精确查询为本区域唯一主操作；查询模式提供返回列表出口 */}
+      {/* 筛选栏：关键词模糊查询为本区域唯一主操作；查询模式提供返回列表出口 */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <SearchInput
           className="w-72"
-          placeholder="输入 IP 查询是否在黑名单中"
+          placeholder="输入 IP 前缀 / 域名片段模糊查询"
           value={blQueryIp}
           onChange={setBlQueryIp}
           onClear={() => setBlQueryIp('')}
           onKeyDown={(e) => { if (e.key === 'Enter' && !blQueryLoading) runBlacklistQuery() }}
         />
-        <Button size="sm" className="shrink-0" loading={blQueryLoading} onClick={runBlacklistQuery}>
-          <Search className="h-3.5 w-3.5" /> 查询
+        <Button size="sm" className="shrink-0" loading={blQueryLoading} onClick={() => runBlacklistQuery()}>
+          <Search className="h-3.5 w-3.5" /> 模糊查询
         </Button>
         {blQuery && (
           <Button size="sm" variant="ghost" className="shrink-0" onClick={clearBlacklistQuery}>
@@ -306,13 +319,15 @@ export default function AnbotongBlacklist({ embedded = false }) {
       </div>
       {/* 次级统计信息（弱化层级，不与标题/操作抢视觉重心） */}
       <div className="mt-2 text-xs text-muted-foreground">
-        {blacklist.paginated
-          ? `本页 ${blacklist.items.length} 条${blacklist.page_full ? '' : ' · 已到末页'}`
-          : `共 ${blacklist.items.length} 条`}
-        {' · '}更新于 {fmtTime(blacklist.fetched_at)}
-        {blacklistRefreshMs
+        {blQuery
+          ? `模糊匹配 ${blQuery.matched} 条 · 扫描设备 ${blQuery.scanned_entries} 条`
+          : (blacklist.paginated
+            ? `本页 ${blacklist.items.length} 条${blacklist.page_full ? '' : ' · 已到末页'}`
+            : `共 ${blacklist.items.length} 条`)}
+        {' · '}更新于 {fmtTime(blQuery ? blQuery.fetched_at : blacklist.fetched_at)}
+        {!blQuery && (blacklistRefreshMs
           ? ` · 每 ${BLACKLIST_REFRESH_OPTIONS.find((o) => o.v === blacklistRefreshMs)?.label || `${blacklistRefreshMs / 1000} 秒`}自动刷新`
-          : ' · 已暂停自动刷新'}
+          : ' · 已暂停自动刷新')}
       </div>
       {/* 三态横幅：拉取失败 / 查询结果 / 分页越界提示（浅底深字） */}
       {blacklistError && (
@@ -321,10 +336,10 @@ export default function AnbotongBlacklist({ embedded = false }) {
         </div>
       )}
       {blQuery && (
-        <div className={`mt-2 rounded-md border px-3 py-2 text-xs ${blQuery.found ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600' : 'border-amber-500/30 bg-amber-500/10 text-amber-600'}`}>
-          {blQuery.found
-            ? `已在安博通黑名单中找到 ${blQuery.ip}（更新于 ${fmtTime(blQuery.fetched_at)}），下方为该条目详情`
-            : `${blQuery.ip} 不在安博通黑名单中（更新于 ${fmtTime(blQuery.fetched_at)}）`}
+        <div className={`mt-2 rounded-md border px-3 py-2 text-xs ${blQuery.matched > 0 ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600' : 'border-amber-500/30 bg-amber-500/10 text-amber-600'}`}>
+          {blQuery.matched > 0
+            ? `模糊匹配到 ${blQuery.matched} 条与「${blQuery.keyword}」相关的黑名单条目，下方为命中结果`
+            : `未找到与「${blQuery.keyword}」匹配的黑名单条目`}
           {blQuery.note ? ` · ${blQuery.note}` : ''}
         </div>
       )}
@@ -337,14 +352,14 @@ export default function AnbotongBlacklist({ embedded = false }) {
       <div ref={tableBoxRef} className="mt-3">
         <DataTable
           columns={columns}
-          data={blQuery ? (blQuery.found && blQuery.entry ? [blQuery.entry] : []) : blacklist.items}
+          data={blQuery ? (blQuery.entries || []) : blacklist.items}
           loading={blQuery ? blQueryLoading : (blacklistLoading && !blacklist.items.length)}
           rowKey="blist"
           selectable={false}
           stickyHeader
           maxHeight={tableMaxHeight ?? '26rem'}
-          emptyText={blQuery ? '未查到：该 IP 不在黑名单中' : (blacklist.page > 1 ? '本页无数据' : '设备黑名单为空')}
-          emptyDescription={blQuery ? '设备返回 404，黑名单中没有该 IP 的条目' : (blacklist.page > 1 ? '该页码已超出设备黑名单范围，请返回上一页' : '安博通阻断器上当前没有任何黑名单条目')}
+          emptyText={blQuery ? '未匹配到黑名单条目' : (blacklist.page > 1 ? '本页无数据' : '设备黑名单为空')}
+          emptyDescription={blQuery ? `设备黑名单中没有与「${blQuery.keyword}」匹配的条目，可缩短关键词后重试` : (blacklist.page > 1 ? '该页码已超出设备黑名单范围，请返回上一页' : '安博通阻断器上当前没有任何黑名单条目')}
           emptyIcon={Inbox}
         />
       </div>

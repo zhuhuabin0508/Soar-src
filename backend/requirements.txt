@@ -32,6 +32,8 @@ jsonpath-ng==1.6.1
 croniter==3.0.3
 aiosmtplib==3.0.2
 jieba==0.42.1
+# 境外 IP 归属地区：ISO 3166 国家代码转中文国家名（CLDR）
+babel==2.18.0
 numpy==1.26.4
 # 鉴权与安全
 passlib[bcrypt]==1.7.4

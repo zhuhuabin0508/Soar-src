@@ -6,7 +6,10 @@
 - ``GET /ban-workflow/approvals`` + ``POST .../approve|reject|escalate``：封禁审批中心
 - ``GET /ban-workflow/anbotong/blacklist`` + ``GET .../blacklist/query``：安博通黑名单
   分页拉取与单个 IP 精确查询（需 ban_workflow:view）；
+  ``GET .../blacklist/search`` 按关键词模糊查询黑名单条目；
   ``POST .../blacklist/unban`` 行内解封（需 ban_workflow:edit）
+- ``GET /ban-workflow/ip-region``：手动封禁归属地区自动识别（IP 地址库点查，
+  需 ban_workflow:view）
 - ``GET /ban-workflow/asset-match``：手动封禁弹窗资产匹配预检（资产发现 +
   资产清单双源并行查询，复用工单安全上下文匹配规则，需 ban_workflow:view）
 - ``GET /ban-workflow/banned-ips`` + ``POST .../{id}/unban``：封禁工作台（已封禁 IP 模块；
@@ -852,11 +855,53 @@ _BLACKLIST_TOTAL_SCAN_LIMIT = 100000
 _BLACKLIST_TOTAL_TTL_SECONDS = 60.0
 _BLACKLIST_TOTAL_CACHE: dict = {}
 _BLACKLIST_TOTAL_LOCK = threading.Lock()
+# 黑名单模糊查询快照缓存：设备列表接口不支持关键词过滤，只能全量拉取后本地
+# 过滤。条目数超过阈值时不缓存，避免大黑名单长期占用内存。
+_BLACKLIST_SEARCH_TTL_SECONDS = 30.0
+_BLACKLIST_SEARCH_CACHE_MAX_ENTRIES = 20000
+_BLACKLIST_SEARCH_CACHE: dict = {}
 
 
 def _invalidate_blacklist_total() -> None:
     with _BLACKLIST_TOTAL_LOCK:
         _BLACKLIST_TOTAL_CACHE.clear()
+        _BLACKLIST_SEARCH_CACHE.clear()
+
+
+def _blacklist_entries_snapshot(db: Session) -> dict:
+    """全量拉取设备黑名单条目并缓存 30 秒（模糊查询数据源）。"""
+    now_mono = time.monotonic()
+    with _BLACKLIST_TOTAL_LOCK:
+        cached = _BLACKLIST_SEARCH_CACHE.get("default")
+        if cached and (now_mono - cached["_mono"]) < _BLACKLIST_SEARCH_TTL_SECONDS:
+            return cached
+
+    from app.devices.anbotong import fetch_all_blacklist_entries
+
+    # 设备单页支持较大 count（实测 1 万条约 3 秒），用大页减少翻页次数，
+    # 避免 1000/页 时 12 秒内只扫到万条就截断、模糊查询漏掉后面的条目
+    result = fetch_all_blacklist_entries(
+        db, source="workbench", page_size=10000, max_seconds=20.0,
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("error") or "安博通阻断器黑名单拉取失败",
+        )
+    entries = [e for e in (result.get("entries") or []) if isinstance(e, dict)]
+    payload = {
+        "device": result.get("device"),
+        "entries": entries,
+        "scanned_entries": len(entries),
+        "scan_truncated": bool(result.get("truncated")),
+        "fetched_at": result.get("fetched_at") or beijing_now().isoformat(),
+    }
+    if len(entries) <= _BLACKLIST_SEARCH_CACHE_MAX_ENTRIES:
+        with _BLACKLIST_TOTAL_LOCK:
+            _BLACKLIST_SEARCH_CACHE["default"] = {
+                **payload, "_mono": time.monotonic(),
+            }
+    return payload
 
 
 @router.get("/anbotong/blacklist/count", dependencies=[Depends(require_permission("ban_workflow", "view"))])
@@ -943,6 +988,57 @@ def get_anbotong_blacklist(
         "items": result.get("items", []),
         "note": result.get("note"),
         "fetched_at": result.get("fetched_at"),
+    }
+
+
+@router.get("/anbotong/blacklist/search", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+def search_anbotong_blacklist(
+    keyword: str = Query(
+        ..., min_length=1, max_length=253,
+        description="模糊查询关键词（IP 前缀 / 域名片段，按黑名单条目匹配）",
+    ),
+    limit: int = Query(200, ge=1, le=1000, description="最多返回条数"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """安博通黑名单模糊查询（黑名单页查询框）。
+
+    设备「查询指定黑名单」只支持单条精确查询，无法做片段匹配；这里全量拉取
+    设备黑名单列表（30 秒快照缓存，避免每次查询都拉全量），在本地过滤：
+
+    - IP 片段（仅数字与点，如 ``10.0.0``）：按条目 **前缀** 匹配，避免
+      ``10.`` 命中 ``205.210.31.52`` 这类中间片段造成噪音；
+    - 其他关键词（域名片段等）：按条目 **包含** 匹配（大小写不敏感）。
+
+    命中数超过 ``limit`` 或设备条目超过单次扫描上限时 ``truncated=True``，
+    并通过 ``note`` 说明结果可能不完整。
+    """
+    needle = keyword.strip().lower()
+    if not needle:
+        raise HTTPException(status_code=400, detail="查询关键词不能为空")
+    snapshot = _blacklist_entries_snapshot(db)
+    ip_fragment = all(ch.isdigit() or ch == "." for ch in needle)
+    matched = []
+    for entry in snapshot["entries"]:
+        blist = str(entry.get("blist") or "").strip().lower()
+        if not blist:
+            continue
+        if (blist.startswith(needle) if ip_fragment else needle in blist):
+            matched.append(entry)
+    notes: list[str] = []
+    if snapshot["scan_truncated"]:
+        notes.append("设备黑名单条目超过单次扫描上限，结果可能不完整")
+    if len(matched) > limit:
+        notes.append(f"命中结果超过展示上限，仅返回前 {limit} 条")
+    return {
+        "device": snapshot.get("device"),
+        "keyword": keyword.strip(),
+        "matched": len(matched),
+        "entries": matched[:limit],
+        "truncated": len(matched) > limit or snapshot["scan_truncated"],
+        "scanned_entries": snapshot["scanned_entries"],
+        "scan_truncated": snapshot["scan_truncated"],
+        "note": "；".join(notes) if notes else None,
+        "fetched_at": beijing_now().isoformat(),
     }
 
 
@@ -1444,6 +1540,151 @@ def match_anbotong_whitelist(
     result = match_targets(db, tokens)
     result["fetched_at"] = beijing_now().isoformat()
     return result
+
+
+# ======================================================================
+# 手动封禁归属地区自动识别（IP 地址库）
+# ======================================================================
+# 点查结果按库优先级选取归属信息：国内运营商地理库最精确，其次注册持有者库；
+# 港澳/境外库各自覆盖对应网段；云服务库只覆盖国内云网段，作为「中国」兜底。
+_REGION_LIBRARY_PRIORITY = ("geo_cn", "holder_cn", "hk_mo", "overseas", "cloud_cn")
+# 归属地区落库长度上限：ban_records.region 为 64，legacy banned_ips.region 为 50，
+# 统一截断到 50 保证两侧都能写入
+_REGION_MAX_LEN = 50
+
+# ISO 3166-1 alpha-2 国家代码 → 中文国家名（Babel/CLDR，首次使用时加载）
+_ZH_COUNTRY_NAMES: dict[str, str] | None = None
+
+
+def _country_name_zh(code) -> str:
+    """把国家代码转换成中文国家名；无映射返回空串。"""
+    global _ZH_COUNTRY_NAMES
+    if _ZH_COUNTRY_NAMES is None:
+        try:
+            from babel import Locale
+
+            _ZH_COUNTRY_NAMES = {
+                str(key).upper(): str(name)
+                for key, name in Locale("zh").territories.items()
+                if len(str(key)) == 2
+            }
+        except Exception:  # noqa: BLE001
+            _ZH_COUNTRY_NAMES = {}
+            logger.warning("Babel 中文国家名映射不可用，境外归属地区将保留英文", exc_info=True)
+    return _ZH_COUNTRY_NAMES.get(str(code or "").strip().upper(), "")
+
+
+def _compose_region_text(match: dict) -> str:
+    """把一条 IP 地址库命中记录拼成「国家 省 市」文本（去重、截断）。"""
+    library_type = match.get("library_type")
+    if library_type == "overseas":
+        # 境外库的国家/省州/城市均为英文，且省州/城市没有权威中文映射：
+        # 归属地区只取中文国家名，避免「美国 New Jersey ...」中英混排
+        zh_name = _country_name_zh(
+            match.get("geo_country_code") or match.get("rir_country")
+        )
+        if zh_name:
+            return zh_name[:_REGION_MAX_LEN]
+        return str(match.get("country_geo") or "").strip()[:_REGION_MAX_LEN]
+
+    parts: list[str] = []
+
+    def add(value) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        for idx, part in enumerate(parts):
+            if text == part or text in part:
+                # 完全相同，或新值已被更完整的已有值包含（省=市 / 香港 vs 中国香港）
+                return
+            if part in text:
+                # 已有值是新值的一部分：用更具体的新值替换（如 中国 → 中国香港）
+                parts[idx] = text
+                return
+        parts.append(text)
+
+    if library_type in ("geo_cn", "cloud_cn"):
+        # 这两个库只收录中国大陆网段且不含国家字段，补「中国」前缀
+        add("中国")
+    add(match.get("country_geo"))
+    add(match.get("province"))
+    add(match.get("city"))
+    return " ".join(parts)[:_REGION_MAX_LEN]
+
+
+def lookup_ip_region(db: Session, ip: str) -> tuple[str, str]:
+    """查询单个 IPv4 的归属地区。
+
+    Returns:
+        ``(归属地区文本, 命中的库中文名)``；非 IPv4 / 地址库无命中 / 查询异常
+        返回 ``("", "")``，调用方按无归属地区处理，不影响封禁主流程。
+    """
+    try:
+        addr = ipaddress.IPv4Address(str(ip or "").strip())
+    except ValueError:
+        return "", ""
+    try:
+        # 复用 IP 地址库的跨库点查（GiST ip_range @>，毫秒级）
+        from app.api.v1.ip_library import _lookup_matches
+
+        matches = _lookup_matches(db, int(addr))
+    except Exception:  # noqa: BLE001
+        logger.warning("IP 地址库归属地区查询失败 ip=%s", ip, exc_info=True)
+        return "", ""
+    by_type = {
+        m.get("library_type"): m
+        for m in matches
+        if isinstance(m, dict) and m.get("library_type")
+    }
+    for library_type in _REGION_LIBRARY_PRIORITY:
+        match = by_type.get(library_type)
+        if not match:
+            continue
+        text = _compose_region_text(match)
+        if text:
+            return text, str(match.get("library_label") or "")
+    return "", ""
+
+
+@router.get("/ip-region", dependencies=[Depends(require_permission("ban_workflow", "view"))])
+def query_ip_region(
+    ips: str = Query(
+        ..., min_length=1, max_length=512,
+        description="IPv4 列表（逗号分隔，最多 20 个）",
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    """手动封禁弹窗的归属地区自动识别：按 IP 地址库点查返回国家/省/市。
+
+    仅支持 IPv4（地址库仅收录 IPv4，IPv6 / 域名 / 网段不做归属识别）；
+    ``region`` 仅在全部目标识别结果一致时返回；多目标地区不一致时为空、
+    ``mixed=True``，由前端汇总展示并按目标分别落库。
+    """
+    tokens = [t.strip() for t in ips.replace("，", ",").split(",") if t.strip()]
+    if not tokens:
+        raise HTTPException(status_code=400, detail="IP 列表不能为空")
+    # 输入去重：同一 IP 只查一次，结果顺序按输入首次出现顺序
+    uniq = list(dict.fromkeys(tokens))
+    if len(uniq) > 20:
+        raise HTTPException(status_code=400, detail="IP 数量超过上限（20 个）")
+    for t in uniq:
+        try:
+            ipaddress.IPv4Address(t)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"'{t}' 不是合法的 IPv4 地址")
+
+    items = []
+    for ip in uniq:
+        region, label = lookup_ip_region(db, ip)
+        items.append({"ip": ip, "region": region, "library_label": label})
+    regions = [item["region"] for item in items]
+    common = regions[0] if regions and all(r and r == regions[0] for r in regions) else ""
+    return {
+        "items": items,
+        "region": common,
+        "mixed": len({r for r in regions if r}) > 1,
+        "fetched_at": beijing_now().isoformat(),
+    }
 
 
 @router.get("/asset-match", dependencies=[Depends(require_permission("ban_workflow", "view"))])
@@ -2516,9 +2757,23 @@ def _issue_manual_ban(
 
     now = beijing_now()
     expire_time = None if is_permanent else now + timedelta(seconds=duration_seconds)
+
+    # 归属地区自动识别：未填写时按 IP 地址库逐目标点查并落库。
+    # 多目标可能属于不同地区，因此按目标分别计算，避免共用同一条地区文本；
+    # 域名 / CIDR / 范围在地址库中没有单一归属，保持为空。
+    auto_regions: dict[str, str] = {}
+
+    def _target_region(target: str) -> str:
+        if region:
+            return region
+        if target not in auto_regions:
+            auto_regions[target] = lookup_ip_region(db, target)[0]
+        return auto_regions[target]
+
     records: list = []
     for target, result in dispatched:
         record_id = ban_target.extract_record_id(result.get("response_body"))
+        record_region = _target_region(target)
         record = BanRecord(
             ip=target,
             ban_level=ban_level,
@@ -2526,7 +2781,7 @@ def _issue_manual_ban(
             is_permanent=is_permanent,
             expire_time=expire_time,
             reason=reason,
-            region=region,
+            region=record_region,
             ban_source="manual",
             ban_device=device.name,
             record_id=record_id,
@@ -2541,7 +2796,7 @@ def _issue_manual_ban(
         legacy.ban_level = ban_level
         legacy.ban_duration = ban_duration
         legacy.expired_at = expire_time or (now + timedelta(days=36500))
-        legacy.region = region
+        legacy.region = record_region
         legacy.reason = reason
         legacy.status = "active"
         legacy.source = "manual"
@@ -2550,6 +2805,8 @@ def _issue_manual_ban(
         legacy.action_response = ban_target.summarize_response(result)
         records.append(record)
     db.commit()
+    # 新条目已下发设备：失效黑名单统计 / 模糊查询快照，避免页面查询到旧数据
+    _invalidate_blacklist_total()
 
     for record, (_, result) in zip(records, dispatched):
         write_audit(
@@ -2557,7 +2814,8 @@ def _issue_manual_ban(
             detail={
                 "ip": record.ip, "ban_plan": {
                     "ban_level": ban_level, "ban_duration": ban_duration,
-                    "is_permanent": is_permanent, "reason": reason, "region": region,
+                    "is_permanent": is_permanent, "reason": reason,
+                    "region": _target_region(record.ip),
                 },
                 "record_id": record.record_id, "device": device.name,
                 "status_code": result.get("status_code"),
